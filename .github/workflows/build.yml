@@ -45,6 +45,17 @@ jobs:
       MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: muxlang/mux-runtime
+          ref: main
+          path: mux-runtime
+      - id: runtime_sha
+        run: echo "sha=$(git -C mux-runtime rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/mux-lang/runtime
+          key: ${{ runner.os }}-muxrt-${{ steps.runtime_sha.outputs.sha }}
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -65,7 +76,6 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin
-            ~/.cache/mux-lang
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
