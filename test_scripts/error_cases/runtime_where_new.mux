@@ -1,0 +1,9 @@
+// Constructing an object whose field default violates its where constraint
+// panics at .new(): objects must be born satisfying their invariants.
+
+class Account {
+    int balance where { balance >= 100 }
+}
+
+auto a = Account.new()
+print("unreachable")

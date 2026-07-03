@@ -3,7 +3,7 @@
 //! This module handles generating constructors and related initialization code.
 
 use super::CodeGenerator;
-use crate::ast::{EnumVariant, ExpressionNode, Field, PrimitiveType, TypeKind};
+use crate::ast::{EnumVariant, ExpressionNode, Field, LiteralNode, PrimitiveType, TypeKind};
 use crate::semantics::{GenericContext, MethodSig, Type};
 use inkwell::AddressSpace;
 use inkwell::types::BasicType;
@@ -298,6 +298,8 @@ impl<'a> CodeGenerator<'a> {
             self.store_initialized_field(field_ptr, field)?;
         }
 
+        self.emit_construction_invariants(name, struct_ptr_typed)?;
+
         // set vtable fields. Generic classes never get a vtable generated
         // (see generate_class_vtables) since the vtable would have to
         // reference an unspecialized method that has no body; skip those
@@ -381,10 +383,13 @@ impl<'a> CodeGenerator<'a> {
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Str) => {
-                // initialize with null pointer (empty string)
-                let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+                // A real empty string, not null: string methods (and
+                // construction-time where checks that call them) must work
+                // on a field before its first assignment.
+                let empty: ExpressionNode = LiteralNode::String(String::new()).into();
+                let val = self.generate_expression(&empty)?;
                 self.builder
-                    .build_store(field_ptr, null_ptr)
+                    .build_store(field_ptr, val)
                     .map_err(|e| e.to_string())?;
             }
             Type::List(_) => {

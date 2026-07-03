@@ -1,7 +1,7 @@
 // A field assignment violating the field's where constraint panics.
 
 class Port {
-    int number where { number > 0, number < 65535 }
+    int number = 80 where { number > 0, number < 65535 }
 }
 
 auto p = Port.new()

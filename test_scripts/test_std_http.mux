@@ -2,51 +2,72 @@ import std.assert
 import std.data.json
 import std.net
 
+// Everything lives in main because the analyzer requires every match arm in
+// a non-void function to end in a return, so helper functions returning an
+// error string cannot use match for side effects.
+
 func main() returns void {
     print("Starting http client smoke test")
 
-    match json.parse("{\"method\":\"GET\",\"url\":\"https://httpbin.org/get\",\"headers\":{\"Accept\":\"application/json\"}}") {
-        ok(req) {
-            match net.http.request(req) {
-                ok(resp_json) {
-                    match json.to_map(resp_json) {
-                        ok(resp_map) {
-                            assert.assert(resp_map.contains("status"), "response missing status")
-                            assert.assert(resp_map.contains("headers"), "response missing headers")
-                            assert.assert(resp_map.contains("body"), "response missing body")
+    // httpbingo.org is a maintained httpbin clone; the original httpbin.org
+    // routinely 503s under load. Retry a few times so only a genuinely
+    // broken client fails the test, and keep the output attempt-independent.
+    string req_str = "{\"method\":\"GET\",\"url\":\"https://httpbingo.org/get\",\"headers\":{\"Accept\":\"application/json\"}}"
 
-                            auto status_json = resp_map["status"]
-                            match status_json.stringify(none) {
-                                ok(status_str) {
-                                    assert.assert(
-                                        status_str == "200" || status_str == "200.0",
-                                        "unexpected status: " + status_str
-                                    )
+    string last_error = "no attempts made"
+    bool success = false
+    int attempt = 0
+    while attempt < 3 && !success {
+        attempt += 1
+        string err_msg = ""
+        match json.parse(req_str) {
+            ok(req) {
+                match net.http.request(req) {
+                    ok(resp_json) {
+                        match json.to_map(resp_json) {
+                            ok(resp_map) {
+                                if !resp_map.contains("status") || !resp_map.contains("headers") || !resp_map.contains("body") {
+                                    err_msg = "response missing status, headers, or body"
+                                } else {
+                                    auto status_json = resp_map["status"]
+                                    match status_json.stringify(none) {
+                                        ok(status_str) {
+                                            if status_str != "200" && status_str != "200.0" {
+                                                err_msg = "unexpected status: " + status_str
+                                            } else {
+                                                auto body_json = resp_map["body"]
+                                                match json.to_map(body_json) {
+                                                    ok(body_map) {
+                                                        if !body_map.contains("url") || !body_map.contains("headers") {
+                                                            err_msg = "response body missing url or headers"
+                                                        }
+                                                    }
+                                                    err(e) { err_msg = "response body was not an object: " + e }
+                                                }
+                                            }
+                                        }
+                                        err(e) { err_msg = "failed to stringify status: " + e }
+                                    }
                                 }
-                                err(e) { assert.assert(false, "failed to stringify status: " + e) }
                             }
-
-                            auto body_json = resp_map["body"]
-                            match json.to_map(body_json) {
-                                ok(body_map) {
-                                    assert.assert(body_map.contains("url"), "response body missing url")
-                                    assert.assert(body_map.contains("headers"), "response body missing headers")
-                                }
-                                err(e) { assert.assert(false, "response body was not an object: " + e) }
-                            }
-
-                            print("http request success path validated")
+                            err(e) { err_msg = "failed to convert response to map: " + e }
                         }
-                        err(e) { assert.assert(false, "failed to convert response to map: " + e) }
                     }
+                    err(e) { err_msg = "http request failed: " + e }
                 }
-                err(e) { assert.assert(false, "http request failed: " + e) }
             }
+            err(e) { err_msg = "failed to build request json: " + e }
         }
-        err(e) { assert.assert(false, "failed to build request json: " + e) }
+        if err_msg == "" {
+            success = true
+        } else {
+            last_error = err_msg
+        }
     }
+    assert.assert(success, "http request failed after " + attempt.to_string() + " attempts: " + last_error)
+    print("http request success path validated")
 
-    match json.parse("{\"url\":\"https://httpbin.org/get\"}") {
+    match json.parse("{\"url\":\"https://httpbingo.org/get\"}") {
         ok(invalid_req) {
             match net.http.request(invalid_req) {
                 ok(_) { assert.assert(false, "expected invalid request to fail") }

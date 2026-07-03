@@ -4,7 +4,8 @@
 //! unified runtime panic (`panic: where constraint violated` plus the
 //! predicate's `--> file:line:col`). Emission points: function/method/lambda
 //! entry (preconditions, including preconditions inherited from interfaces),
-//! enum variant construction, and class field assignment (invariants).
+//! enum variant construction, class construction (`.new()`, after field
+//! defaults are applied), and class field assignment (invariants).
 
 use inkwell::values::PointerValue;
 
@@ -98,10 +99,34 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    /// At the end of `.new()`, after field defaults are applied, check every
+    /// class invariant. Together with the per-assignment re-checks this
+    /// guarantees an object never holds out-of-range data; it also means a
+    /// constrained field needs a default that satisfies its constraints.
+    pub(super) fn emit_construction_invariants(
+        &mut self,
+        class_name: &str,
+        struct_ptr: PointerValue<'a>,
+    ) -> Result<(), String> {
+        let invariants: Vec<ExpressionNode> = self
+            .analyzer
+            .class_invariants(class_name)
+            .iter()
+            .map(|inv| inv.predicate.clone())
+            .collect();
+        if invariants.is_empty() {
+            return Ok(());
+        }
+
+        let snapshot = self.variables.clone();
+        self.bind_class_fields(class_name, struct_ptr)?;
+        self.emit_where_checks(&invariants, "where_new")?;
+        self.variables = snapshot;
+        Ok(())
+    }
+
     /// After a store to `assigned_field`, re-check the class invariants that
-    /// reference it. Invariants are enforced on assignment rather than at
-    /// `.new()`: construction zero-initializes fields, so objects get their
-    /// real values through assignment (including inside factory methods).
+    /// reference it.
     pub(super) fn emit_field_assignment_invariants(
         &mut self,
         class_name: &str,
