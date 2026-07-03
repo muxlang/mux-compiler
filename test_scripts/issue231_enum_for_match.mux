@@ -1,0 +1,25 @@
+enum Shape {
+    Circle(float radius),
+    Rectangle(float width, float height),
+    Square(float size)
+}
+
+func area(Shape shape) returns float {
+    match shape {
+        Circle(r) { return 3.14159 * r * r }
+        Rectangle(w, h) { return w * h }
+        Square(s) { return s * s }
+    }
+}
+
+func main() returns void {
+    auto shapes = [
+        Shape.Circle(5.0),
+        Shape.Rectangle(4.0, 6.0),
+        Shape.Square(3.0)
+    ]
+    for Shape s in shapes {
+        print(area(s).to_string())
+    }
+    return
+}

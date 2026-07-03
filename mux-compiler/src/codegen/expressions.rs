@@ -1595,6 +1595,29 @@ impl<'a> CodeGenerator<'a> {
                     .build_load(st, ptr, &format!("load_{}", name))
                     .map_err(|e| e.to_string());
             }
+            if var_type.is_pointer_type() {
+                let boxed_ptr = self.load_boxed_ptr_from_alloca(ptr, name)?;
+                let struct_type = self
+                    .type_map
+                    .get(type_name)
+                    .ok_or_else(|| format!("Enum {} not found in type map", type_name))?
+                    .into_struct_type();
+                let unbox_fn = self
+                    .runtime_function("mux_value_unbox_enum")
+                    .ok_or("mux_value_unbox_enum not found")?;
+                let raw_ptr = self
+                    .builder
+                    .build_call(unbox_fn, &[boxed_ptr.into()], "unbox_enum")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("Expected basic value from mux_value_unbox_enum")?
+                    .into_pointer_value();
+                return self
+                    .builder
+                    .build_load(struct_type, raw_ptr, &format!("load_{}", name))
+                    .map_err(|e| e.to_string());
+            }
             return Err(format!("Expected struct type for enum variable {}", name));
         }
 

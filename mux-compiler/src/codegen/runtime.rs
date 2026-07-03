@@ -277,6 +277,12 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        module.add_function(
+            "mux_value_unbox_enum",
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+
         i8ptr_i8ptr_fn!("mux_set_to_string");
         i8ptr_i8ptr_fn!("mux_optional_to_string");
         i8ptr_i8ptr_fn!("mux_optional_into_value");
