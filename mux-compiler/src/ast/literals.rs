@@ -62,6 +62,21 @@ pub struct Field {
     pub is_generic_param: bool,
     pub is_const: bool,
     pub default_value: Option<super::nodes::ExpressionNode>,
+    pub where_clause: Option<WhereClause>,
+}
+
+/// A `where { ... }` runtime constraint block: boolean predicates that must all
+/// hold, separated like set-literal elements (commas, optional newlines).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhereClause {
+    pub predicates: Vec<super::nodes::ExpressionNode>,
+    pub span: Span,
+}
+
+impl super::Spanned for WhereClause {
+    fn span(&self) -> &Span {
+        &self.span
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +97,7 @@ pub type EnumVariantField = (Option<String>, TypeNode);
 pub struct EnumVariant {
     pub name: String,
     pub data: Option<Vec<EnumVariantField>>,
+    pub where_clause: Option<WhereClause>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

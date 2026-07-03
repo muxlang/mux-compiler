@@ -182,6 +182,7 @@ fn sample_function() -> FunctionNode {
         body: Vec::new(),
         span: Span::new(4, 2),
         is_common: false,
+        where_clause: None,
     }
 }
 
@@ -196,6 +197,7 @@ fn ast_node_span_covers_all_variants() {
         traits: Vec::new(),
         fields: Vec::new(),
         methods: Vec::new(),
+        where_clause: None,
         span: Span::new(5, 0),
     };
     assert_eq!(class.span().row_start, 5);

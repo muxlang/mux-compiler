@@ -12,7 +12,7 @@ use super::CodeGenerator;
 use super::GenericContext;
 use crate::ast::{
     ExpressionKind, ExpressionNode, Param, PrimitiveType, StatementKind, StatementNode, TypeKind,
-    TypeNode,
+    TypeNode, WhereClause,
 };
 use crate::lexer::Span;
 use crate::semantics::{Type, infer_missing_type_params_from_bounds};
@@ -377,6 +377,15 @@ impl<'a> CodeGenerator<'a> {
         }
         substituted_func.body = substituted_body;
 
+        // substitute types in the where-clause predicates
+        if let Some(clause) = &mut substituted_func.where_clause {
+            clause.predicates = clause
+                .predicates
+                .iter()
+                .map(|p| self.substitute_types_in_expression(p, &type_map))
+                .collect();
+        }
+
         // save current context (from calling context)
         let saved_variables = self.variables.clone();
         let saved_current_function_name = self.current_function_name.take();
@@ -597,6 +606,7 @@ impl<'a> CodeGenerator<'a> {
                 params,
                 return_type,
                 body,
+                where_clause,
             } => {
                 // for lambda parameters, substitute their types
                 let substituted_params = params
@@ -618,11 +628,20 @@ impl<'a> CodeGenerator<'a> {
                     .iter()
                     .map(|s| self.substitute_types_in_statement(s, type_map))
                     .collect();
+                let substituted_where = where_clause.as_ref().map(|clause| WhereClause {
+                    predicates: clause
+                        .predicates
+                        .iter()
+                        .map(|p| self.substitute_types_in_expression(p, type_map))
+                        .collect(),
+                    span: clause.span,
+                });
                 ExpressionNode {
                     kind: ExpressionKind::Lambda {
                         params: substituted_params,
                         return_type: substituted_return_type,
                         body: substituted_body,
+                        where_clause: substituted_where,
                     },
                     span: expr.span,
                 }

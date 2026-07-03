@@ -13,6 +13,7 @@ pub mod stdlib;
 pub mod symbol_table;
 pub mod types;
 pub mod unifier;
+pub mod where_clause;
 
 // Re-exports for public API
 pub use error::SemanticError;
@@ -62,6 +63,17 @@ pub struct SemanticAnalyzer {
     // processed twice (some import side effects, like registering a
     // submodule namespace symbol, are not safe to repeat).
     pub(super) hoisted_import_spans: HashSet<Span>,
+    // Class name -> the where-clause invariants (field-level and class-level)
+    // codegen enforces on field assignment.
+    pub(super) class_invariants: HashMap<String, Vec<where_clause::ClassInvariant>>,
+    // Interface name -> method name -> that method's where-clause
+    // precondition, collected before the analysis pass.
+    pub(super) interface_preconditions:
+        HashMap<String, HashMap<String, where_clause::InheritedPrecondition>>,
+    // Class name -> method name -> interface preconditions the class method
+    // must enforce at entry (one entry per declaring interface).
+    pub(super) inherited_preconditions:
+        HashMap<String, HashMap<String, Vec<where_clause::InheritedPrecondition>>>,
 }
 
 impl Default for SemanticAnalyzer {
@@ -96,6 +108,9 @@ impl SemanticAnalyzer {
             expression_type_overrides: std::collections::HashMap::new(),
             fresh_type_var_counter: 0,
             hoisted_import_spans: HashSet::new(),
+            class_invariants: HashMap::new(),
+            interface_preconditions: HashMap::new(),
+            inherited_preconditions: HashMap::new(),
         }
     }
 
@@ -240,6 +255,9 @@ impl SemanticAnalyzer {
             expression_type_overrides: std::collections::HashMap::new(),
             fresh_type_var_counter: 0,
             hoisted_import_spans: HashSet::new(),
+            class_invariants: HashMap::new(),
+            interface_preconditions: HashMap::new(),
+            inherited_preconditions: HashMap::new(),
         }
     }
 
@@ -249,6 +267,29 @@ impl SemanticAnalyzer {
 
     pub fn all_symbols(&self) -> &std::collections::HashMap<String, Symbol> {
         &self.symbol_table.all_symbols
+    }
+
+    /// The where-clause invariants (field-level and class-level) declared on a
+    /// class, or an empty slice when it has none.
+    pub fn class_invariants(&self, class_name: &str) -> &[where_clause::ClassInvariant] {
+        self.class_invariants
+            .get(class_name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// The interface preconditions a class method inherits from the
+    /// interfaces its class implements, or an empty slice when none apply.
+    pub fn inherited_preconditions(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> &[where_clause::InheritedPrecondition] {
+        self.inherited_preconditions
+            .get(class_name)
+            .and_then(|methods| methods.get(method_name))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn imported_symbols(
@@ -551,6 +592,9 @@ impl SemanticAnalyzer {
         if let Err(e) = self.collect_hoistable_declarations(ast, files.as_deref_mut()) {
             self.errors.push(e);
         }
+        // Imports are loaded by now, so interface where-clauses from every
+        // module are visible for classes to inherit during analysis.
+        self.collect_interface_preconditions(ast);
         self.analyze_nodes(ast, files);
         std::mem::take(&mut self.errors)
     }
@@ -734,6 +778,7 @@ impl SemanticAnalyzer {
                 params,
                 return_type,
                 body,
+                ..
             } => self.resolve_lambda_type(params, return_type, body, expr.span),
             ExpressionKind::SetOrMapLiteral(elements) => self.resolve_set_literal_type(elements),
             ExpressionKind::TupleLiteral(elements) => {

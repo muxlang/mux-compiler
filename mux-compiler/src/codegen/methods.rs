@@ -889,7 +889,9 @@ impl<'a> CodeGenerator<'a> {
                 "to_int" => self.call_string_conversion_func(obj_value, "mux_string_to_int"),
                 "to_float" => self.call_string_conversion_func(obj_value, "mux_string_to_float"),
                 "to_char" => self.call_string_conversion_func(obj_value, "mux_string_to_char"),
-                "length" => self.call_runtime_function("mux_string_length", &[obj_value]),
+                // mux_string_length takes a raw C string, so unwrap the
+                // boxed value first like the conversion functions do.
+                "length" => self.call_string_conversion_func(obj_value, "mux_string_length"),
                 _ => Err(format!("Method {} not implemented for string", method_name)),
             },
             PrimitiveType::Bool => match method_name {

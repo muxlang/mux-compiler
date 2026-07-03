@@ -1,0 +1,8 @@
+// Where preconditions on generic functions are enforced per instantiation.
+
+func first_of<T>(list<T> items) where { items.size() > 0 } returns T {
+    return items[0]
+}
+
+list<int> empty = []
+print(first_of(empty).to_string())

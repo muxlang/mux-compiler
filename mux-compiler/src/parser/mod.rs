@@ -10,7 +10,7 @@ use crate::ast::{
     AstNode, BinaryOp, EnumVariant, EnumVariantField, ExpressionKind, ExpressionNode, Field,
     FunctionNode, ImportSpec, LiteralNode, MatchArm, Param, PatternNode, Precedence, PrimitiveType,
     SpanExt, Spanned, StatementKind, StatementNode, TraitBound, TraitRef, TypeKind, TypeNode,
-    UnaryOp,
+    UnaryOp, WhereClause,
 };
 use crate::lexer::{Span, Token, TokenType};
 
@@ -336,13 +336,18 @@ impl<'a> Parser<'a> {
         let (fields, methods) = self.parse_class_body(&type_params, start_span)?;
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after class body")?;
-        let full_span = start_span.combine(&end_span);
+        let where_clause = self.parse_where_clause()?;
+        let full_span = match &where_clause {
+            Some(clause) => start_span.combine(&clause.span),
+            None => start_span.combine(&end_span),
+        };
         Ok(AstNode::Class {
             name,
             type_params,
             traits,
             fields,
             methods,
+            where_clause,
             span: full_span,
         })
     }
@@ -598,6 +603,12 @@ impl<'a> Parser<'a> {
         self.consume_token(TokenType::OpenParen, "Expected '(' after method name")?;
         let params = self.parse_param_list()?;
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
+        let where_clause = self.parse_where_clause()?;
+        if where_clause.is_some() {
+            // The return type may continue on the next line after the block,
+            // but do not eat the newline separating this member from the next.
+            self.skip_newlines_before(TokenType::Returns);
+        }
         let return_type = self.parse_optional_return_type()?;
         Ok(FunctionNode {
             name,
@@ -607,6 +618,7 @@ impl<'a> Parser<'a> {
             body: vec![],
             span: start_span,
             is_common: false,
+            where_clause,
         })
     }
 
@@ -716,9 +728,17 @@ impl<'a> Parser<'a> {
     fn parse_single_enum_variant(&mut self) -> ParserResult<EnumVariant> {
         let variant_name = self.consume_identifier("Expected variant name")?;
         let data = self.parse_enum_variant_data()?;
+        let where_clause = if self.check(TokenType::Where) {
+            self.parse_where_clause()?
+        } else {
+            // Variants are newline-separated, so only a same-line `where`
+            // belongs to this variant.
+            None
+        };
         Ok(EnumVariant {
             name: variant_name,
             data,
+            where_clause,
         })
     }
 
@@ -897,6 +917,10 @@ impl<'a> Parser<'a> {
         self.consume_token(TokenType::OpenParen, "Expected '(' after function name")?;
         let params = self.parse_function_params()?;
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
+        let where_clause = self.parse_where_clause()?;
+        if where_clause.is_some() {
+            self.skip_newlines();
+        }
         let return_type = self.parse_required_return_type()?;
         self.skip_newlines();
         let body_statements = self.parse_function_body(start_span)?;
@@ -910,6 +934,7 @@ impl<'a> Parser<'a> {
             body: body_statements,
             span,
             is_common,
+            where_clause,
         }))
     }
 
@@ -1001,6 +1026,71 @@ impl<'a> Parser<'a> {
         }
         *has_default = true;
         Ok(Some(default_expr))
+    }
+
+    /// If the next non-newline token is `token_type`, consume the intervening
+    /// newlines and return true; otherwise leave them unconsumed and return
+    /// false. Lets a clause continue on a following line without eating
+    /// newlines that separate declarations.
+    fn skip_newlines_before(&mut self, token_type: TokenType) -> bool {
+        let mut i = 0;
+        while self
+            .peek_ahead(i)
+            .is_some_and(|t| t.token_type == TokenType::NewLine)
+        {
+            i += 1;
+        }
+        if self
+            .peek_ahead(i)
+            .is_some_and(|t| t.token_type == token_type)
+        {
+            self.skip_newlines();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Parse an optional `where { ... }` constraint block. Predicates are
+    /// boolean expressions separated like set-literal elements: commas, with
+    /// newlines freely allowed around predicates and separators, and a
+    /// trailing comma tolerated. The clause may start on a following line
+    /// (`func f(a)\n    where { ... }`); if no `where` follows, any newlines
+    /// looked past are left unconsumed.
+    fn parse_where_clause(&mut self) -> ParserResult<Option<WhereClause>> {
+        if !self.skip_newlines_before(TokenType::Where) {
+            return Ok(None);
+        }
+        let start_span = self.peek().span;
+        self.consume_token(TokenType::Where, "Expected 'where' keyword")?;
+        self.skip_newlines();
+        self.consume_token(TokenType::OpenBrace, "Expected '{' after 'where'")?;
+        let mut predicates = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.check(TokenType::CloseBrace) {
+                break;
+            }
+            predicates.push(self.parse_expression()?);
+            self.skip_newlines();
+            if !self.matches(&[TokenType::Comma]) {
+                break;
+            }
+        }
+        self.skip_newlines();
+        let end_span = self.consume_token(
+            TokenType::CloseBrace,
+            "Expected '}' after where predicates (predicates are comma-separated)",
+        )?;
+        let span = start_span.combine(&end_span);
+        if predicates.is_empty() {
+            return Err(ParserError::with_help(
+                "Empty 'where' block",
+                span,
+                "A where block must contain at least one boolean predicate. Example: where { value > 0 }",
+            ));
+        }
+        Ok(Some(WhereClause { predicates, span }))
     }
 
     fn parse_required_return_type(&mut self) -> ParserResult<TypeNode> {
@@ -2388,6 +2478,11 @@ impl<'a> Parser<'a> {
 
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
 
+        let where_clause = self.parse_where_clause()?;
+        if where_clause.is_some() {
+            self.skip_newlines();
+        }
+
         let return_type = if self.matches(&[TokenType::Returns]) {
             self.parse_type()?
         } else {
@@ -2421,6 +2516,7 @@ impl<'a> Parser<'a> {
                 params,
                 return_type,
                 body: body_statements,
+                where_clause,
             },
             span: start_span.combine(&end_span),
         };
@@ -2890,6 +2986,7 @@ impl<'a> Parser<'a> {
             TokenType::Is => "'is' keyword".to_string(),
             TokenType::As => "'as' keyword".to_string(),
             TokenType::Common => "'common' keyword".to_string(),
+            TokenType::Where => "'where' keyword".to_string(),
             TokenType::None => "'none' keyword".to_string(),
             TokenType::OpenBrace => "'{'".to_string(),
             TokenType::CloseBrace => "'}'".to_string(),
@@ -3100,12 +3197,20 @@ impl<'a> Parser<'a> {
         }
 
         let is_generic_param = Self::is_field_generic_param(&field_type, type_param_names);
+        let where_clause = if self.check(TokenType::Where) {
+            // Fields are newline-separated, so only a same-line `where`
+            // belongs to this field.
+            self.parse_where_clause()?
+        } else {
+            None
+        };
         Ok(Field {
             name: field_name,
             type_: field_type,
             is_generic_param,
             is_const,
             default_value,
+            where_clause,
         })
     }
 

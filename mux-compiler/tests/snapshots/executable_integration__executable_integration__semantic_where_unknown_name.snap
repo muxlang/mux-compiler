@@ -1,0 +1,9 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Undefined variable 'missing'
+--> test_scripts/error_cases/semantic_where_unknown_name.mux:3:23
+   |
+ 3 | func f(int a) where { missing > 0 } returns int {
+   |                       ^^^^^^^

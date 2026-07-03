@@ -3,7 +3,7 @@
 //! This module handles generating constructors and related initialization code.
 
 use super::CodeGenerator;
-use crate::ast::{EnumVariant, ExpressionNode, Field, PrimitiveType, TypeKind};
+use crate::ast::{EnumVariant, ExpressionNode, Field, LiteralNode, PrimitiveType, TypeKind};
 use crate::semantics::{GenericContext, MethodSig, Type};
 use inkwell::AddressSpace;
 use inkwell::types::BasicType;
@@ -106,6 +106,23 @@ impl<'a> CodeGenerator<'a> {
                 self.builder
                     .build_store(data_ptr, arg)
                     .map_err(|e| e.to_string())?;
+            }
+            // enforce the variant's where clause with its named payload
+            // fields readable by name (bound like function parameters)
+            if let Some(clause) = &variant.where_clause {
+                let snapshot = self.variables.clone();
+                for (i, (field_name, type_node)) in variant.data.iter().flatten().enumerate() {
+                    let Some(field_name) = field_name else {
+                        continue;
+                    };
+                    let arg = function
+                        .get_nth_param(i as u32)
+                        .expect("function parameter should exist at expected index");
+                    let semantic_type = self.type_node_to_type(type_node);
+                    self.store_function_parameter_value(field_name, arg, semantic_type)?;
+                }
+                self.emit_where_checks(&clause.predicates, "where_variant")?;
+                self.variables = snapshot;
             }
             let struct_val = self
                 .builder
@@ -281,6 +298,8 @@ impl<'a> CodeGenerator<'a> {
             self.store_initialized_field(field_ptr, field)?;
         }
 
+        self.emit_construction_invariants(name, struct_ptr_typed)?;
+
         // set vtable fields. Generic classes never get a vtable generated
         // (see generate_class_vtables) since the vtable would have to
         // reference an unspecialized method that has no body; skip those
@@ -364,10 +383,13 @@ impl<'a> CodeGenerator<'a> {
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Str) => {
-                // initialize with null pointer (empty string)
-                let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+                // A real empty string, not null: string methods (and
+                // construction-time where checks that call them) must work
+                // on a field before its first assignment.
+                let empty: ExpressionNode = LiteralNode::String(String::new()).into();
+                let val = self.generate_expression(&empty)?;
                 self.builder
-                    .build_store(field_ptr, null_ptr)
+                    .build_store(field_ptr, val)
                     .map_err(|e| e.to_string())?;
             }
             Type::List(_) => {

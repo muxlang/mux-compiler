@@ -1,0 +1,9 @@
+// A lambda where-precondition may capture outer variables and panics on
+// violation.
+
+int limit = 10
+auto bounded = func(int x) where { x < limit } returns int {
+    return x * 2
+}
+
+print(bounded(50).to_string())

@@ -1,0 +1,17 @@
+// An implementer enforces the interface method's where precondition even
+// though its own parameter is named differently.
+
+interface Divider {
+    func div(int n) where { n != 0 } returns int
+}
+
+class Calc is Divider {
+    int total
+
+    func div(int amount) returns int {
+        return 100 / amount
+    }
+}
+
+auto c = Calc.new()
+print(c.div(0).to_string())

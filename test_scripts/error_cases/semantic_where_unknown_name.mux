@@ -1,0 +1,7 @@
+// Where predicates may only reference names in scope (params here).
+
+func f(int a) where { missing > 0 } returns int {
+    return a
+}
+
+print(f(1).to_string())

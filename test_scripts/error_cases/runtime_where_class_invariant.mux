@@ -1,0 +1,13 @@
+// A field assignment violating the class-level invariant panics.
+
+class Rect {
+    int width
+    int height
+} where {
+    width <= height
+}
+
+auto r = Rect.new()
+r.height = 10
+r.width = 20
+print("unreachable")

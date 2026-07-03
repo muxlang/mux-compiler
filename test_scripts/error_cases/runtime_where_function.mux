@@ -1,0 +1,11 @@
+// A violated function where-precondition panics at the failing predicate.
+
+func divide(float a, float b)
+    where {
+        b != 0.0
+    }
+    returns float {
+    return a / b
+}
+
+print(divide(1.0, 0.0).to_string())

@@ -1,0 +1,18 @@
+// string.length() must unwrap the boxed value before hitting the runtime
+// (it used to read the box header and return garbage), and unassigned
+// string fields zero-init to a real empty string so methods work on them.
+
+string empty = ""
+print(empty.length().to_string())
+
+string word = "hello"
+print(word.length().to_string())
+
+class Msg {
+    string text
+}
+
+auto m = Msg.new()
+print(m.text.length().to_string())
+m.text = "hi there"
+print(m.text.length().to_string())

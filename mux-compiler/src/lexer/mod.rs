@@ -203,6 +203,7 @@ impl<'a> Lexer<'a> {
             "true" => TokenType::Bool(true),
             "false" => TokenType::Bool(false),
             "common" => TokenType::Common,
+            "where" => TokenType::Where,
             _ => TokenType::Id(ident),
         }
     }
