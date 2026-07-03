@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use super::const_fold::{self, ConstValue};
 use super::{SemanticAnalyzer, SemanticError, SymbolKind, Type};
-use crate::ast::{AstNode, BinaryOp, ExpressionKind, ExpressionNode};
+use crate::ast::{AstNode, BinaryOp, EnumVariant, ExpressionKind, ExpressionNode, FunctionNode};
 use crate::lexer::Span;
 
 /// A function's or method's `where` predicates with what a call site needs to
@@ -58,57 +58,70 @@ impl SemanticAnalyzer {
         variants: &mut HashMap<(String, String), EnumVariantPreconditions>,
         poisoned: &mut Vec<(String, String)>,
     ) {
-        let mut record = |key: (String, String), value: WherePreconditions| {
-            if let Some(previous) = functions.insert(key.clone(), value.clone())
-                && previous != value
-            {
-                poisoned.push(key);
-            }
-        };
         for node in nodes {
             match node {
                 AstNode::Function(func) => {
-                    if let Some(clause) = &func.where_clause {
-                        record(
-                            (String::new(), func.name.clone()),
-                            Self::make_preconditions(&func.params, &clause.predicates),
-                        );
-                    }
+                    Self::record_function_preconditions(String::new(), func, functions, poisoned);
                 }
                 AstNode::Class { name, methods, .. } => {
                     for method in methods {
-                        if let Some(clause) = &method.where_clause {
-                            record(
-                                (name.clone(), method.name.clone()),
-                                Self::make_preconditions(&method.params, &clause.predicates),
-                            );
-                        }
+                        Self::record_function_preconditions(
+                            name.clone(),
+                            method,
+                            functions,
+                            poisoned,
+                        );
                     }
                 }
                 AstNode::Enum {
                     name,
                     variants: enum_variants,
                     ..
-                } => {
-                    for variant in enum_variants {
-                        if let Some(clause) = &variant.where_clause {
-                            variants.insert(
-                                (name.clone(), variant.name.clone()),
-                                EnumVariantPreconditions {
-                                    field_names: variant
-                                        .data
-                                        .iter()
-                                        .flatten()
-                                        .map(|(field_name, _)| field_name.clone())
-                                        .collect(),
-                                    predicates: clause.predicates.clone(),
-                                },
-                            );
-                        }
-                    }
-                }
+                } => Self::record_enum_preconditions(name, enum_variants, variants),
                 _ => {}
             }
+        }
+    }
+
+    fn record_function_preconditions(
+        owner: String,
+        func: &FunctionNode,
+        functions: &mut HashMap<(String, String), WherePreconditions>,
+        poisoned: &mut Vec<(String, String)>,
+    ) {
+        let Some(clause) = &func.where_clause else {
+            return;
+        };
+        let key = (owner, func.name.clone());
+        let value = Self::make_preconditions(&func.params, &clause.predicates);
+        if let Some(previous) = functions.insert(key.clone(), value.clone())
+            && previous != value
+        {
+            poisoned.push(key);
+        }
+    }
+
+    fn record_enum_preconditions(
+        enum_name: &str,
+        enum_variants: &[EnumVariant],
+        variants: &mut HashMap<(String, String), EnumVariantPreconditions>,
+    ) {
+        for variant in enum_variants {
+            let Some(clause) = &variant.where_clause else {
+                continue;
+            };
+            variants.insert(
+                (enum_name.to_string(), variant.name.clone()),
+                EnumVariantPreconditions {
+                    field_names: variant
+                        .data
+                        .iter()
+                        .flatten()
+                        .map(|(field_name, _)| field_name.clone())
+                        .collect(),
+                    predicates: clause.predicates.clone(),
+                },
+            );
         }
     }
 
