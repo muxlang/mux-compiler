@@ -1,9 +1,11 @@
-// Constructing an object whose field default violates its where constraint
-// panics at .new(): objects must be born satisfying their invariants.
+// Constructing an object whose defaults violate an invariant panics at
+// .new(): objects must be born satisfying their invariants. The predicate
+// calls a method, so the violation is not provable at compile time and the
+// runtime check is the enforcement point.
 
-class Account {
-    int balance where { balance >= 100 }
+class Batch {
+    list<int> items where { items.size() > 0 }
 }
 
-auto a = Account.new()
+auto b = Batch.new()
 print("unreachable")

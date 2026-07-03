@@ -1,0 +1,10 @@
+// A literal assigned to a constrained field that violates its where clause
+// is a guaranteed panic, so the assignment is rejected at compile time.
+
+class Port {
+    int number = 80 where { number > 0, number < 65535 }
+}
+
+auto p = Port.new()
+p.number = 70000
+print("unreachable")

@@ -1,0 +1,9 @@
+// Invariants are checked at .new() after defaults are applied, so defaults
+// that violate one make every construction panic; rejected at compile time.
+
+class Account {
+    int balance where { balance >= 100 }
+}
+
+auto a = Account.new()
+print("unreachable")

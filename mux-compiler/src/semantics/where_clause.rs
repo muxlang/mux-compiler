@@ -7,6 +7,7 @@
 //! the fields each references) and interface method preconditions that every
 //! implementing class must enforce.
 
+use super::const_fold::{self, ConstValue};
 use super::{SemanticAnalyzer, SemanticError, SymbolKind, Type, format_type};
 use crate::ast::{
     AstNode, EnumVariant, ExpressionKind, ExpressionNode, Field, FunctionNode, PrimitiveType,
@@ -42,7 +43,15 @@ impl SemanticAnalyzer {
                 continue;
             }
             match self.get_expression_type(predicate) {
-                Ok(Type::Primitive(PrimitiveType::Bool)) => {}
+                Ok(Type::Primitive(PrimitiveType::Bool)) => {
+                    if const_fold::fold(predicate) == Some(ConstValue::Bool(false)) {
+                        self.errors.push(SemanticError::with_help(
+                            "where predicate is always false",
+                            predicate.span,
+                            "This predicate can never hold, so every check of it would panic. Fix the condition or remove it.",
+                        ));
+                    }
+                }
                 Ok(other) => self.errors.push(SemanticError::with_help(
                     format!(
                         "where predicate must be a bool, got {}",
@@ -183,6 +192,7 @@ impl SemanticAnalyzer {
             );
         }
 
+        let construction_env = self.fold_field_defaults(fields);
         let mut invariants = Vec::new();
         let clauses = fields
             .iter()
@@ -191,6 +201,19 @@ impl SemanticAnalyzer {
         for clause in clauses {
             self.analyze_where_clause(clause);
             for predicate in &clause.predicates {
+                // Invariants run at .new() right after defaults are applied,
+                // so defaults that violate one make every construction panic.
+                // Context-free false predicates are already reported above.
+                if const_fold::fold(predicate) != Some(ConstValue::Bool(false))
+                    && const_fold::fold_with_env(predicate, &construction_env)
+                        == Some(ConstValue::Bool(false))
+                {
+                    self.errors.push(SemanticError::with_help(
+                        "field defaults violate this where constraint at construction",
+                        predicate.span,
+                        "Invariants are checked when .new() runs, after field defaults are applied, so every construction would panic. Give the constrained fields defaults that satisfy this predicate.",
+                    ));
+                }
                 invariants.push(ClassInvariant {
                     referenced_fields: referenced_field_names(predicate, &field_names),
                     predicate: predicate.clone(),
@@ -205,6 +228,35 @@ impl SemanticAnalyzer {
 
         self.record_inherited_preconditions(name, methods, traits);
         Ok(())
+    }
+
+    /// The constant value each field holds right after `.new()` applies
+    /// defaults: the folded explicit default, or the zero value codegen
+    /// stores for primitive fields without one. Fields whose construction
+    /// value is not a provable constant are left out, which makes any
+    /// invariant that references them fold to `None` and stay silent.
+    fn fold_field_defaults(&self, fields: &[Field]) -> HashMap<String, ConstValue> {
+        let mut env = HashMap::new();
+        for field in fields {
+            if field.is_generic_param {
+                continue;
+            }
+            let value = if let Some(default) = &field.default_value {
+                const_fold::fold(default)
+            } else {
+                match self.resolve_type(&field.type_) {
+                    Ok(Type::Primitive(PrimitiveType::Int)) => Some(ConstValue::Int(0)),
+                    Ok(Type::Primitive(PrimitiveType::Float)) => Some(ConstValue::Float(0.0)),
+                    Ok(Type::Primitive(PrimitiveType::Bool)) => Some(ConstValue::Bool(false)),
+                    Ok(Type::Primitive(PrimitiveType::Str)) => Some(ConstValue::Str(String::new())),
+                    _ => None,
+                }
+            };
+            if let Some(value) = value {
+                env.insert(field.name.clone(), value);
+            }
+        }
+        env
     }
 
     /// For each interface the class implements, record the preconditions of

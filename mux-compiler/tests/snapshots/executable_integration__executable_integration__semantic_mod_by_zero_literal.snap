@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: modulo by zero
+--> test_scripts/error_cases/semantic_mod_by_zero_literal.mux:4:13
+   |
+ 4 | print((10 % 0).to_string())
+   |             ^
+   |
+= help: The divisor is always zero, so this operation would panic on every execution

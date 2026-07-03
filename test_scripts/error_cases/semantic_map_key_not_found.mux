@@ -1,0 +1,4 @@
+// Looking up a literal key that is provably absent from a map literal is a
+// guaranteed panic, so it is rejected at compile time.
+
+print({"a": 1, "b": 2}["c"].to_string())

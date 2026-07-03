@@ -1,0 +1,8 @@
+// A predicate that folds to false from literals alone can never hold and is
+// rejected at compile time instead of panicking on every call.
+
+func f(int a) where { 1 > 2 } returns int {
+    return a
+}
+
+print(f(1).to_string())

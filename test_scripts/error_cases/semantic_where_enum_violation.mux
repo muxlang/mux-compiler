@@ -1,0 +1,10 @@
+// A literal payload that violates an enum variant's where clause is a
+// guaranteed panic, so the construction is rejected at compile time.
+
+enum Status {
+    Unknown,
+    Code(int value) where { value >= 100, value <= 599 }
+}
+
+auto bad = Status.Code(9999)
+print("unreachable")

@@ -5,5 +5,6 @@ enum Status {
     Code(int value) where { value >= 100, value <= 599 }
 }
 
-auto bad = Status.Code(9999)
+int bad_code = 9999
+auto bad = Status.Code(bad_code)
 print("unreachable")

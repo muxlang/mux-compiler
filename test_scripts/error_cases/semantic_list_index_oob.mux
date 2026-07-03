@@ -1,0 +1,4 @@
+// A literal index past the end of a list literal is a guaranteed panic, so
+// it is rejected at compile time.
+
+print([1, 2, 3][5].to_string())

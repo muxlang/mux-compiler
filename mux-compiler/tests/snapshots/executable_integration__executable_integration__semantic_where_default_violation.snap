@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: field defaults violate this where constraint at construction
+--> test_scripts/error_cases/semantic_where_default_violation.mux:5:25
+   |
+ 5 |     int balance where { balance >= 100 }
+   |                         ^^^^^^^^^^^^^^
+   |
+= help: Invariants are checked when .new() runs, after field defaults are applied, so every construction would panic. Give the constrained fields defaults that satisfy this predicate.

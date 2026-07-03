@@ -88,5 +88,93 @@
     "relevant_docs": [
       "/docs/language-guide/functions/"
     ]
+  },
+  {
+    "id": "semantic_where_always_false",
+    "source": "func f(int a) where { 1 > 2 } returns int { return a }",
+    "error": "where predicate is always false",
+    "help": "This predicate can never hold, so every check of it would panic. Fix the condition or remove it.",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/functions/"]
+  },
+  {
+    "id": "semantic_div_by_zero_literal",
+    "source": "print((10 / 0).to_string())",
+    "error": "division by zero",
+    "help": "The divisor is always zero, so this operation would panic on every execution",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/types/"]
+  },
+  {
+    "id": "semantic_mod_by_zero_literal",
+    "source": "print((10 % 0).to_string())",
+    "error": "modulo by zero",
+    "help": "The divisor is always zero, so this operation would panic on every execution",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/types/"]
+  },
+  {
+    "id": "semantic_where_call_violation",
+    "source": "func divide(float a, float b) where { b != 0.0 } returns float { return a / b }\nprint(divide(10.0, 0.0).to_string())",
+    "error": "arguments to 'divide' violate its where constraint",
+    "help": "The where predicate at 1:39 is always false for these argument values, so this call would panic on every execution",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/functions/"]
+  },
+  {
+    "id": "semantic_where_enum_violation",
+    "source": "enum Status { Unknown, Code(int value) where { value >= 100, value <= 599 } }\nauto bad = Status.Code(9999)",
+    "error": "arguments to 'Status.Code' violate its where constraint",
+    "help": "The where predicate at 1:48 is always false for these argument values, so this call would panic on every execution",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/enums/"]
+  },
+  {
+    "id": "semantic_where_inherited_violation",
+    "source": "interface Divider { func div(int n) where { n != 0 } returns int }\nclass Calc is Divider { int total\n    func div(int amount) returns int { return 100 / amount } }\nauto c = Calc.new()\nprint(c.div(0).to_string())",
+    "error": "arguments to 'Calc.div' violate its where constraint",
+    "help": "The where predicate at 1:45 is always false for these argument values, so this call would panic on every execution",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/classes/"]
+  },
+  {
+    "id": "semantic_where_assign_violation",
+    "source": "class Port { int number = 80 where { number > 0, number < 65535 } }\nauto p = Port.new()\np.number = 70000",
+    "error": "assignment violates where constraint of 'Port.number'",
+    "help": "The where predicate at 1:38 is always false for this value, so this assignment would panic on every execution",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/classes/"]
+  },
+  {
+    "id": "semantic_where_default_violation",
+    "source": "class Account { int balance where { balance >= 100 } }\nauto a = Account.new()",
+    "error": "field defaults violate this where constraint at construction",
+    "help": "Invariants are checked when .new() runs, after field defaults are applied, so every construction would panic. Give the constrained fields defaults that satisfy this predicate.",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/classes/"]
+  },
+  {
+    "id": "semantic_list_index_negative",
+    "source": "auto nums = [1, 2, 3]\nprint(nums[-1].to_string())",
+    "error": "list index out of bounds: index -1",
+    "help": "List indices start at 0; a negative index panics on every execution",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/collections/"]
+  },
+  {
+    "id": "semantic_list_index_oob",
+    "source": "print([1, 2, 3][5].to_string())",
+    "error": "list index out of bounds: index 5, length 3",
+    "help": "The index is always outside this list, so the access would panic on every execution",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/collections/"]
+  },
+  {
+    "id": "semantic_map_key_not_found",
+    "source": "print({\"a\": 1, \"b\": 2}[\"c\"].to_string())",
+    "error": "key not found in map: key c",
+    "help": "The key is never present in this map literal, so the lookup would panic on every execution",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/collections/"]
   }
 ]
