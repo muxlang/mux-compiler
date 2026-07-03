@@ -431,6 +431,7 @@ impl<'a> CodeGenerator<'a> {
         params: &[Param],
         return_type: &TypeNode,
         body: &[StatementNode],
+        where_clause: Option<&crate::ast::WhereClause>,
     ) -> Result<BasicValueEnum<'a>, String> {
         let old_bb = self.builder.get_insert_block();
 
@@ -488,6 +489,11 @@ impl<'a> CodeGenerator<'a> {
         }
 
         self.setup_lambda_user_params(function, params, param_offset, ptr_type)?;
+
+        // enforce where-clause preconditions before the body runs
+        if let Some(clause) = where_clause {
+            self.emit_where_checks(&clause.predicates, "where_lambda")?;
+        }
 
         for stmt in body {
             self.generate_statement(stmt, Some(&function))?;
@@ -1912,6 +1918,7 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_store(field_ptr, right_val)
             .map_err(|e| e.to_string())?;
+        self.emit_field_assignment_invariants(&class_name, name, data_ptr, "where_inv_self")?;
         Ok(Some(right_val))
     }
 
@@ -1946,6 +1953,7 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_store(field_ptr, value_to_store)
             .map_err(|e| e.to_string())?;
+        self.emit_field_assignment_invariants(&class_name, field, struct_ptr, "where_inv")?;
         Ok(right_val)
     }
 
@@ -3936,7 +3944,14 @@ impl<'a> CodeGenerator<'a> {
                 params,
                 return_type,
                 body,
-            } => Ok(self.generate_lambda_expression(expr, params, return_type, body)?),
+                where_clause,
+            } => Ok(self.generate_lambda_expression(
+                expr,
+                params,
+                return_type,
+                body,
+                where_clause.as_ref(),
+            )?),
             ExpressionKind::FieldAccess { expr, field } => {
                 self.generate_field_access_expression(expr, field)
             }

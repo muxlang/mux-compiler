@@ -20,6 +20,22 @@ impl SemanticAnalyzer {
         Ok(free_vars.into_iter().collect())
     }
 
+    /// Free variables referenced by a list of bare expressions (e.g. the
+    /// predicates of a lambda's where clause).
+    pub(super) fn find_free_variables_in_exprs(
+        &self,
+        exprs: &[ExpressionNode],
+        local_vars: &std::collections::HashSet<String>,
+    ) -> Result<Vec<(String, Type)>, SemanticError> {
+        let mut free_vars = std::collections::HashMap::new();
+
+        for expr in exprs {
+            self.find_free_variables_in_expression(expr, local_vars, &mut free_vars)?;
+        }
+
+        Ok(free_vars.into_iter().collect())
+    }
+
     fn find_free_variables_in_statement(
         &self,
         stmt: &StatementNode,

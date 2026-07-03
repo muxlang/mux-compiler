@@ -600,13 +600,26 @@ impl SemanticAnalyzer {
                 fields,
                 methods,
                 type_params,
+                traits,
+                where_clause,
                 ..
             } => {
                 let type_param_bounds = self.resolve_type_param_bounds(type_params)?;
-                self.analyze_class(name, fields, methods, &type_param_bounds)
+                self.analyze_class(
+                    name,
+                    fields,
+                    methods,
+                    &type_param_bounds,
+                    traits,
+                    where_clause.as_ref(),
+                )
             }
-            AstNode::Enum { .. } => Ok(()), // enums don't need further analysis.
-            AstNode::Interface { .. } => Ok(()), // interfaces don't need further analysis.
+            AstNode::Enum { variants, .. } => self.analyze_enum_where_clauses(variants),
+            AstNode::Interface {
+                type_params,
+                methods,
+                ..
+            } => self.analyze_interface_where_clauses(type_params, methods),
             AstNode::Statement(stmt) => self.analyze_statement(stmt, files),
         }
     }
@@ -679,6 +692,11 @@ impl SemanticAnalyzer {
                 &param.name,
                 Self::make_symbol(SymbolKind::Variable, param.type_.span, Some(param_type)),
             )?;
+        }
+
+        // typecheck where-clause preconditions with the params in scope.
+        if let Some(clause) = &func.where_clause {
+            self.analyze_where_clause(clause);
         }
 
         // analyze function body with new scope.
@@ -759,9 +777,11 @@ impl SemanticAnalyzer {
     fn analyze_class(
         &mut self,
         name: &str,
-        _fields: &[Field],
+        fields: &[Field],
         methods: &[FunctionNode],
         type_params: &[(String, GenericBounds)],
+        traits: &[TraitRef],
+        where_clause: Option<&crate::ast::WhereClause>,
     ) -> Result<(), SemanticError> {
         // Methods were already added to the class symbol during first pass (collect_hoistable_declarations)
         // Here we just need to analyze method bodies with proper self type
@@ -782,6 +802,11 @@ impl SemanticAnalyzer {
 
         // Set current class type params for method analysis
         self.set_class_type_params(type_params.to_vec());
+
+        // Typecheck field-level and class-level where clauses with the fields
+        // in scope, and record the invariants and inherited interface
+        // preconditions codegen enforces.
+        self.analyze_class_where_clauses(name, fields, methods, traits, where_clause)?;
 
         // Analyze each method body with proper self type
         for method in methods {

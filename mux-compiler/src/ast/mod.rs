@@ -15,7 +15,7 @@ pub mod types;
 // Re-export all public types for convenient access
 pub use error::ParseError;
 pub use literals::{
-    EnumVariant, EnumVariantField, Field, LiteralNode, Param, TraitBound, TraitRef,
+    EnumVariant, EnumVariantField, Field, LiteralNode, Param, TraitBound, TraitRef, WhereClause,
 };
 pub use nodes::{
     AstNode, ExpressionKind, ExpressionNode, FunctionNode, ImportSpec, StatementKind, StatementNode,

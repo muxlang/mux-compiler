@@ -45,6 +45,7 @@ pub enum TokenType {
     Continue,
     None,
     Common,
+    Where,
 
     // Delimiters
     OpenParen,    // (

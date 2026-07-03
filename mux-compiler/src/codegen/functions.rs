@@ -145,7 +145,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn store_function_parameter_value(
+    pub(super) fn store_function_parameter_value(
         &mut self,
         param_name: &str,
         arg: inkwell::values::BasicValueEnum<'a>,
@@ -401,6 +401,9 @@ impl<'a> CodeGenerator<'a> {
             self.setup_method_self_parameter(func, function, &mut param_index)?;
         }
         self.setup_function_parameters(func, function, param_index)?;
+
+        // enforce where-clause preconditions before the body runs
+        self.emit_function_preconditions(func)?;
 
         // generate function body
         for stmt in &func.body {

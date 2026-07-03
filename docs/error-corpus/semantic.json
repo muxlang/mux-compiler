@@ -78,5 +78,15 @@
     "help": null,
     "category": "semantic",
     "relevant_docs": ["/docs/language-guide/functions/"]
+  },
+  {
+    "id": "semantic_where_not_bool",
+    "source": "func f(int a) where { a + 1 } returns int { return a }",
+    "error": "where predicate must be a bool, got int",
+    "help": "Each predicate in a where block must evaluate to a bool. Example: where { value > 0 }",
+    "category": "semantic",
+    "relevant_docs": [
+      "/docs/language-guide/functions/"
+    ]
   }
 ]

@@ -107,6 +107,23 @@ impl<'a> CodeGenerator<'a> {
                     .build_store(data_ptr, arg)
                     .map_err(|e| e.to_string())?;
             }
+            // enforce the variant's where clause with its named payload
+            // fields readable by name (bound like function parameters)
+            if let Some(clause) = &variant.where_clause {
+                let snapshot = self.variables.clone();
+                for (i, (field_name, type_node)) in variant.data.iter().flatten().enumerate() {
+                    let Some(field_name) = field_name else {
+                        continue;
+                    };
+                    let arg = function
+                        .get_nth_param(i as u32)
+                        .expect("function parameter should exist at expected index");
+                    let semantic_type = self.type_node_to_type(type_node);
+                    self.store_function_parameter_value(field_name, arg, semantic_type)?;
+                }
+                self.emit_where_checks(&clause.predicates, "where_variant")?;
+                self.variables = snapshot;
+            }
             let struct_val = self
                 .builder
                 .build_load(struct_type, temp_ptr, "struct")

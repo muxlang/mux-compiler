@@ -1,0 +1,77 @@
+// Where-clause constraints across every supported construct: functions,
+// methods, fields, class-level invariants, interface method preconditions,
+// enum variants, lambdas, and generics. All checks here pass; the violating
+// counterparts live in error_cases/runtime_where_*.mux.
+
+// function precondition, multi-line block
+func divide(float a, float b)
+    where {
+        b != 0.0
+    }
+    returns float {
+    return a / b
+}
+
+// generic function precondition, specialized per instantiation
+func first_of<T>(list<T> items) where { items.size() > 0 } returns T {
+    return items[0]
+}
+
+// field constraints (comma-separated), class-level invariant, and a method
+// precondition; field constraints may call methods on the field value
+class Server {
+    string host where { host.length() < 64 }
+    int port where { port > 0, port < 65535 }
+
+    func address(int retries) where { retries >= 0 } returns string {
+        return self.host + ":" + self.port.to_string()
+    }
+} where {
+    port != 22
+}
+
+// interface method preconditions are enforced by every implementer, with the
+// interface's parameter names bound to the implementer's positionally
+interface Divider {
+    func div(int n) where { n != 0 } returns int
+}
+
+class Calc is Divider {
+    int total
+
+    func div(int amount) returns int {
+        return 100 / amount
+    }
+}
+
+// enum variant constraints on named payload fields
+enum Status {
+    Unknown,
+    Code(int value) where { value >= 100, value <= 599 }
+}
+
+print("=== Where Clause Tests ===")
+
+print("divide(10, 2) = " + divide(10.0, 2.0).to_string())
+
+auto nums = [7, 8, 9]
+print("first_of(nums) = " + first_of(nums).to_string())
+
+auto server = Server.new()
+server.host = "localhost"
+server.port = 8080
+print("server = " + server.address(3))
+
+auto calc = Calc.new()
+print("calc.div(4) = " + calc.div(4).to_string())
+
+auto status = Status.Code(404)
+print("made Status.Code(404)")
+
+int limit = 100
+auto bounded = func(int x) where { x < limit } returns int {
+    return x * 2
+}
+print("bounded(21) = " + bounded(21).to_string())
+
+print("=== All Where Clause Tests Passed ===")

@@ -56,7 +56,8 @@ impl SemanticAnalyzer {
                 params,
                 return_type,
                 body,
-            } => self.analyze_lambda_expr(expr, params, return_type, body),
+                where_clause,
+            } => self.analyze_lambda_expr(expr, params, return_type, body, where_clause.as_ref()),
             ExpressionKind::GenericType(name, type_args) => {
                 self.analyze_generic_type_expr(expr, name, type_args)
             }
@@ -529,6 +530,7 @@ impl SemanticAnalyzer {
         params: &[Param],
         return_type: &TypeNode,
         body: &[StatementNode],
+        where_clause: Option<&crate::ast::WhereClause>,
     ) -> Result<(), SemanticError> {
         let mut local_vars = std::collections::HashSet::new();
         for param in params {
@@ -561,12 +563,28 @@ impl SemanticAnalyzer {
             )?;
         }
 
+        // typecheck where-clause preconditions with the params in scope.
+        if let Some(clause) = where_clause {
+            self.analyze_where_clause(clause);
+        }
+
         self.analyze_block(body, None)?;
 
         self.check_lambda_return_paths(expr, body, &lambda_return_type)?;
 
         self.current_return_type = prev_return_type;
-        let captures = self.find_free_variables_in_block(body, &local_vars)?;
+        let mut captures = self.find_free_variables_in_block(body, &local_vars)?;
+        // Where predicates run inside the lambda, so outer variables they
+        // reference must be captured too.
+        if let Some(clause) = where_clause {
+            let predicate_captures =
+                self.find_free_variables_in_exprs(&clause.predicates, &local_vars)?;
+            for capture in predicate_captures {
+                if !captures.iter().any(|(name, _)| *name == capture.0) {
+                    captures.push(capture);
+                }
+            }
+        }
         self.lambda_captures.insert(expr.span, captures);
 
         self.symbol_table.pop_scope()?;

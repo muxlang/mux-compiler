@@ -1,7 +1,7 @@
 use crate::lexer::Span;
 
 use super::Spanned;
-use super::literals::{EnumVariant, Field, LiteralNode, Param, TraitBound, TraitRef};
+use super::literals::{EnumVariant, Field, LiteralNode, Param, TraitBound, TraitRef, WhereClause};
 use super::operators::BinaryOp;
 use super::operators::UnaryOp;
 use super::patterns::MatchArm;
@@ -16,6 +16,7 @@ pub enum AstNode {
         traits: Vec<TraitRef>,
         fields: Vec<Field>,
         methods: Vec<FunctionNode>,
+        where_clause: Option<WhereClause>,
         span: Span,
     },
     Interface {
@@ -187,6 +188,7 @@ pub enum ExpressionKind {
         params: Vec<Param>,
         return_type: TypeNode,
         body: Vec<StatementNode>,
+        where_clause: Option<WhereClause>,
     },
     GenericType(String, Vec<TypeNode>),
 }
@@ -230,4 +232,5 @@ pub struct FunctionNode {
     pub body: Vec<StatementNode>,
     pub span: Span,
     pub is_common: bool,
+    pub where_clause: Option<WhereClause>,
 }
