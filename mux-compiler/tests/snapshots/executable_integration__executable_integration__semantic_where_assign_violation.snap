@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: assignment violates where constraint of 'Port.number'
+--> test_scripts/error_cases/semantic_where_assign_violation.mux:9:12
+   |
+ 9 | p.number = 70000
+   |            ^^^^^
+   |
+= help: The where predicate at 5:41 is always false for this value, so this assignment would panic on every execution

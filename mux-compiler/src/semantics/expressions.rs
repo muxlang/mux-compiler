@@ -18,11 +18,28 @@ impl SemanticAnalyzer {
             ExpressionKind::Identifier(name) => self.analyze_identifier_expr(name, expr),
             ExpressionKind::Literal(_) => Ok(()),
             ExpressionKind::None => Ok(()),
-            ExpressionKind::Binary { left, right, .. } => {
-                self.analyze_expression(left)?;
+            ExpressionKind::Binary {
+                left,
+                op,
+                op_span,
+                right,
+            } => {
+                // List writes wrap negative indices and extend past the end,
+                // so an assignment target is exempt from the provable
+                // out-of-bounds check that applies to reads.
+                if op.is_assignment()
+                    && let ExpressionKind::ListAccess {
+                        expr: target,
+                        index,
+                    } = &left.kind
+                {
+                    self.analyze_list_access_expr(target, index, true)?;
+                } else {
+                    self.analyze_expression(left)?;
+                }
                 self.analyze_expression(right)?;
                 let _ = self.get_expression_type(expr)?;
-                Ok(())
+                self.check_const_binary(left, op, op_span, right)
             }
             ExpressionKind::Unary {
                 expr,
@@ -37,7 +54,7 @@ impl SemanticAnalyzer {
                 Ok(())
             }
             ExpressionKind::ListAccess { expr, index } => {
-                self.analyze_list_access_expr(expr, index)
+                self.analyze_list_access_expr(expr, index, false)
             }
             ExpressionKind::ListLiteral(elements) => self.analyze_list_literal_expr(elements),
             ExpressionKind::MapLiteral { entries, .. } => {
@@ -267,7 +284,7 @@ impl SemanticAnalyzer {
         }
 
         let _ = self.get_expression_type(expr)?;
-        Ok(())
+        self.check_call_preconditions(expr, func, args)
     }
 
     fn check_some_call_args(
@@ -297,6 +314,7 @@ impl SemanticAnalyzer {
         &mut self,
         expr: &ExpressionNode,
         index: &ExpressionNode,
+        is_assignment_target: bool,
     ) -> Result<(), SemanticError> {
         self.analyze_expression(expr)?;
         self.analyze_expression(index)?;
@@ -346,7 +364,10 @@ impl SemanticAnalyzer {
                 ));
             }
         }
-        Ok(())
+        if is_assignment_target {
+            return Ok(());
+        }
+        self.check_const_index(expr, &target_type, index)
     }
 
     fn analyze_list_literal_expr(

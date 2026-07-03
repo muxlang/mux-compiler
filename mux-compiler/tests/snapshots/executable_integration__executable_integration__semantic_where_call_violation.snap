@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: arguments to 'divide' violate its where constraint
+--> test_scripts/error_cases/semantic_where_call_violation.mux:8:7
+   |
+ 8 | print(divide(10.0, 0.0).to_string())
+   |       ^^^^^^
+   |
+= help: The where predicate at 4:39 is always false for these argument values, so this call would panic on every execution

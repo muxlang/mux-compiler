@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: list index out of bounds: index -1
+--> test_scripts/error_cases/semantic_list_index_negative.mux:5:12
+   |
+ 5 | print(nums[-1].to_string())
+   |            ^^
+   |
+= help: List indices start at 0; a negative index panics on every execution

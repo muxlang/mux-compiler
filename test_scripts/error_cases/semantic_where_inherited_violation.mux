@@ -1,5 +1,5 @@
-// An implementer enforces the interface method's where precondition even
-// though its own parameter is named differently.
+// A literal argument violating a precondition inherited from an interface
+// method is a guaranteed panic, so the call is rejected at compile time.
 
 interface Divider {
     func div(int n) where { n != 0 } returns int
@@ -14,5 +14,4 @@ class Calc is Divider {
 }
 
 auto c = Calc.new()
-int zero = 0
-print(c.div(zero).to_string())
+print(c.div(0).to_string())

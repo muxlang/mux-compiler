@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: arguments to 'Calc.div' violate its where constraint
+--> test_scripts/error_cases/semantic_where_inherited_violation.mux:17:7
+   |
+17 | print(c.div(0).to_string())
+   |       ^^^^^
+   |
+= help: The where predicate at 5:29 is always false for these argument values, so this call would panic on every execution

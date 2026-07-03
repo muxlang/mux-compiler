@@ -1,0 +1,8 @@
+// Literal arguments that violate a callee's where precondition are a
+// guaranteed panic, so the call is rejected at compile time.
+
+func divide(float a, float b) where { b != 0.0 } returns float {
+    return a / b
+}
+
+print(divide(10.0, 0.0).to_string())

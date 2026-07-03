@@ -1,5 +1,7 @@
 // Module declarations
 
+pub mod const_checks;
+pub mod const_fold;
 pub mod declarations;
 pub mod error;
 pub mod expressions;
@@ -74,6 +76,13 @@ pub struct SemanticAnalyzer {
     // must enforce at entry (one entry per declaring interface).
     pub(super) inherited_preconditions:
         HashMap<String, HashMap<String, Vec<where_clause::InheritedPrecondition>>>,
+    // (class name or "" for free functions, name) -> where preconditions,
+    // collected before the analysis pass so call sites can prove violations
+    // from literal arguments regardless of declaration order.
+    pub(super) function_preconditions: HashMap<(String, String), const_checks::WherePreconditions>,
+    // (enum name, variant name) -> where preconditions on the variant payload.
+    pub(super) enum_variant_preconditions:
+        HashMap<(String, String), const_checks::EnumVariantPreconditions>,
 }
 
 impl Default for SemanticAnalyzer {
@@ -111,6 +120,8 @@ impl SemanticAnalyzer {
             class_invariants: HashMap::new(),
             interface_preconditions: HashMap::new(),
             inherited_preconditions: HashMap::new(),
+            function_preconditions: HashMap::new(),
+            enum_variant_preconditions: HashMap::new(),
         }
     }
 
@@ -258,6 +269,8 @@ impl SemanticAnalyzer {
             class_invariants: HashMap::new(),
             interface_preconditions: HashMap::new(),
             inherited_preconditions: HashMap::new(),
+            function_preconditions: HashMap::new(),
+            enum_variant_preconditions: HashMap::new(),
         }
     }
 
@@ -595,6 +608,7 @@ impl SemanticAnalyzer {
         // Imports are loaded by now, so interface where-clauses from every
         // module are visible for classes to inherit during analysis.
         self.collect_interface_preconditions(ast);
+        self.collect_where_preconditions(ast);
         self.analyze_nodes(ast, files);
         std::mem::take(&mut self.errors)
     }

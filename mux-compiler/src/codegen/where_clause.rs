@@ -11,6 +11,7 @@ use inkwell::values::PointerValue;
 
 use crate::ast::{ExpressionNode, FunctionNode};
 use crate::semantics::Type;
+use crate::semantics::const_fold::{self, ConstValue};
 
 use super::CodeGenerator;
 
@@ -23,6 +24,12 @@ impl<'a> CodeGenerator<'a> {
         block_prefix: &str,
     ) -> Result<(), String> {
         for (i, predicate) in predicates.iter().enumerate() {
+            // A predicate that folds to true from literals alone can never
+            // fail; skip the branch. The folder never short-circuits, so no
+            // runtime evaluation is dropped.
+            if const_fold::fold(predicate) == Some(ConstValue::Bool(true)) {
+                continue;
+            }
             let value = self.generate_expression(predicate)?;
             let cond = self.get_raw_bool_value(value)?;
 
