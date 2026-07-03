@@ -151,7 +151,9 @@ jobs:
         run: |
           measure=$(curl -sf -u "$SONAR_TOKEN:" \
             "https://sonarcloud.io/api/measures/component?component=muxlang_mux-compiler&pullRequest=${PR_NUMBER}&metricKeys=new_violations")
-          count=$(printf '%s' "$measure" | python3 -c "import sys, json; ms = json.load(sys.stdin).get('component', {}).get('measures', []); print(ms[0]['value'] if ms else '0')")
+          # new_violations is a new-code metric, so the count lives under
+          # period.value (or periods[].value on older responses), not value.
+          count=$(printf '%s' "$measure" | jq -r '(.component.measures[0] // {}) as $m | $m.value // $m.period.value // $m.periods[0].value // "0"')
           echo "New SonarCloud issues on PR #${PR_NUMBER}: ${count}"
           if [ "${count:-0}" -gt 0 ]; then
             echo "::error::${count} new SonarCloud issue(s) introduced on this PR. See https://sonarcloud.io/project/issues?id=muxlang_mux-compiler&pullRequest=${PR_NUMBER}&resolved=false&inNewCodePeriod=true"
