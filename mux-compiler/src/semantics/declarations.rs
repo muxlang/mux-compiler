@@ -709,27 +709,36 @@ impl SemanticAnalyzer {
         self.current_self_type = old_self_type;
         self.current_return_type = old_return_type;
 
-        if func.body.is_empty() || !self.all_paths_return(&func.body) {
-            let (msg, help): (String, String) = if matches!(return_type, Type::Void) {
-                (
-                    "Function must end with an explicit 'return' statement on all code paths"
-                        .to_string(),
-                    "Add a 'return' statement at the end of every code path".to_string(),
-                )
-            } else {
-                (
-                    format!(
-                        "Function must return a value of type '{}' on all code paths",
-                        format_type(&return_type)
-                    ),
-                    "Add a return statement at the end of every branch (if/else, match, etc.)"
-                        .to_string(),
-                )
-            };
-            return Err(SemanticError::with_help(msg, func.span, help));
-        }
+        self.ensure_all_paths_return(func, &return_type)
+    }
 
-        Ok(())
+    /// Ensure every code path in the function body ends in a return, with a
+    /// diagnostic tailored to whether the function returns void or a value.
+    fn ensure_all_paths_return(
+        &self,
+        func: &FunctionNode,
+        return_type: &Type,
+    ) -> Result<(), SemanticError> {
+        if !func.body.is_empty() && self.all_paths_return(&func.body) {
+            return Ok(());
+        }
+        let (msg, help): (String, String) = if matches!(return_type, Type::Void) {
+            (
+                "Function must end with an explicit 'return' statement on all code paths"
+                    .to_string(),
+                "Add a 'return' statement at the end of every code path".to_string(),
+            )
+        } else {
+            (
+                format!(
+                    "Function must return a value of type '{}' on all code paths",
+                    format_type(return_type)
+                ),
+                "Add a return statement at the end of every branch (if/else, match, etc.)"
+                    .to_string(),
+            )
+        };
+        Err(SemanticError::with_help(msg, func.span, help))
     }
 
     #[allow(clippy::only_used_in_recursion)]

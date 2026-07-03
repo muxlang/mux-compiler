@@ -1082,10 +1082,15 @@ impl<'a> Parser<'a> {
             TokenType::CloseBrace,
             "Expected '}' after where predicates (predicates are comma-separated)",
         )?;
-        Ok(Some(WhereClause {
-            predicates,
-            span: start_span.combine(&end_span),
-        }))
+        let span = start_span.combine(&end_span);
+        if predicates.is_empty() {
+            return Err(ParserError::with_help(
+                "Empty 'where' block",
+                span,
+                "A where block must contain at least one boolean predicate. Example: where { value > 0 }",
+            ));
+        }
+        Ok(Some(WhereClause { predicates, span }))
     }
 
     fn parse_required_return_type(&mut self) -> ParserResult<TypeNode> {

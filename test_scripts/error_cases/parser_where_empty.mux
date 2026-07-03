@@ -1,0 +1,8 @@
+// A where block must contain at least one boolean predicate; an empty
+// block is rejected rather than silently enforcing nothing.
+
+func f(int a) where { } returns int {
+    return a
+}
+
+print(f(1).to_string())
