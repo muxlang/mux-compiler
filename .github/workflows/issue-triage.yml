@@ -1,0 +1,41 @@
+name: Issue triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  ensure-triage-label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const labelName = 'needs triage';
+            try {
+              await github.rest.labels.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: labelName,
+              });
+            } catch {
+              await github.rest.labels.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: labelName,
+                color: 'ededed',
+                description: 'Not yet reviewed or categorized',
+              });
+            }
+            const names = context.payload.issue.labels.map((label) => label.name);
+            if (!names.includes(labelName)) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: [labelName],
+              });
+            }
