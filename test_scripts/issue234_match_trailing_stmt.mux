@@ -1,0 +1,24 @@
+// A match whose arms all return may be followed by other statements; the
+// trailing code is unreachable and must not corrupt the emitted IR (#234).
+
+func describe(int n) returns string {
+    match n {
+        1 { return "one" }
+        _ { return "many" }
+    }
+    return "unreachable"
+}
+
+func pick(int n) returns string {
+    if n > 0 {
+        return "pos"
+    } else {
+        return "nonpos"
+    }
+    return "unreachable"
+}
+
+print(describe(1))
+print(describe(7))
+print(pick(1))
+print(pick(-1))

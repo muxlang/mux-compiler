@@ -1,0 +1,75 @@
+// A match used as a statement does not require returning arms (#233):
+// side-effect matches, mixed returning/fall-through arms, and tail-position
+// matches whose arms return through nested if/else all work, in functions,
+// lambdas, and methods.
+
+func describe(int n) returns string {
+    string label = ""
+    match n {
+        1 { label = "one" }
+        _ { label = "many" }
+    }
+    return label
+}
+
+func pick(int n) returns int {
+    match n {
+        1 { return 10 }
+        _ { print("fallthrough") }
+    }
+    return 0
+}
+
+func sign_label(int n) returns string {
+    match n {
+        0 { return "zero" }
+        _ {
+            if n > 0 {
+                return "pos"
+            } else {
+                return "neg"
+            }
+        }
+    }
+}
+
+class Counter {
+    int total
+
+    func bump(int kind) returns int {
+        int amount = 0
+        match kind {
+            1 { amount = 10 }
+            _ { amount = 1 }
+        }
+        self.total = self.total + amount
+        return self.total
+    }
+}
+
+auto classify = func(int n) returns string {
+    match n {
+        0 { return "zero" }
+        _ {
+            if n > 0 {
+                return "pos"
+            } else {
+                return "neg"
+            }
+        }
+    }
+}
+
+print(describe(1))
+print(describe(5))
+print(pick(1).to_string())
+print(pick(2).to_string())
+print(sign_label(0))
+print(sign_label(3))
+print(sign_label(-3))
+auto c = Counter.new()
+print(c.bump(1).to_string())
+print(c.bump(2).to_string())
+print(classify(0))
+print(classify(4))
+print(classify(-4))

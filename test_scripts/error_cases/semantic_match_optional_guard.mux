@@ -1,0 +1,12 @@
+// A guarded arm covers nothing for exhaustiveness: the guard can fail at
+// runtime, so this match still misses an unconditional 'some' pattern.
+
+func peek(optional<int> x) returns void {
+    match x {
+        some(v) if v > 3 { print("big") }
+        none { print("none") }
+    }
+    return
+}
+
+peek(some(5))

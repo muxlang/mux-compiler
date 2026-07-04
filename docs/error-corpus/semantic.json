@@ -176,5 +176,13 @@
     "help": "The key is never present in this map literal, so the lookup would panic on every execution",
     "category": "semantic",
     "relevant_docs": ["/docs/language-guide/collections/"]
+  },
+  {
+    "id": "semantic_match_guarded_wildcard",
+    "source": "func f(int n) returns int {\n    match n {\n        _ if n > 0 { return 1 }\n    }\n}",
+    "error": "Non-exhaustive match on type 'int'",
+    "help": "Add an unguarded wildcard '_' pattern as the last match arm to handle all remaining cases; a guarded arm can fail its guard at runtime",
+    "category": "semantic",
+    "relevant_docs": ["/docs/language-guide/control-flow/"]
   }
 ]
