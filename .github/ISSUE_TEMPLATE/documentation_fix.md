@@ -1,13 +1,17 @@
 ---
-name: Documentation Update
-about: Report an incorrect or outdated documentation
-title: "[Docs] - "
-labels: documentation
-assignees: "DerekCorniello"
+name: Documentation fix
+about: Report incorrect or missing compiler documentation
+title: ""
+labels: "documentation, needs triage"
+assignees: DerekCorniello
 ---
 
-**Description**
-A clear and concise description of the documentation issue.
+## What is wrong
 
-**Suggested Update**
-Describe the changes or updates needed in the documentation.
+<!-- Which doc, README, or error message? -->
+
+## Expected content
+
+## Links
+
+<!-- File paths or URLs. -->

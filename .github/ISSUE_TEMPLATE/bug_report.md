@@ -1,26 +1,34 @@
 ---
 name: Bug report
-about: Report a bug or incorrect behavior
-title: "[Bug] - "
-labels: bug
-assignees: "DerekCorniello"
+about: Report incorrect compiler behavior or a crash
+title: ""
+labels: needs triage
+assignees: DerekCorniello
 ---
 
-**Description**
-A clear and concise description of the bug.
+## Description
 
-**Steps to Reproduce**
-1. Code snippet
-2. Command ran
-3. See error/unexpected behavior
+<!-- What went wrong? -->
 
-**Expected Behavior**
-Describe what you expected to happen.
+## Steps to reproduce
 
-**Actual Behavior**
-Describe what happened instead.
+1.
+2.
+3.
 
-**Environment**
-- OS:
-- Mux version:
+## Expected behavior
 
+## Actual behavior
+
+<!-- Include error output if any. -->
+
+## Minimal example
+
+```mux
+
+```
+
+## Environment
+
+- `mux --version`:
+- OS / architecture:

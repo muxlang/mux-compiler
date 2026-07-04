@@ -1,0 +1,67 @@
+name: Issue triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  ensure-triage-label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const labelName = 'needs triage';
+            const ensureLabel = async (name, color, description) => {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                });
+              } catch {
+                try {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name,
+                    color,
+                    description,
+                  });
+                } catch (createError) {
+                  if (createError.status !== 422) {
+                    throw createError;
+                  }
+                }
+              }
+            };
+            const applyLabelIfMissing = async (name) => {
+              const names = context.payload.issue.labels.map((label) => label.name);
+              if (!names.includes(name)) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.issue.number,
+                  labels: [name],
+                });
+              }
+            };
+            await ensureLabel(labelName, 'ededed', 'Not yet reviewed or categorized');
+            await applyLabelIfMissing(labelName);
+            if (!context.payload.issue.assignee) {
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                assignees: ['DerekCorniello'],
+              });
+            }
+            const title = context.payload.issue.title;
+            const body = context.payload.issue.body || '';
+            if (/^docs?[:/\s]/i.test(title) || /documentation/i.test(title + ' ' + body) || /What is wrong|Expected content|Page URL/i.test(body)) {
+              await ensureLabel('documentation', '0075ca', 'Improvements or additions to documentation');
+              await applyLabelIfMissing('documentation');
+            }
