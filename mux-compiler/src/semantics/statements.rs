@@ -633,7 +633,7 @@ impl SemanticAnalyzer {
         });
         let has_wildcard = arms
             .iter()
-            .any(|arm| matches!(&arm.pattern, PatternNode::Wildcard));
+            .any(|arm| arm.guard.is_none() && matches!(&arm.pattern, PatternNode::Wildcard));
 
         if has_wildcard || (has_ok && has_err) {
             return Ok(());
@@ -676,7 +676,7 @@ impl SemanticAnalyzer {
         });
         let has_wildcard = arms
             .iter()
-            .any(|arm| matches!(&arm.pattern, PatternNode::Wildcard));
+            .any(|arm| arm.guard.is_none() && matches!(&arm.pattern, PatternNode::Wildcard));
 
         if has_wildcard || (has_some && has_none) {
             return Ok(());
@@ -764,8 +764,10 @@ impl SemanticAnalyzer {
         for arm in arms {
             match &arm.pattern {
                 PatternNode::Wildcard => {
-                    has_wildcard = true;
-                    break;
+                    if arm.guard.is_none() {
+                        has_wildcard = true;
+                        break;
+                    }
                 }
                 PatternNode::EnumVariant { name, .. } => {
                     if arm.guard.is_none() {
@@ -792,12 +794,12 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         let has_wildcard = arms
             .iter()
-            .any(|arm| matches!(arm.pattern, PatternNode::Wildcard));
+            .any(|arm| arm.guard.is_none() && matches!(arm.pattern, PatternNode::Wildcard));
         if !has_wildcard {
             return Err(SemanticError::with_help(
                 format!("Non-exhaustive match on type '{}'", format_type(expr_type)),
                 expr_span,
-                "Add a wildcard '_' pattern as the last match arm to handle all remaining cases",
+                "Add an unguarded wildcard '_' pattern as the last match arm to handle all remaining cases; a guarded arm can fail its guard at runtime",
             ));
         }
         Ok(())

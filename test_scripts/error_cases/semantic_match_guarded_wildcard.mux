@@ -1,0 +1,11 @@
+// A guarded wildcard does not make a match exhaustive: its guard can fail
+// at runtime, which would fall through every arm. An unguarded catch-all
+// is required.
+
+func f(int n) returns int {
+    match n {
+        _ if n > 0 { return 1 }
+    }
+}
+
+print(f(5).to_string())
