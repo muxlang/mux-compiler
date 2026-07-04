@@ -1,0 +1,60 @@
+func main() returns void {
+    // Trailing comma with newline - set/map literal
+    auto test = {1,
+        2,
+        3,
+    }
+
+    // Trailing comma with newline - list literal
+    auto test2 = [1,
+        2,
+        3,
+    ]
+
+    // Trailing comma with newline - map literal
+    auto test3 = {1: "1",
+        2: "2",
+        3: "3",
+    }
+
+    // Trailing comma without newline
+    auto test4 = {1, 2, 3,}
+    auto test5 = [1, 2, 3,]
+    auto test6 = {1: "1", 2: "2", 3: "3",}
+
+    // Single element with trailing comma
+    auto test7 = {1,}
+    auto test8 = [1,]
+    auto test9 = {1: "a",}
+
+    // First element on new line, trailing comma
+    set<int> test10 = {
+        1,
+        2,
+        3,
+    }
+    list<int> test11 = [
+        1,
+        2,
+        3,
+    ]
+    map<int, string> test12 = {
+        1: "1",
+        2: "2",
+        3: "3",
+    }
+
+    print(test.to_string())
+    print(test2.to_string())
+    print(test3.to_string())
+    print(test4.to_string())
+    print(test5.to_string())
+    print(test6.to_string())
+    print(test7.to_string())
+    print(test8.to_string())
+    print(test9.to_string())
+    print(test10.to_string())
+    print(test11.to_string())
+    print(test12.to_string())
+    return
+}

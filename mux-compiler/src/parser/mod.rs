@@ -2290,10 +2290,10 @@ impl<'a> Parser<'a> {
 
     fn has_comma_or_entry(&mut self) -> ParserResult<bool> {
         if self.matches(&[TokenType::Comma]) {
+            self.skip_newlines();
             if self.check(TokenType::CloseBrace) {
                 return Ok(false);
             }
-            self.skip_newlines();
             return Ok(true);
         }
         self.skip_newlines_after_comma()
@@ -2388,10 +2388,10 @@ impl<'a> Parser<'a> {
                 self.skip_newlines();
 
                 if self.matches(&[TokenType::Comma]) {
+                    self.skip_newlines();
                     if self.check(TokenType::CloseBracket) {
                         break;
                     }
-                    self.skip_newlines();
                 } else if !self.consume_newline_delimited_comma() {
                     break;
                 }
