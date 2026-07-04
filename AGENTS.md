@@ -85,8 +85,10 @@ The user will run `cargo test` and insta snapshot tests separately. Do not manua
   lexer, parser, and executable integration suites (insta snapshots); files under
   `test_scripts/error_cases/` only by the executable suite. Adding a script requires
   `cargo insta test --accept` and a review of the generated snapshots.
-- **List semantics are asymmetric**: list reads panic on negative or out-of-bounds
-  indices, but list writes wrap negative indices and extend past the end
+- **List semantics are asymmetric**: statically provable negative or
+  out-of-bounds read indices are compile-time errors, while dynamic list reads
+  normalize negative indices before panicking only when the normalized index is
+  still out of bounds. List writes wrap negative indices and extend past the end
   (`mux_list_set_value` in mux-runtime). Static checks and codegen changes must
   respect the read/write split.
 - **Compile-time guard rule**: checks built on `semantics/const_fold.rs` must be
