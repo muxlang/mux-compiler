@@ -283,39 +283,28 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
+    /// Record the type of each arm's top-level return so the arms can be
+    /// cross-checked. A match used as a statement does not require returning
+    /// arms: whole-function return coverage is enforced by
+    /// `all_paths_return`, which counts a match as returning only when every
+    /// arm does (including through nested if/else).
     fn collect_match_arm_returns(
         &mut self,
         arm: &crate::ast::MatchArm,
-        expr_span: Span,
         expecting_return: bool,
         arm_return_types: &mut Vec<(Type, Span)>,
     ) -> Result<(), SemanticError> {
         if !expecting_return {
             return Ok(());
         }
-
-        let mut has_return = false;
         for stmt in &arm.body {
             if let StatementKind::Return(Some(ret_expr)) = &stmt.kind {
                 let ret_type = self.get_expression_type(ret_expr)?;
                 arm_return_types.push((ret_type, stmt.span));
-                has_return = true;
                 break;
             }
-            if let StatementKind::Return(None) = &stmt.kind {
-                has_return = true;
-            }
         }
-
-        if has_return {
-            return Ok(());
-        }
-
-        Err(SemanticError::with_help(
-            "Match arm must return a value in a function with non-void return type",
-            arm.body.first().map(|s| s.span).unwrap_or(expr_span),
-            "Add a return statement to this match arm",
-        ))
+        Ok(())
     }
 
     fn validate_match_arm_return_types(
@@ -369,12 +358,7 @@ impl SemanticAnalyzer {
                 self.analyze_expression(guard)?;
             }
             self.analyze_block(&arm.body, files.as_deref_mut())?;
-            self.collect_match_arm_returns(
-                arm,
-                expr.span,
-                expecting_return,
-                &mut arm_return_types,
-            )?;
+            self.collect_match_arm_returns(arm, expecting_return, &mut arm_return_types)?;
             self.symbol_table.pop_scope()?;
         }
 

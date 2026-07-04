@@ -644,12 +644,21 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         return_type_opt: Option<BasicTypeEnum<'a>>,
     ) -> Result<(), String> {
-        if return_type_opt.is_none()
-            && let Some(block) = self.builder.get_insert_block()
+        if let Some(block) = self.builder.get_insert_block()
             && block.get_terminator().is_none()
         {
-            self.generate_all_scopes_cleanup()?;
-            self.builder.build_return(None).map_err(|e| e.to_string())?;
+            if return_type_opt.is_none() {
+                self.generate_all_scopes_cleanup()?;
+                self.builder.build_return(None).map_err(|e| e.to_string())?;
+            } else {
+                // Non-void: the analyzer guarantees every path returns, so an
+                // open block here is unreachable join-point fallout (e.g. a
+                // tail-position match whose arms return through nested
+                // if/else). Terminate it so the module verifies.
+                self.builder
+                    .build_unreachable()
+                    .map_err(|e| e.to_string())?;
+            }
         }
         Ok(())
     }
