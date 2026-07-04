@@ -863,6 +863,19 @@ impl<'a> CodeGenerator<'a> {
         stmt: &StatementNode,
         function: Option<&FunctionValue<'a>>,
     ) -> Result<(), String> {
+        // The current block already ends in a terminator when the previous
+        // statement made this point unreachable (e.g. a match whose arms all
+        // return leaves its end block terminated with `unreachable`). Emitting
+        // here would place instructions after the terminator and fail module
+        // verification, so skip the dead statement instead.
+        if self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_terminator())
+            .is_some()
+        {
+            return Ok(());
+        }
         match &stmt.kind {
             StatementKind::AutoDecl(name, _, expr) => {
                 self.generate_auto_decl_statement(name, expr, function)?;
