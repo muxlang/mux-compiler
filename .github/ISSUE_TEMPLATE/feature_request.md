@@ -1,15 +1,17 @@
 ---
 name: Feature request
-about: Suggest a new feature or improvement
-title: "[Feature] - "
-labels: feature
-assignees: "DerekCorniello"
+about: Suggest a new language or compiler capability
+title: ""
+labels: needs triage
+assignees: DerekCorniello
 ---
 
-**Is your feature request related to a problem? Please describe.**
+## Problem
 
-**Describe the solution you'd like**
+<!-- What problem would this solve? -->
 
-**Additional Context**
-Optional sketches, links, or discussion points.
+## Proposed solution
 
+## Alternatives considered
+
+## Additional context
