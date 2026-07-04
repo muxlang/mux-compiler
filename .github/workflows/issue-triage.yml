@@ -17,14 +17,14 @@ jobs:
             const labelName = 'needs triage';
             const ensureLabel = async (name, color, description) => {
               try {
-                await github.rest.labels.get({
+                await github.rest.issues.getLabel({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   name,
                 });
               } catch {
                 try {
-                  await github.rest.labels.create({
+                  await github.rest.issues.createLabel({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     name,
@@ -61,7 +61,7 @@ jobs:
             }
             const title = context.payload.issue.title;
             const body = context.payload.issue.body || '';
-            if (/^docs?[:/\s]/i.test(title) || /documentation/i.test(title + ' ' + body)) {
+            if (/^docs?[:/\s]/i.test(title) || /documentation/i.test(title + ' ' + body) || /What is wrong|Expected content|Page URL/i.test(body)) {
               await ensureLabel('documentation', '0075ca', 'Improvements or additions to documentation');
               await applyLabelIfMissing('documentation');
             }
