@@ -76,6 +76,28 @@ The user will run `cargo test` and insta snapshot tests separately. Do not manua
 ### Common Issues
 - Executable output seems cut off → likely a segfault due to incorrect LLVM IR generation. Review codegen changes carefully.
 
+### Hard-Won Facts
+- **Coupled runtime testing**: `MUX_RUNTIME_LIB=<path to .a>` overrides the runtime
+  library the compiler links. Required whenever compiler work depends on unmerged
+  mux-runtime changes. The pre-commit hook runs the full `cargo test`, so export it
+  before committing or the executable tests link a stale runtime and fail.
+- **Test-script auto-discovery**: every `test_scripts/*.mux` file is picked up by the
+  lexer, parser, and executable integration suites (insta snapshots); files under
+  `test_scripts/error_cases/` only by the executable suite. Adding a script requires
+  `cargo insta test --accept` and a review of the generated snapshots.
+- **List semantics are asymmetric**: statically provable negative or
+  out-of-bounds read indices are compile-time errors, while dynamic list reads
+  normalize negative indices before panicking only when the normalized index is
+  still out of bounds. List writes wrap negative indices and extend past the end
+  (`mux_list_set_value` in mux-runtime). Static checks and codegen changes must
+  respect the read/write split.
+- **Compile-time guard rule**: checks built on `semantics/const_fold.rs` must be
+  zero-false-positive. The folder returns `None` on anything unprovable (overflow,
+  NaN, unknown identifiers) and the runtime check stays the fallback; Mux has no
+  warning level, so a wrong compile error blocks valid programs.
+- **Sonar gate**: PRs fail CI on any new SonarCloud issue; keep cognitive
+  complexity per function at 15 or below.
+
 ## Release Process
 
 Versions are independent per repo; there is no root `VERSION` file or sync script.
