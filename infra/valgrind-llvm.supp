@@ -1,0 +1,51 @@
+# Valgrind suppressions for running the Mux compiler (Leg B of
+# scripts/valgrind-checks.sh) under Memcheck.
+#
+# LLVM is statically linked into the `mux` binary, so its allocations show up
+# under the mux object rather than a separate libLLVM.so. That makes precise
+# object-based suppression impossible; these entries match by mangled symbol
+# prefix (`_ZN4llvm...` is the `llvm::` namespace) and by the dynamic loader.
+#
+# This file is intentionally MINIMAL and matches only frames that verifiably
+# originate inside LLVM or the loader, never inside mux code. Leg B is
+# report-only, so anything not covered here is surfaced as a finding rather than
+# silently hidden -- tighten or extend these against real Valgrind output before
+# promoting Leg B to a fatal gate.
+
+# One-time global option registry that LLVM's cl::opt machinery builds during
+# static initialization and never tears down.
+{
+   llvm-cl-opt-registration
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   ...
+   fun:_ZN4llvm2cl*
+}
+
+# LLVM ManagedStatic / target and pass registries constructed on first use.
+{
+   llvm-managed-static-init
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   ...
+   fun:_ZN4llvm13ManagedStatic*
+}
+
+# Target/subtarget and TargetMachine setup allocated once for the host triple.
+{
+   llvm-target-init
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   ...
+   fun:_ZN4llvm14TargetRegistry*
+}
+
+# Allocations retained by the dynamic loader when the process pulls in shared
+# objects (e.g. the system linker, libc locale tables).
+{
+   ld-so-dlopen-retained
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   ...
+   obj:*/ld-*.so*
+}

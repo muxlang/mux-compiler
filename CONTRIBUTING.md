@@ -54,17 +54,31 @@ Thanks for your interest! This guide explains how to contribute to Mux.
    ./scripts/measure-baseline.sh
    ```
 
-10. Profile the compiler and runtime with external tools (see the Setup documentation for platform-specific guidance).
+10. Check for memory leaks and invalid accesses with Valgrind (requires `valgrind` installed):
 
-11. Always run `cargo fmt` and `cargo clippy` before committing changes.
-12. For releases, bump `version` in `mux-compiler/Cargo.toml`, add the matching section in `CHANGELOG.md`, and update the README version badge (see the Release Process in AGENTS.md).
-13. Create a new branch for your changes, named with the tag first, and description after, e.g., `bug/xyz-fix` or `feature/new-feat`.
-14. Make your changes.
-15. Run tests again to ensure nothing is broken.
-16. Commit your changes with clear messages.
-17. Push your branch to your fork.
-18. Open a Pull Request against the `main` branch of the original repository.
-19. AI agents should follow the guidelines in [AGENTS.md](AGENTS.md).
+    ```bash
+    ./scripts/valgrind-checks.sh            # both legs
+    ./scripts/valgrind-checks.sh --programs # Leg A only (compiled programs)
+    ./scripts/valgrind-checks.sh --compiler # Leg B only (the compiler)
+    ```
+
+    Leg A compiles every `test_scripts/*.mux` program and runs the resulting
+    binary under Valgrind; definitely-lost and indirectly-lost leaks and memory
+    errors fail (still-reachable is ignored). This mirrors the PR-blocking CI
+    job. Leg B runs the compiler itself under Valgrind and is report-only,
+    filtering statically linked LLVM noise via `infra/valgrind-llvm.supp`.
+
+11. Profile the compiler and runtime with external tools (see the Setup documentation for platform-specific guidance).
+
+12. Always run `cargo fmt` and `cargo clippy` before committing changes.
+13. For releases, bump `version` in `mux-compiler/Cargo.toml`, add the matching section in `CHANGELOG.md`, and update the README version badge (see the Release Process in AGENTS.md).
+14. Create a new branch for your changes, named with the tag first, and description after, e.g., `bug/xyz-fix` or `feature/new-feat`.
+15. Make your changes.
+16. Run tests again to ensure nothing is broken.
+17. Commit your changes with clear messages.
+18. Push your branch to your fork.
+19. Open a Pull Request against the `main` branch of the original repository.
+20. AI agents should follow the guidelines in [AGENTS.md](AGENTS.md).
 
 ---
 
@@ -99,6 +113,7 @@ We generally don't accept contributions that:
 - Standard Rust tooling: `cargo fmt`, `cargo clippy`, and `cargo test`.
 - Canonical local verification: `./scripts/run-checks.sh`
 - Docker-backed integration verification: `./scripts/integration-checks.sh`
+- Valgrind memory checking: `./scripts/valgrind-checks.sh` (Leg A programs are PR-blocking; Leg B compiler run is report-only)
 - Profiling baseline capture: `./scripts/measure-baseline.sh`
 - Compiler profiling: external tools only
 - Runtime profiling: external tools only
