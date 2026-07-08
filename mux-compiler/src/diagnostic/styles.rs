@@ -1,75 +1,76 @@
-//! ANSI color codes and styling for diagnostic output.
+//! Styling for diagnostic output, built on anstyle.
+//!
+//! Styles always render ANSI escape codes. The emitter writes through
+//! anstream, which strips the codes when stderr is not a terminal or when
+//! NO_COLOR is set, so no manual TTY detection is needed here.
 
-use std::io::IsTerminal;
+use anstyle::{AnsiColor, Style};
+
+const ERROR: Style = AnsiColor::Red.on_default().bold();
+const WARNING: Style = AnsiColor::Yellow.on_default().bold();
+const NOTE: Style = AnsiColor::Cyan.on_default().bold();
+const HELP: Style = AnsiColor::Cyan.on_default().bold();
+const BOLD: Style = Style::new().bold();
+const LOCATION: Style = AnsiColor::Cyan.on_default();
+const PRIMARY_LABEL: Style = AnsiColor::Red.on_default();
+const SECONDARY_LABEL: Style = AnsiColor::Blue.on_default();
+const LINE_NUMBER: Style = AnsiColor::Blue.on_default().bold();
 
 /// Configuration for color output.
+///
+/// Color stripping is handled by anstream at write time, so `Auto` is the
+/// only mode: emit codes and let the stream decide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorConfig {
     Auto,
 }
 
-impl ColorConfig {
-    pub fn should_colorize(&self) -> bool {
-        match self {
-            ColorConfig::Auto => std::io::stderr().is_terminal(),
-        }
-    }
-}
-
-/// ANSI escape code wrapper for styled text output.
-pub struct Styles {
-    enabled: bool,
-}
+/// Renders text wrapped in ANSI style codes for diagnostic output.
+pub struct Styles;
 
 impl Styles {
-    pub fn new(config: ColorConfig) -> Self {
-        Self {
-            enabled: config.should_colorize(),
-        }
+    pub fn new(_config: ColorConfig) -> Self {
+        Self
     }
 
-    fn styled(&self, code: &str, text: &str) -> String {
-        if self.enabled {
-            format!("\x1b[{}m{}\x1b[0m", code, text)
-        } else {
-            text.to_string()
-        }
+    fn styled(style: Style, text: &str) -> String {
+        format!("{style}{text}{style:#}")
     }
 
     pub fn error(&self, text: &str) -> String {
-        self.styled("1;31", text)
+        Self::styled(ERROR, text)
     }
 
     pub fn warning(&self, text: &str) -> String {
-        self.styled("1;33", text)
+        Self::styled(WARNING, text)
     }
 
     pub fn note(&self, text: &str) -> String {
-        self.styled("1;36", text)
+        Self::styled(NOTE, text)
     }
 
     pub fn help(&self, text: &str) -> String {
-        self.styled("1;36", text)
+        Self::styled(HELP, text)
     }
 
     pub fn bold(&self, text: &str) -> String {
-        self.styled("1", text)
+        Self::styled(BOLD, text)
     }
 
-    pub fn dim(&self, text: &str) -> String {
-        self.styled("2", text)
+    pub fn location(&self, text: &str) -> String {
+        Self::styled(LOCATION, text)
     }
 
     pub fn primary_label(&self, text: &str) -> String {
-        self.styled("31", text)
+        Self::styled(PRIMARY_LABEL, text)
     }
 
     pub fn secondary_label(&self, text: &str) -> String {
-        self.styled("34", text)
+        Self::styled(SECONDARY_LABEL, text)
     }
 
     pub fn line_number(&self, text: &str) -> String {
-        self.styled("34;1", text)
+        Self::styled(LINE_NUMBER, text)
     }
 }
 

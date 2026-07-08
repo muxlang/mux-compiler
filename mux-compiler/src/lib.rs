@@ -9,3 +9,4 @@ pub mod module_resolver;
 pub mod parser;
 pub mod semantics;
 pub mod source;
+pub mod spinner;

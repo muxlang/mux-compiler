@@ -10,7 +10,10 @@ mod module_resolver;
 mod parser;
 mod semantics;
 mod source;
+mod spinner;
 
+use anstream::{eprintln, println};
+use anstyle::AnsiColor;
 use clap::{Parser as ClapParser, Subcommand};
 use diagnostic::{ColorConfig, DiagnosticEmitter, FileId, Files, StandardEmitter, ToDiagnostic};
 use module_resolver::ModuleResolver;
@@ -25,7 +28,16 @@ use std::rc::Rc;
 
 const REQUIRED_LLVM_MAJOR: u32 = 22;
 
+/// Styling for clap's generated help output (mirrors cargo's palette).
+const HELP_STYLES: clap::builder::styling::Styles = clap::builder::styling::Styles::styled()
+    .header(AnsiColor::Green.on_default().bold())
+    .usage(AnsiColor::Green.on_default().bold())
+    .literal(AnsiColor::Cyan.on_default().bold())
+    .placeholder(AnsiColor::Cyan.on_default());
+
 fn emit_diagnostics<E: ToDiagnostic>(files: &Files, file_id: FileId, errors: &[E]) {
+    // Clear any in-progress spinner line before printing diagnostics.
+    spinner::stop();
     let emitter = StandardEmitter::new(ColorConfig::Auto);
     let diagnostics: Vec<_> = errors.iter().map(|e| e.to_diagnostic(file_id)).collect();
     emitter.emit_batch(&diagnostics, files);
@@ -36,6 +48,7 @@ fn emit_diagnostics<E: ToDiagnostic>(files: &Files, file_id: FileId, errors: &[E
 #[command(name = "mux")]
 #[command(version)]
 #[command(about = "CLI tool for Mux Programming Language", long_about = None)]
+#[command(styles = HELP_STYLES)]
 struct Cli {
     /// Name of the output executable
     #[arg(short, long)]
@@ -498,6 +511,16 @@ fn resolve_runtime_lib_dir(profile: &str, features: &[String]) -> Option<PathBuf
     build_runtime_in_cache(profile, features)
 }
 
+/// Colored ASCII status marker for doctor checks: green "[ok]" or red "[x]".
+fn status_marker(ok: bool) -> String {
+    let (style, marker) = if ok {
+        (AnsiColor::Green.on_default().bold(), "[ok]")
+    } else {
+        (AnsiColor::Red.on_default().bold(), "[x]")
+    };
+    format!("{style}{marker}{style:#}")
+}
+
 fn print_detected_llvm_versions(llvm_versions: &[(String, String, u32)]) {
     if llvm_versions.is_empty() {
         println!("No llvm-config command found on PATH.");
@@ -518,15 +541,19 @@ fn validate_llvm_for_doctor(
         return match selected_dev_llvm {
             Some((tool, version, _)) => {
                 println!(
-                    "LLVM development requirement satisfied with {} ({}).",
-                    version, tool
+                    "{} LLVM development requirement satisfied with {} ({}).",
+                    status_marker(true),
+                    version,
+                    tool
                 );
                 true
             }
             None => {
                 println!(
-                    "Contributor mode requires LLVM {}.x (llvm-config-{}).",
-                    REQUIRED_LLVM_MAJOR, REQUIRED_LLVM_MAJOR
+                    "{} Contributor mode requires LLVM {}.x (llvm-config-{}).",
+                    status_marker(false),
+                    REQUIRED_LLVM_MAJOR,
+                    REQUIRED_LLVM_MAJOR
                 );
                 print_llvm_install_help();
                 false
@@ -535,11 +562,18 @@ fn validate_llvm_for_doctor(
     }
 
     if let Some((tool, version, _)) = selected_dev_llvm {
-        println!("Using LLVM {} from {}.", version, tool);
+        println!(
+            "{} Using LLVM {} from {}.",
+            status_marker(true),
+            version,
+            tool
+        );
     } else {
         println!(
-            "LLVM {} was not detected. This is okay for prebuilt installs, but source builds need LLVM {}.",
-            REQUIRED_LLVM_MAJOR, REQUIRED_LLVM_MAJOR
+            "{} LLVM {} was not detected. This is okay for prebuilt installs, but source builds need LLVM {}.",
+            status_marker(true),
+            REQUIRED_LLVM_MAJOR,
+            REQUIRED_LLVM_MAJOR
         );
     }
 
@@ -554,15 +588,20 @@ fn report_clang_for_doctor(clang: Option<&str>) -> bool {
         let clang_ok = match extract_clang_major(clang_cmd) {
             Some(clang_major) if clang_major == linked_major => {
                 println!(
-                    "Clang is installed: {} (matches linked LLVM {}).",
-                    clang_cmd, linked_major
+                    "{} Clang is installed: {} (matches linked LLVM {}).",
+                    status_marker(true),
+                    clang_cmd,
+                    linked_major
                 );
                 true
             }
             Some(clang_major) => {
                 println!(
-                    "WARNING: {} (clang {}) does not match linked LLVM {}.",
-                    clang_cmd, clang_major, linked_major
+                    "{} {} (clang {}) does not match linked LLVM {}.",
+                    status_marker(false),
+                    clang_cmd,
+                    clang_major,
+                    linked_major
                 );
                 println!(
                     "  This will cause IR parse errors. Install clang-{} or set CC=clang-{}.",
@@ -571,14 +610,14 @@ fn report_clang_for_doctor(clang: Option<&str>) -> bool {
                 false
             }
             None => {
-                println!("Clang is installed: {}.", clang_cmd);
+                println!("{} Clang is installed: {}.", status_marker(true), clang_cmd);
                 true
             }
         };
         return clang_ok;
     }
 
-    println!("Clang is not installed.");
+    println!("{} Clang is not installed.", status_marker(false));
     print_llvm_install_help();
     false
 }
@@ -612,9 +651,9 @@ fn ensure_runtime_for_doctor() -> bool {
     };
 
     if runtime_ok {
-        println!("Mux runtime is available.");
+        println!("{} Mux runtime is available.", status_marker(true));
     } else {
-        println!("Mux runtime is not available.");
+        println!("{} Mux runtime is not available.", status_marker(false));
     }
 
     runtime_ok
@@ -631,22 +670,37 @@ fn run_doctor(dev_mode: bool) {
     let runtime_ok = ensure_runtime_for_doctor();
 
     if llvm_ok && clang_ok && runtime_ok {
-        println!("Your system is ready to use the Mux compiler!");
+        let style = AnsiColor::Green.on_default().bold();
+        println!("{style}Your system is ready to use the Mux compiler!{style:#}");
     } else {
-        println!("Please install the missing dependencies and try again.");
+        let style = AnsiColor::Red.on_default().bold();
+        println!("{style}Please install the missing dependencies and try again.{style:#}");
         process::exit(1);
     }
+}
+
+/// Small ASCII logotype printed above the version info.
+const VERSION_BANNER: &str = r"  _ __ ___  _   ___  __
+ | '_ ` _ \| | | \ \/ /
+ | | | | | | |_| |>  <
+ |_| |_| |_|\__,_/_/\_\";
+
+fn print_version_banner() {
+    let style = AnsiColor::Cyan.on_default().bold();
+    println!("{style}{VERSION_BANNER}{style:#}");
+    println!();
+    println!(
+        "mux version {} (runtime {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("MUX_RUNTIME_VERSION")
+    );
 }
 
 fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool) {
     let cli = Cli::parse();
     match &cli.command {
         Commands::Version {} => {
-            println!(
-                "mux version {} (runtime {})",
-                env!("CARGO_PKG_VERSION"),
-                env!("MUX_RUNTIME_VERSION")
-            );
+            print_version_banner();
             process::exit(0);
         }
         Commands::Doctor { dev } => {
@@ -664,8 +718,8 @@ fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool) {
             intermediate,
         } => (file.clone(), true, output.clone(), *intermediate),
         Commands::Format { file } => {
-            println!("Formatting is not yet implemented for {}", file.display());
-            process::exit(0);
+            eprintln!("formatting is not yet implemented for {}", file.display());
+            process::exit(1);
         }
     }
 }
@@ -733,10 +787,12 @@ fn generate_ir_or_exit(
     ir_file: &str,
 ) {
     if let Err(e) = codegen.generate(nodes) {
+        spinner::stop();
         eprintln!("Codegen error: {}", e);
         process::exit(1);
     }
     if let Err(e) = codegen.emit_ir_to_file(ir_file) {
+        spinner::stop();
         eprintln!("Failed to emit IR: {}", e);
         process::exit(1);
     }
@@ -746,6 +802,7 @@ fn resolve_runtime_lib_dir_or_exit(profile: &str, features: &[String]) -> PathBu
     match resolve_runtime_lib_dir(profile, features) {
         Some(dir) => dir,
         None => {
+            spinner::stop();
             eprintln!();
             eprintln!("Could not locate mux-runtime.");
             eprintln!("You can set MUX_RUNTIME_LIB to a built library path.");
@@ -762,6 +819,7 @@ fn find_clang_or_exit() -> String {
     match find_clang_command() {
         Some(cmd) => cmd,
         None => {
+            spinner::stop();
             eprintln!("clang is required to link Mux programs but was not found on PATH.");
             print_llvm_install_help();
             process::exit(1);
@@ -833,6 +891,11 @@ fn main() {
     let mut files = Files::new();
     let source_str = load_source_or_exit(&file_path);
     let file_id = files.add(&file_path, source_str.clone());
+
+    // Progress spinner on stderr for slow compiles; error paths and the
+    // post-link stop below clear the line before anything else prints.
+    spinner::start(format!("compiling {}", file_path.display()));
+
     let tokens = { lex_source_or_exit(file_id, &files, source_str) };
     let nodes = { parse_tokens_or_exit(file_id, &files, &tokens) };
 
@@ -915,6 +978,7 @@ fn main() {
 
     let clang_output = Command::new(&clang_cmd).args(&clang_args).output();
 
+    spinner::stop();
     report_clang_output_or_exit(clang_output, do_run, &file_path, &ir_file);
 
     remove_ir_if_requested(intermediate, &ir_file);

@@ -61,9 +61,9 @@ fn format_subcommand_reports_not_implemented() {
         .args(["format", "whatever.mux"])
         .output()
         .expect("spawn mux format");
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Formatting is not yet implemented"));
+    assert!(!out.status.success(), "format stub must exit non-zero");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("formatting is not yet implemented"));
 }
 
 #[test]

@@ -284,6 +284,7 @@ impl ModuleResolver {
         let tokens = match lex.lex_all() {
             Ok(t) => t,
             Err(e) => {
+                crate::spinner::stop();
                 let emitter = StandardEmitter::new(ColorConfig::Auto);
                 emitter.emit(&e.to_diagnostic(file_id), files);
                 return Err(format!("Lexer error in module {}", file_path.display()));
@@ -294,6 +295,7 @@ impl ModuleResolver {
         match parser.parse() {
             Ok(nodes) => Ok(nodes),
             Err((_, errors)) => {
+                crate::spinner::stop();
                 let emitter = StandardEmitter::new(ColorConfig::Auto);
                 let diagnostics: Vec<_> = errors.iter().map(|e| e.to_diagnostic(file_id)).collect();
                 emitter.emit_batch(&diagnostics, files);
