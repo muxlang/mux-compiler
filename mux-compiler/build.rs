@@ -113,11 +113,6 @@ fn ensure_llvm_prefix(workspace_root: &Path) {
     // so we detect it ourselves and tell llvm-sys where to look.
     let prefix = detect_llvm22_prefix();
     let Some(prefix) = prefix else {
-        println!(
-            "cargo:warning=llvm-config-{} not found on PATH. \
-             If LLVM {} is installed, set LLVM_SYS_221_PREFIX to its installation root.",
-            REQUIRED_LLVM_MAJOR, REQUIRED_LLVM_MAJOR,
-        );
         return;
     };
 
@@ -125,11 +120,6 @@ fn ensure_llvm_prefix(workspace_root: &Path) {
         eprintln!("error[build]: {}", e);
         std::process::exit(1);
     }
-    println!(
-        "cargo:warning=LLVM {} detected at {}. Configured .cargo/config.toml. \
-         Please run `cargo build` again.",
-        REQUIRED_LLVM_MAJOR, prefix,
-    );
     // Force a rebuild so the newly written .cargo/config.toml takes effect.
     std::process::exit(1);
 }
@@ -339,27 +329,12 @@ fn runtime_search_candidates(
 }
 
 fn emit_missing_runtime_warning(
-    runtime_name: &str,
-    profile_path: &Path,
-    release_path: &Path,
-    debug_path: &Path,
-    workspace_root: &Path,
+    _runtime_name: &str,
+    _profile_path: &Path,
+    _release_path: &Path,
+    _debug_path: &Path,
+    _workspace_root: &Path,
 ) {
-    println!(
-        "cargo:warning=Could not find {} yet. Expected locations:\n\
-         - {} (profile-specific)\n\
-         - {}\n\
-         - {}\n\
-         - {}\n\
-         - {}\n\
-         The mux CLI will request a runtime build if needed.",
-        runtime_name,
-        profile_path.display(),
-        release_path.display(),
-        debug_path.display(),
-        workspace_root.join("target").join("release").display(),
-        workspace_root.join("target").join("debug").display()
-    );
 }
 
 #[cfg(target_family = "unix")]
@@ -376,7 +351,6 @@ fn detect_runtime_library(
         let static_lib = path.join("libmux_runtime.a");
         let dynamic_lib = path.join("libmux_runtime.so");
         if static_lib.exists() || dynamic_lib.exists() {
-            println!("cargo:warning=Found libmux_runtime in {}", path.display());
             return (static_lib, dynamic_lib);
         }
     }
@@ -413,14 +387,9 @@ fn detect_runtime_library(
     let candidates =
         runtime_search_candidates(workspace_root, debug_path, release_path, profile_path);
 
-    for (path, description) in &candidates {
+    for (path, _description) in &candidates {
         let (static_lib, dynamic_lib) = check_path(path);
         if static_lib.exists() || dynamic_lib.exists() {
-            println!(
-                "cargo:warning=Found mux_runtime in {} (checking {})",
-                path.display(),
-                description
-            );
             return (static_lib, dynamic_lib);
         }
     }

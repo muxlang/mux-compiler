@@ -37,7 +37,7 @@ fn version_subcommand_prints_versions() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("mux version"),
+        stdout.contains("compiler v"),
         "unexpected version output: {stdout}"
     );
 }

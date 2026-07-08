@@ -304,3 +304,41 @@ impl ModuleResolver {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_tmp_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("mux_mod_{}_{}_{}", tag, std::process::id(), nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_import_path_reports_lex_and_parse_errors() {
+        let dir = unique_tmp_dir("broken");
+        std::fs::write(dir.join("badlex.mux"), "auto s = \"unterminated\n").unwrap();
+        std::fs::write(dir.join("badparse.mux"), "func main( {\n    return\n}\n").unwrap();
+
+        let mut resolver = ModuleResolver::new(dir.clone());
+        let mut files = Files::new();
+
+        let err = resolver
+            .resolve_import_path("badlex", None, &mut files)
+            .expect_err("lex error module must fail");
+        assert!(err.contains("Lexer error in module"), "got: {err}");
+
+        let err = resolver
+            .resolve_import_path("badparse", None, &mut files)
+            .expect_err("parse error module must fail");
+        assert!(err.contains("Parse error in module"), "got: {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

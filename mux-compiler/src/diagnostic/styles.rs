@@ -4,7 +4,7 @@
 //! anstream, which strips the codes when stderr is not a terminal or when
 //! NO_COLOR is set, so no manual TTY detection is needed here.
 
-use anstyle::{AnsiColor, Style};
+use anstyle::{AnsiColor, Color, RgbColor, Style};
 
 const ERROR: Style = AnsiColor::Red.on_default().bold();
 const WARNING: Style = AnsiColor::Yellow.on_default().bold();
@@ -13,8 +13,10 @@ const HELP: Style = AnsiColor::Cyan.on_default().bold();
 const BOLD: Style = Style::new().bold();
 const LOCATION: Style = AnsiColor::Cyan.on_default();
 const PRIMARY_LABEL: Style = AnsiColor::Red.on_default();
-const SECONDARY_LABEL: Style = AnsiColor::Blue.on_default();
-const LINE_NUMBER: Style = AnsiColor::Blue.on_default().bold();
+const SECONDARY_LABEL: Style = Style::new().fg_color(Some(Color::Rgb(RgbColor(0x60, 0xa5, 0xfa))));
+const LINE_NUMBER: Style = Style::new()
+    .fg_color(Some(Color::Rgb(RgbColor(0x60, 0xa5, 0xfa))))
+    .bold();
 
 /// Configuration for color output.
 ///
@@ -26,6 +28,7 @@ pub enum ColorConfig {
 }
 
 /// Renders text wrapped in ANSI style codes for diagnostic output.
+#[derive(Default)]
 pub struct Styles;
 
 impl Styles {
@@ -74,8 +77,34 @@ impl Styles {
     }
 }
 
-impl Default for Styles {
-    fn default() -> Self {
-        Self::new(ColorConfig::Auto)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The rendered escape codes are asserted literally: they are part of the
+    // CLI's visual contract (anstream strips them for non-TTY consumers).
+    #[test]
+    fn severity_styles_render_bold_colored_text() {
+        let styles = Styles;
+        assert_eq!(styles.error("e"), "\u{1b}[1m\u{1b}[31me\u{1b}[0m");
+        assert_eq!(styles.warning("w"), "\u{1b}[1m\u{1b}[33mw\u{1b}[0m");
+        assert_eq!(styles.note("n"), "\u{1b}[1m\u{1b}[36mn\u{1b}[0m");
+        assert_eq!(styles.help("h"), "\u{1b}[1m\u{1b}[36mh\u{1b}[0m");
+    }
+
+    #[test]
+    fn structural_styles_render_expected_codes() {
+        let styles = Styles::new(ColorConfig::Auto);
+        assert_eq!(styles.bold("b"), "\u{1b}[1mb\u{1b}[0m");
+        assert_eq!(styles.location("--> f:1:2"), "\u{1b}[36m--> f:1:2\u{1b}[0m");
+        assert_eq!(styles.primary_label("^^^"), "\u{1b}[31m^^^\u{1b}[0m");
+        assert_eq!(
+            styles.secondary_label("---"),
+            "\u{1b}[38;2;96;165;250m---\u{1b}[0m"
+        );
+        assert_eq!(
+            styles.line_number("12"),
+            "\u{1b}[1m\u{1b}[38;2;96;165;250m12\u{1b}[0m"
+        );
     }
 }
