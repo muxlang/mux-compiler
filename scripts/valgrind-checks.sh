@@ -123,6 +123,14 @@ classify_program() {
     echo "COMPILE-FAIL"
     return 0
   fi
+  # The compiler can exit zero while the link step still fails to produce a
+  # binary; treat that as a compile failure, not a Valgrind EXIT-127.
+  if [[ ! -x "$bin" ]]; then
+    echo "mux build reported success but produced no executable at $bin" >>"$compile_log"
+    rm -f "$bin" "$ll"
+    echo "COMPILE-FAIL"
+    return 0
+  fi
 
   rc=0
   ( cd "$dir" && timeout "$program_timeout" valgrind "${valgrind_flags[@]}" "./$name" ) \
@@ -155,7 +163,11 @@ run_leg_a() {
       a_failures=$((a_failures + 1))
       echo "  FAIL  $(basename "$script")  [$status]"
       echo "----- valgrind/compile output for $(basename "$script") -----"
-      cat "$run_log" 2>/dev/null || true
+      if [[ "$status" == "COMPILE-FAIL" ]]; then
+        cat "$compile_log" 2>/dev/null || true
+      else
+        cat "$run_log" 2>/dev/null || true
+      fi
       echo "----- end output -----"
     fi
   done
