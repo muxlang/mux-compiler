@@ -734,8 +734,7 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
 
-        let (closure_mem, captures_field) =
-            self.allocate_closure(function, ptr_type, "closure_alloc")?;
+        let (closure_mem, captures_field) = self.allocate_closure(function, ptr_type)?;
         self.builder
             .build_store(captures_field, capture_mem)
             .map_err(|e| e.to_string())?;
@@ -748,8 +747,7 @@ impl<'a> CodeGenerator<'a> {
         function: inkwell::values::FunctionValue<'a>,
         ptr_type: inkwell::types::PointerType<'a>,
     ) -> Result<BasicValueEnum<'a>, String> {
-        let (closure_mem, captures_field) =
-            self.allocate_closure(function, ptr_type, "closure_alloc")?;
+        let (closure_mem, captures_field) = self.allocate_closure(function, ptr_type)?;
         let null_ptr = ptr_type.const_null();
         self.builder
             .build_store(captures_field, null_ptr)
@@ -758,32 +756,55 @@ impl<'a> CodeGenerator<'a> {
         Ok(closure_mem)
     }
 
-    /// Allocate a closure struct (fn_ptr + captures), store the function
-    /// pointer in the first field, and return the closure memory pointer
-    /// along with a pointer to the captures field so the caller can
-    /// populate it.
+    /// Allocate a closure struct (fn_ptr + captures) with refcount header.
+    /// The closure is allocated as [RefHeader (8 bytes) | fn_ptr | captures]
+    /// Returns pointer to the closure struct (after the header) and the
+    /// captures field pointer so the caller can populate it.
     fn allocate_closure(
         &self,
         function: inkwell::values::FunctionValue<'a>,
         ptr_type: inkwell::types::PointerType<'a>,
-        alloc_name: &str,
     ) -> Result<(BasicValueEnum<'a>, inkwell::values::PointerValue<'a>), String> {
         let closure_struct_type = self
             .context
             .struct_type(&[ptr_type.into(), ptr_type.into()], false);
 
+        // Allocate RefHeader (8-byte u64) + closure struct
+        let refcount_header_type = self.context.i64_type();
+        let full_struct_type = self.context.struct_type(
+            &[refcount_header_type.into(), closure_struct_type.into()],
+            false,
+        );
+
         let malloc_fn = self.runtime_function("malloc").ok_or("malloc not found")?;
-        let closure_size = closure_struct_type
+        let full_size = full_struct_type
             .size_of()
-            .ok_or("Failed to get closure struct size")?;
-        let closure_mem = self
+            .ok_or("Failed to get full allocation size")?;
+
+        let alloc_mem = self
             .builder
-            .build_call(malloc_fn, &[closure_size.into()], alloc_name)
+            .build_call(malloc_fn, &[full_size.into()], "closure_alloc")
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
             .ok_or("malloc didn't return a value")?
             .into_pointer_value();
+
+        // Initialize refcount header to 1
+        let header_ptr = self
+            .builder
+            .build_struct_gep(full_struct_type, alloc_mem, 0, "header_ptr")
+            .map_err(|e| e.to_string())?;
+        let one = refcount_header_type.const_int(1, false);
+        self.builder
+            .build_store(header_ptr, one)
+            .map_err(|e| e.to_string())?;
+
+        // Get the closure struct pointer (after header)
+        let closure_mem = self
+            .builder
+            .build_struct_gep(full_struct_type, alloc_mem, 1, "closure_struct_ptr")
+            .map_err(|e| e.to_string())?;
 
         let fn_ptr_field = self
             .builder

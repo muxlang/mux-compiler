@@ -334,6 +334,12 @@ impl<'a> Lexer<'a> {
             *is_float = true;
         } else if after_dot.is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
             return Ok(());
+        } else if after_dot == Some('.') {
+            return Err(LexerError::with_help(
+                "Mux does not have range literal syntax",
+                Span::new(self.source.line, self.source.col),
+                "Use range(a, b) to iterate over a numeric range, e.g. for int i in range(0, 10)",
+            ));
         } else {
             return Err(LexerError::new(
                 "Expected digit after decimal point",
@@ -1001,6 +1007,17 @@ auto y = 42"#;
             result.is_err(),
             "Expected error for invalid integer literal"
         );
+    }
+
+    #[test]
+    fn test_range_literal_diagnostic() {
+        // Mux has no range literal syntax; `0..10` should produce a targeted
+        // diagnostic pointing users at range(a, b) instead of the generic
+        // "Expected digit after decimal point" message.
+        let input = "for int i in 0..10 {}";
+        let mut source = Source::from_test_str(input);
+        let result = Lexer::new(&mut source).lex_all();
+        assert_lexer_error(result, "Mux does not have range literal syntax", 1, 15);
     }
 
     #[test]
