@@ -85,9 +85,16 @@ impl<'a> CodeGenerator<'a> {
     /// slots back to SSA/phi form, so this is the standard way to let LLVM place
     /// dominance-correct cleanups for values born inside conditional control
     /// flow (short-circuit operands, ternary arms, loop bodies).
-    pub(super) fn register_temp(&mut self, value: BasicValueEnum<'a>) -> Result<(), String> {
+    ///
+    /// Tracking is a best-effort optimization: it is called from `box_value`,
+    /// which is on the hot path of nearly every expression and does not return a
+    /// `Result`. If the slot cannot be materialized (no active function, or a
+    /// builder error) the temporary is simply left untracked - it will not be
+    /// auto-released (a leak), which is preferable to aborting codegen. So this
+    /// is infallible by design.
+    pub(super) fn register_temp(&mut self, value: BasicValueEnum<'a>) {
         if !value.is_pointer_value() {
-            return Ok(());
+            return;
         }
         let ptr = value.into_pointer_value();
         // A pointer identifies a unique allocation, so it must be tracked (and
@@ -97,15 +104,16 @@ impl<'a> CodeGenerator<'a> {
         // aliases its input): registering it twice would free the single
         // reference twice, dangling whatever bound the value.
         if self.temp_values.iter().any(|(v, _)| *v == ptr) {
-            return Ok(());
+            return;
         }
         let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let slot = self.create_entry_alloca(ptr_type.into(), "temp_slot")?;
-        self.builder
-            .build_store(slot, value)
-            .map_err(|e| e.to_string())?;
-        self.temp_values.push((value.into_pointer_value(), slot));
-        Ok(())
+        let Ok(slot) = self.create_entry_alloca(ptr_type.into(), "temp_slot") else {
+            return;
+        };
+        if self.builder.build_store(slot, value).is_err() {
+            return;
+        }
+        self.temp_values.push((ptr, slot));
     }
 
     /// Current number of registered temporaries. Capture this before evaluating
@@ -117,19 +125,18 @@ impl<'a> CodeGenerator<'a> {
 
     /// Remove a value from the pending-temporary list because its ownership has
     /// been transferred (e.g. stored into a variable slot or returned). After
-    /// this the value is no longer decremented at the statement boundary; its
-    /// slot is nulled so any later blanket cleanup also skips it.
+    /// this the value is no longer decremented at the statement boundary.
     /// Returns `true` if the value was a tracked owned temporary, `false`
     /// otherwise (e.g. a borrowed identifier/parameter load or a non-pointer).
     pub(super) fn untrack_temp(&mut self, value: BasicValueEnum<'a>) -> bool {
         if value.is_pointer_value() {
             let ptr = value.into_pointer_value();
             // Remove the most recent matching entry; the transferred value is
-            // typically the last temporary produced.
+            // typically the last temporary produced. Removing it from the list
+            // is sufficient - cleanup only ever iterates `temp_values`, so the
+            // now-untracked slot is never loaded or decremented again.
             if let Some(pos) = self.temp_values.iter().rposition(|(p, _)| *p == ptr) {
-                let (_, slot) = self.temp_values.remove(pos);
-                let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
-                let _ = self.builder.build_store(slot, null_ptr);
+                self.temp_values.remove(pos);
                 return true;
             }
         }

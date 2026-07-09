@@ -1099,21 +1099,21 @@ impl<'a> CodeGenerator<'a> {
                 let call = self
                     .generate_runtime_call("mux_bool_value", &[i32_val.into()])
                     .expect("mux_bool_value should always return a value");
-                self.register_temp(call).expect("register boxed temp");
+                self.register_temp(call);
                 call.into_pointer_value()
             } else {
                 // Regular int (i64)
                 let call = self
                     .generate_runtime_call("mux_int_value", &[int_val.into()])
                     .expect("mux_int_value should always return a value");
-                self.register_temp(call).expect("register boxed temp");
+                self.register_temp(call);
                 call.into_pointer_value()
             }
         } else if val.is_float_value() {
             let call = self
                 .generate_runtime_call("mux_float_value", &[val.into()])
                 .expect("mux_float_value should always return a value");
-            self.register_temp(call).expect("register boxed temp");
+            self.register_temp(call);
             call.into_pointer_value()
         } else if val.is_pointer_value() {
             // assume string or already boxed Value (from Map/Set/List literals)
@@ -1137,7 +1137,7 @@ impl<'a> CodeGenerator<'a> {
             let call = self
                 .generate_runtime_call("mux_box_enum", &[temp_ptr.into(), size.into()])
                 .expect("mux_box_enum should always return a value");
-            self.register_temp(call).expect("register boxed temp");
+            self.register_temp(call);
             call.into_pointer_value()
         } else {
             panic!("Unexpected value type in box_value")

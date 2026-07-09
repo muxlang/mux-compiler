@@ -1541,7 +1541,7 @@ impl<'a> CodeGenerator<'a> {
         // reference/lambda) must not be, or the shared value would be freed out
         // from under its owner.
         if Self::expr_produces_owned_temp(&expr.kind) {
-            self.register_temp(value)?;
+            self.register_temp(value);
         }
         Ok(value)
     }
