@@ -723,89 +723,14 @@ fn print_version_banner() {
     use std::thread::sleep;
     use std::time::Duration;
 
-    const LOGO_HEIGHT: usize = 6;
-    const LOGO_ROWS: usize = 6;
-    const MSG: &str = "The Programming Language For Everyone";
-    const ANIM_ROWS: usize = LOGO_ROWS + 3;
-    const TOTAL_COLS: usize = 30;
-
-    let m: [&str; LOGO_HEIGHT] = [
-        "███╗   ███╗",
-        "████╗ ████║",
-        "██╔████╔██║",
-        "██║╚██╔╝██║",
-        "██║ ╚═╝ ██║",
-        "╚═╝     ╚═╝",
-    ];
-    let u: [&str; LOGO_HEIGHT] = [
-        "██╗   ██╗",
-        "██║   ██║",
-        "██║   ██║",
-        "██║   ██║",
-        "╚██████╔╝",
-        " ╚═════╝",
-    ];
-    let x: [&str; LOGO_HEIGHT] = [
-        "██╗  ██╗",
-        "╚██╗██╔╝",
-        " ╚███╔╝",
-        " ██╔██╗",
-        "██╔╝ ██╗",
-        "╚═╝  ╚═╝",
-    ];
-
-    let settled = anstyle::Style::new().fg_color(Some(anstyle::RgbColor(0x60, 0xa5, 0xfa).into()));
-    let warm = anstyle::Style::new().fg_color(Some(anstyle::RgbColor(0x93, 0xc5, 0xfd).into()));
-    let glow = anstyle::Style::new().fg_color(Some(anstyle::RgbColor(0xbf, 0xdb, 0xfe).into()));
-    let hot = anstyle::Style::new().fg_color(Some(anstyle::RgbColor(0xff, 0xff, 0xff).into()));
+    let palette = BannerPalette::new();
     let green = AnsiColor::Green.on_default().bold();
-
-    fn pad(content: &str, w: usize) -> String {
-        let chars: Vec<char> = content.chars().collect();
-        let count = chars.len();
-        if count >= w {
-            chars.into_iter().take(w).collect()
-        } else {
-            let mut s: String = chars.into_iter().collect();
-            for _ in 0..(w - count) {
-                s.push(' ');
-            }
-            s
-        }
-    }
-
-    // Build combined logo bitmap: 6 rows, 30 chars wide (11+1+9+1+8)
-    let combined: Vec<Vec<char>> = (0..LOGO_ROWS)
-        .map(|row| {
-            let mut s = String::new();
-            s.push_str(&pad(m[row], 11));
-            s.push(' ');
-            s.push_str(&pad(u[row], 9));
-            s.push(' ');
-            s.push_str(&pad(x[row], 8));
-            s.chars().collect()
-        })
-        .collect();
-
-    let cv = get_clang_version();
-    let lv = get_llvm_version();
-    let mut version_lines: Vec<String> = Vec::new();
-    version_lines.push(format!(
-        "{green}compiler{green:#} v{}",
-        env!("CARGO_PKG_VERSION")
-    ));
-    version_lines.push(format!(
-        "{green}runtime{green:#} v{}",
-        env!("MUX_RUNTIME_VERSION")
-    ));
-    if let Some(ref c) = cv {
-        version_lines.push(format!("{green}clang{green:#} v{c}"));
-    }
-    version_lines.push(format!("{green}llvm{green:#} v{lv}"));
+    let combined = banner_logo_rows();
+    let version_lines = banner_version_lines(green);
     let num_versions = version_lines.len();
 
     // Allocate blank space for the animated section
-    for _ in 0..ANIM_ROWS {
+    for _ in 0..BANNER_ANIM_ROWS {
         println!();
     }
     // Version info below the animated area, visible from the start
@@ -816,38 +741,14 @@ fn print_version_banner() {
     let mut out = stdout();
     out.flush().ok();
 
-    // Neon gradient column wipe (1 col per frame, 15ms)
-    for cols in 1..=TOTAL_COLS {
+    // Neon gradient column wipe (1 col per frame)
+    for cols in 1..=BANNER_TOTAL_COLS {
         let offset = if cols == 1 {
-            ANIM_ROWS + num_versions
+            BANNER_ANIM_ROWS + num_versions
         } else {
-            ANIM_ROWS
+            BANNER_ANIM_ROWS
         };
-
-        let mut buf = format!("\x1b[{}A", offset);
-        // Blank line before logo
-        buf.push('\n');
-        for char_row in &combined {
-            for (col, ch) in char_row.iter().enumerate() {
-                if col >= cols {
-                    break;
-                }
-                let dist = cols - 1 - col;
-                let s = if dist <= 1 {
-                    &hot
-                } else if dist <= 4 {
-                    &warm
-                } else if dist <= 8 {
-                    &glow
-                } else {
-                    &settled
-                };
-                buf.push_str(&format!("{s}{ch}{s:#}"));
-            }
-            buf.push('\n');
-        }
-        buf.push('\n');
-        buf.push_str(&format!("{settled}{MSG}{settled:#}\n"));
+        let buf = banner_sweep_frame(&combined, cols, offset, &palette);
         write!(out, "{buf}").ok();
         out.flush().ok();
         sleep(Duration::from_millis(10));
@@ -855,18 +756,9 @@ fn print_version_banner() {
 
     // Settle frame: render the full logo in settled blue
     sleep(Duration::from_millis(10));
-    {
-        let mut buf = format!("\x1b[{}A", ANIM_ROWS);
-        buf.push('\n');
-        for char_row in &combined {
-            let s: String = char_row.iter().collect();
-            buf.push_str(&format!("{settled}{s}{settled:#}\n"));
-        }
-        buf.push('\n');
-        buf.push_str(&format!("{settled}{MSG}{settled:#}\n"));
-        write!(out, "{buf}").ok();
-        out.flush().ok();
-    }
+    let buf = banner_settled_frame(&combined, &palette.settled);
+    write!(out, "{buf}").ok();
+    out.flush().ok();
 
     // Pause to show the completed logo before moving on
     sleep(Duration::from_millis(200));
@@ -874,6 +766,139 @@ fn print_version_banner() {
     // Move cursor past the version lines so the shell prompt doesn't overlap
     write!(out, "\x1b[{}B", num_versions).ok();
     out.flush().ok();
+}
+
+const BANNER_LOGO_ROWS: usize = 6;
+const BANNER_ANIM_ROWS: usize = BANNER_LOGO_ROWS + 3;
+const BANNER_TOTAL_COLS: usize = 30;
+const BANNER_MSG: &str = "The Programming Language For Everyone";
+
+struct BannerPalette {
+    settled: anstyle::Style,
+    warm: anstyle::Style,
+    glow: anstyle::Style,
+    hot: anstyle::Style,
+}
+
+impl BannerPalette {
+    fn new() -> Self {
+        let rgb = |r, g, b| anstyle::Style::new().fg_color(Some(anstyle::RgbColor(r, g, b).into()));
+        Self {
+            settled: rgb(0x60, 0xa5, 0xfa),
+            warm: rgb(0x93, 0xc5, 0xfd),
+            glow: rgb(0xbf, 0xdb, 0xfe),
+            hot: rgb(0xff, 0xff, 0xff),
+        }
+    }
+
+    /// Style for a column that trails the sweep head by `dist` columns.
+    fn for_distance(&self, dist: usize) -> &anstyle::Style {
+        match dist {
+            0..=1 => &self.hot,
+            2..=4 => &self.warm,
+            5..=8 => &self.glow,
+            _ => &self.settled,
+        }
+    }
+}
+
+/// Left-pad or truncate `content` to exactly `w` characters.
+fn banner_pad(content: &str, w: usize) -> String {
+    let mut chars: Vec<char> = content.chars().collect();
+    chars.truncate(w);
+    let mut s: String = chars.into_iter().collect();
+    while s.chars().count() < w {
+        s.push(' ');
+    }
+    s
+}
+
+/// Combined M-U-X logo bitmap: 6 rows, 30 chars wide (11+1+9+1+8).
+fn banner_logo_rows() -> Vec<Vec<char>> {
+    let m: [&str; BANNER_LOGO_ROWS] = [
+        "███╗   ███╗",
+        "████╗ ████║",
+        "██╔████╔██║",
+        "██║╚██╔╝██║",
+        "██║ ╚═╝ ██║",
+        "╚═╝     ╚═╝",
+    ];
+    let u: [&str; BANNER_LOGO_ROWS] = [
+        "██╗   ██╗",
+        "██║   ██║",
+        "██║   ██║",
+        "██║   ██║",
+        "╚██████╔╝",
+        " ╚═════╝",
+    ];
+    let x: [&str; BANNER_LOGO_ROWS] = [
+        "██╗  ██╗",
+        "╚██╗██╔╝",
+        " ╚███╔╝",
+        " ██╔██╗",
+        "██╔╝ ██╗",
+        "╚═╝  ╚═╝",
+    ];
+    (0..BANNER_LOGO_ROWS)
+        .map(|row| {
+            let mut s = String::new();
+            s.push_str(&banner_pad(m[row], 11));
+            s.push(' ');
+            s.push_str(&banner_pad(u[row], 9));
+            s.push(' ');
+            s.push_str(&banner_pad(x[row], 8));
+            s.chars().collect()
+        })
+        .collect()
+}
+
+fn banner_version_lines(green: anstyle::Style) -> Vec<String> {
+    let mut version_lines = vec![
+        format!("{green}compiler{green:#} v{}", env!("CARGO_PKG_VERSION")),
+        format!("{green}runtime{green:#} v{}", env!("MUX_RUNTIME_VERSION")),
+    ];
+    if let Some(ref c) = get_clang_version() {
+        version_lines.push(format!("{green}clang{green:#} v{c}"));
+    }
+    version_lines.push(format!("{green}llvm{green:#} v{}", get_llvm_version()));
+    version_lines
+}
+
+/// One animation frame: the logo revealed up to `cols` columns, with a
+/// neon gradient trailing the sweep head. Starts by moving the cursor up
+/// `offset` rows so the frame redraws in place.
+fn banner_sweep_frame(
+    combined: &[Vec<char>],
+    cols: usize,
+    offset: usize,
+    palette: &BannerPalette,
+) -> String {
+    let mut buf = format!("\x1b[{}A", offset);
+    // Blank line before logo
+    buf.push('\n');
+    for char_row in combined {
+        for (col, ch) in char_row.iter().enumerate().take(cols) {
+            let s = palette.for_distance(cols - 1 - col);
+            buf.push_str(&format!("{s}{ch}{s:#}"));
+        }
+        buf.push('\n');
+    }
+    buf.push('\n');
+    let settled = &palette.settled;
+    buf.push_str(&format!("{settled}{BANNER_MSG}{settled:#}\n"));
+    buf
+}
+
+fn banner_settled_frame(combined: &[Vec<char>], settled: &anstyle::Style) -> String {
+    let mut buf = format!("\x1b[{}A", BANNER_ANIM_ROWS);
+    buf.push('\n');
+    for char_row in combined {
+        let s: String = char_row.iter().collect();
+        buf.push_str(&format!("{settled}{s}{settled:#}\n"));
+    }
+    buf.push('\n');
+    buf.push_str(&format!("{settled}{BANNER_MSG}{settled:#}\n"));
+    buf
 }
 
 fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool) {
