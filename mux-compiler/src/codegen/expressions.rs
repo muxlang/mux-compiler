@@ -735,7 +735,7 @@ impl<'a> CodeGenerator<'a> {
         }
 
         let (closure_mem, captures_field) =
-            self.allocate_closure(function, ptr_type, "closure_alloc")?;
+            self.allocate_closure(function, ptr_type)?;
         self.builder
             .build_store(captures_field, capture_mem)
             .map_err(|e| e.to_string())?;
@@ -749,7 +749,7 @@ impl<'a> CodeGenerator<'a> {
         ptr_type: inkwell::types::PointerType<'a>,
     ) -> Result<BasicValueEnum<'a>, String> {
         let (closure_mem, captures_field) =
-            self.allocate_closure(function, ptr_type, "closure_alloc")?;
+            self.allocate_closure(function, ptr_type)?;
         let null_ptr = ptr_type.const_null();
         self.builder
             .build_store(captures_field, null_ptr)
@@ -766,7 +766,6 @@ impl<'a> CodeGenerator<'a> {
         &self,
         function: inkwell::values::FunctionValue<'a>,
         ptr_type: inkwell::types::PointerType<'a>,
-        _alloc_name: &str,
     ) -> Result<(BasicValueEnum<'a>, inkwell::values::PointerValue<'a>), String> {
         let closure_struct_type = self
             .context
