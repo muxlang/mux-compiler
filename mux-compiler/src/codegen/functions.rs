@@ -297,6 +297,11 @@ impl<'a> CodeGenerator<'a> {
             self.generate_statement(stmt, Some(&init_func))?;
         }
 
+        // Clean up any temporary variables allocated during module init (e.g., string literals).
+        // Reference-counted values created at module init time are local to this scope and
+        // should be decreffed before returning to avoid definite/indirect leaks.
+        self.generate_all_scopes_cleanup()?;
+
         self.builder.build_return(None).map_err(|e| e.to_string())?;
         Ok(())
     }
