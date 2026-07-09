@@ -32,6 +32,12 @@ impl<'a> CodeGenerator<'a> {
         field_ptr: PointerValue<'a>,
         field: &Field,
     ) -> Result<(), String> {
+        // The initial value stored here is owned by the field (released by the
+        // object's destructor), so any temporary registered while producing it
+        // must be dropped from the pending set rather than freed at the
+        // constructor's statement boundary - otherwise the field is left
+        // dangling.
+        let temp_mark = self.temp_mark();
         if let Some(default_expr) = &field.default_value {
             let literal_val = self.generate_expression(default_expr)?;
             let stored_val = if matches!(field.type_.kind, TypeKind::Primitive(_)) {
@@ -46,6 +52,7 @@ impl<'a> CodeGenerator<'a> {
             let field_type = self.type_node_to_type(&field.type_);
             self.initialize_field_by_type(field_ptr, &field_type, field.is_generic_param)?;
         }
+        self.discard_temps_to(temp_mark);
         Ok(())
     }
 

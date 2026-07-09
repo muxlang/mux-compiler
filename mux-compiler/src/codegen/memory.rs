@@ -183,6 +183,14 @@ impl<'a> CodeGenerator<'a> {
         self.cleanup_temps_to(0)
     }
 
+    /// Drop the temporaries registered since `mark` WITHOUT releasing them - used
+    /// when their ownership has been transferred somewhere that will free them
+    /// (e.g. stored into an object field, which the destructor decrements). They
+    /// must not also be decremented at the statement boundary.
+    pub(super) fn discard_temps_to(&mut self, mark: usize) {
+        self.temp_values.truncate(mark);
+    }
+
     /// Deep-clone a reference-counted value, returning a fresh, uniquely-owned,
     /// refcount-isolated copy (`mux_value_deep_clone`).
     fn deep_clone_value(&mut self, ptr: PointerValue<'a>) -> Result<PointerValue<'a>, String> {
