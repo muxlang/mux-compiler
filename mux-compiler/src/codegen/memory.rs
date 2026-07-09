@@ -15,7 +15,15 @@ impl<'a> CodeGenerator<'a> {
     }
     /// Generate cleanup code for all scopes (used before return statements).
     /// This doesn't pop the scopes - just generates the cleanup code.
+    ///
+    /// Every caller is a return/terminator path, and on value-returning paths
+    /// the returned value has already been retained with `mux_rc_inc`. So we
+    /// also decrement any pending statement temporaries here: an unbound
+    /// temporary is freed, and a temporary that happens to be the return value
+    /// is brought back down to the caller-owned +1 by the earlier retain.
     pub(super) fn generate_all_scopes_cleanup(&mut self) -> Result<(), String> {
+        self.cleanup_all_temps()?;
+
         // Collect all variables from all scopes to avoid borrow issues
         let all_vars: Vec<(String, PointerValue<'a>)> = self
             .rc_scope_stack
@@ -63,6 +71,184 @@ impl<'a> CodeGenerator<'a> {
             }
             current_scope.push((name.to_string(), alloca));
         }
+    }
+
+    /// Register a freshly produced, owned RC temporary so it will be
+    /// decremented at the end of the current statement unless ownership is
+    /// transferred first. No-op for non-pointer (unboxed scalar) values.
+    ///
+    /// The temporary is spilled into a null-initialized entry-block alloca (its
+    /// "slot"). Because the slot dominates the whole function, cleanup can load
+    /// and decrement it from any later block regardless of the control flow that
+    /// produced the value; on paths that never produced it the slot is still
+    /// null and `mux_rc_dec` (null-safe) is a no-op. `mem2reg` promotes these
+    /// slots back to SSA/phi form, so this is the standard way to let LLVM place
+    /// dominance-correct cleanups for values born inside conditional control
+    /// flow (short-circuit operands, ternary arms, loop bodies).
+    pub(super) fn register_temp(&mut self, value: BasicValueEnum<'a>) -> Result<(), String> {
+        if !value.is_pointer_value() {
+            return Ok(());
+        }
+        let ptr = value.into_pointer_value();
+        // A pointer identifies a unique allocation, so it must be tracked (and
+        // thus decremented) at most once. The same pointer legitimately flows
+        // out of several owned-returning calls when a function returns its own
+        // argument (e.g. an in-place `sort(list)` whose `auto out = items`
+        // aliases its input): registering it twice would free the single
+        // reference twice, dangling whatever bound the value.
+        if self.temp_values.iter().any(|(v, _)| *v == ptr) {
+            return Ok(());
+        }
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let slot = self.create_entry_alloca(ptr_type.into(), "temp_slot")?;
+        self.builder
+            .build_store(slot, value)
+            .map_err(|e| e.to_string())?;
+        self.temp_values.push((value.into_pointer_value(), slot));
+        Ok(())
+    }
+
+    /// Current number of registered temporaries. Capture this before evaluating
+    /// a full expression, then pass it to `cleanup_temps_to` afterwards to
+    /// decrement only the temporaries produced by that expression.
+    pub(super) fn temp_mark(&self) -> usize {
+        self.temp_values.len()
+    }
+
+    /// Remove a value from the pending-temporary list because its ownership has
+    /// been transferred (e.g. stored into a variable slot or returned). After
+    /// this the value is no longer decremented at the statement boundary; its
+    /// slot is nulled so any later blanket cleanup also skips it.
+    /// Returns `true` if the value was a tracked owned temporary, `false`
+    /// otherwise (e.g. a borrowed identifier/parameter load or a non-pointer).
+    pub(super) fn untrack_temp(&mut self, value: BasicValueEnum<'a>) -> bool {
+        if value.is_pointer_value() {
+            let ptr = value.into_pointer_value();
+            // Remove the most recent matching entry; the transferred value is
+            // typically the last temporary produced.
+            if let Some(pos) = self.temp_values.iter().rposition(|(p, _)| *p == ptr) {
+                let (_, slot) = self.temp_values.remove(pos);
+                let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+                let _ = self.builder.build_store(slot, null_ptr);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Emit `mux_rc_dec` for every temporary registered since `mark` by loading
+    /// its slot (null-safe), then truncate the list back to `mark`. Call at
+    /// statement boundaries. Skips emission when the current block already has a
+    /// terminator (dead code).
+    pub(super) fn cleanup_temps_to(&mut self, mark: usize) -> Result<(), String> {
+        if self.temp_values.len() <= mark {
+            return Ok(());
+        }
+        let live = self
+            .builder
+            .get_insert_block()
+            .is_some_and(|bb| bb.get_terminator().is_none());
+        if live {
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let null_ptr = ptr_type.const_null();
+            let slots: Vec<PointerValue<'a>> = self.temp_values[mark..]
+                .iter()
+                .map(|(_, slot)| *slot)
+                .collect();
+            for slot in slots {
+                let loaded = self
+                    .builder
+                    .build_load(ptr_type, slot, "temp_load")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
+                    .map_err(|e| e.to_string())?;
+                // Null the slot so a later blanket cleanup (or the next loop
+                // iteration reusing this slot) does not decrement it again.
+                self.builder
+                    .build_store(slot, null_ptr)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        self.temp_values.truncate(mark);
+        Ok(())
+    }
+
+    /// Decrement every registered temporary (used on the return path, after the
+    /// returned value has been retained).
+    pub(super) fn cleanup_all_temps(&mut self) -> Result<(), String> {
+        self.cleanup_temps_to(0)
+    }
+
+    /// Deep-clone a reference-counted value, returning a fresh, uniquely-owned,
+    /// refcount-isolated copy (`mux_value_deep_clone`).
+    fn deep_clone_value(&mut self, ptr: PointerValue<'a>) -> Result<PointerValue<'a>, String> {
+        let clone_fn = self
+            .runtime_function("mux_value_deep_clone")
+            .ok_or("mux_value_deep_clone not found")?;
+        let cloned = self
+            .builder
+            .build_call(clone_fn, &[ptr.into()], "value_copy")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_value_deep_clone returned no value")?;
+        Ok(cloned.into_pointer_value())
+    }
+
+    /// Produce the boxed pointer to store into a variable/constant slot, taking
+    /// ownership of it. Three cases:
+    ///  - a freshly produced owned temporary is transferred as-is (untracked so
+    ///    it is not also freed at the statement boundary);
+    ///  - a borrowed reference-counted value of a copy type (an identifier or
+    ///    field load bound with `auto x = y`) is deep-cloned, giving the binding
+    ///    value semantics: an independent, uniquely-owned copy that can be freed
+    ///    by scope cleanup without touching the source and cannot alias-mutate
+    ///    it. References and function values are stored by handle, not copied;
+    ///  - a scalar is boxed into a fresh owned value.
+    pub(super) fn box_value_owned_for_slot(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        resolved_type: &Type,
+    ) -> Result<PointerValue<'a>, String> {
+        let boxed = self.box_value(value);
+        if self.untrack_temp(boxed.into()) {
+            // Was a tracked owned temporary: transfer ownership unchanged.
+            return Ok(boxed);
+        }
+        let is_copy_type = self.type_needs_rc_tracking(resolved_type)
+            && !matches!(resolved_type, Type::Reference(_) | Type::Function { .. });
+        if value.is_pointer_value() && is_copy_type {
+            // Borrowed value-type binding: copy so the new slot owns it.
+            return self.deep_clone_value(boxed);
+        }
+        Ok(boxed)
+    }
+
+    /// Overwrite a variable slot that holds an owned boxed pointer with a new
+    /// boxed value, transferring the new value's ownership into the slot so it
+    /// is not also freed as a statement temporary. Only valid for slots that
+    /// store boxed `*mut Value` pointers (not inline struct/enum storage).
+    ///
+    /// The previous occupant is intentionally NOT decremented here. The compiler
+    /// still has borrow-without-retain sites (an alias can hold a slot's value
+    /// without owning a reference), so eagerly releasing the old value can free
+    /// something still in use. Leaking the overwritten value is recoverable;
+    /// a use-after-free is not. Reclaiming overwritten values needs the same
+    /// dominance-aware ownership tracking as the rest of the ARC work.
+    pub(super) fn store_boxed_into_slot(
+        &mut self,
+        slot: PointerValue<'a>,
+        boxed: PointerValue<'a>,
+    ) -> Result<(), String> {
+        self.builder
+            .build_store(slot, boxed)
+            .map_err(|e| e.to_string())?;
+        self.untrack_temp(boxed.into());
+        Ok(())
     }
 
     /// Check if a type requires RC tracking.

@@ -99,6 +99,11 @@ impl<'a> CodeGenerator<'a> {
                 let arg = function
                     .get_nth_param(i as u32)
                     .expect("function parameter should exist at expected index");
+                // The variant takes ownership of a reference-counted payload
+                // (string/list/object), so retain it: the caller frees the value
+                // it passed in as a statement temporary, and the enum must keep
+                // its own reference alive. No-op for unboxed scalar payloads.
+                self.rc_inc_if_pointer(arg)?;
                 let data_ptr = self
                     .builder
                     .build_struct_gep(struct_type, temp_ptr, (i + 1) as u32, "data_ptr")
@@ -364,22 +369,31 @@ impl<'a> CodeGenerator<'a> {
         let resolved_type = self.resolve_type(field_type)?;
 
         match resolved_type {
+            // Primitive fields are stored boxed (a `*mut Value` pointer), matching
+            // how explicitly-defaulted fields and later assignments store them.
+            // Storing the raw scalar instead would leave the upper bytes of the
+            // pointer-sized slot uninitialized, so a later boxed-pointer read
+            // (e.g. `mux_value_get_bool`) would dereference garbage whenever the
+            // object landed on non-zero reclaimed heap memory.
             Type::Primitive(PrimitiveType::Bool) => {
                 let false_val = self.context.bool_type().const_int(0, false);
+                let boxed = self.box_value(false_val.into());
                 self.builder
-                    .build_store(field_ptr, false_val)
+                    .build_store(field_ptr, boxed)
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Int) => {
                 let zero_val = self.context.i64_type().const_int(0, false);
+                let boxed = self.box_value(zero_val.into());
                 self.builder
-                    .build_store(field_ptr, zero_val)
+                    .build_store(field_ptr, boxed)
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Float) => {
                 let zero_val = self.context.f64_type().const_float(0.0);
+                let boxed = self.box_value(zero_val.into());
                 self.builder
-                    .build_store(field_ptr, zero_val)
+                    .build_store(field_ptr, boxed)
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Str) => {

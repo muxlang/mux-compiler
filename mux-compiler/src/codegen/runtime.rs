@@ -118,6 +118,14 @@ impl<'a> CodeGenerator<'a> {
             i8_ptr.fn_type(&[i8_ptr.into()], false),
             None,
         );
+        // Ownership-taking variant: frees the input C string after copying it.
+        // Used for conversion functions (`to_string`, concat) whose input is an
+        // owned pointer returned by the runtime, so it must be freed once copied.
+        module.add_function(
+            "mux_new_string_from_owned_cstr",
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
         module.add_function(
             "mux_print",
             void_type.fn_type(&[i8_ptr.into()], false),
@@ -263,6 +271,7 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        void_i8ptr_fn!("mux_free_string");
         void_i8ptr_fn!("mux_free_object");
         void_i8ptr_fn!("mux_free_list");
         void_i8ptr_fn!("mux_free_set");
@@ -1090,22 +1099,26 @@ impl<'a> CodeGenerator<'a> {
                 let call = self
                     .generate_runtime_call("mux_bool_value", &[i32_val.into()])
                     .expect("mux_bool_value should always return a value");
+                self.register_temp(call).expect("register boxed temp");
                 call.into_pointer_value()
             } else {
                 // Regular int (i64)
                 let call = self
                     .generate_runtime_call("mux_int_value", &[int_val.into()])
                     .expect("mux_int_value should always return a value");
+                self.register_temp(call).expect("register boxed temp");
                 call.into_pointer_value()
             }
         } else if val.is_float_value() {
             let call = self
                 .generate_runtime_call("mux_float_value", &[val.into()])
                 .expect("mux_float_value should always return a value");
+            self.register_temp(call).expect("register boxed temp");
             call.into_pointer_value()
         } else if val.is_pointer_value() {
             // assume string or already boxed Value (from Map/Set/List literals)
-            // map/Set/List literals already return *mut Value pointers, so just return as-is
+            // map/Set/List literals already return *mut Value pointers, so just return as-is.
+            // Already-owned pointers were registered by whatever produced them.
             val.into_pointer_value()
         } else if val.is_struct_value() {
             // user-defined enum values (structs): box into Value::Opaque
@@ -1124,6 +1137,7 @@ impl<'a> CodeGenerator<'a> {
             let call = self
                 .generate_runtime_call("mux_box_enum", &[temp_ptr.into(), size.into()])
                 .expect("mux_box_enum should always return a value");
+            self.register_temp(call).expect("register boxed temp");
             call.into_pointer_value()
         } else {
             panic!("Unexpected value type in box_value")

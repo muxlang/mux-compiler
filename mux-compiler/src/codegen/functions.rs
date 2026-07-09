@@ -372,6 +372,10 @@ impl<'a> CodeGenerator<'a> {
         // (specialized methods, generic instantiation, etc.) should not see or clean up
         // variables from the calling function's scope.
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
+        // Statement temporaries are likewise per-function: a temporary produced
+        // while generating this body must never be cleaned up in another
+        // function (which would emit a cross-function instruction reference).
+        let saved_temp_values = std::mem::take(&mut self.temp_values);
 
         self.current_function_name = Some(func.name.clone());
         self.current_function_return_type = Some(
@@ -441,8 +445,11 @@ impl<'a> CodeGenerator<'a> {
         self.current_function_return_type = saved_return_type;
         self.analyzer.current_self_type = saved_self_type;
 
-        // Restore the parent function's RC scope stack
+        // Restore the parent function's RC scope stack and temporaries. Any
+        // temporaries still pending here belonged to this body and have already
+        // been decremented on its return paths.
         self.rc_scope_stack = saved_rc_scope_stack;
+        self.temp_values = saved_temp_values;
 
         Ok(())
     }

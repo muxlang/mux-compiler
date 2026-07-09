@@ -36,7 +36,7 @@ impl<'a> CodeGenerator<'a> {
                     .build_store(existing_ptr, value)
                     .map_err(|e| e.to_string())?;
             } else {
-                let boxed = self.box_value(value);
+                let boxed = self.box_value_owned_for_slot(value, resolved_type)?;
                 self.builder
                     .build_store(existing_ptr, boxed)
                     .map_err(|e| e.to_string())?;
@@ -55,7 +55,7 @@ impl<'a> CodeGenerator<'a> {
             self.variables
                 .insert(name.to_string(), (alloca, var_type, resolved_type.clone()));
         } else {
-            let boxed = self.box_value(value);
+            let boxed = self.box_value_owned_for_slot(value, resolved_type)?;
             let ptr_type = self.context.ptr_type(AddressSpace::default());
             let alloca = if let Some(func) = function {
                 self.create_entry_block_alloca(*func, ptr_type.into(), name)?
@@ -500,6 +500,9 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         let value = self.generate_expression(expr)?;
         let boxed = self.box_value(value);
+        // Ownership of the boxed value transfers into the constant's storage
+        // slot; do not also free it as a statement temporary.
+        self.untrack_temp(boxed.into());
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let resolved_type = self
             .resolve_expression_type_with_fallback(expr)
@@ -876,6 +879,12 @@ impl<'a> CodeGenerator<'a> {
         {
             return Ok(());
         }
+        // Statement boundary: any owned RC temporaries produced while evaluating
+        // this statement's expressions and not transferred to a binding are
+        // decremented here. `Return` manages its own temporaries (it must retain
+        // the returned value across cleanup), so it is exempt.
+        let temp_mark = self.temp_mark();
+        let is_return = matches!(stmt.kind, StatementKind::Return(_));
         match &stmt.kind {
             StatementKind::AutoDecl(name, _, expr) => {
                 self.generate_auto_decl_statement(name, expr, function)?;
@@ -925,6 +934,9 @@ impl<'a> CodeGenerator<'a> {
                 self.generate_nested_function_statement(func, function)?;
             }
             _ => {} // skip other statement types for now
+        }
+        if !is_return {
+            self.cleanup_temps_to(temp_mark)?;
         }
         Ok(())
     }
@@ -1734,7 +1746,22 @@ impl<'a> CodeGenerator<'a> {
                 let right_ptr = self.ensure_pointer(right);
                 let left_cstr = self.extract_c_string_from_value(left_ptr)?;
                 let right_cstr = self.extract_c_string_from_value(right_ptr)?;
-                self.call_runtime_bool(left_cstr, right_cstr, "mux_string_equal", "string_equal")
+                let result = self.call_runtime_bool(
+                    left_cstr,
+                    right_cstr,
+                    "mux_string_equal",
+                    "string_equal",
+                );
+                // The getters return owned C strings; free them after comparison.
+                let free_fn = self
+                    .runtime_function("mux_free_string")
+                    .ok_or("mux_free_string not found")?;
+                for cstr in [left_cstr, right_cstr] {
+                    self.builder
+                        .build_call(free_fn, &[cstr.into()], "free_cstr")
+                        .map_err(|e| e.to_string())?;
+                }
+                result
             }
             Type::List(_)
             | Type::Map(_, _)

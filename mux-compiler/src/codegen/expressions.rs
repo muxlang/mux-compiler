@@ -482,6 +482,8 @@ impl<'a> CodeGenerator<'a> {
         self.variables.clear();
 
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
+        // Isolate statement temporaries to this lambda body (see generate_function).
+        let saved_temp_values = std::mem::take(&mut self.temp_values);
         self.push_rc_scope();
 
         if has_captures {
@@ -503,6 +505,7 @@ impl<'a> CodeGenerator<'a> {
 
         self.rc_scope_stack.pop();
         self.rc_scope_stack = saved_rc_scope_stack;
+        self.temp_values = saved_temp_values;
 
         self.variables = old_variables;
         self.current_function_return_type = old_return_type;
@@ -712,6 +715,10 @@ impl<'a> CodeGenerator<'a> {
                 .builder
                 .build_load(ptr_type, var_ptr, &format!("cap_{}_val", name))
                 .map_err(|e| e.to_string())?;
+            // The closure keeps its own reference to the captured value: a
+            // returned closure outlives the function whose scope cleanup would
+            // otherwise free the captured binding, leaving a dangling capture.
+            self.rc_inc_if_pointer(current_value)?;
             self.builder
                 .build_store(heap_storage, current_value)
                 .map_err(|e| e.to_string())?;
@@ -1039,6 +1046,10 @@ impl<'a> CodeGenerator<'a> {
         } else {
             self.box_value(expr_val)
         };
+        // Taking a reference to a temporary value (e.g. `&list[0]`) keeps that
+        // value alive through the reference, so it must not be freed at the
+        // statement boundary or the reference would dangle.
+        self.untrack_temp(boxed_val.into());
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let temp = self
             .builder
@@ -1146,9 +1157,8 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?
         };
         let boxed_val = self.box_value(new_val.into());
-        self.builder
-            .build_store(ptr, boxed_val)
-            .map_err(|e| e.to_string())?;
+        // Release the previous boxed integer before overwriting the slot.
+        self.store_boxed_into_slot(ptr, boxed_val)?;
         Ok(new_val.into())
     }
 
@@ -1523,7 +1533,52 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         expr: &ExpressionNode,
     ) -> Result<BasicValueEnum<'a>, String> {
-        self.generate_expression_impl(expr)
+        let value = self.generate_expression_impl(expr)?;
+        // Register freshly produced, owned RC values so unbound temporaries are
+        // decremented at the statement boundary. Only expression kinds that
+        // return a newly allocated (+1) value are registered; kinds that return
+        // a borrowed pointer (an identifier/parameter load, a `None`, a function
+        // reference/lambda) must not be, or the shared value would be freed out
+        // from under its owner.
+        if Self::expr_produces_owned_temp(&expr.kind) {
+            self.register_temp(value)?;
+        }
+        Ok(value)
+    }
+
+    /// Whether an expression kind yields a freshly allocated, caller-owned RC
+    /// value (as opposed to a borrowed pointer into an existing binding). Used
+    /// to decide whether the result should be tracked as a statement temporary.
+    fn expr_produces_owned_temp(kind: &ExpressionKind) -> bool {
+        match kind {
+            // String literals allocate a new Value; other literals are unboxed
+            // scalars and are filtered out by the pointer check in register_temp.
+            ExpressionKind::Literal(_) => true,
+            // A non-assignment binary op builds a new value (string/list concat)
+            // or an unboxed scalar (arithmetic/comparison, ignored by
+            // register_temp). An assignment op instead yields the assigned value,
+            // which is already owned by the target slot (and separately tracked),
+            // so tracking it here would double-free it.
+            ExpressionKind::Binary { op, .. } => !op.is_assignment(),
+            // These return a newly allocated, owned value (or an unboxed scalar
+            // that register_temp ignores): calls (functions and methods return
+            // +1), collection literals, and indexed access (the runtime getters
+            // clone the element out).
+            ExpressionKind::Call { .. }
+            | ExpressionKind::ListAccess { .. }
+            | ExpressionKind::ListLiteral(_)
+            | ExpressionKind::MapLiteral { .. }
+            | ExpressionKind::SetOrMapLiteral(_)
+            | ExpressionKind::TupleLiteral(_) => true,
+            // Everything else is either borrowed or not reference counted, and
+            // must never be tracked — freeing a borrowed value (a field load, a
+            // dereference, an identifier, a ternary arm that yields one of its
+            // borrowed operands) double-frees the owner. A missed owned value
+            // only leaks, which is recoverable; a double free corrupts the heap.
+            // Notably excluded: Identifier, FieldAccess, Unary (incl. Deref),
+            // If, None, Lambda.
+            _ => false,
+        }
     }
 
     fn generate_identifier_expression(&mut self, name: &str) -> Result<BasicValueEnum<'a>, String> {
@@ -1897,25 +1952,26 @@ impl<'a> CodeGenerator<'a> {
         let ptr_copy = *ptr;
         let type_node_copy = type_node.clone();
 
-        let value_to_store = if let Type::Named(type_name, _) = &type_node_copy {
-            let is_enum = self
-                .analyzer
+        let is_enum = if let Type::Named(type_name, _) = &type_node_copy {
+            self.analyzer
                 .symbol_table()
                 .lookup(type_name)
                 .map(|s| s.kind == crate::semantics::SymbolKind::Enum)
-                .unwrap_or(false);
-            if is_enum {
-                right_val
-            } else {
-                self.box_value(right_val).into()
-            }
+                .unwrap_or(false)
         } else {
-            self.box_value(right_val).into()
+            false
         };
 
-        self.builder
-            .build_store(ptr_copy, value_to_store)
-            .map_err(|e| e.to_string())?;
+        if is_enum {
+            // Enum values are stored inline (not as owned boxed pointers), so
+            // there is no previous occupant to release.
+            self.builder
+                .build_store(ptr_copy, right_val)
+                .map_err(|e| e.to_string())?;
+        } else {
+            let boxed = self.box_value(right_val);
+            self.store_boxed_into_slot(ptr_copy, boxed)?;
+        }
         Ok(right_val)
     }
 
@@ -1983,9 +2039,10 @@ impl<'a> CodeGenerator<'a> {
         let ref_val = self.generate_expression(deref_expr)?;
         let ptr = ref_val.into_pointer_value();
         let boxed = self.box_value(right_val);
-        self.builder
-            .build_store(ptr, boxed)
-            .map_err(|e| e.to_string())?;
+        // The referenced slot takes ownership of the boxed value (releasing the
+        // previous occupant), so it must not also be freed as a statement
+        // temporary — otherwise the slot would point at freed memory.
+        self.store_boxed_into_slot(ptr, boxed)?;
         Ok(right_val)
     }
 
@@ -2322,9 +2379,7 @@ impl<'a> CodeGenerator<'a> {
                 };
                 let ptr_copy = *ptr;
                 let boxed = self.box_value(result);
-                self.builder
-                    .build_store(ptr_copy, boxed)
-                    .map_err(|e| e.to_string())?;
+                self.store_boxed_into_slot(ptr_copy, boxed)?;
                 Ok(result)
             }
             ExpressionKind::Unary {
@@ -2335,9 +2390,7 @@ impl<'a> CodeGenerator<'a> {
                 let ref_val = self.generate_expression(deref_expr)?;
                 let ptr = ref_val.into_pointer_value();
                 let boxed = self.box_value(result);
-                self.builder
-                    .build_store(ptr, boxed)
-                    .map_err(|e| e.to_string())?;
+                self.store_boxed_into_slot(ptr, boxed)?;
                 Ok(result)
             }
             _ => Err("Assignment to non-identifier/deref not implemented".to_string()),
@@ -3796,7 +3849,8 @@ impl<'a> CodeGenerator<'a> {
             .build_call(free_map_fn, &[map.into()], "free_map")
             .map_err(|e| e.to_string())?;
 
-        self.builder
+        let unwrapped = self
+            .builder
             .build_call(
                 self.runtime_function("mux_optional_get_value")
                     .expect("mux_optional_get_value must be declared in runtime"),
@@ -3806,7 +3860,16 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
-            .ok_or("mux_optional_get_value should return a basic value".to_string())
+            .ok_or("mux_optional_get_value should return a basic value".to_string())?;
+        // The optional wrapper is an owned value; get_value clones the inner
+        // value out, so release the wrapper to avoid leaking it.
+        let rc_dec = self
+            .runtime_function("mux_rc_dec")
+            .ok_or("mux_rc_dec not found")?;
+        self.builder
+            .build_call(rc_dec, &[optional_ptr.into()], "rc_dec_optional")
+            .map_err(|e| e.to_string())?;
+        Ok(unwrapped)
     }
 
     /// Look up `index` in the raw `list` (after negative-index normalization)
