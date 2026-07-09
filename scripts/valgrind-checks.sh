@@ -51,14 +51,16 @@ usage() {
 }
 
 parse_args() {
+  local arg
   run_programs=0
   run_compiler=0
   while [[ $# -gt 0 ]]; do
-    case "$1" in
+    arg="$1"
+    case "$arg" in
       --programs) run_programs=1 ;;
       --compiler) run_compiler=1 ;;
       -h|--help) usage; exit 0 ;;
-      *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+      *) echo "Unknown argument: $arg" >&2; usage >&2; exit 1 ;;
     esac
     shift
   done
@@ -108,7 +110,7 @@ require_valgrind() {
 }
 
 # Compile one script in place (so relative imports resolve) and run its binary
-# under Valgrind. Echoes a status token; leaves cleanup to the caller.
+# under Valgrind. Sets classify_status; leaves cleanup to the caller.
 classify_program() {
   local script="$1"
   local dir name bin ll rc
@@ -120,7 +122,7 @@ classify_program() {
   rm -f "$bin" "$ll"
   if ! "$mux_bin" build "$script" >"$compile_log" 2>&1; then
     rm -f "$bin" "$ll"
-    echo "COMPILE-FAIL"
+    classify_status="COMPILE-FAIL"
     return 0
   fi
   # The compiler can exit zero while the link step still fails to produce a
@@ -128,7 +130,7 @@ classify_program() {
   if [[ ! -x "$bin" ]]; then
     echo "mux build reported success but produced no executable at $bin" >>"$compile_log"
     rm -f "$bin" "$ll"
-    echo "COMPILE-FAIL"
+    classify_status="COMPILE-FAIL"
     return 0
   fi
 
@@ -138,10 +140,10 @@ classify_program() {
   rm -f "$bin" "$ll"
 
   case "$rc" in
-    0) echo "OK" ;;
-    99) echo "MEMORY-ERROR" ;;
-    124) echo "TIMEOUT" ;;
-    *) echo "EXIT-$rc" ;;
+    0) classify_status="OK" ;;
+    99) classify_status="MEMORY-ERROR" ;;
+    124) classify_status="TIMEOUT" ;;
+    *) classify_status="EXIT-$rc" ;;
   esac
 }
 
@@ -154,7 +156,9 @@ run_leg_a() {
   a_failures=0
   for script in "$repo_root"/test_scripts/*.mux; do
     [[ -e "$script" ]] || continue
-    status="$(classify_program "$script")"
+    classify_status=""
+    classify_program "$script"
+    status="$classify_status"
     a_names+=("$(basename "$script")")
     a_status+=("$status")
     if [[ "$status" == "OK" ]]; then
