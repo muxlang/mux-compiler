@@ -56,6 +56,13 @@ jobs:
         with:
           path: ~/.cache/mux-lang/runtime
           key: ${{ runner.os }}-muxrt-1.93.1-${{ steps.runtime_sha.outputs.sha }}
+      # The compiler's build.rs reuses any libmux_runtime already present in the
+      # cache dir without checking whether the runtime source changed, so a
+      # restored-but-stale library can be linked into test programs and mismatch
+      # the current runtime ABI. Remove it AFTER the cache restore so the build
+      # rebuilds the runtime from the checked-out source.
+      - name: Clear restored runtime library
+        run: rm -rf ~/.cache/mux-lang/runtime
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
