@@ -489,6 +489,10 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let left_ptr = self.create_default_value_ptr(left_type)?;
         let right_ptr = self.create_default_value_ptr(right_type)?;
+        // mux_new_tuple clones its arguments, so the owned default values are
+        // ours to release; register them for statement-end cleanup.
+        self.register_temp(left_ptr.into());
+        self.register_temp(right_ptr.into());
 
         let tuple_value = self
             .generate_runtime_call("mux_new_tuple", &[left_ptr.into(), right_ptr.into()])
@@ -498,6 +502,9 @@ impl<'a> CodeGenerator<'a> {
             .generate_runtime_call("mux_tuple_value", &[tuple_value.into()])
             .expect("mux_tuple_value should always return a value");
 
+        // Owned (+1) tuple Value; register so a non-binding use is released and a
+        // binding transfers ownership instead of deep-cloning.
+        self.register_temp(wrapped_value);
         Ok(wrapped_value)
     }
 

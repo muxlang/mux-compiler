@@ -1050,6 +1050,9 @@ impl<'a> CodeGenerator<'a> {
         let wrapped_value = self
             .generate_runtime_call("mux_tuple_value", &[tuple_value.into()])
             .expect("mux_tuple_value should always return a value");
+        // mux_tuple_value returns an owned (+1) tuple Value; register it so it is
+        // released at statement end unless a binding transfers ownership.
+        self.register_temp(wrapped_value);
         Ok(wrapped_value)
     }
 
