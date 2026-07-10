@@ -3268,6 +3268,10 @@ impl<'a> CodeGenerator<'a> {
                 // Use extract_value_from_ptr to properly extract based on type
                 let (extracted_val, _) =
                     self.extract_value_from_ptr(result_ptr, element_type, "list_element")?;
+                // For scalar elements extract_value_from_ptr already released the
+                // owned clone; for string/complex elements it returns an owned
+                // value, so register it for statement-end release.
+                self.register_temp(extracted_val);
                 Ok(extracted_val)
             }
             crate::semantics::Type::Map(_, value_type) => {
@@ -3295,6 +3299,9 @@ impl<'a> CodeGenerator<'a> {
                 // Use extract_value_from_ptr to properly extract based on type
                 let (extracted_val, _) =
                     self.extract_value_from_ptr(value_ptr, value_type, "map_element")?;
+                // Register owned string/complex results for statement-end release
+                // (scalars were already released inside extract_value_from_ptr).
+                self.register_temp(extracted_val);
                 Ok(extracted_val)
             }
             _ => Err(format!(
