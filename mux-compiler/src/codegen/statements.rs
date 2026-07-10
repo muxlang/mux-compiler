@@ -209,10 +209,11 @@ impl<'a> CodeGenerator<'a> {
                 .build_store(index_alloca, zero)
                 .map_err(|e| e.to_string())?;
             let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let var_alloca = self
-                .builder
-                .build_alloca(ptr_type, var)
-                .map_err(|e| e.to_string())?;
+            // Null-initialized entry-block slot: the per-iteration overwrite
+            // decrements the previous occupant, so the first iteration must see
+            // a null (the null-safe dec is then a no-op), and a zero-iteration
+            // loop must leave a null the scope cleanup can safely decrement.
+            let var_alloca = self.create_entry_block_alloca(*function, ptr_type.into(), var)?;
             self.variables.insert(
                 var.to_string(),
                 (
@@ -221,6 +222,11 @@ impl<'a> CodeGenerator<'a> {
                     resolved_var_type.clone(),
                 ),
             );
+            // The loop variable owns its element copy for the whole loop; release
+            // the final copy at function return / function-end scope cleanup.
+            if self.type_needs_rc_tracking(&resolved_var_type) {
+                self.track_rc_variable(var, var_alloca);
+            }
             let label_id = self.label_counter;
             self.label_counter += 1;
             let header_bb = self
@@ -271,9 +277,13 @@ impl<'a> CodeGenerator<'a> {
                 .basic()
                 .expect("mux_value_list_get_value should return a basic value")
                 .into_pointer_value();
-            self.builder
-                .build_store(var_alloca, value_ptr)
-                .map_err(|e| e.to_string())?;
+            // `mux_value_list_get_value` returns an owned (+1) copy of the
+            // element. Registering it lets `overwrite_slot_with_owned` transfer
+            // that ownership into the slot (rather than deep-cloning it, which
+            // would leak the copy) while releasing the previous iteration's
+            // element so long-running loops do not accumulate leaks.
+            self.register_temp(value_ptr.into());
+            self.overwrite_slot_with_owned(var_alloca, value_ptr.into(), &resolved_var_type)?;
             for stmt in body {
                 self.generate_statement(stmt, Some(function))?;
             }
@@ -1329,6 +1339,15 @@ impl<'a> CodeGenerator<'a> {
             .build_store(alloca, boxed)
             .map_err(|e| e.to_string())?;
 
+        // The bound payload is an owned (+1) value: scalar payloads are freshly
+        // boxed here, and complex payloads (string/list/...) were cloned by the
+        // `mux_*_data` extraction. `box_value` already registers freshly boxed
+        // scalars as statement temporaries, but returns already-boxed pointers
+        // untracked - so register the binding to guarantee it is released at the
+        // end of the match statement (or brought down to caller-owned on a
+        // returning arm). Dedups if already tracked.
+        self.register_temp(boxed.into());
+
         self.variables
             .insert(var.clone(), (alloca, ptr_type.into(), resolved_type));
         Ok(())
@@ -1432,6 +1451,11 @@ impl<'a> CodeGenerator<'a> {
                     .build_store(alloca, boxed)
                     .map_err(|e| e.to_string())?;
 
+                // Note: for custom enums the payload is loaded directly from the
+                // enum struct (a borrow), so it is intentionally NOT registered
+                // as an owned temporary here - the enum owns it. Only scalar
+                // payloads, which `box_value` freshly boxes and self-registers,
+                // are released as temporaries.
                 let resolved_type = self.variant_field_resolved_type(
                     enum_name,
                     variant_name,
