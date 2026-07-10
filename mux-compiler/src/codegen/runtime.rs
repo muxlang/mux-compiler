@@ -1248,6 +1248,24 @@ impl<'a> CodeGenerator<'a> {
     ///
     /// # Returns
     /// A tuple of (BasicValueEnum, Type) representing the extracted value and its type
+    /// Emit `mux_rc_dec` on an owned `*mut Value`. Used to release an
+    /// intermediate extraction result that is not otherwise stored or returned.
+    pub(super) fn emit_value_decref(&self, ptr: PointerValue<'a>) -> Result<(), String> {
+        let rc_dec = self
+            .runtime_function("mux_rc_dec")
+            .ok_or("mux_rc_dec not found")?;
+        self.builder
+            .build_call(rc_dec, &[ptr.into()], "rc_dec_extracted")
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Extract the payload of an Optional/Result inner value out of an owned
+    /// `data_ptr` (produced by `mux_optional_data`/`mux_result_data`, which clone
+    /// the inner value into a fresh allocation). For scalar and string payloads
+    /// the boxed `data_ptr` is unwrapped and then released here; for
+    /// collection/object/nested-wrapper payloads `data_ptr` *is* the payload and
+    /// ownership is handed back to the caller unchanged.
     pub(super) fn extract_value_from_ptr(
         &mut self,
         data_ptr: PointerValue<'a>,
@@ -1268,6 +1286,7 @@ impl<'a> CodeGenerator<'a> {
                     .try_as_basic_value()
                     .basic()
                     .ok_or("mux_value_get_int returned no value")?;
+                self.emit_value_decref(data_ptr)?;
                 Ok((val, Type::Primitive(PrimitiveType::Int)))
             }
             Type::Primitive(PrimitiveType::Float) => {
@@ -1283,6 +1302,7 @@ impl<'a> CodeGenerator<'a> {
                     .try_as_basic_value()
                     .basic()
                     .ok_or("mux_value_get_float returned no value")?;
+                self.emit_value_decref(data_ptr)?;
                 Ok((val, Type::Primitive(PrimitiveType::Float)))
             }
             Type::Primitive(PrimitiveType::Bool) => {
@@ -1302,6 +1322,7 @@ impl<'a> CodeGenerator<'a> {
                     .builder
                     .build_int_truncate(val, self.context.bool_type(), "trunc_to_i1")
                     .map_err(|e| e.to_string())?;
+                self.emit_value_decref(data_ptr)?;
                 Ok((i1_val.into(), Type::Primitive(PrimitiveType::Bool)))
             }
             Type::Primitive(PrimitiveType::Char) => {
@@ -1317,6 +1338,7 @@ impl<'a> CodeGenerator<'a> {
                     .try_as_basic_value()
                     .basic()
                     .ok_or("mux_value_get_int returned no value")?;
+                self.emit_value_decref(data_ptr)?;
                 Ok((val, Type::Primitive(PrimitiveType::Char)))
             }
             Type::Primitive(PrimitiveType::Str) => {
@@ -1336,17 +1358,19 @@ impl<'a> CodeGenerator<'a> {
                     .ok_or("mux_value_get_string returned no value")?
                     .into_pointer_value();
 
-                // Wrap C string back into Mux string (*mut Value)
+                // Wrap the (owned) C string back into a Mux string, freeing the C
+                // string in the process, then release the boxed data pointer.
                 let new_string_func = self
-                    .runtime_function("mux_new_string_from_cstr")
-                    .ok_or("mux_new_string_from_cstr not found")?;
+                    .runtime_function("mux_new_string_from_owned_cstr")
+                    .ok_or("mux_new_string_from_owned_cstr not found")?;
                 let mux_string = self
                     .builder
                     .build_call(new_string_func, &[c_str.into()], "new_string")
                     .map_err(|e| e.to_string())?
                     .try_as_basic_value()
                     .basic()
-                    .ok_or("mux_new_string_from_cstr returned no value")?;
+                    .ok_or("mux_new_string_from_owned_cstr returned no value")?;
+                self.emit_value_decref(data_ptr)?;
 
                 Ok((mux_string, Type::Primitive(PrimitiveType::Str)))
             }
