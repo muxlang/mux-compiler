@@ -1899,6 +1899,10 @@ impl<'a> CodeGenerator<'a> {
                     .basic()
                     .ok_or("mux_value_list_get_value returned no value")?;
 
+                // mux_value_list_get_value returns an owned element copy; the
+                // equality check only reads it, so register it for release at the
+                // end of the match statement.
+                self.register_temp(elem_result);
                 let pattern_val = self.generate_literal(lit)?;
                 let elem_eq =
                     self.generate_value_equality(elem_result, pattern_val, &inner_type)?;
@@ -1957,6 +1961,9 @@ impl<'a> CodeGenerator<'a> {
                 self.builder
                     .build_store(alloca, elem_ptr)
                     .map_err(|e| e.to_string())?;
+                // Owned element copy bound to the pattern variable; register it
+                // for release at the end of the match statement.
+                self.register_temp(elem_ptr.into());
                 self.variables
                     .insert(var.clone(), (alloca, ptr_type.into(), inner_type.clone()));
             }
