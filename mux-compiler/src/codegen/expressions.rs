@@ -2486,6 +2486,39 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
+    /// Compute the scalar result of a compound assignment (`+=` / `-=`) for
+    /// numeric operands. `is_add` selects addition vs subtraction.
+    fn compute_compound_result(
+        &mut self,
+        left_val: BasicValueEnum<'a>,
+        right_val: BasicValueEnum<'a>,
+        is_add: bool,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if left_val.is_int_value() {
+            let (l, r) = (left_val.into_int_value(), right_val.into_int_value());
+            let v = if is_add {
+                self.builder.build_int_add(l, r, "add_assign")
+            } else {
+                self.builder.build_int_sub(l, r, "sub_assign")
+            }
+            .map_err(|e| e.to_string())?;
+            Ok(v.into())
+        } else if left_val.is_float_value() {
+            let (l, r) = (left_val.into_float_value(), right_val.into_float_value());
+            let v = if is_add {
+                self.builder.build_float_add(l, r, "fadd_assign")
+            } else {
+                self.builder.build_float_sub(l, r, "fsub_assign")
+            }
+            .map_err(|e| e.to_string())?;
+            Ok(v.into())
+        } else if is_add {
+            Err("Unsupported add assign operands".to_string())
+        } else {
+            Err("Unsupported sub assign operands".to_string())
+        }
+    }
+
     fn generate_compound_assignment_expression(
         &mut self,
         left: &ExpressionNode,
@@ -2494,51 +2527,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let left_val = self.generate_expression(left)?;
         let right_val = self.generate_expression(right)?;
-        let result = if left_val.is_int_value() {
-            if is_add {
-                self.builder
-                    .build_int_add(
-                        left_val.into_int_value(),
-                        right_val.into_int_value(),
-                        "add_assign",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into()
-            } else {
-                self.builder
-                    .build_int_sub(
-                        left_val.into_int_value(),
-                        right_val.into_int_value(),
-                        "sub_assign",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into()
-            }
-        } else if left_val.is_float_value() {
-            if is_add {
-                self.builder
-                    .build_float_add(
-                        left_val.into_float_value(),
-                        right_val.into_float_value(),
-                        "fadd_assign",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into()
-            } else {
-                self.builder
-                    .build_float_sub(
-                        left_val.into_float_value(),
-                        right_val.into_float_value(),
-                        "fsub_assign",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into()
-            }
-        } else if is_add {
-            return Err("Unsupported add assign operands".to_string());
-        } else {
-            return Err("Unsupported sub assign operands".to_string());
-        };
+        let result = self.compute_compound_result(left_val, right_val, is_add)?;
 
         match &left.kind {
             ExpressionKind::Identifier(name) => {
