@@ -4624,6 +4624,13 @@ impl<'a> CodeGenerator<'a> {
                 _ => unreachable!(),
             }
 
+            // list_get_or_panic / map_get_or_panic returned an owned (+1) clone of
+            // the intermediate collection, and the writeback clones it again, so
+            // the intermediate is ours to release.
+            if intermediate_val.is_pointer_value() {
+                self.emit_value_decref(intermediate_val.into_pointer_value())?;
+            }
+
             Ok(())
         }
     }
