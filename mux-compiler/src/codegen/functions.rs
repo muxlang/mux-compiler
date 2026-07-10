@@ -73,7 +73,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn is_enum_type(&self, resolved_type: &Type) -> bool {
+    pub(super) fn is_enum_type(&self, resolved_type: &Type) -> bool {
         matches!(resolved_type, Type::Named(type_name, _) if self
             .analyzer
             .symbol_table()
@@ -292,10 +292,41 @@ impl<'a> CodeGenerator<'a> {
         // copy global_variables to variables so statements can access/initialize them
         self.variables = self.global_variables.clone();
 
+        // Isolate RC scope and statement temporaries for this init body, exactly
+        // as generate_function does: nested function generation triggered while
+        // emitting top-level statements must not see or clean up init's temps
+        // (and vice versa), or cleanup would emit a cross-function instruction
+        // reference. Give init its own RC scope so block-local bindings created
+        // by top-level statements (loop variables, match-arm bindings) are
+        // released at the end of init. Top-level global declarations reuse their
+        // pre-declared global slots (the `existing_var` path in declare_variable)
+        // and are NOT tracked here, so they survive for a later user `main()`.
+        let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
+        let saved_temp_values = std::mem::take(&mut self.temp_values);
+        let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
+        let saved_closure_temp_values = std::mem::take(&mut self.closure_temp_values);
+        self.push_rc_scope();
+
         // Execute top-level statements as module initialization
         for stmt in top_level_statements {
             self.generate_statement(stmt, Some(&init_func))?;
         }
+
+        // Release module-init locals before returning. Only runs when the entry
+        // block is still open (top-level code cannot early-return).
+        if self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_terminator())
+            .is_none()
+        {
+            self.generate_all_scopes_cleanup()?;
+        }
+
+        self.rc_scope_stack = saved_rc_scope_stack;
+        self.temp_values = saved_temp_values;
+        self.closure_scope_stack = saved_closure_scope_stack;
+        self.closure_temp_values = saved_closure_temp_values;
 
         self.builder.build_return(None).map_err(|e| e.to_string())?;
         Ok(())
@@ -337,10 +368,49 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
 
+        self.emit_global_teardown()?;
+
         // return 0 from main
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(0, false)))
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Release every owned global variable once at program exit so persistent
+    /// globals are not reported as leaked. Reference and function globals borrow
+    /// their target and must not be decremented.
+    fn emit_global_teardown(&mut self) -> Result<(), String> {
+        let rc_dec = self
+            .runtime_function("mux_rc_dec")
+            .ok_or("mux_rc_dec not found")?;
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        let owned_globals: Vec<(String, inkwell::values::PointerValue<'a>)> = self
+            .global_variables
+            .iter()
+            .filter(|(_, (_, llvm_type, ty))| {
+                // Only globals whose storage is a boxed RC pointer can be
+                // decremented. Value-semantic types stored inline (e.g. custom
+                // enums held as a struct) are not RC pointers - loading and
+                // decrementing them would dereference a non-pointer. References
+                // and functions borrow their target and are managed elsewhere.
+                llvm_type.is_pointer_type()
+                    && self.type_needs_rc_tracking(ty)
+                    && !matches!(ty, Type::Reference(_) | Type::Function { .. })
+            })
+            .map(|(name, (alloca, _, _))| (name.clone(), *alloca))
+            .collect();
+
+        for (name, alloca) in owned_globals {
+            let value = self
+                .builder
+                .build_load(ptr_type, alloca, &format!("global_teardown_load_{}", name))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(rc_dec, &[value.into()], &format!("global_dec_{}", name))
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
@@ -372,6 +442,13 @@ impl<'a> CodeGenerator<'a> {
         // (specialized methods, generic instantiation, etc.) should not see or clean up
         // variables from the calling function's scope.
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
+        // Statement temporaries are likewise per-function: a temporary produced
+        // while generating this body must never be cleaned up in another
+        // function (which would emit a cross-function instruction reference).
+        let saved_temp_values = std::mem::take(&mut self.temp_values);
+        // Closure temporaries/scopes are per-function for the same reason.
+        let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
+        let saved_closure_temp_values = std::mem::take(&mut self.closure_temp_values);
 
         self.current_function_name = Some(func.name.clone());
         self.current_function_return_type = Some(
@@ -435,14 +512,20 @@ impl<'a> CodeGenerator<'a> {
         // Pop the function's RC scope (no cleanup needed here since we already
         // cleaned up before returns, and non-void functions must have explicit returns)
         self.rc_scope_stack.pop();
+        self.closure_scope_stack.pop();
 
         // Restore previous function context
         self.current_function_name = saved_function_name;
         self.current_function_return_type = saved_return_type;
         self.analyzer.current_self_type = saved_self_type;
 
-        // Restore the parent function's RC scope stack
+        // Restore the parent function's RC scope stack and temporaries. Any
+        // temporaries still pending here belonged to this body and have already
+        // been decremented on its return paths.
         self.rc_scope_stack = saved_rc_scope_stack;
+        self.temp_values = saved_temp_values;
+        self.closure_scope_stack = saved_closure_scope_stack;
+        self.closure_temp_values = saved_closure_temp_values;
 
         Ok(())
     }

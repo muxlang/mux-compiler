@@ -34,7 +34,7 @@ impl<'a> CodeGenerator<'a> {
         args: &[ExpressionNode],
         func_type: Option<&Type>,
         llvm_func: Option<inkwell::values::FunctionValue<'a>>,
-    ) -> Result<Vec<BasicMetadataValueEnum<'a>>, String> {
+    ) -> Result<(Vec<BasicMetadataValueEnum<'a>>, Vec<PointerValue<'a>>), String> {
         let param_types = match func_type {
             Some(Type::Function { params, .. }) => Some(params.as_slice()),
             _ => None,
@@ -42,12 +42,20 @@ impl<'a> CodeGenerator<'a> {
         let llvm_param_types = llvm_func.map(|f| f.get_type().get_param_types());
 
         let mut call_args = Vec::with_capacity(args.len());
+        // C strings extracted for `string` parameters are owned copies
+        // (mux_value_get_string returns an into_raw pointer). Imported/runtime
+        // functions borrow their `*const c_char` arguments, so the caller must
+        // free these once the call returns.
+        let mut owned_cstrings = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
             let arg_val = self.generate_expression(arg)?;
             let mut coerced = arg_val;
+            let mut coerced_owned_cstr = false;
             if let Some(params) = param_types
                 && let Some(param_type) = params.get(idx)
             {
+                coerced_owned_cstr = matches!(param_type, Type::Primitive(PrimitiveType::Str))
+                    && coerced.is_pointer_value();
                 coerced = self.coerce_import_arg(coerced, param_type)?;
             }
 
@@ -56,9 +64,32 @@ impl<'a> CodeGenerator<'a> {
             {
                 coerced = self.coerce_to_llvm_param_type(coerced, *expected)?;
             }
+            if coerced_owned_cstr && coerced.is_pointer_value() {
+                owned_cstrings.push(coerced.into_pointer_value());
+            }
             call_args.push(coerced.into());
         }
-        Ok(call_args)
+        Ok((call_args, owned_cstrings))
+    }
+
+    /// Free owned C strings that were extracted for imported/runtime string
+    /// arguments after the call that borrowed them has returned.
+    fn free_import_arg_cstrings(
+        &mut self,
+        owned_cstrings: &[PointerValue<'a>],
+    ) -> Result<(), String> {
+        if owned_cstrings.is_empty() {
+            return Ok(());
+        }
+        let free_fn = self
+            .runtime_function("mux_free_string")
+            .ok_or("mux_free_string not found")?;
+        for cstr in owned_cstrings {
+            self.builder
+                .build_call(free_fn, &[(*cstr).into()], "free_import_cstr")
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn coerce_to_llvm_param_type(
@@ -172,21 +203,25 @@ impl<'a> CodeGenerator<'a> {
             .generate_runtime_call("mux_map_get", &[raw_map.into(), key_value.into()])
             .ok_or_else(|| "mux_map_get should return a value".to_string())?
             .into_pointer_value();
+        // mux_map_get borrows the key, so the boxed key string is ours to free.
+        if key_value.is_pointer_value() {
+            self.emit_value_decref(key_value.into_pointer_value())?;
+        }
         let value = self
             .generate_runtime_call("mux_optional_get_value", &[map_get.into()])
             .ok_or_else(|| "mux_optional_get_value should return a value".to_string())?;
-        let free_opt = self
-            .runtime_function("mux_free_optional")
-            .ok_or("mux_free_optional not found")?;
-        let _ = self
-            .builder
-            .build_call(free_opt, &[map_get.into()], "free_csv_optional");
+        // mux_map_get returns an owned (+1) optional. mux_free_optional is a
+        // runtime no-op, so release it with the refcount decrement.
+        self.emit_value_decref(map_get)?;
         let free_map = self
             .runtime_function("mux_free_map")
             .ok_or("mux_free_map not found")?;
         let _ = self
             .builder
             .build_call(free_map, &[raw_map.into()], "free_csv_map");
+        // mux_optional_get_value returns an owned (+1) copy of the payload;
+        // register it so it is released at statement end unless transferred.
+        self.register_temp(value);
         Ok(value)
     }
 
@@ -326,12 +361,20 @@ impl<'a> CodeGenerator<'a> {
             return Ok(None);
         };
 
-        let call_args = self.build_import_call_args(args, func_type, Some(func))?;
+        let (call_args, owned_cstrings) =
+            self.build_import_call_args(args, func_type, Some(func))?;
         let call = self
             .builder
             .build_call(func, &call_args, &format!("{}_call", display_name))
             .map_err(|e| e.to_string())?;
-        Ok(Some(self.call_result_or_default_i32(call)))
+        self.free_import_arg_cstrings(&owned_cstrings)?;
+        let result = self.call_result_or_default_i32(call);
+        // Value-returning stdlib/runtime functions (json.parse, env.get, csv.*,
+        // ...) hand back a freshly allocated owned value; register it so it is
+        // released at statement end unless ownership is transferred. No-op for
+        // the i32/void default result.
+        self.register_temp(result);
+        Ok(Some(result))
     }
 
     fn call_imported_symbol_function(
@@ -482,6 +525,10 @@ impl<'a> CodeGenerator<'a> {
         self.variables.clear();
 
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
+        // Isolate statement temporaries to this lambda body (see generate_function).
+        let saved_temp_values = std::mem::take(&mut self.temp_values);
+        let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
+        let saved_closure_temp_values = std::mem::take(&mut self.closure_temp_values);
         self.push_rc_scope();
 
         if has_captures {
@@ -502,7 +549,11 @@ impl<'a> CodeGenerator<'a> {
         self.handle_lambda_void_return(return_type_opt)?;
 
         self.rc_scope_stack.pop();
+        self.closure_scope_stack.pop();
         self.rc_scope_stack = saved_rc_scope_stack;
+        self.temp_values = saved_temp_values;
+        self.closure_scope_stack = saved_closure_scope_stack;
+        self.closure_temp_values = saved_closure_temp_values;
 
         self.variables = old_variables;
         self.current_function_return_type = old_return_type;
@@ -712,6 +763,10 @@ impl<'a> CodeGenerator<'a> {
                 .builder
                 .build_load(ptr_type, var_ptr, &format!("cap_{}_val", name))
                 .map_err(|e| e.to_string())?;
+            // The closure keeps its own reference to the captured value: a
+            // returned closure outlives the function whose scope cleanup would
+            // otherwise free the captured binding, leaving a dangling capture.
+            self.rc_inc_if_pointer(current_value)?;
             self.builder
                 .build_store(heap_storage, current_value)
                 .map_err(|e| e.to_string())?;
@@ -734,40 +789,72 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
 
-        let (closure_mem, captures_field) = self.allocate_closure(function, ptr_type)?;
+        let (closure_mem, captures_field, count_field) =
+            self.allocate_closure(function, ptr_type)?;
         self.builder
             .build_store(captures_field, capture_mem)
             .map_err(|e| e.to_string())?;
+        let count = self
+            .context
+            .i64_type()
+            .const_int(captures.len() as u64, false);
+        self.builder
+            .build_store(count_field, count)
+            .map_err(|e| e.to_string())?;
 
+        // The closure owns one reference to each captured value plus its heap
+        // allocations; register it so mux_closure_release runs at statement end
+        // unless ownership is transferred to a binding or return value.
+        self.register_closure_temp(closure_mem);
         Ok(closure_mem)
     }
 
     fn create_closure_without_captures(
-        &self,
+        &mut self,
         function: inkwell::values::FunctionValue<'a>,
         ptr_type: inkwell::types::PointerType<'a>,
     ) -> Result<BasicValueEnum<'a>, String> {
-        let (closure_mem, captures_field) = self.allocate_closure(function, ptr_type)?;
+        let (closure_mem, captures_field, count_field) =
+            self.allocate_closure(function, ptr_type)?;
         let null_ptr = ptr_type.const_null();
         self.builder
             .build_store(captures_field, null_ptr)
             .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(count_field, self.context.i64_type().const_zero())
+            .map_err(|e| e.to_string())?;
 
+        self.register_closure_temp(closure_mem);
         Ok(closure_mem)
     }
 
-    /// Allocate a closure struct (fn_ptr + captures) with refcount header.
-    /// The closure is allocated as [RefHeader (8 bytes) | fn_ptr | captures]
-    /// Returns pointer to the closure struct (after the header) and the
-    /// captures field pointer so the caller can populate it.
+    /// Allocate a closure struct (fn_ptr + captures + capture_count) with a
+    /// refcount header. The closure is allocated as
+    /// `[RefHeader (i64) | fn_ptr | captures | capture_count (i64)]`.
+    /// The `capture_count` lets the runtime teardown (`mux_closure_release`)
+    /// walk and free the capture array. Returns the pointer to the closure
+    /// struct (after the header), the captures field pointer, and the
+    /// capture-count field pointer so the caller can populate them.
     fn allocate_closure(
         &self,
         function: inkwell::values::FunctionValue<'a>,
         ptr_type: inkwell::types::PointerType<'a>,
-    ) -> Result<(BasicValueEnum<'a>, inkwell::values::PointerValue<'a>), String> {
-        let closure_struct_type = self
-            .context
-            .struct_type(&[ptr_type.into(), ptr_type.into()], false);
+    ) -> Result<
+        (
+            BasicValueEnum<'a>,
+            inkwell::values::PointerValue<'a>,
+            inkwell::values::PointerValue<'a>,
+        ),
+        String,
+    > {
+        let closure_struct_type = self.context.struct_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        );
 
         // Allocate RefHeader (8-byte u64) + closure struct
         let refcount_header_type = self.context.i64_type();
@@ -819,7 +906,12 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(closure_struct_type, closure_mem, 1, "closure_captures")
             .map_err(|e| e.to_string())?;
 
-        Ok((closure_mem.into(), captures_field))
+        let count_field = self
+            .builder
+            .build_struct_gep(closure_struct_type, closure_mem, 2, "closure_capture_count")
+            .map_err(|e| e.to_string())?;
+
+        Ok((closure_mem.into(), captures_field, count_field))
     }
 
     /// check if a method's parameters or return type reference any of the given type parameters
@@ -874,6 +966,10 @@ impl<'a> CodeGenerator<'a> {
             .try_as_basic_value()
             .basic()
             .expect("mux_optional_none should return a basic value");
+        // mux_optional_none returns an owned (+1) optional value; register it so
+        // it is released at the end of the statement unless ownership is
+        // transferred (e.g. to a binding or return value) first.
+        self.register_temp(none_call);
         Ok(none_call)
     }
 
@@ -1000,6 +1096,9 @@ impl<'a> CodeGenerator<'a> {
         let wrapped_value = self
             .generate_runtime_call("mux_tuple_value", &[tuple_value.into()])
             .expect("mux_tuple_value should always return a value");
+        // mux_tuple_value returns an owned (+1) tuple Value; register it so it is
+        // released at statement end unless a binding transfers ownership.
+        self.register_temp(wrapped_value);
         Ok(wrapped_value)
     }
 
@@ -1039,14 +1138,27 @@ impl<'a> CodeGenerator<'a> {
         } else {
             self.box_value(expr_val)
         };
+        // Taking a reference to a temporary value (e.g. `&list[0]`) keeps that
+        // value alive through the reference, so it must not be freed at the
+        // statement boundary or the reference would dangle. `owned` is true when
+        // this reference now solely owns a freshly produced value (a boxed scalar
+        // or a transferred owned temporary) rather than borrowing an existing
+        // binding's value.
+        let owned = self.untrack_temp(boxed_val.into());
         let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let temp = self
-            .builder
-            .build_alloca(ptr_type, "ref_temp")
-            .map_err(|e| e.to_string())?;
+        // Null-initialized entry-block slot so scope cleanup of the owned target
+        // is dominance- and null-safe (the reference may be produced inside
+        // conditional control flow).
+        let temp = self.create_entry_alloca(ptr_type.into(), "ref_temp")?;
         self.builder
             .build_store(temp, boxed_val)
             .map_err(|e| e.to_string())?;
+        // The temporary that this reference owns is released when the enclosing
+        // scope ends (after all uses of the reference). Borrowed targets are not
+        // owned here and are freed by whatever binding owns them.
+        if owned {
+            self.track_rc_variable("ref_temp", temp);
+        }
         Ok(temp.into())
     }
 
@@ -1145,10 +1257,10 @@ impl<'a> CodeGenerator<'a> {
                 .build_int_sub(current_val, one, "decr_result")
                 .map_err(|e| e.to_string())?
         };
-        let boxed_val = self.box_value(new_val.into());
-        self.builder
-            .build_store(ptr, boxed_val)
-            .map_err(|e| e.to_string())?;
+        // The incremented value is freshly boxed; releasing the previous boxed
+        // integer avoids leaking it on every `++`/`--`.
+        let int_type = Type::Primitive(PrimitiveType::Int);
+        self.overwrite_slot_with_owned(ptr, new_val.into(), &int_type)?;
         Ok(new_val.into())
     }
 
@@ -1224,9 +1336,14 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_call(func, &[arg_val.into()], call_name)
             .map_err(|e| e.to_string())?;
-        call.try_as_basic_value()
+        let result = call
+            .try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} should return a basic value", func_name))
+            .ok_or_else(|| format!("{} should return a basic value", func_name))?;
+        // some(...)/ok(...)/err(...) return an owned (+1) optional/result value;
+        // register it so it is released at statement end unless transferred.
+        self.register_temp(result);
+        Ok(result)
     }
 
     fn generate_ok_builtin_call(
@@ -1289,9 +1406,14 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_call(func, &[], "none_call")
             .map_err(|e| e.to_string())?;
-        call.try_as_basic_value()
+        let result = call
+            .try_as_basic_value()
             .basic()
-            .ok_or("optional constructor should return a basic value".to_string())
+            .ok_or("optional constructor should return a basic value".to_string())?;
+        // Owned (+1) optional value; register for statement-end release unless
+        // ownership is transferred first.
+        self.register_temp(result);
+        Ok(result)
     }
 
     fn generate_err_builtin_call(
@@ -1337,7 +1459,12 @@ impl<'a> CodeGenerator<'a> {
             if needs_copy {
                 let arg_value = self.generate_expression(arg)?;
                 let ptr = arg_value.into_pointer_value();
+                // Objects are passed by value: copy the argument so the callee
+                // cannot mutate the caller's instance. The copy is owned by this
+                // statement (the callee only borrows it), so track it for release
+                // at the statement boundary rather than leaking it.
                 let copied_ptr = self.copy_object_or_error(ptr)?;
+                self.register_temp(copied_ptr.into());
                 call_args.push(copied_ptr.into());
             } else {
                 call_args.push(self.generate_expression(arg)?.into());
@@ -1523,7 +1650,63 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         expr: &ExpressionNode,
     ) -> Result<BasicValueEnum<'a>, String> {
-        self.generate_expression_impl(expr)
+        let value = self.generate_expression_impl(expr)?;
+        // Register freshly produced, owned RC values so unbound temporaries are
+        // decremented at the statement boundary. Only expression kinds that
+        // return a newly allocated (+1) value are registered; kinds that return
+        // a borrowed pointer (an identifier/parameter load, a `None`, a function
+        // reference/lambda) must not be, or the shared value would be freed out
+        // from under its owner.
+        if Self::expr_produces_owned_temp(&expr.kind) {
+            // Closures are not RC `Value`s: a closure-returning call already
+            // registered its result as a closure temporary (released with
+            // mux_closure_release). Registering it as an RC temporary too would
+            // free it with mux_rc_dec, corrupting the still-live closure.
+            let is_closure = value.is_pointer_value()
+                && matches!(
+                    self.get_resolved_expression_type(expr),
+                    Ok(Type::Function { .. })
+                );
+            if !is_closure {
+                self.register_temp(value);
+            }
+        }
+        Ok(value)
+    }
+
+    /// Whether an expression kind yields a freshly allocated, caller-owned RC
+    /// value (as opposed to a borrowed pointer into an existing binding). Used
+    /// to decide whether the result should be tracked as a statement temporary.
+    fn expr_produces_owned_temp(kind: &ExpressionKind) -> bool {
+        match kind {
+            // String literals allocate a new Value; other literals are unboxed
+            // scalars and are filtered out by the pointer check in register_temp.
+            ExpressionKind::Literal(_) => true,
+            // A non-assignment binary op builds a new value (string/list concat)
+            // or an unboxed scalar (arithmetic/comparison, ignored by
+            // register_temp). An assignment op instead yields the assigned value,
+            // which is already owned by the target slot (and separately tracked),
+            // so tracking it here would double-free it.
+            ExpressionKind::Binary { op, .. } => !op.is_assignment(),
+            // These return a newly allocated, owned value (or an unboxed scalar
+            // that register_temp ignores): calls (functions and methods return
+            // +1), collection literals, and indexed access (the runtime getters
+            // clone the element out).
+            ExpressionKind::Call { .. }
+            | ExpressionKind::ListAccess { .. }
+            | ExpressionKind::ListLiteral(_)
+            | ExpressionKind::MapLiteral { .. }
+            | ExpressionKind::SetOrMapLiteral(_)
+            | ExpressionKind::TupleLiteral(_) => true,
+            // Everything else is either borrowed or not reference counted, and
+            // must never be tracked — freeing a borrowed value (a field load, a
+            // dereference, an identifier, a ternary arm that yields one of its
+            // borrowed operands) double-frees the owner. A missed owned value
+            // only leaks, which is recoverable; a double free corrupts the heap.
+            // Notably excluded: Identifier, FieldAccess, Unary (incl. Deref),
+            // If, None, Lambda.
+            _ => false,
+        }
     }
 
     fn generate_identifier_expression(&mut self, name: &str) -> Result<BasicValueEnum<'a>, String> {
@@ -1897,25 +2080,27 @@ impl<'a> CodeGenerator<'a> {
         let ptr_copy = *ptr;
         let type_node_copy = type_node.clone();
 
-        let value_to_store = if let Type::Named(type_name, _) = &type_node_copy {
-            let is_enum = self
-                .analyzer
+        let is_enum = if let Type::Named(type_name, _) = &type_node_copy {
+            self.analyzer
                 .symbol_table()
                 .lookup(type_name)
                 .map(|s| s.kind == crate::semantics::SymbolKind::Enum)
-                .unwrap_or(false);
-            if is_enum {
-                right_val
-            } else {
-                self.box_value(right_val).into()
-            }
+                .unwrap_or(false)
         } else {
-            self.box_value(right_val).into()
+            false
         };
 
-        self.builder
-            .build_store(ptr_copy, value_to_store)
-            .map_err(|e| e.to_string())?;
+        if is_enum {
+            // Enum values are stored inline (not as owned boxed pointers), so
+            // there is no previous occupant to release.
+            self.builder
+                .build_store(ptr_copy, right_val)
+                .map_err(|e| e.to_string())?;
+        } else {
+            // Value-semantic overwrite: copy a borrowed value type so `x = y`
+            // does not alias, release the previous occupant, then store.
+            self.overwrite_slot_with_owned(ptr_copy, right_val, &type_node_copy)?;
+        }
         Ok(right_val)
     }
 
@@ -1967,7 +2152,24 @@ impl<'a> CodeGenerator<'a> {
                 &format!("{}_ptr", name),
             )
             .map_err(|e| e.to_string())?;
+        // Retain the new value, then release the field's previous occupant
+        // (boxed-pointer fields only) so `self.x = ...` inside a method does not
+        // leak the value it overwrites. Retain-before-release keeps self-assign
+        // safe.
         self.rc_inc_if_pointer(right_val)?;
+        if right_val.is_pointer_value() {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let old = self
+                .builder
+                .build_load(ptr_type, field_ptr, "old_field_val")
+                .map_err(|e| e.to_string())?;
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            self.builder
+                .build_call(rc_dec, &[old.into()], "rc_dec_old_field")
+                .map_err(|e| e.to_string())?;
+        }
         self.builder
             .build_store(field_ptr, right_val)
             .map_err(|e| e.to_string())?;
@@ -1982,10 +2184,20 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let ref_val = self.generate_expression(deref_expr)?;
         let ptr = ref_val.into_pointer_value();
-        let boxed = self.box_value(right_val);
-        self.builder
-            .build_store(ptr, boxed)
-            .map_err(|e| e.to_string())?;
+        // Resolve the referenced value's type so the slot's previous occupant can
+        // be released under value semantics. References point at the slot, not at
+        // the value it currently holds, so releasing the old value is safe. Fall
+        // back to a transfer-only store if the type cannot be resolved.
+        let target_type = match self.resolve_expression_type_with_fallback(deref_expr) {
+            Ok(Type::Reference(inner)) => Some(*inner),
+            _ => None,
+        };
+        if let Some(t) = target_type {
+            self.overwrite_slot_with_owned(ptr, right_val, &t)?;
+        } else {
+            let boxed = self.box_value(right_val);
+            self.store_boxed_into_slot(ptr, boxed)?;
+        }
         Ok(right_val)
     }
 
@@ -2002,7 +2214,24 @@ impl<'a> CodeGenerator<'a> {
         let field_ptr = self.resolve_struct_field_pointer(&class_name, field, struct_ptr)?;
         let value_to_store = self.compute_field_store_value(&class_name, field, right_val)?;
 
+        // Retain the new value first, then release the field's previous occupant
+        // (boxed-pointer fields only; enum fields are stored inline). Retaining
+        // before releasing keeps `self.x = self.x` safe, and releasing the old
+        // value stops reassignment from leaking it.
         self.rc_inc_if_pointer(value_to_store)?;
+        if value_to_store.is_pointer_value() {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let old = self
+                .builder
+                .build_load(ptr_type, field_ptr, "old_field_val")
+                .map_err(|e| e.to_string())?;
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            self.builder
+                .build_call(rc_dec, &[old.into()], "rc_dec_old_field")
+                .map_err(|e| e.to_string())?;
+        }
         self.builder
             .build_store(field_ptr, value_to_store)
             .map_err(|e| e.to_string())?;
@@ -2257,6 +2486,39 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
+    /// Compute the scalar result of a compound assignment (`+=` / `-=`) for
+    /// numeric operands. `is_add` selects addition vs subtraction.
+    fn compute_compound_result(
+        &mut self,
+        left_val: BasicValueEnum<'a>,
+        right_val: BasicValueEnum<'a>,
+        is_add: bool,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if left_val.is_int_value() {
+            let (l, r) = (left_val.into_int_value(), right_val.into_int_value());
+            let v = if is_add {
+                self.builder.build_int_add(l, r, "add_assign")
+            } else {
+                self.builder.build_int_sub(l, r, "sub_assign")
+            }
+            .map_err(|e| e.to_string())?;
+            Ok(v.into())
+        } else if left_val.is_float_value() {
+            let (l, r) = (left_val.into_float_value(), right_val.into_float_value());
+            let v = if is_add {
+                self.builder.build_float_add(l, r, "fadd_assign")
+            } else {
+                self.builder.build_float_sub(l, r, "fsub_assign")
+            }
+            .map_err(|e| e.to_string())?;
+            Ok(v.into())
+        } else if is_add {
+            Err("Unsupported add assign operands".to_string())
+        } else {
+            Err("Unsupported sub assign operands".to_string())
+        }
+    }
+
     fn generate_compound_assignment_expression(
         &mut self,
         left: &ExpressionNode,
@@ -2265,55 +2527,11 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let left_val = self.generate_expression(left)?;
         let right_val = self.generate_expression(right)?;
-        let result = if left_val.is_int_value() {
-            if is_add {
-                self.builder
-                    .build_int_add(
-                        left_val.into_int_value(),
-                        right_val.into_int_value(),
-                        "add_assign",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into()
-            } else {
-                self.builder
-                    .build_int_sub(
-                        left_val.into_int_value(),
-                        right_val.into_int_value(),
-                        "sub_assign",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into()
-            }
-        } else if left_val.is_float_value() {
-            if is_add {
-                self.builder
-                    .build_float_add(
-                        left_val.into_float_value(),
-                        right_val.into_float_value(),
-                        "fadd_assign",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into()
-            } else {
-                self.builder
-                    .build_float_sub(
-                        left_val.into_float_value(),
-                        right_val.into_float_value(),
-                        "fsub_assign",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .into()
-            }
-        } else if is_add {
-            return Err("Unsupported add assign operands".to_string());
-        } else {
-            return Err("Unsupported sub assign operands".to_string());
-        };
+        let result = self.compute_compound_result(left_val, right_val, is_add)?;
 
         match &left.kind {
             ExpressionKind::Identifier(name) => {
-                let Some((ptr, _, _)) = self
+                let Some((ptr, _, ty)) = self
                     .variables
                     .get(name)
                     .or_else(|| self.global_variables.get(name))
@@ -2321,10 +2539,10 @@ impl<'a> CodeGenerator<'a> {
                     return Err(format!("Undefined variable {}", name));
                 };
                 let ptr_copy = *ptr;
-                let boxed = self.box_value(result);
-                self.builder
-                    .build_store(ptr_copy, boxed)
-                    .map_err(|e| e.to_string())?;
+                let ty_copy = ty.clone();
+                // `result` is a freshly computed scalar; release the previous
+                // boxed value rather than leaking it.
+                self.overwrite_slot_with_owned(ptr_copy, result, &ty_copy)?;
                 Ok(result)
             }
             ExpressionKind::Unary {
@@ -2334,10 +2552,16 @@ impl<'a> CodeGenerator<'a> {
             } => {
                 let ref_val = self.generate_expression(deref_expr)?;
                 let ptr = ref_val.into_pointer_value();
-                let boxed = self.box_value(result);
-                self.builder
-                    .build_store(ptr, boxed)
-                    .map_err(|e| e.to_string())?;
+                let target_type = match self.resolve_expression_type_with_fallback(deref_expr) {
+                    Ok(Type::Reference(inner)) => Some(*inner),
+                    _ => None,
+                };
+                if let Some(t) = target_type {
+                    self.overwrite_slot_with_owned(ptr, result, &t)?;
+                } else {
+                    let boxed = self.box_value(result);
+                    self.store_boxed_into_slot(ptr, boxed)?;
+                }
                 Ok(result)
             }
             _ => Err("Assignment to non-identifier/deref not implemented".to_string()),
@@ -2977,7 +3201,11 @@ impl<'a> CodeGenerator<'a> {
             let arg_val = if needs_copy {
                 let original_val = self.generate_expression(arg)?;
                 let ptr = original_val.into_pointer_value();
-                self.copy_object_or_error(ptr)?.into()
+                // Pass-by-value copy owned by this statement (see the sibling
+                // path in build_call_args_from_expressions); track for release.
+                let copied = self.copy_object_or_error(ptr)?;
+                self.register_temp(copied.into());
+                copied.into()
             } else {
                 self.generate_expression(arg)?
             };
@@ -3098,6 +3326,10 @@ impl<'a> CodeGenerator<'a> {
                 // Use extract_value_from_ptr to properly extract based on type
                 let (extracted_val, _) =
                     self.extract_value_from_ptr(result_ptr, element_type, "list_element")?;
+                // For scalar elements extract_value_from_ptr already released the
+                // owned clone; for string/complex elements it returns an owned
+                // value, so register it for statement-end release.
+                self.register_temp(extracted_val);
                 Ok(extracted_val)
             }
             crate::semantics::Type::Map(_, value_type) => {
@@ -3125,6 +3357,9 @@ impl<'a> CodeGenerator<'a> {
                 // Use extract_value_from_ptr to properly extract based on type
                 let (extracted_val, _) =
                     self.extract_value_from_ptr(value_ptr, value_type, "map_element")?;
+                // Register owned string/complex results for statement-end release
+                // (scalars were already released inside extract_value_from_ptr).
+                self.register_temp(extracted_val);
                 Ok(extracted_val)
             }
             _ => Err(format!(
@@ -3245,6 +3480,24 @@ impl<'a> CodeGenerator<'a> {
             .basic()
             .ok_or("mux_tuple_left/right should return a value")?;
         let unboxed = self.unbox_value_for_type(field_value, &field_type)?;
+        // mux_tuple_left/right return an owned (+1) clone of the element. For
+        // scalar fields the raw value has been extracted into `unboxed`, so the
+        // owned box is now dead and must be released; for string/complex fields
+        // the box IS the returned value, so register it as a statement
+        // temporary to be released at the end of the statement.
+        if field_value.is_pointer_value() {
+            match field_type {
+                Type::Primitive(PrimitiveType::Int)
+                | Type::Primitive(PrimitiveType::Float)
+                | Type::Primitive(PrimitiveType::Bool)
+                | Type::Primitive(PrimitiveType::Char) => {
+                    self.emit_value_decref(field_value.into_pointer_value())?;
+                }
+                _ => {
+                    self.register_temp(field_value);
+                }
+            }
+        }
         Ok(Some(unboxed))
     }
 
@@ -3796,7 +4049,8 @@ impl<'a> CodeGenerator<'a> {
             .build_call(free_map_fn, &[map.into()], "free_map")
             .map_err(|e| e.to_string())?;
 
-        self.builder
+        let unwrapped = self
+            .builder
             .build_call(
                 self.runtime_function("mux_optional_get_value")
                     .expect("mux_optional_get_value must be declared in runtime"),
@@ -3806,7 +4060,16 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
-            .ok_or("mux_optional_get_value should return a basic value".to_string())
+            .ok_or("mux_optional_get_value should return a basic value".to_string())?;
+        // The optional wrapper is an owned value; get_value clones the inner
+        // value out, so release the wrapper to avoid leaking it.
+        let rc_dec = self
+            .runtime_function("mux_rc_dec")
+            .ok_or("mux_rc_dec not found")?;
+        self.builder
+            .build_call(rc_dec, &[optional_ptr.into()], "rc_dec_optional")
+            .map_err(|e| e.to_string())?;
+        Ok(unwrapped)
     }
 
     /// Look up `index` in the raw `list` (after negative-index normalization)
@@ -3971,7 +4234,21 @@ impl<'a> CodeGenerator<'a> {
             ExpressionKind::Binary {
                 left, op, right, ..
             } => self.generate_binary_expression(left, op, right),
-            ExpressionKind::Call { func, args } => self.generate_call_expression(expr, func, args),
+            ExpressionKind::Call { func, args } => {
+                let result = self.generate_call_expression(expr, func, args)?;
+                // A call that returns a closure hands back an owned (+1) closure
+                // (the callee retained it). Register it so the caller releases it
+                // at statement end unless a binding/return transfers ownership.
+                if result.is_pointer_value()
+                    && matches!(
+                        self.get_resolved_expression_type(expr),
+                        Ok(Type::Function { .. })
+                    )
+                {
+                    self.register_closure_temp(result);
+                }
+                Ok(result)
+            }
             ExpressionKind::ListAccess {
                 expr: target_expr,
                 index,
@@ -4064,6 +4341,11 @@ impl<'a> CodeGenerator<'a> {
                 let call = self
                     .generate_runtime_call("mux_new_string_from_cstr", &[ptr.into()])
                     .expect("mux_new_string_from_cstr should always return a value");
+                // A string literal is a freshly allocated owned Mux string.
+                // Register it so uses that do not bind it (e.g. a string pattern
+                // compared in a match) release it at statement end; a binding
+                // transfers it out of the temp set instead of deep-cloning.
+                self.register_temp(call);
                 Ok(call)
             }
             LiteralNode::Char(c) => {
@@ -4333,6 +4615,13 @@ impl<'a> CodeGenerator<'a> {
                         .map_err(|e| e.to_string())?;
                 }
                 _ => unreachable!(),
+            }
+
+            // list_get_or_panic / map_get_or_panic returned an owned (+1) clone of
+            // the intermediate collection, and the writeback clones it again, so
+            // the intermediate is ours to release.
+            if intermediate_val.is_pointer_value() {
+                self.emit_value_decref(intermediate_val.into_pointer_value())?;
             }
 
             Ok(())
