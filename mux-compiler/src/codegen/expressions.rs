@@ -4269,6 +4269,11 @@ impl<'a> CodeGenerator<'a> {
                 let call = self
                     .generate_runtime_call("mux_new_string_from_cstr", &[ptr.into()])
                     .expect("mux_new_string_from_cstr should always return a value");
+                // A string literal is a freshly allocated owned Mux string.
+                // Register it so uses that do not bind it (e.g. a string pattern
+                // compared in a match) release it at statement end; a binding
+                // transfers it out of the temp set instead of deep-cloning.
+                self.register_temp(call);
                 Ok(call)
             }
             LiteralNode::Char(c) => {
