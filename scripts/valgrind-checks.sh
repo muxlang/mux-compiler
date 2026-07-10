@@ -135,7 +135,10 @@ classify_program() {
   fi
 
   rc=0
-  ( cd "$dir" && timeout "$program_timeout" valgrind "${valgrind_flags[@]}" "./$name" ) \
+  # Suppress only benign third-party TLS/crypto noise (rustls/ring/ureq); the
+  # file is anchored to those library frames and cannot hide a leak in Mux code.
+  ( cd "$dir" && timeout "$program_timeout" valgrind "${valgrind_flags[@]}" \
+      --suppressions="$repo_root/infra/valgrind-programs.supp" "./$name" ) \
     >"$run_log" 2>&1 || rc=$?
   rm -f "$bin" "$ll"
 

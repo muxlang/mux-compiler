@@ -1,9 +1,9 @@
-# Valgrind suppression file for the Mux test programs.
+# Valgrind suppression file for the compiled Mux test programs (Leg A of
+# scripts/valgrind-checks.sh, the PR-blocking leak gate). The companion
+# infra/valgrind-llvm.supp covers the compiler itself (Leg B).
 #
-# Usage:
-#   valgrind --suppressions=scripts/valgrind.supp --leak-check=full ./your_program
-# or via the helper:
-#   scripts/valgrind-check.sh test_scripts/test_std_http.mux
+# Usage (matches how the CI script applies it):
+#   valgrind --suppressions=infra/valgrind-programs.supp --leak-check=full ./prog
 #
 # ---------------------------------------------------------------------------
 # WHY THIS FILE EXISTS
