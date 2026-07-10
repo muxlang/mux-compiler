@@ -474,6 +474,17 @@ impl<'a> CodeGenerator<'a> {
                     self.builder
                         .build_store(field_ptr, false_val)
                         .map_err(|e| e.to_string())?;
+                } else if self.is_enum_type(&Type::Named(class_name.clone(), type_args.clone())) {
+                    // Enum fields are stored inline as a struct. Default them to a
+                    // zeroed enum value (the first variant) - going through the
+                    // class constructor path would wrongly allocate a heap object
+                    // (mux_alloc_object) for the enum, which then leaks.
+                    if let Some(enum_type) = self.type_map.get(&class_name) {
+                        let zero = enum_type.into_struct_type().const_zero();
+                        self.builder
+                            .build_store(field_ptr, zero)
+                            .map_err(|e| e.to_string())?;
+                    }
                 } else {
                     // recursively call constructor for nested classes
                     let nested_obj =

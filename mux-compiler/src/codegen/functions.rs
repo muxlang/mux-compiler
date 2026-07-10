@@ -73,7 +73,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn is_enum_type(&self, resolved_type: &Type) -> bool {
+    pub(super) fn is_enum_type(&self, resolved_type: &Type) -> bool {
         matches!(resolved_type, Type::Named(type_name, _) if self
             .analyzer
             .symbol_table()
