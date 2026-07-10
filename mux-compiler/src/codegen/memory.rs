@@ -243,6 +243,45 @@ impl<'a> CodeGenerator<'a> {
         Ok(boxed)
     }
 
+    /// Overwrite a variable/reference slot with a new value under value
+    /// semantics, releasing the previous occupant so reassignment (`x = ...`,
+    /// `x++`, `*r = ...`) does not leak it.
+    ///
+    /// The new owned value is produced first (a fresh temporary is transferred,
+    /// a borrowed value type is deep-cloned) and only then is the old value
+    /// decremented. Computing the copy before the release makes self-assignment
+    /// (`x = x`) and aliasing assignment (`x = y`) safe: the independent copy
+    /// already exists before the old reference is dropped. The old value is only
+    /// released for value-type slots that uniquely own their contents; reference
+    /// and function slots hold a borrowed handle and must not be decremented.
+    pub(super) fn overwrite_slot_with_owned(
+        &mut self,
+        slot: PointerValue<'a>,
+        value: BasicValueEnum<'a>,
+        resolved_type: &Type,
+    ) -> Result<(), String> {
+        let owned = self.box_value_owned_for_slot(value, resolved_type)?;
+        let owns_contents = self.type_needs_rc_tracking(resolved_type)
+            && !matches!(resolved_type, Type::Reference(_) | Type::Function { .. });
+        if owns_contents {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            let old = self
+                .builder
+                .build_load(ptr_type, slot, "old_slot_val")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(rc_dec, &[old.into()], "rc_dec_old")
+                .map_err(|e| e.to_string())?;
+        }
+        self.builder
+            .build_store(slot, owned)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Overwrite a variable slot that holds an owned boxed pointer with a new
     /// boxed value, transferring the new value's ownership into the slot so it
     /// is not also freed as a statement temporary. Only valid for slots that

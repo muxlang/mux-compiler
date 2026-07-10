@@ -1156,9 +1156,10 @@ impl<'a> CodeGenerator<'a> {
                 .build_int_sub(current_val, one, "decr_result")
                 .map_err(|e| e.to_string())?
         };
-        let boxed_val = self.box_value(new_val.into());
-        // Release the previous boxed integer before overwriting the slot.
-        self.store_boxed_into_slot(ptr, boxed_val)?;
+        // The incremented value is freshly boxed; releasing the previous boxed
+        // integer avoids leaking it on every `++`/`--`.
+        let int_type = Type::Primitive(PrimitiveType::Int);
+        self.overwrite_slot_with_owned(ptr, new_val.into(), &int_type)?;
         Ok(new_val.into())
     }
 
@@ -1969,8 +1970,9 @@ impl<'a> CodeGenerator<'a> {
                 .build_store(ptr_copy, right_val)
                 .map_err(|e| e.to_string())?;
         } else {
-            let boxed = self.box_value(right_val);
-            self.store_boxed_into_slot(ptr_copy, boxed)?;
+            // Value-semantic overwrite: copy a borrowed value type so `x = y`
+            // does not alias, release the previous occupant, then store.
+            self.overwrite_slot_with_owned(ptr_copy, right_val, &type_node_copy)?;
         }
         Ok(right_val)
     }
@@ -2038,11 +2040,20 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let ref_val = self.generate_expression(deref_expr)?;
         let ptr = ref_val.into_pointer_value();
-        let boxed = self.box_value(right_val);
-        // The referenced slot takes ownership of the boxed value (releasing the
-        // previous occupant), so it must not also be freed as a statement
-        // temporary — otherwise the slot would point at freed memory.
-        self.store_boxed_into_slot(ptr, boxed)?;
+        // Resolve the referenced value's type so the slot's previous occupant can
+        // be released under value semantics. References point at the slot, not at
+        // the value it currently holds, so releasing the old value is safe. Fall
+        // back to a transfer-only store if the type cannot be resolved.
+        let target_type = match self.resolve_expression_type_with_fallback(deref_expr) {
+            Ok(Type::Reference(inner)) => Some(*inner),
+            _ => None,
+        };
+        if let Some(t) = target_type {
+            self.overwrite_slot_with_owned(ptr, right_val, &t)?;
+        } else {
+            let boxed = self.box_value(right_val);
+            self.store_boxed_into_slot(ptr, boxed)?;
+        }
         Ok(right_val)
     }
 
@@ -2370,7 +2381,7 @@ impl<'a> CodeGenerator<'a> {
 
         match &left.kind {
             ExpressionKind::Identifier(name) => {
-                let Some((ptr, _, _)) = self
+                let Some((ptr, _, ty)) = self
                     .variables
                     .get(name)
                     .or_else(|| self.global_variables.get(name))
@@ -2378,8 +2389,10 @@ impl<'a> CodeGenerator<'a> {
                     return Err(format!("Undefined variable {}", name));
                 };
                 let ptr_copy = *ptr;
-                let boxed = self.box_value(result);
-                self.store_boxed_into_slot(ptr_copy, boxed)?;
+                let ty_copy = ty.clone();
+                // `result` is a freshly computed scalar; release the previous
+                // boxed value rather than leaking it.
+                self.overwrite_slot_with_owned(ptr_copy, result, &ty_copy)?;
                 Ok(result)
             }
             ExpressionKind::Unary {
@@ -2389,8 +2402,16 @@ impl<'a> CodeGenerator<'a> {
             } => {
                 let ref_val = self.generate_expression(deref_expr)?;
                 let ptr = ref_val.into_pointer_value();
-                let boxed = self.box_value(result);
-                self.store_boxed_into_slot(ptr, boxed)?;
+                let target_type = match self.resolve_expression_type_with_fallback(deref_expr) {
+                    Ok(Type::Reference(inner)) => Some(*inner),
+                    _ => None,
+                };
+                if let Some(t) = target_type {
+                    self.overwrite_slot_with_owned(ptr, result, &t)?;
+                } else {
+                    let boxed = self.box_value(result);
+                    self.store_boxed_into_slot(ptr, boxed)?;
+                }
                 Ok(result)
             }
             _ => Err("Assignment to non-identifier/deref not implemented".to_string()),
