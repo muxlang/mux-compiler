@@ -292,10 +292,37 @@ impl<'a> CodeGenerator<'a> {
         // copy global_variables to variables so statements can access/initialize them
         self.variables = self.global_variables.clone();
 
+        // Isolate RC scope and statement temporaries for this init body, exactly
+        // as generate_function does: nested function generation triggered while
+        // emitting top-level statements must not see or clean up init's temps
+        // (and vice versa), or cleanup would emit a cross-function instruction
+        // reference. Give init its own RC scope so block-local bindings created
+        // by top-level statements (loop variables, match-arm bindings) are
+        // released at the end of init. Top-level global declarations reuse their
+        // pre-declared global slots (the `existing_var` path in declare_variable)
+        // and are NOT tracked here, so they survive for a later user `main()`.
+        let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
+        let saved_temp_values = std::mem::take(&mut self.temp_values);
+        self.push_rc_scope();
+
         // Execute top-level statements as module initialization
         for stmt in top_level_statements {
             self.generate_statement(stmt, Some(&init_func))?;
         }
+
+        // Release module-init locals before returning. Only runs when the entry
+        // block is still open (top-level code cannot early-return).
+        if self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_terminator())
+            .is_none()
+        {
+            self.generate_all_scopes_cleanup()?;
+        }
+
+        self.rc_scope_stack = saved_rc_scope_stack;
+        self.temp_values = saved_temp_values;
 
         self.builder.build_return(None).map_err(|e| e.to_string())?;
         Ok(())

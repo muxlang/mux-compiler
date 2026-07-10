@@ -105,10 +105,10 @@ impl<'a> CodeGenerator<'a> {
                         .build_store(index_alloca, start_val)
                         .map_err(|e| e.to_string())?;
                     let ptr_type = self.context.ptr_type(AddressSpace::default());
-                    let var_alloca = self
-                        .builder
-                        .build_alloca(ptr_type, var)
-                        .map_err(|e| e.to_string())?;
+                    // Null-initialized entry-block slot so the per-iteration
+                    // overwrite can safely decrement the previous boxed index.
+                    let var_alloca =
+                        self.create_entry_block_alloca(*function, ptr_type.into(), var)?;
                     self.variables.insert(
                         var.to_string(),
                         (
@@ -117,6 +117,8 @@ impl<'a> CodeGenerator<'a> {
                             resolved_var_type.clone(),
                         ),
                     );
+                    // Release the final boxed index at function return / scope end.
+                    self.track_rc_variable(var, var_alloca);
                     let label_id = self.label_counter;
                     self.label_counter += 1;
                     let header_bb = self
@@ -153,10 +155,10 @@ impl<'a> CodeGenerator<'a> {
                         .builder
                         .build_load(index_type, index_alloca, "index_load2")
                         .map_err(|e| e.to_string())?;
-                    let boxed = self.box_value(index_load2);
-                    self.builder
-                        .build_store(var_alloca, boxed)
-                        .map_err(|e| e.to_string())?;
+                    // Box the current index and transfer it into the loop slot,
+                    // releasing the previous iteration's boxed index so the loop
+                    // does not accumulate leaks.
+                    self.overwrite_slot_with_owned(var_alloca, index_load2, &resolved_var_type)?;
                     for stmt in body {
                         self.generate_statement(stmt, Some(function))?;
                     }
@@ -325,6 +327,13 @@ impl<'a> CodeGenerator<'a> {
         }
 
         let temp_val = self.generate_expression(expr)?;
+        // A non-trivial match subject (method/module call like json.parse(...),
+        // binary expression, etc.) produces an owned (+1) value. Register it so
+        // it is released at the end of the match statement; the arms extract
+        // their bindings by cloning from the subject, so releasing it after the
+        // match is safe. (Identifier/field-access subjects are borrowed and take
+        // the early-return path above without registration.)
+        self.register_temp(temp_val);
         let temp_name = format!("match_temp_{}", self.label_counter);
         self.label_counter += 1;
         let temp_type = self.context.ptr_type(AddressSpace::default());

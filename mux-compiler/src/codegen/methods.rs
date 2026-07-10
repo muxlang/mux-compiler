@@ -1063,7 +1063,12 @@ impl<'a> CodeGenerator<'a> {
                     );
                 }
                 let indent_arg = self.generate_expression(&args[0])?;
-                self.call_runtime_function("mux_json_stringify", &[obj_value, indent_arg])
+                let result =
+                    self.call_runtime_function("mux_json_stringify", &[obj_value, indent_arg])?;
+                // mux_json_stringify returns an owned result<string,...>; register
+                // it for statement-end release unless ownership is transferred.
+                self.register_temp(result);
+                Ok(result)
             }
             _ => Err(format!("Method {} not implemented for Json", method_name)),
         }

@@ -34,7 +34,7 @@ impl<'a> CodeGenerator<'a> {
         args: &[ExpressionNode],
         func_type: Option<&Type>,
         llvm_func: Option<inkwell::values::FunctionValue<'a>>,
-    ) -> Result<Vec<BasicMetadataValueEnum<'a>>, String> {
+    ) -> Result<(Vec<BasicMetadataValueEnum<'a>>, Vec<PointerValue<'a>>), String> {
         let param_types = match func_type {
             Some(Type::Function { params, .. }) => Some(params.as_slice()),
             _ => None,
@@ -42,12 +42,20 @@ impl<'a> CodeGenerator<'a> {
         let llvm_param_types = llvm_func.map(|f| f.get_type().get_param_types());
 
         let mut call_args = Vec::with_capacity(args.len());
+        // C strings extracted for `string` parameters are owned copies
+        // (mux_value_get_string returns an into_raw pointer). Imported/runtime
+        // functions borrow their `*const c_char` arguments, so the caller must
+        // free these once the call returns.
+        let mut owned_cstrings = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
             let arg_val = self.generate_expression(arg)?;
             let mut coerced = arg_val;
+            let mut coerced_owned_cstr = false;
             if let Some(params) = param_types
                 && let Some(param_type) = params.get(idx)
             {
+                coerced_owned_cstr = matches!(param_type, Type::Primitive(PrimitiveType::Str))
+                    && coerced.is_pointer_value();
                 coerced = self.coerce_import_arg(coerced, param_type)?;
             }
 
@@ -56,9 +64,32 @@ impl<'a> CodeGenerator<'a> {
             {
                 coerced = self.coerce_to_llvm_param_type(coerced, *expected)?;
             }
+            if coerced_owned_cstr && coerced.is_pointer_value() {
+                owned_cstrings.push(coerced.into_pointer_value());
+            }
             call_args.push(coerced.into());
         }
-        Ok(call_args)
+        Ok((call_args, owned_cstrings))
+    }
+
+    /// Free owned C strings that were extracted for imported/runtime string
+    /// arguments after the call that borrowed them has returned.
+    fn free_import_arg_cstrings(
+        &mut self,
+        owned_cstrings: &[PointerValue<'a>],
+    ) -> Result<(), String> {
+        if owned_cstrings.is_empty() {
+            return Ok(());
+        }
+        let free_fn = self
+            .runtime_function("mux_free_string")
+            .ok_or("mux_free_string not found")?;
+        for cstr in owned_cstrings {
+            self.builder
+                .build_call(free_fn, &[(*cstr).into()], "free_import_cstr")
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn coerce_to_llvm_param_type(
@@ -326,12 +357,20 @@ impl<'a> CodeGenerator<'a> {
             return Ok(None);
         };
 
-        let call_args = self.build_import_call_args(args, func_type, Some(func))?;
+        let (call_args, owned_cstrings) =
+            self.build_import_call_args(args, func_type, Some(func))?;
         let call = self
             .builder
             .build_call(func, &call_args, &format!("{}_call", display_name))
             .map_err(|e| e.to_string())?;
-        Ok(Some(self.call_result_or_default_i32(call)))
+        self.free_import_arg_cstrings(&owned_cstrings)?;
+        let result = self.call_result_or_default_i32(call);
+        // Value-returning stdlib/runtime functions (json.parse, env.get, csv.*,
+        // ...) hand back a freshly allocated owned value; register it so it is
+        // released at statement end unless ownership is transferred. No-op for
+        // the i32/void default result.
+        self.register_temp(result);
+        Ok(Some(result))
     }
 
     fn call_imported_symbol_function(
@@ -881,6 +920,10 @@ impl<'a> CodeGenerator<'a> {
             .try_as_basic_value()
             .basic()
             .expect("mux_optional_none should return a basic value");
+        // mux_optional_none returns an owned (+1) optional value; register it so
+        // it is released at the end of the statement unless ownership is
+        // transferred (e.g. to a binding or return value) first.
+        self.register_temp(none_call);
         Ok(none_call)
     }
 
@@ -1235,9 +1278,14 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_call(func, &[arg_val.into()], call_name)
             .map_err(|e| e.to_string())?;
-        call.try_as_basic_value()
+        let result = call
+            .try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} should return a basic value", func_name))
+            .ok_or_else(|| format!("{} should return a basic value", func_name))?;
+        // some(...)/ok(...)/err(...) return an owned (+1) optional/result value;
+        // register it so it is released at statement end unless transferred.
+        self.register_temp(result);
+        Ok(result)
     }
 
     fn generate_ok_builtin_call(
@@ -1300,9 +1348,14 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_call(func, &[], "none_call")
             .map_err(|e| e.to_string())?;
-        call.try_as_basic_value()
+        let result = call
+            .try_as_basic_value()
             .basic()
-            .ok_or("optional constructor should return a basic value".to_string())
+            .ok_or("optional constructor should return a basic value".to_string())?;
+        // Owned (+1) optional value; register for statement-end release unless
+        // ownership is transferred first.
+        self.register_temp(result);
+        Ok(result)
     }
 
     fn generate_err_builtin_call(
