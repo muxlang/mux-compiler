@@ -28,6 +28,34 @@ impl<'a> CodeGenerator<'a> {
         resolved_type: &ResolvedType,
         function: Option<&FunctionValue<'a>>,
     ) -> Result<(), String> {
+        // Closures are not RC `Value`s; they carry their own refcount and are
+        // released with mux_closure_release. Bind them into a null-initialized
+        // slot and, if the bound value is an owned closure temporary, transfer
+        // ownership into a tracked closure variable so the scope releases it.
+        // A borrowed closure (a parameter or an alias of another variable) is
+        // not an owned temporary, so it is stored without tracking.
+        if matches!(resolved_type, Type::Function { .. }) && value.is_pointer_value() {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let alloca = match function {
+                Some(func) => self.create_entry_block_alloca(*func, ptr_type.into(), name)?,
+                None => self
+                    .builder
+                    .build_alloca(ptr_type, name)
+                    .map_err(|e| e.to_string())?,
+            };
+            self.builder
+                .build_store(alloca, value)
+                .map_err(|e| e.to_string())?;
+            self.variables.insert(
+                name.to_string(),
+                (alloca, ptr_type.into(), resolved_type.clone()),
+            );
+            if self.untrack_closure_temp(value) {
+                self.track_closure_variable(name, alloca);
+            }
+            return Ok(());
+        }
+
         let existing_var = self.variables.get(name).cloned();
 
         if let Some((existing_ptr, _, _)) = existing_var {
@@ -706,6 +734,17 @@ impl<'a> CodeGenerator<'a> {
             }
             ResolvedType::Primitive(PrimitiveType::Bool) => self.return_bool_value(value),
             ResolvedType::List(_) => self.return_list_value(value),
+            ResolvedType::Function { .. } => {
+                // A closure is not an RC Value: retain it (bump its own refcount)
+                // so it survives this scope's cleanup, which releases the closure
+                // temporary/variable that currently holds it.
+                self.retain_closure(value)?;
+                self.generate_all_scopes_cleanup()?;
+                self.builder
+                    .build_return(Some(&value))
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
             _ => self.return_boxed_complex_value(value),
         }
     }

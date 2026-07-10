@@ -76,6 +76,15 @@ pub struct CodeGenerator<'a> {
     /// regardless of control flow. `value` is retained so ownership transfer can
     /// find and null the right slot.
     temp_values: Vec<(PointerValue<'a>, PointerValue<'a>)>,
+    /// Owned closure temporaries produced during the current statement, kept
+    /// separate from `temp_values` because closures are freed with
+    /// `mux_closure_release` (which walks and releases their captures) rather
+    /// than `mux_rc_dec`. Same `(value, slot)` spill-slot discipline.
+    closure_temp_values: Vec<(PointerValue<'a>, PointerValue<'a>)>,
+    /// Closure-typed variables tracked per scope, released with
+    /// `mux_closure_release` when the scope ends. Pushed/popped in lock-step
+    /// with `rc_scope_stack`.
+    closure_scope_stack: Vec<Vec<(String, PointerValue<'a>)>>,
     source_name: String,
 }
 
@@ -492,6 +501,8 @@ impl<'a> CodeGenerator<'a> {
             generated_methods: HashMap::new(),
             rc_scope_stack: Vec::new(),
             temp_values: Vec::new(),
+            closure_temp_values: Vec::new(),
+            closure_scope_stack: Vec::new(),
             source_name: source_name.to_string(),
         }
     }

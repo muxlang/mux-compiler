@@ -303,6 +303,8 @@ impl<'a> CodeGenerator<'a> {
         // and are NOT tracked here, so they survive for a later user `main()`.
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
         let saved_temp_values = std::mem::take(&mut self.temp_values);
+        let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
+        let saved_closure_temp_values = std::mem::take(&mut self.closure_temp_values);
         self.push_rc_scope();
 
         // Execute top-level statements as module initialization
@@ -323,6 +325,8 @@ impl<'a> CodeGenerator<'a> {
 
         self.rc_scope_stack = saved_rc_scope_stack;
         self.temp_values = saved_temp_values;
+        self.closure_scope_stack = saved_closure_scope_stack;
+        self.closure_temp_values = saved_closure_temp_values;
 
         self.builder.build_return(None).map_err(|e| e.to_string())?;
         Ok(())
@@ -403,6 +407,9 @@ impl<'a> CodeGenerator<'a> {
         // while generating this body must never be cleaned up in another
         // function (which would emit a cross-function instruction reference).
         let saved_temp_values = std::mem::take(&mut self.temp_values);
+        // Closure temporaries/scopes are per-function for the same reason.
+        let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
+        let saved_closure_temp_values = std::mem::take(&mut self.closure_temp_values);
 
         self.current_function_name = Some(func.name.clone());
         self.current_function_return_type = Some(
@@ -466,6 +473,7 @@ impl<'a> CodeGenerator<'a> {
         // Pop the function's RC scope (no cleanup needed here since we already
         // cleaned up before returns, and non-void functions must have explicit returns)
         self.rc_scope_stack.pop();
+        self.closure_scope_stack.pop();
 
         // Restore previous function context
         self.current_function_name = saved_function_name;
@@ -477,6 +485,8 @@ impl<'a> CodeGenerator<'a> {
         // been decremented on its return paths.
         self.rc_scope_stack = saved_rc_scope_stack;
         self.temp_values = saved_temp_values;
+        self.closure_scope_stack = saved_closure_scope_stack;
+        self.closure_temp_values = saved_closure_temp_values;
 
         Ok(())
     }

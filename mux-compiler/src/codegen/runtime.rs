@@ -154,6 +154,18 @@ impl<'a> CodeGenerator<'a> {
         );
         module.add_function("malloc", i8_ptr.fn_type(&[i64_type.into()], false), None);
 
+        // Closure lifetime management (see mux-runtime/src/closure.rs).
+        module.add_function(
+            "mux_closure_retain",
+            void_type.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_closure_release",
+            void_type.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+
         let params = &[i8_ptr.into(), i8_ptr.into()];
         let fn_type = i8_ptr.fn_type(params, false);
         module.add_function("mux_string_concat", fn_type, None);

@@ -523,6 +523,8 @@ impl<'a> CodeGenerator<'a> {
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
         // Isolate statement temporaries to this lambda body (see generate_function).
         let saved_temp_values = std::mem::take(&mut self.temp_values);
+        let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
+        let saved_closure_temp_values = std::mem::take(&mut self.closure_temp_values);
         self.push_rc_scope();
 
         if has_captures {
@@ -543,8 +545,11 @@ impl<'a> CodeGenerator<'a> {
         self.handle_lambda_void_return(return_type_opt)?;
 
         self.rc_scope_stack.pop();
+        self.closure_scope_stack.pop();
         self.rc_scope_stack = saved_rc_scope_stack;
         self.temp_values = saved_temp_values;
+        self.closure_scope_stack = saved_closure_scope_stack;
+        self.closure_temp_values = saved_closure_temp_values;
 
         self.variables = old_variables;
         self.current_function_return_type = old_return_type;
@@ -780,40 +785,72 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
 
-        let (closure_mem, captures_field) = self.allocate_closure(function, ptr_type)?;
+        let (closure_mem, captures_field, count_field) =
+            self.allocate_closure(function, ptr_type)?;
         self.builder
             .build_store(captures_field, capture_mem)
             .map_err(|e| e.to_string())?;
+        let count = self
+            .context
+            .i64_type()
+            .const_int(captures.len() as u64, false);
+        self.builder
+            .build_store(count_field, count)
+            .map_err(|e| e.to_string())?;
 
+        // The closure owns one reference to each captured value plus its heap
+        // allocations; register it so mux_closure_release runs at statement end
+        // unless ownership is transferred to a binding or return value.
+        self.register_closure_temp(closure_mem);
         Ok(closure_mem)
     }
 
     fn create_closure_without_captures(
-        &self,
+        &mut self,
         function: inkwell::values::FunctionValue<'a>,
         ptr_type: inkwell::types::PointerType<'a>,
     ) -> Result<BasicValueEnum<'a>, String> {
-        let (closure_mem, captures_field) = self.allocate_closure(function, ptr_type)?;
+        let (closure_mem, captures_field, count_field) =
+            self.allocate_closure(function, ptr_type)?;
         let null_ptr = ptr_type.const_null();
         self.builder
             .build_store(captures_field, null_ptr)
             .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(count_field, self.context.i64_type().const_zero())
+            .map_err(|e| e.to_string())?;
 
+        self.register_closure_temp(closure_mem);
         Ok(closure_mem)
     }
 
-    /// Allocate a closure struct (fn_ptr + captures) with refcount header.
-    /// The closure is allocated as [RefHeader (8 bytes) | fn_ptr | captures]
-    /// Returns pointer to the closure struct (after the header) and the
-    /// captures field pointer so the caller can populate it.
+    /// Allocate a closure struct (fn_ptr + captures + capture_count) with a
+    /// refcount header. The closure is allocated as
+    /// `[RefHeader (i64) | fn_ptr | captures | capture_count (i64)]`.
+    /// The `capture_count` lets the runtime teardown (`mux_closure_release`)
+    /// walk and free the capture array. Returns the pointer to the closure
+    /// struct (after the header), the captures field pointer, and the
+    /// capture-count field pointer so the caller can populate them.
     fn allocate_closure(
         &self,
         function: inkwell::values::FunctionValue<'a>,
         ptr_type: inkwell::types::PointerType<'a>,
-    ) -> Result<(BasicValueEnum<'a>, inkwell::values::PointerValue<'a>), String> {
-        let closure_struct_type = self
-            .context
-            .struct_type(&[ptr_type.into(), ptr_type.into()], false);
+    ) -> Result<
+        (
+            BasicValueEnum<'a>,
+            inkwell::values::PointerValue<'a>,
+            inkwell::values::PointerValue<'a>,
+        ),
+        String,
+    > {
+        let closure_struct_type = self.context.struct_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        );
 
         // Allocate RefHeader (8-byte u64) + closure struct
         let refcount_header_type = self.context.i64_type();
@@ -865,7 +902,12 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(closure_struct_type, closure_mem, 1, "closure_captures")
             .map_err(|e| e.to_string())?;
 
-        Ok((closure_mem.into(), captures_field))
+        let count_field = self
+            .builder
+            .build_struct_gep(closure_struct_type, closure_mem, 2, "closure_capture_count")
+            .map_err(|e| e.to_string())?;
+
+        Ok((closure_mem.into(), captures_field, count_field))
     }
 
     /// check if a method's parameters or return type reference any of the given type parameters
@@ -1603,7 +1645,18 @@ impl<'a> CodeGenerator<'a> {
         // reference/lambda) must not be, or the shared value would be freed out
         // from under its owner.
         if Self::expr_produces_owned_temp(&expr.kind) {
-            self.register_temp(value);
+            // Closures are not RC `Value`s: a closure-returning call already
+            // registered its result as a closure temporary (released with
+            // mux_closure_release). Registering it as an RC temporary too would
+            // free it with mux_rc_dec, corrupting the still-live closure.
+            let is_closure = value.is_pointer_value()
+                && matches!(
+                    self.get_resolved_expression_type(expr),
+                    Ok(Type::Function { .. })
+                );
+            if !is_closure {
+                self.register_temp(value);
+            }
         }
         Ok(value)
     }
@@ -4179,7 +4232,21 @@ impl<'a> CodeGenerator<'a> {
             ExpressionKind::Binary {
                 left, op, right, ..
             } => self.generate_binary_expression(left, op, right),
-            ExpressionKind::Call { func, args } => self.generate_call_expression(expr, func, args),
+            ExpressionKind::Call { func, args } => {
+                let result = self.generate_call_expression(expr, func, args)?;
+                // A call that returns a closure hands back an owned (+1) closure
+                // (the callee retained it). Register it so the caller releases it
+                // at statement end unless a binding/return transfers ownership.
+                if result.is_pointer_value()
+                    && matches!(
+                        self.get_resolved_expression_type(expr),
+                        Ok(Type::Function { .. })
+                    )
+                {
+                    self.register_closure_temp(result);
+                }
+                Ok(result)
+            }
             ExpressionKind::ListAccess {
                 expr: target_expr,
                 index,
