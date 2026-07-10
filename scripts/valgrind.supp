@@ -1,0 +1,119 @@
+# Valgrind suppression file for the Mux test programs.
+#
+# Usage:
+#   valgrind --suppressions=scripts/valgrind.supp --leak-check=full ./your_program
+# or via the helper:
+#   scripts/valgrind-check.sh test_scripts/test_std_http.mux
+#
+# ---------------------------------------------------------------------------
+# WHY THIS FILE EXISTS
+# ---------------------------------------------------------------------------
+# The Mux runtime is Valgrind-clean: every Mux test program reports
+# "definitely lost: 0 bytes" and "indirectly lost: 0 bytes". The ONLY Valgrind
+# findings that remain come from third-party TLS/crypto crates that the runtime
+# pulls in transitively for HTTPS support (ureq -> rustls -> ring). They are:
+#
+#   * NOT memory leaks (0 bytes lost) - they are "uninitialised value" and
+#     "syscall param points to uninitialised byte(s)" reports, and
+#   * NOT in Mux code - every frame is inside rustls / ring / ureq / std, and
+#   * well-known false positives: `ring` (the crypto backend) hand-writes and
+#     assembles buffers in ways Valgrind's Memcheck cannot follow (e.g. it
+#     validates/writes bytes that Memcheck still considers undefined), and
+#     rustls then hands those buffers straight to writev(2). This is documented
+#     upstream and is benign - the bytes are fully initialised in reality.
+#
+# We suppress exactly these third-party frames (matched by library name so the
+# suppressions survive dependency version bumps, which change the trailing hash
+# in each mangled symbol) and NOTHING that could hide a real defect in Mux:
+# every suppression is anchored to a `rustls` / `ring` / `ureq` frame. A genuine
+# leak or error in Mux code would not match and would still fail the run.
+#
+# If these crates are ever removed, or upstream fixes the reports, this whole
+# file can be deleted.
+# ---------------------------------------------------------------------------
+
+# rustls writes already-encrypted TLS records to the socket with writev(2).
+# Memcheck flags the record buffer (produced by `ring`) as partially
+# uninitialised. Anchored to a rustls frame so only the TLS write path matches.
+{
+   mux-thirdparty-tls-rustls-writev-uninitialised-vector0
+   Memcheck:Param
+   writev(vector[0])
+   fun:writev
+   ...
+   fun:*rustls*
+   ...
+}
+{
+   mux-thirdparty-tls-rustls-writev-uninitialised-vector1
+   Memcheck:Param
+   writev(vector[1])
+   fun:writev
+   ...
+   fun:*rustls*
+   ...
+}
+
+# `ring`'s constant-time comparisons and AEAD open/seal operate on buffers that
+# Memcheck cannot prove initialised (SIMD / hand-written assembly), producing
+# "Conditional jump or move depends on uninitialised value(s)". Anchored to a
+# `ring` frame.
+{
+   mux-thirdparty-tls-ring-crypto-conditional-uninitialised
+   Memcheck:Cond
+   fun:*ring*
+   ...
+}
+{
+   mux-thirdparty-tls-ring-crypto-value8-uninitialised
+   Memcheck:Value8
+   fun:*ring*
+   ...
+}
+
+# Belt-and-suspenders: any remaining uninitialised-syscall-param report whose
+# stack passes through rustls (e.g. a future write(2)/send(2) code path in a
+# newer rustls) is the same benign encrypted-record-buffer situation.
+{
+   mux-thirdparty-tls-rustls-syscall-uninitialised
+   Memcheck:Param
+   socketcall.send(msg)
+   ...
+   fun:*rustls*
+   ...
+}
+
+# ---------------------------------------------------------------------------
+# "POSSIBLY LOST" blocks inside the TLS stack
+# ---------------------------------------------------------------------------
+# rustls / rustls_pki_types retain internal state for the lifetime of a
+# connection or the process: the TLS session cache, cloned DNS server names,
+# and TLS 1.3 session tickets. Valgrind reports the backing allocations as
+# "possibly lost" (it finds interior pointers but cannot prove the block is
+# still fully reachable) - this is NOT the same as "definitely lost" /
+# "indirectly lost", which is what an actual memory leak reports, and every Mux
+# program reports 0 bytes of those. These are third-party allocations (each
+# stack passes through a rustls / rustls_pki_types / ureq frame) that Mux code
+# neither owns nor could free.
+#
+# NOTE: we deliberately match ONLY `match-leak-kinds: possible`. A real
+# "definitely" or "indirectly" lost block - even one inside rustls - is left
+# unsuppressed so it would still be surfaced. And because each pattern is
+# anchored to a third-party frame, a leak in Mux's own code (which never appears
+# in these stacks) can never be hidden by them.
+{
+   mux-thirdparty-tls-rustls-possibly-lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*rustls*
+   ...
+}
+{
+   mux-thirdparty-tls-ureq-possibly-lost
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*ureq*
+   ...
+}

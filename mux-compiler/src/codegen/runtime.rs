@@ -118,6 +118,14 @@ impl<'a> CodeGenerator<'a> {
             i8_ptr.fn_type(&[i8_ptr.into()], false),
             None,
         );
+        // Ownership-taking variant: frees the input C string after copying it.
+        // Used for conversion functions (`to_string`, concat) whose input is an
+        // owned pointer returned by the runtime, so it must be freed once copied.
+        module.add_function(
+            "mux_new_string_from_owned_cstr",
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
         module.add_function(
             "mux_print",
             void_type.fn_type(&[i8_ptr.into()], false),
@@ -145,6 +153,18 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
         module.add_function("malloc", i8_ptr.fn_type(&[i64_type.into()], false), None);
+
+        // Closure lifetime management (see mux-runtime/src/closure.rs).
+        module.add_function(
+            "mux_closure_retain",
+            void_type.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_closure_release",
+            void_type.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
 
         let params = &[i8_ptr.into(), i8_ptr.into()];
         let fn_type = i8_ptr.fn_type(params, false);
@@ -263,6 +283,7 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        void_i8ptr_fn!("mux_free_string");
         void_i8ptr_fn!("mux_free_object");
         void_i8ptr_fn!("mux_free_list");
         void_i8ptr_fn!("mux_free_set");
@@ -1090,22 +1111,26 @@ impl<'a> CodeGenerator<'a> {
                 let call = self
                     .generate_runtime_call("mux_bool_value", &[i32_val.into()])
                     .expect("mux_bool_value should always return a value");
+                self.register_temp(call);
                 call.into_pointer_value()
             } else {
                 // Regular int (i64)
                 let call = self
                     .generate_runtime_call("mux_int_value", &[int_val.into()])
                     .expect("mux_int_value should always return a value");
+                self.register_temp(call);
                 call.into_pointer_value()
             }
         } else if val.is_float_value() {
             let call = self
                 .generate_runtime_call("mux_float_value", &[val.into()])
                 .expect("mux_float_value should always return a value");
+            self.register_temp(call);
             call.into_pointer_value()
         } else if val.is_pointer_value() {
             // assume string or already boxed Value (from Map/Set/List literals)
-            // map/Set/List literals already return *mut Value pointers, so just return as-is
+            // map/Set/List literals already return *mut Value pointers, so just return as-is.
+            // Already-owned pointers were registered by whatever produced them.
             val.into_pointer_value()
         } else if val.is_struct_value() {
             // user-defined enum values (structs): box into Value::Opaque
@@ -1124,6 +1149,7 @@ impl<'a> CodeGenerator<'a> {
             let call = self
                 .generate_runtime_call("mux_box_enum", &[temp_ptr.into(), size.into()])
                 .expect("mux_box_enum should always return a value");
+            self.register_temp(call);
             call.into_pointer_value()
         } else {
             panic!("Unexpected value type in box_value")
@@ -1234,6 +1260,24 @@ impl<'a> CodeGenerator<'a> {
     ///
     /// # Returns
     /// A tuple of (BasicValueEnum, Type) representing the extracted value and its type
+    /// Emit `mux_rc_dec` on an owned `*mut Value`. Used to release an
+    /// intermediate extraction result that is not otherwise stored or returned.
+    pub(super) fn emit_value_decref(&self, ptr: PointerValue<'a>) -> Result<(), String> {
+        let rc_dec = self
+            .runtime_function("mux_rc_dec")
+            .ok_or("mux_rc_dec not found")?;
+        self.builder
+            .build_call(rc_dec, &[ptr.into()], "rc_dec_extracted")
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Extract the payload of an Optional/Result inner value out of an owned
+    /// `data_ptr` (produced by `mux_optional_data`/`mux_result_data`, which clone
+    /// the inner value into a fresh allocation). For scalar and string payloads
+    /// the boxed `data_ptr` is unwrapped and then released here; for
+    /// collection/object/nested-wrapper payloads `data_ptr` *is* the payload and
+    /// ownership is handed back to the caller unchanged.
     pub(super) fn extract_value_from_ptr(
         &mut self,
         data_ptr: PointerValue<'a>,
@@ -1254,6 +1298,7 @@ impl<'a> CodeGenerator<'a> {
                     .try_as_basic_value()
                     .basic()
                     .ok_or("mux_value_get_int returned no value")?;
+                self.emit_value_decref(data_ptr)?;
                 Ok((val, Type::Primitive(PrimitiveType::Int)))
             }
             Type::Primitive(PrimitiveType::Float) => {
@@ -1269,6 +1314,7 @@ impl<'a> CodeGenerator<'a> {
                     .try_as_basic_value()
                     .basic()
                     .ok_or("mux_value_get_float returned no value")?;
+                self.emit_value_decref(data_ptr)?;
                 Ok((val, Type::Primitive(PrimitiveType::Float)))
             }
             Type::Primitive(PrimitiveType::Bool) => {
@@ -1288,6 +1334,7 @@ impl<'a> CodeGenerator<'a> {
                     .builder
                     .build_int_truncate(val, self.context.bool_type(), "trunc_to_i1")
                     .map_err(|e| e.to_string())?;
+                self.emit_value_decref(data_ptr)?;
                 Ok((i1_val.into(), Type::Primitive(PrimitiveType::Bool)))
             }
             Type::Primitive(PrimitiveType::Char) => {
@@ -1303,6 +1350,7 @@ impl<'a> CodeGenerator<'a> {
                     .try_as_basic_value()
                     .basic()
                     .ok_or("mux_value_get_int returned no value")?;
+                self.emit_value_decref(data_ptr)?;
                 Ok((val, Type::Primitive(PrimitiveType::Char)))
             }
             Type::Primitive(PrimitiveType::Str) => {
@@ -1322,17 +1370,19 @@ impl<'a> CodeGenerator<'a> {
                     .ok_or("mux_value_get_string returned no value")?
                     .into_pointer_value();
 
-                // Wrap C string back into Mux string (*mut Value)
+                // Wrap the (owned) C string back into a Mux string, freeing the C
+                // string in the process, then release the boxed data pointer.
                 let new_string_func = self
-                    .runtime_function("mux_new_string_from_cstr")
-                    .ok_or("mux_new_string_from_cstr not found")?;
+                    .runtime_function("mux_new_string_from_owned_cstr")
+                    .ok_or("mux_new_string_from_owned_cstr not found")?;
                 let mux_string = self
                     .builder
                     .build_call(new_string_func, &[c_str.into()], "new_string")
                     .map_err(|e| e.to_string())?
                     .try_as_basic_value()
                     .basic()
-                    .ok_or("mux_new_string_from_cstr returned no value")?;
+                    .ok_or("mux_new_string_from_owned_cstr returned no value")?;
+                self.emit_value_decref(data_ptr)?;
 
                 Ok((mux_string, Type::Primitive(PrimitiveType::Str)))
             }

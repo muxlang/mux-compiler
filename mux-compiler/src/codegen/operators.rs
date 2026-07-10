@@ -84,6 +84,31 @@ impl<'a> CodeGenerator<'a> {
         self.i32_to_bool(result_i32)
     }
 
+    /// Extract both operands as owned C strings, run a string comparison
+    /// runtime call, then free the two C strings. The getters return owned
+    /// pointers, so without the frees every string comparison leaks two
+    /// allocations.
+    fn call_string_comparison(
+        &mut self,
+        left_ptr: PointerValue<'a>,
+        right_ptr: PointerValue<'a>,
+        func_name: &str,
+        label: &str,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let left_cstr = self.extract_c_string_from_value(left_ptr)?;
+        let right_cstr = self.extract_c_string_from_value(right_ptr)?;
+        let result = self.call_comparison_runtime(left_cstr, right_cstr, func_name, label)?;
+        let free_fn = self
+            .runtime_function("mux_free_string")
+            .ok_or("mux_free_string not found")?;
+        for cstr in [left_cstr, right_cstr] {
+            self.builder
+                .build_call(free_fn, &[cstr.into()], "free_cstr")
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(result)
+    }
+
     pub(super) fn i32_to_bool(&self, int_val: IntValue<'a>) -> Result<BasicValueEnum<'a>, String> {
         let zero = self.context.i32_type().const_zero();
         self.builder
@@ -440,6 +465,11 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Str) => {
                 let left_ptr = self.ensure_pointer(left);
                 let right_ptr = self.ensure_pointer(right);
+                // Both getters return owned C strings, and mux_string_concat
+                // returns a third owned C string. box_string_value copies the
+                // concatenated bytes into a new Value, so all three C strings are
+                // ours to free once the Value exists (mirrors how list concat
+                // frees its intermediate lists below).
                 let left_cstr = self.extract_c_string_from_value(left_ptr)?;
                 let right_cstr = self.extract_c_string_from_value(right_ptr)?;
 
@@ -459,7 +489,18 @@ impl<'a> CodeGenerator<'a> {
                     .ok_or("Call returned no value")?
                     .into_pointer_value();
 
-                self.box_string_value(result)
+                let boxed = self.box_string_value(result)?;
+
+                let free_string_fn = self
+                    .runtime_function("mux_free_string")
+                    .ok_or("mux_free_string not found")?;
+                for cstr in [left_cstr, right_cstr, result] {
+                    self.builder
+                        .build_call(free_string_fn, &[cstr.into()], "free_cstr")
+                        .map_err(|e| e.to_string())?;
+                }
+
+                Ok(boxed)
             }
             Type::List(_) => {
                 let left_list = self.extract_list_from_value(left.into_pointer_value())?;
@@ -812,14 +853,7 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Str) => {
                 let left_ptr = self.ensure_pointer(left);
                 let right_ptr = self.ensure_pointer(right);
-                let left_cstr = self.extract_c_string_from_value(left_ptr)?;
-                let right_cstr = self.extract_c_string_from_value(right_ptr)?;
-                self.call_comparison_runtime(
-                    left_cstr,
-                    right_cstr,
-                    "mux_string_equal",
-                    "string_equal",
-                )
+                self.call_string_comparison(left_ptr, right_ptr, "mux_string_equal", "string_equal")
             }
             Type::Primitive(PrimitiveType::Int) | Type::Primitive(PrimitiveType::Char) => {
                 let left_int = self.get_raw_int_value(left)?;
@@ -883,11 +917,9 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Str) => {
                 let left_ptr = self.ensure_pointer(left);
                 let right_ptr = self.ensure_pointer(right);
-                let left_cstr = self.extract_c_string_from_value(left_ptr)?;
-                let right_cstr = self.extract_c_string_from_value(right_ptr)?;
-                self.call_comparison_runtime(
-                    left_cstr,
-                    right_cstr,
+                self.call_string_comparison(
+                    left_ptr,
+                    right_ptr,
                     "mux_string_not_equal",
                     "string_not_equal",
                 )
