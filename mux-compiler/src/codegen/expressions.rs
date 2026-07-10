@@ -203,21 +203,25 @@ impl<'a> CodeGenerator<'a> {
             .generate_runtime_call("mux_map_get", &[raw_map.into(), key_value.into()])
             .ok_or_else(|| "mux_map_get should return a value".to_string())?
             .into_pointer_value();
+        // mux_map_get borrows the key, so the boxed key string is ours to free.
+        if key_value.is_pointer_value() {
+            self.emit_value_decref(key_value.into_pointer_value())?;
+        }
         let value = self
             .generate_runtime_call("mux_optional_get_value", &[map_get.into()])
             .ok_or_else(|| "mux_optional_get_value should return a value".to_string())?;
-        let free_opt = self
-            .runtime_function("mux_free_optional")
-            .ok_or("mux_free_optional not found")?;
-        let _ = self
-            .builder
-            .build_call(free_opt, &[map_get.into()], "free_csv_optional");
+        // mux_map_get returns an owned (+1) optional. mux_free_optional is a
+        // runtime no-op, so release it with the refcount decrement.
+        self.emit_value_decref(map_get)?;
         let free_map = self
             .runtime_function("mux_free_map")
             .ok_or("mux_free_map not found")?;
         let _ = self
             .builder
             .build_call(free_map, &[raw_map.into()], "free_csv_map");
+        // mux_optional_get_value returns an owned (+1) copy of the payload;
+        // register it so it is released at statement end unless transferred.
+        self.register_temp(value);
         Ok(value)
     }
 
