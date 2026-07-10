@@ -1136,16 +1136,25 @@ impl<'a> CodeGenerator<'a> {
         };
         // Taking a reference to a temporary value (e.g. `&list[0]`) keeps that
         // value alive through the reference, so it must not be freed at the
-        // statement boundary or the reference would dangle.
-        self.untrack_temp(boxed_val.into());
+        // statement boundary or the reference would dangle. `owned` is true when
+        // this reference now solely owns a freshly produced value (a boxed scalar
+        // or a transferred owned temporary) rather than borrowing an existing
+        // binding's value.
+        let owned = self.untrack_temp(boxed_val.into());
         let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let temp = self
-            .builder
-            .build_alloca(ptr_type, "ref_temp")
-            .map_err(|e| e.to_string())?;
+        // Null-initialized entry-block slot so scope cleanup of the owned target
+        // is dominance- and null-safe (the reference may be produced inside
+        // conditional control flow).
+        let temp = self.create_entry_alloca(ptr_type.into(), "ref_temp")?;
         self.builder
             .build_store(temp, boxed_val)
             .map_err(|e| e.to_string())?;
+        // The temporary that this reference owns is released when the enclosing
+        // scope ends (after all uses of the reference). Borrowed targets are not
+        // owned here and are freed by whatever binding owns them.
+        if owned {
+            self.track_rc_variable("ref_temp", temp);
+        }
         Ok(temp.into())
     }
 
