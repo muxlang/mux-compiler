@@ -368,10 +368,49 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
 
+        self.emit_global_teardown()?;
+
         // return 0 from main
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(0, false)))
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Release every owned global variable once at program exit so persistent
+    /// globals are not reported as leaked. Reference and function globals borrow
+    /// their target and must not be decremented.
+    fn emit_global_teardown(&mut self) -> Result<(), String> {
+        let rc_dec = self
+            .runtime_function("mux_rc_dec")
+            .ok_or("mux_rc_dec not found")?;
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        let owned_globals: Vec<(String, inkwell::values::PointerValue<'a>)> = self
+            .global_variables
+            .iter()
+            .filter(|(_, (_, llvm_type, ty))| {
+                // Only globals whose storage is a boxed RC pointer can be
+                // decremented. Value-semantic types stored inline (e.g. custom
+                // enums held as a struct) are not RC pointers - loading and
+                // decrementing them would dereference a non-pointer. References
+                // and functions borrow their target and are managed elsewhere.
+                llvm_type.is_pointer_type()
+                    && self.type_needs_rc_tracking(ty)
+                    && !matches!(ty, Type::Reference(_) | Type::Function { .. })
+            })
+            .map(|(name, (alloca, _, _))| (name.clone(), *alloca))
+            .collect();
+
+        for (name, alloca) in owned_globals {
+            let value = self
+                .builder
+                .build_load(ptr_type, alloca, &format!("global_teardown_load_{}", name))
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(rc_dec, &[value.into()], &format!("global_dec_{}", name))
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 

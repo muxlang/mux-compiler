@@ -210,6 +210,11 @@ impl<'a> CodeGenerator<'a> {
                 .and_then(|m| m.get(&field.name))
                 .copied()
                 .ok_or_else(|| format!("Field {} not in field_map for {}", field.name, name))?;
+            // Inline fields (e.g. an enum struct) were already duplicated by the
+            // bulk memcpy above and hold no boxed pointer to deep-clone.
+            if !Self::class_field_is_boxed_pointer(class_type, field_index) {
+                continue;
+            }
             let field_ptr = self
                 .builder
                 .build_struct_gep(class_type, dst_typed, field_index as u32, &field.name)
@@ -256,6 +261,13 @@ impl<'a> CodeGenerator<'a> {
                 .and_then(|m| m.get(&field.name))
                 .copied()
                 .ok_or_else(|| format!("Field {} not in field_map for {}", field.name, name))?;
+            // Fields stored inline (e.g. an enum held as a struct) are not boxed
+            // `*mut Value` pointers; loading their first word and decrementing it
+            // as a refcount would corrupt memory. They own no heap reference to
+            // release, so skip them.
+            if !Self::class_field_is_boxed_pointer(class_type, field_index) {
+                continue;
+            }
             let field_ptr = self
                 .builder
                 .build_struct_gep(class_type, obj_typed, field_index as u32, &field.name)
@@ -269,6 +281,18 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    /// Whether class field `field_index` is stored as a boxed `*mut Value`
+    /// pointer (and therefore participates in reference counting) rather than
+    /// inline data such as an enum struct.
+    fn class_field_is_boxed_pointer(class_type: BasicTypeEnum<'a>, field_index: usize) -> bool {
+        matches!(
+            class_type
+                .into_struct_type()
+                .get_field_type_at_index(field_index as u32),
+            Some(t) if t.is_pointer_type()
+        )
     }
 
     pub(super) fn generate_class_vtables(
