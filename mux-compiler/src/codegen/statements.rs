@@ -36,10 +36,12 @@ impl<'a> CodeGenerator<'a> {
                     .build_store(existing_ptr, value)
                     .map_err(|e| e.to_string())?;
             } else {
-                let boxed = self.box_value_owned_for_slot(value, resolved_type)?;
-                self.builder
-                    .build_store(existing_ptr, boxed)
-                    .map_err(|e| e.to_string())?;
+                // Re-declaring an existing slot (a loop-local declared each
+                // iteration, or a pre-declared top-level global) must release the
+                // previous occupant, or every iteration but the last leaks.
+                // Global slots are zero-initialized and locals hold their prior
+                // owned value, so the null-safe release is always correct.
+                self.overwrite_slot_with_owned(existing_ptr, value, resolved_type)?;
             }
         } else if value.is_struct_value() {
             let alloca = if let Some(func) = function {
@@ -54,16 +56,35 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
             self.variables
                 .insert(name.to_string(), (alloca, var_type, resolved_type.clone()));
+        } else if let Some(func) = function {
+            // Hoisted, null-initialized entry-block slot: because the store below
+            // runs on every pass (e.g. a variable declared inside a loop body),
+            // route it through overwrite_slot_with_owned so each pass releases the
+            // previous iteration's value. The first pass sees the null init and
+            // the release is a no-op.
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let alloca = self.create_entry_block_alloca(*func, ptr_type.into(), name)?;
+            self.variables.insert(
+                name.to_string(),
+                (
+                    alloca,
+                    BasicTypeEnum::PointerType(ptr_type),
+                    resolved_type.clone(),
+                ),
+            );
+            if self.type_needs_rc_tracking(resolved_type) {
+                self.track_rc_variable(name, alloca);
+            }
+            self.overwrite_slot_with_owned(alloca, value, resolved_type)?;
         } else {
+            // No function context: the fallback alloca is not null-initialized,
+            // so we cannot release a previous occupant; just store the owned box.
             let boxed = self.box_value_owned_for_slot(value, resolved_type)?;
             let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let alloca = if let Some(func) = function {
-                self.create_entry_block_alloca(*func, ptr_type.into(), name)?
-            } else {
-                self.builder
-                    .build_alloca(ptr_type, name)
-                    .map_err(|e| e.to_string())?
-            };
+            let alloca = self
+                .builder
+                .build_alloca(ptr_type, name)
+                .map_err(|e| e.to_string())?;
             self.builder
                 .build_store(alloca, boxed)
                 .map_err(|e| e.to_string())?;
@@ -75,9 +96,6 @@ impl<'a> CodeGenerator<'a> {
                     resolved_type.clone(),
                 ),
             );
-            if function.is_some() && self.type_needs_rc_tracking(resolved_type) {
-                self.track_rc_variable(name, alloca);
-            }
         }
         Ok(())
     }
