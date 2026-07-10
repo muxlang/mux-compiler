@@ -3362,6 +3362,24 @@ impl<'a> CodeGenerator<'a> {
             .basic()
             .ok_or("mux_tuple_left/right should return a value")?;
         let unboxed = self.unbox_value_for_type(field_value, &field_type)?;
+        // mux_tuple_left/right return an owned (+1) clone of the element. For
+        // scalar fields the raw value has been extracted into `unboxed`, so the
+        // owned box is now dead and must be released; for string/complex fields
+        // the box IS the returned value, so register it as a statement
+        // temporary to be released at the end of the statement.
+        if field_value.is_pointer_value() {
+            match field_type {
+                Type::Primitive(PrimitiveType::Int)
+                | Type::Primitive(PrimitiveType::Float)
+                | Type::Primitive(PrimitiveType::Bool)
+                | Type::Primitive(PrimitiveType::Char) => {
+                    self.emit_value_decref(field_value.into_pointer_value())?;
+                }
+                _ => {
+                    self.register_temp(field_value);
+                }
+            }
+        }
         Ok(Some(unboxed))
     }
 
