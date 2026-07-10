@@ -1348,7 +1348,12 @@ impl<'a> CodeGenerator<'a> {
             if needs_copy {
                 let arg_value = self.generate_expression(arg)?;
                 let ptr = arg_value.into_pointer_value();
+                // Objects are passed by value: copy the argument so the callee
+                // cannot mutate the caller's instance. The copy is owned by this
+                // statement (the callee only borrows it), so track it for release
+                // at the statement boundary rather than leaking it.
                 let copied_ptr = self.copy_object_or_error(ptr)?;
+                self.register_temp(copied_ptr.into());
                 call_args.push(copied_ptr.into());
             } else {
                 call_args.push(self.generate_expression(arg)?.into());
@@ -3085,7 +3090,11 @@ impl<'a> CodeGenerator<'a> {
             let arg_val = if needs_copy {
                 let original_val = self.generate_expression(arg)?;
                 let ptr = original_val.into_pointer_value();
-                self.copy_object_or_error(ptr)?.into()
+                // Pass-by-value copy owned by this statement (see the sibling
+                // path in build_call_args_from_expressions); track for release.
+                let copied = self.copy_object_or_error(ptr)?;
+                self.register_temp(copied.into());
+                copied.into()
             } else {
                 self.generate_expression(arg)?
             };
