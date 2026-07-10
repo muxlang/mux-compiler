@@ -122,6 +122,11 @@ impl<'a> CodeGenerator<'a> {
             // enforce the variant's where clause with its named payload
             // fields readable by name (bound like function parameters)
             if let Some(clause) = &variant.where_clause {
+                // Binding payload fields for the where-check boxes scalar payloads
+                // (mux_int_value, ...); those boxes are owned temporaries that
+                // must be released once the check has run, or every constructed
+                // variant with a where clause leaks them.
+                let temp_mark = self.temp_mark();
                 let snapshot = self.variables.clone();
                 for (i, (field_name, type_node)) in variant.data.iter().flatten().enumerate() {
                     let Some(field_name) = field_name else {
@@ -135,6 +140,7 @@ impl<'a> CodeGenerator<'a> {
                 }
                 self.emit_where_checks(&clause.predicates, "where_variant")?;
                 self.variables = snapshot;
+                self.cleanup_temps_to(temp_mark)?;
             }
             let struct_val = self
                 .builder
