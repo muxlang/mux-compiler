@@ -2025,7 +2025,24 @@ impl<'a> CodeGenerator<'a> {
                 &format!("{}_ptr", name),
             )
             .map_err(|e| e.to_string())?;
+        // Retain the new value, then release the field's previous occupant
+        // (boxed-pointer fields only) so `self.x = ...` inside a method does not
+        // leak the value it overwrites. Retain-before-release keeps self-assign
+        // safe.
         self.rc_inc_if_pointer(right_val)?;
+        if right_val.is_pointer_value() {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let old = self
+                .builder
+                .build_load(ptr_type, field_ptr, "old_field_val")
+                .map_err(|e| e.to_string())?;
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            self.builder
+                .build_call(rc_dec, &[old.into()], "rc_dec_old_field")
+                .map_err(|e| e.to_string())?;
+        }
         self.builder
             .build_store(field_ptr, right_val)
             .map_err(|e| e.to_string())?;
@@ -2070,7 +2087,24 @@ impl<'a> CodeGenerator<'a> {
         let field_ptr = self.resolve_struct_field_pointer(&class_name, field, struct_ptr)?;
         let value_to_store = self.compute_field_store_value(&class_name, field, right_val)?;
 
+        // Retain the new value first, then release the field's previous occupant
+        // (boxed-pointer fields only; enum fields are stored inline). Retaining
+        // before releasing keeps `self.x = self.x` safe, and releasing the old
+        // value stops reassignment from leaking it.
         self.rc_inc_if_pointer(value_to_store)?;
+        if value_to_store.is_pointer_value() {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let old = self
+                .builder
+                .build_load(ptr_type, field_ptr, "old_field_val")
+                .map_err(|e| e.to_string())?;
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            self.builder
+                .build_call(rc_dec, &[old.into()], "rc_dec_old_field")
+                .map_err(|e| e.to_string())?;
+        }
         self.builder
             .build_store(field_ptr, value_to_store)
             .map_err(|e| e.to_string())?;

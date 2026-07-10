@@ -224,10 +224,19 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_call(func, &[cstr.into()], "str_conv")
             .map_err(|e| e.to_string())?;
-        Ok(call
+        let result = call
             .try_as_basic_value()
             .basic()
-            .unwrap_or_else(|| panic!("{} should return a basic value", conversion_func)))
+            .unwrap_or_else(|| panic!("{} should return a basic value", conversion_func));
+        // `mux_value_to_string` returned an owned C string that the conversion
+        // only borrows; free it so string `.length()`/`.to_int()` etc. do not leak.
+        let free_fn = self
+            .runtime_function("mux_free_string")
+            .ok_or("mux_free_string not found")?;
+        self.builder
+            .build_call(free_fn, &[cstr.into()], "free_cstr")
+            .map_err(|e| e.to_string())?;
+        Ok(result)
     }
 
     fn call_unary_predicate(
