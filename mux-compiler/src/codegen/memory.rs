@@ -186,8 +186,39 @@ impl<'a> CodeGenerator<'a> {
 
     /// Decrement every registered temporary (used on the return path, after the
     /// returned value has been retained).
+    ///
+    /// Unlike `cleanup_temps_to`, this does NOT truncate the pending set. A
+    /// function can return from several alternative branches (e.g. an `if`/`else`
+    /// where each arm returns, or an early `return` inside a loop); each branch
+    /// is a distinct runtime path that must release the same still-live
+    /// temporaries, so the set has to survive for the sibling branches' returns.
+    /// Emitting the same decrement on more than one branch is safe: each
+    /// temporary's slot is a null-initialized entry-block alloca, so on a path
+    /// that never produced the value the load yields null and the null-safe
+    /// `mux_rc_dec` is a no-op. Skips emission in an already-terminated block.
     pub(super) fn cleanup_all_temps(&mut self) -> Result<(), String> {
-        self.cleanup_temps_to(0)
+        let live = self
+            .builder
+            .get_insert_block()
+            .is_some_and(|bb| bb.get_terminator().is_none());
+        if !live || self.temp_values.is_empty() {
+            return Ok(());
+        }
+        let rc_dec = self
+            .runtime_function("mux_rc_dec")
+            .ok_or("mux_rc_dec not found")?;
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let slots: Vec<PointerValue<'a>> = self.temp_values.iter().map(|(_, slot)| *slot).collect();
+        for slot in slots {
+            let loaded = self
+                .builder
+                .build_load(ptr_type, slot, "temp_load")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     /// Drop the temporaries registered since `mark` WITHOUT releasing them - used
