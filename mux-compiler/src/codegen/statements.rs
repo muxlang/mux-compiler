@@ -28,6 +28,10 @@ impl<'a> CodeGenerator<'a> {
         resolved_type: &ResolvedType,
         function: Option<&FunctionValue<'a>>,
     ) -> Result<(), String> {
+        if self.try_declare_closure_variable(name, value, resolved_type, function)? {
+            return Ok(());
+        }
+
         let existing_var = self.variables.get(name).cloned();
 
         if let Some((existing_ptr, _, _)) = existing_var {
@@ -36,10 +40,12 @@ impl<'a> CodeGenerator<'a> {
                     .build_store(existing_ptr, value)
                     .map_err(|e| e.to_string())?;
             } else {
-                let boxed = self.box_value(value);
-                self.builder
-                    .build_store(existing_ptr, boxed)
-                    .map_err(|e| e.to_string())?;
+                // Re-declaring an existing slot (a loop-local declared each
+                // iteration, or a pre-declared top-level global) must release the
+                // previous occupant, or every iteration but the last leaks.
+                // Global slots are zero-initialized and locals hold their prior
+                // owned value, so the null-safe release is always correct.
+                self.overwrite_slot_with_owned(existing_ptr, value, resolved_type)?;
             }
         } else if value.is_struct_value() {
             let alloca = if let Some(func) = function {
@@ -54,16 +60,35 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
             self.variables
                 .insert(name.to_string(), (alloca, var_type, resolved_type.clone()));
-        } else {
-            let boxed = self.box_value(value);
+        } else if let Some(func) = function {
+            // Hoisted, null-initialized entry-block slot: because the store below
+            // runs on every pass (e.g. a variable declared inside a loop body),
+            // route it through overwrite_slot_with_owned so each pass releases the
+            // previous iteration's value. The first pass sees the null init and
+            // the release is a no-op.
             let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let alloca = if let Some(func) = function {
-                self.create_entry_block_alloca(*func, ptr_type.into(), name)?
-            } else {
-                self.builder
-                    .build_alloca(ptr_type, name)
-                    .map_err(|e| e.to_string())?
-            };
+            let alloca = self.create_entry_block_alloca(*func, ptr_type.into(), name)?;
+            self.variables.insert(
+                name.to_string(),
+                (
+                    alloca,
+                    BasicTypeEnum::PointerType(ptr_type),
+                    resolved_type.clone(),
+                ),
+            );
+            if self.type_needs_rc_tracking(resolved_type) {
+                self.track_rc_variable(name, alloca);
+            }
+            self.overwrite_slot_with_owned(alloca, value, resolved_type)?;
+        } else {
+            // No function context: the fallback alloca is not null-initialized,
+            // so we cannot release a previous occupant; just store the owned box.
+            let boxed = self.box_value_owned_for_slot(value, resolved_type)?;
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let alloca = self
+                .builder
+                .build_alloca(ptr_type, name)
+                .map_err(|e| e.to_string())?;
             self.builder
                 .build_store(alloca, boxed)
                 .map_err(|e| e.to_string())?;
@@ -75,11 +100,45 @@ impl<'a> CodeGenerator<'a> {
                     resolved_type.clone(),
                 ),
             );
-            if function.is_some() && self.type_needs_rc_tracking(resolved_type) {
-                self.track_rc_variable(name, alloca);
-            }
         }
         Ok(())
+    }
+
+    /// Bind a closure-typed variable. Closures are not RC `Value`s; they carry
+    /// their own refcount and are released with mux_closure_release. If the bound
+    /// value is an owned closure temporary, transfer ownership into a tracked
+    /// closure variable so the scope releases it; a borrowed closure (a parameter
+    /// or an alias of another variable) is stored without tracking. Returns
+    /// `true` when it handled the declaration.
+    fn try_declare_closure_variable(
+        &mut self,
+        name: &str,
+        value: BasicValueEnum<'a>,
+        resolved_type: &ResolvedType,
+        function: Option<&FunctionValue<'a>>,
+    ) -> Result<bool, String> {
+        if !matches!(resolved_type, Type::Function { .. }) || !value.is_pointer_value() {
+            return Ok(false);
+        }
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let alloca = match function {
+            Some(func) => self.create_entry_block_alloca(*func, ptr_type.into(), name)?,
+            None => self
+                .builder
+                .build_alloca(ptr_type, name)
+                .map_err(|e| e.to_string())?,
+        };
+        self.builder
+            .build_store(alloca, value)
+            .map_err(|e| e.to_string())?;
+        self.variables.insert(
+            name.to_string(),
+            (alloca, ptr_type.into(), resolved_type.clone()),
+        );
+        if self.untrack_closure_temp(value) {
+            self.track_closure_variable(name, alloca);
+        }
+        Ok(true)
     }
 
     fn generate_for_statement_inner(
@@ -91,215 +150,248 @@ impl<'a> CodeGenerator<'a> {
         body: &[StatementNode],
     ) -> Result<(), String> {
         if let ExpressionKind::Call { func, args } = &iter.kind {
-            if let ExpressionKind::Identifier(name) = &func.kind {
-                if name == "range" && args.len() == 2 {
-                    let resolved_var_type = Type::Primitive(PrimitiveType::Int);
-                    let start_val = self.generate_expression(&args[0])?;
-                    let end_val = self.generate_expression(&args[1])?;
-                    let index_type = self.context.i64_type();
-                    let index_alloca = self
-                        .builder
-                        .build_alloca(index_type, "index")
-                        .map_err(|e| e.to_string())?;
-                    self.builder
-                        .build_store(index_alloca, start_val)
-                        .map_err(|e| e.to_string())?;
-                    let ptr_type = self.context.ptr_type(AddressSpace::default());
-                    let var_alloca = self
-                        .builder
-                        .build_alloca(ptr_type, var)
-                        .map_err(|e| e.to_string())?;
-                    self.variables.insert(
-                        var.to_string(),
-                        (
-                            var_alloca,
-                            BasicTypeEnum::PointerType(ptr_type),
-                            resolved_var_type.clone(),
-                        ),
-                    );
-                    let label_id = self.label_counter;
-                    self.label_counter += 1;
-                    let header_bb = self
-                        .context
-                        .append_basic_block(*function, &format!("for_header_{}", label_id));
-                    let body_bb = self
-                        .context
-                        .append_basic_block(*function, &format!("for_body_{}", label_id));
-                    let exit_bb = self
-                        .context
-                        .append_basic_block(*function, &format!("for_exit_{}", label_id));
-                    self.builder
-                        .build_unconditional_branch(header_bb)
-                        .map_err(|e| e.to_string())?;
-                    self.builder.position_at_end(header_bb);
-                    let index_load = self
-                        .builder
-                        .build_load(index_type, index_alloca, "index_load")
-                        .map_err(|e| e.to_string())?;
-                    let cmp = self
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::SLT,
-                            index_load.into_int_value(),
-                            end_val.into_int_value(),
-                            "cmp",
-                        )
-                        .map_err(|e| e.to_string())?;
-                    self.builder
-                        .build_conditional_branch(cmp, body_bb, exit_bb)
-                        .map_err(|e| e.to_string())?;
-                    self.builder.position_at_end(body_bb);
-                    let index_load2 = self
-                        .builder
-                        .build_load(index_type, index_alloca, "index_load2")
-                        .map_err(|e| e.to_string())?;
-                    let boxed = self.box_value(index_load2);
-                    self.builder
-                        .build_store(var_alloca, boxed)
-                        .map_err(|e| e.to_string())?;
-                    for stmt in body {
-                        self.generate_statement(stmt, Some(function))?;
-                    }
-                    let one = self.context.i64_type().const_int(1, false);
-                    let new_index = self
-                        .builder
-                        .build_int_add(index_load2.into_int_value(), one, "inc")
-                        .map_err(|e| e.to_string())?;
-                    self.builder
-                        .build_store(index_alloca, new_index)
-                        .map_err(|e| e.to_string())?;
-                    self.builder
-                        .build_unconditional_branch(header_bb)
-                        .map_err(|e| e.to_string())?;
-                    self.builder.position_at_end(exit_bb);
-                    return Ok(());
-                }
-                return Err("For loop iter must be range(start, end)".to_string());
+            let ExpressionKind::Identifier(name) = &func.kind else {
+                return Err("For loop iter must be range call".to_string());
+            };
+            if name == "range" && args.len() == 2 {
+                return self.generate_range_for_loop(function, var, &args[0], &args[1], body);
             }
-            return Err("For loop iter must be range call".to_string());
+            return Err("For loop iter must be range(start, end)".to_string());
         }
-
         if let ExpressionKind::Identifier(_) = &iter.kind {
-            let resolved_var_type = self
-                .analyzer
-                .resolve_type(var_type)
-                .map_err(|e| e.message)?;
-            let list_val = self.generate_expression(iter)?;
-            let len_call = self
-                .builder
-                .build_call(
-                    self.runtime_function("mux_value_list_length")
-                        .expect("mux_value_list_length must be declared in runtime"),
-                    &[list_val.into()],
-                    "list_len",
-                )
-                .map_err(|e| e.to_string())?;
-            let len_val = len_call
-                .try_as_basic_value()
-                .basic()
-                .expect("mux_value_list_length should return a basic value")
-                .into_int_value();
-            let index_type = self.context.i64_type();
-            let index_alloca = self
-                .builder
-                .build_alloca(index_type, "index")
-                .map_err(|e| e.to_string())?;
-            let zero = self.context.i64_type().const_int(0, false);
-            self.builder
-                .build_store(index_alloca, zero)
-                .map_err(|e| e.to_string())?;
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let var_alloca = self
-                .builder
-                .build_alloca(ptr_type, var)
-                .map_err(|e| e.to_string())?;
-            self.variables.insert(
-                var.to_string(),
-                (
-                    var_alloca,
-                    BasicTypeEnum::PointerType(ptr_type),
-                    resolved_var_type.clone(),
-                ),
-            );
-            let label_id = self.label_counter;
-            self.label_counter += 1;
-            let header_bb = self
-                .context
-                .append_basic_block(*function, &format!("for_header_{}", label_id));
-            let body_bb = self
-                .context
-                .append_basic_block(*function, &format!("for_body_{}", label_id));
-            let exit_bb = self
-                .context
-                .append_basic_block(*function, &format!("for_exit_{}", label_id));
-            self.builder
-                .build_unconditional_branch(header_bb)
-                .map_err(|e| e.to_string())?;
-            self.builder.position_at_end(header_bb);
-            let index_load = self
-                .builder
-                .build_load(index_type, index_alloca, "index_load")
-                .map_err(|e| e.to_string())?;
-            let cmp = self
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::SLT,
-                    index_load.into_int_value(),
-                    len_val,
-                    "cmp",
-                )
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_conditional_branch(cmp, body_bb, exit_bb)
-                .map_err(|e| e.to_string())?;
-            self.builder.position_at_end(body_bb);
-            let index_load2 = self
-                .builder
-                .build_load(index_type, index_alloca, "index_load2")
-                .map_err(|e| e.to_string())?;
-            let get_call = self
-                .builder
-                .build_call(
-                    self.runtime_function("mux_value_list_get_value")
-                        .expect("mux_value_list_get_value must be declared in runtime"),
-                    &[list_val.into(), index_load2.into()],
-                    "list_get_value",
-                )
-                .map_err(|e| e.to_string())?;
-            let value_ptr = get_call
-                .try_as_basic_value()
-                .basic()
-                .expect("mux_value_list_get_value should return a basic value")
-                .into_pointer_value();
-            self.builder
-                .build_store(var_alloca, value_ptr)
-                .map_err(|e| e.to_string())?;
-            for stmt in body {
-                self.generate_statement(stmt, Some(function))?;
-            }
-            let one = self.context.i64_type().const_int(1, false);
-            let new_index = self
-                .builder
-                .build_int_add(index_load2.into_int_value(), one, "inc")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(index_alloca, new_index)
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_unconditional_branch(header_bb)
-                .map_err(|e| e.to_string())?;
-            let continue_bb = self
-                .context
-                .append_basic_block(*function, &format!("for_continue_{}", label_id));
-            self.builder.position_at_end(exit_bb);
-            self.builder
-                .build_unconditional_branch(continue_bb)
-                .map_err(|e| e.to_string())?;
-            self.builder.position_at_end(continue_bb);
-            return Ok(());
+            return self.generate_list_for_loop(function, var, var_type, iter, body);
         }
-
         Err("For loop iter must be range(...) or list identifier".to_string())
+    }
+
+    /// `for <var> in range(<start>, <end>)`: iterate the integers [start, end).
+    fn generate_range_for_loop(
+        &mut self,
+        function: &FunctionValue<'a>,
+        var: &str,
+        start: &ExpressionNode,
+        end: &ExpressionNode,
+        body: &[StatementNode],
+    ) -> Result<(), String> {
+        let resolved_var_type = Type::Primitive(PrimitiveType::Int);
+        let start_val = self.generate_expression(start)?;
+        let end_val = self.generate_expression(end)?;
+        let index_type = self.context.i64_type();
+        let index_alloca = self
+            .builder
+            .build_alloca(index_type, "index")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(index_alloca, start_val)
+            .map_err(|e| e.to_string())?;
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        // Null-initialized entry-block slot so the per-iteration
+        // overwrite can safely decrement the previous boxed index.
+        let var_alloca = self.create_entry_block_alloca(*function, ptr_type.into(), var)?;
+        self.variables.insert(
+            var.to_string(),
+            (
+                var_alloca,
+                BasicTypeEnum::PointerType(ptr_type),
+                resolved_var_type.clone(),
+            ),
+        );
+        // Release the final boxed index at function return / scope end.
+        self.track_rc_variable(var, var_alloca);
+        let label_id = self.label_counter;
+        self.label_counter += 1;
+        let header_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_header_{}", label_id));
+        let body_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_body_{}", label_id));
+        let exit_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_exit_{}", label_id));
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(header_bb);
+        let index_load = self
+            .builder
+            .build_load(index_type, index_alloca, "index_load")
+            .map_err(|e| e.to_string())?;
+        let cmp = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                index_load.into_int_value(),
+                end_val.into_int_value(),
+                "cmp",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(cmp, body_bb, exit_bb)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(body_bb);
+        let index_load2 = self
+            .builder
+            .build_load(index_type, index_alloca, "index_load2")
+            .map_err(|e| e.to_string())?;
+        // Box the current index and transfer it into the loop slot,
+        // releasing the previous iteration's boxed index so the loop
+        // does not accumulate leaks.
+        self.overwrite_slot_with_owned(var_alloca, index_load2, &resolved_var_type)?;
+        for stmt in body {
+            self.generate_statement(stmt, Some(function))?;
+        }
+        let one = self.context.i64_type().const_int(1, false);
+        let new_index = self
+            .builder
+            .build_int_add(index_load2.into_int_value(), one, "inc")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(index_alloca, new_index)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(exit_bb);
+        Ok(())
+    }
+
+    /// `for <var> in <list-identifier>`: iterate a list value's elements.
+    fn generate_list_for_loop(
+        &mut self,
+        function: &FunctionValue<'a>,
+        var: &str,
+        var_type: &crate::ast::TypeNode,
+        iter: &ExpressionNode,
+        body: &[StatementNode],
+    ) -> Result<(), String> {
+        let resolved_var_type = self
+            .analyzer
+            .resolve_type(var_type)
+            .map_err(|e| e.message)?;
+        let list_val = self.generate_expression(iter)?;
+        let len_call = self
+            .builder
+            .build_call(
+                self.runtime_function("mux_value_list_length")
+                    .expect("mux_value_list_length must be declared in runtime"),
+                &[list_val.into()],
+                "list_len",
+            )
+            .map_err(|e| e.to_string())?;
+        let len_val = len_call
+            .try_as_basic_value()
+            .basic()
+            .expect("mux_value_list_length should return a basic value")
+            .into_int_value();
+        let index_type = self.context.i64_type();
+        let index_alloca = self
+            .builder
+            .build_alloca(index_type, "index")
+            .map_err(|e| e.to_string())?;
+        let zero = self.context.i64_type().const_int(0, false);
+        self.builder
+            .build_store(index_alloca, zero)
+            .map_err(|e| e.to_string())?;
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        // Null-initialized entry-block slot: the per-iteration overwrite
+        // decrements the previous occupant, so the first iteration must see
+        // a null (the null-safe dec is then a no-op), and a zero-iteration
+        // loop must leave a null the scope cleanup can safely decrement.
+        let var_alloca = self.create_entry_block_alloca(*function, ptr_type.into(), var)?;
+        self.variables.insert(
+            var.to_string(),
+            (
+                var_alloca,
+                BasicTypeEnum::PointerType(ptr_type),
+                resolved_var_type.clone(),
+            ),
+        );
+        // The loop variable owns its element copy for the whole loop; release
+        // the final copy at function return / function-end scope cleanup.
+        if self.type_needs_rc_tracking(&resolved_var_type) {
+            self.track_rc_variable(var, var_alloca);
+        }
+        let label_id = self.label_counter;
+        self.label_counter += 1;
+        let header_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_header_{}", label_id));
+        let body_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_body_{}", label_id));
+        let exit_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_exit_{}", label_id));
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(header_bb);
+        let index_load = self
+            .builder
+            .build_load(index_type, index_alloca, "index_load")
+            .map_err(|e| e.to_string())?;
+        let cmp = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                index_load.into_int_value(),
+                len_val,
+                "cmp",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(cmp, body_bb, exit_bb)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(body_bb);
+        let index_load2 = self
+            .builder
+            .build_load(index_type, index_alloca, "index_load2")
+            .map_err(|e| e.to_string())?;
+        let get_call = self
+            .builder
+            .build_call(
+                self.runtime_function("mux_value_list_get_value")
+                    .expect("mux_value_list_get_value must be declared in runtime"),
+                &[list_val.into(), index_load2.into()],
+                "list_get_value",
+            )
+            .map_err(|e| e.to_string())?;
+        let value_ptr = get_call
+            .try_as_basic_value()
+            .basic()
+            .expect("mux_value_list_get_value should return a basic value")
+            .into_pointer_value();
+        // `mux_value_list_get_value` returns an owned (+1) copy of the
+        // element. Registering it lets `overwrite_slot_with_owned` transfer
+        // that ownership into the slot (rather than deep-cloning it, which
+        // would leak the copy) while releasing the previous iteration's
+        // element so long-running loops do not accumulate leaks.
+        self.register_temp(value_ptr.into());
+        self.overwrite_slot_with_owned(var_alloca, value_ptr.into(), &resolved_var_type)?;
+        for stmt in body {
+            self.generate_statement(stmt, Some(function))?;
+        }
+        let one = self.context.i64_type().const_int(1, false);
+        let new_index = self
+            .builder
+            .build_int_add(index_load2.into_int_value(), one, "inc")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(index_alloca, new_index)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| e.to_string())?;
+        let continue_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_continue_{}", label_id));
+        self.builder.position_at_end(exit_bb);
+        self.builder
+            .build_unconditional_branch(continue_bb)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(continue_bb);
+        Ok(())
     }
 
     fn prepare_match_expression(
@@ -315,6 +407,13 @@ impl<'a> CodeGenerator<'a> {
         }
 
         let temp_val = self.generate_expression(expr)?;
+        // A non-trivial match subject (method/module call like json.parse(...),
+        // binary expression, etc.) produces an owned (+1) value. Register it so
+        // it is released at the end of the match statement; the arms extract
+        // their bindings by cloning from the subject, so releasing it after the
+        // match is safe. (Identifier/field-access subjects are borrowed and take
+        // the early-return path above without registration.)
+        self.register_temp(temp_val);
         let temp_name = format!("match_temp_{}", self.label_counter);
         self.label_counter += 1;
         let temp_type = self.context.ptr_type(AddressSpace::default());
@@ -500,6 +599,9 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         let value = self.generate_expression(expr)?;
         let boxed = self.box_value(value);
+        // Ownership of the boxed value transfers into the constant's storage
+        // slot; do not also free it as a statement temporary.
+        self.untrack_temp(boxed.into());
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let resolved_type = self
             .resolve_expression_type_with_fallback(expr)
@@ -666,6 +768,17 @@ impl<'a> CodeGenerator<'a> {
             }
             ResolvedType::Primitive(PrimitiveType::Bool) => self.return_bool_value(value),
             ResolvedType::List(_) => self.return_list_value(value),
+            ResolvedType::Function { .. } => {
+                // A closure is not an RC Value: retain it (bump its own refcount)
+                // so it survives this scope's cleanup, which releases the closure
+                // temporary/variable that currently holds it.
+                self.retain_closure(value)?;
+                self.generate_all_scopes_cleanup()?;
+                self.builder
+                    .build_return(Some(&value))
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
             _ => self.return_boxed_complex_value(value),
         }
     }
@@ -876,6 +989,12 @@ impl<'a> CodeGenerator<'a> {
         {
             return Ok(());
         }
+        // Statement boundary: any owned RC temporaries produced while evaluating
+        // this statement's expressions and not transferred to a binding are
+        // decremented here. `Return` manages its own temporaries (it must retain
+        // the returned value across cleanup), so it is exempt.
+        let temp_mark = self.temp_mark();
+        let is_return = matches!(stmt.kind, StatementKind::Return(_));
         match &stmt.kind {
             StatementKind::AutoDecl(name, _, expr) => {
                 self.generate_auto_decl_statement(name, expr, function)?;
@@ -925,6 +1044,9 @@ impl<'a> CodeGenerator<'a> {
                 self.generate_nested_function_statement(func, function)?;
             }
             _ => {} // skip other statement types for now
+        }
+        if !is_return {
+            self.cleanup_temps_to(temp_mark)?;
         }
         Ok(())
     }
@@ -1317,6 +1439,15 @@ impl<'a> CodeGenerator<'a> {
             .build_store(alloca, boxed)
             .map_err(|e| e.to_string())?;
 
+        // The bound payload is an owned (+1) value: scalar payloads are freshly
+        // boxed here, and complex payloads (string/list/...) were cloned by the
+        // `mux_*_data` extraction. `box_value` already registers freshly boxed
+        // scalars as statement temporaries, but returns already-boxed pointers
+        // untracked - so register the binding to guarantee it is released at the
+        // end of the match statement (or brought down to caller-owned on a
+        // returning arm). Dedups if already tracked.
+        self.register_temp(boxed.into());
+
         self.variables
             .insert(var.clone(), (alloca, ptr_type.into(), resolved_type));
         Ok(())
@@ -1420,6 +1551,11 @@ impl<'a> CodeGenerator<'a> {
                     .build_store(alloca, boxed)
                     .map_err(|e| e.to_string())?;
 
+                // Note: for custom enums the payload is loaded directly from the
+                // enum struct (a borrow), so it is intentionally NOT registered
+                // as an owned temporary here - the enum owns it. Only scalar
+                // payloads, which `box_value` freshly boxes and self-registers,
+                // are released as temporaries.
                 let resolved_type = self.variant_field_resolved_type(
                     enum_name,
                     variant_name,
@@ -1734,7 +1870,22 @@ impl<'a> CodeGenerator<'a> {
                 let right_ptr = self.ensure_pointer(right);
                 let left_cstr = self.extract_c_string_from_value(left_ptr)?;
                 let right_cstr = self.extract_c_string_from_value(right_ptr)?;
-                self.call_runtime_bool(left_cstr, right_cstr, "mux_string_equal", "string_equal")
+                let result = self.call_runtime_bool(
+                    left_cstr,
+                    right_cstr,
+                    "mux_string_equal",
+                    "string_equal",
+                );
+                // The getters return owned C strings; free them after comparison.
+                let free_fn = self
+                    .runtime_function("mux_free_string")
+                    .ok_or("mux_free_string not found")?;
+                for cstr in [left_cstr, right_cstr] {
+                    self.builder
+                        .build_call(free_fn, &[cstr.into()], "free_cstr")
+                        .map_err(|e| e.to_string())?;
+                }
+                result
             }
             Type::List(_)
             | Type::Map(_, _)
@@ -1821,6 +1972,10 @@ impl<'a> CodeGenerator<'a> {
                     .basic()
                     .ok_or("mux_value_list_get_value returned no value")?;
 
+                // mux_value_list_get_value returns an owned element copy; the
+                // equality check only reads it, so register it for release at the
+                // end of the match statement.
+                self.register_temp(elem_result);
                 let pattern_val = self.generate_literal(lit)?;
                 let elem_eq =
                     self.generate_value_equality(elem_result, pattern_val, &inner_type)?;
@@ -1879,6 +2034,9 @@ impl<'a> CodeGenerator<'a> {
                 self.builder
                     .build_store(alloca, elem_ptr)
                     .map_err(|e| e.to_string())?;
+                // Owned element copy bound to the pattern variable; register it
+                // for release at the end of the match statement.
+                self.register_temp(elem_ptr.into());
                 self.variables
                     .insert(var.clone(), (alloca, ptr_type.into(), inner_type.clone()));
             }

@@ -36,13 +36,16 @@ fn gen_two_expr<'a>(
 }
 
 impl<'a> CodeGenerator<'a> {
+    /// Wrap an *owned* C string (returned by a runtime `*_to_string` helper) in
+    /// a Mux string Value. Uses the ownership-taking constructor so the input C
+    /// string is freed after its contents are copied, rather than leaked.
     fn call_cstr_to_mux_string(
         &self,
         cstr_ptr: BasicValueEnum<'a>,
     ) -> Result<BasicValueEnum<'a>, String> {
         let new_string = self
-            .runtime_function("mux_new_string_from_cstr")
-            .ok_or("mux_new_string_from_cstr not found")?;
+            .runtime_function("mux_new_string_from_owned_cstr")
+            .ok_or("mux_new_string_from_owned_cstr not found")?;
         let call = self
             .builder
             .build_call(new_string, &[cstr_ptr.into()], "new_string")
@@ -50,7 +53,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(call
             .try_as_basic_value()
             .basic()
-            .expect("mux_new_string_from_cstr should return a basic value"))
+            .expect("mux_new_string_from_owned_cstr should return a basic value"))
     }
 
     fn call_runtime_function(
@@ -221,10 +224,19 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_call(func, &[cstr.into()], "str_conv")
             .map_err(|e| e.to_string())?;
-        Ok(call
+        let result = call
             .try_as_basic_value()
             .basic()
-            .unwrap_or_else(|| panic!("{} should return a basic value", conversion_func)))
+            .unwrap_or_else(|| panic!("{} should return a basic value", conversion_func));
+        // `mux_value_to_string` returned an owned C string that the conversion
+        // only borrows; free it so string `.length()`/`.to_int()` etc. do not leak.
+        let free_fn = self
+            .runtime_function("mux_free_string")
+            .ok_or("mux_free_string not found")?;
+        self.builder
+            .build_call(free_fn, &[cstr.into()], "free_cstr")
+            .map_err(|e| e.to_string())?;
+        Ok(result)
     }
 
     fn call_unary_predicate(
@@ -1051,7 +1063,12 @@ impl<'a> CodeGenerator<'a> {
                     );
                 }
                 let indent_arg = self.generate_expression(&args[0])?;
-                self.call_runtime_function("mux_json_stringify", &[obj_value, indent_arg])
+                let result =
+                    self.call_runtime_function("mux_json_stringify", &[obj_value, indent_arg])?;
+                // mux_json_stringify returns an owned result<string,...>; register
+                // it for statement-end release unless ownership is transferred.
+                self.register_temp(result);
+                Ok(result)
             }
             _ => Err(format!("Method {} not implemented for Json", method_name)),
         }

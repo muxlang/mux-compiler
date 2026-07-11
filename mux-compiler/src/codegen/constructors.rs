@@ -32,6 +32,12 @@ impl<'a> CodeGenerator<'a> {
         field_ptr: PointerValue<'a>,
         field: &Field,
     ) -> Result<(), String> {
+        // The initial value stored here is owned by the field (released by the
+        // object's destructor), so any temporary registered while producing it
+        // must be dropped from the pending set rather than freed at the
+        // constructor's statement boundary - otherwise the field is left
+        // dangling.
+        let temp_mark = self.temp_mark();
         if let Some(default_expr) = &field.default_value {
             let literal_val = self.generate_expression(default_expr)?;
             let stored_val = if matches!(field.type_.kind, TypeKind::Primitive(_)) {
@@ -46,6 +52,7 @@ impl<'a> CodeGenerator<'a> {
             let field_type = self.type_node_to_type(&field.type_);
             self.initialize_field_by_type(field_ptr, &field_type, field.is_generic_param)?;
         }
+        self.discard_temps_to(temp_mark);
         Ok(())
     }
 
@@ -99,6 +106,11 @@ impl<'a> CodeGenerator<'a> {
                 let arg = function
                     .get_nth_param(i as u32)
                     .expect("function parameter should exist at expected index");
+                // The variant takes ownership of a reference-counted payload
+                // (string/list/object), so retain it: the caller frees the value
+                // it passed in as a statement temporary, and the enum must keep
+                // its own reference alive. No-op for unboxed scalar payloads.
+                self.rc_inc_if_pointer(arg)?;
                 let data_ptr = self
                     .builder
                     .build_struct_gep(struct_type, temp_ptr, (i + 1) as u32, "data_ptr")
@@ -110,6 +122,11 @@ impl<'a> CodeGenerator<'a> {
             // enforce the variant's where clause with its named payload
             // fields readable by name (bound like function parameters)
             if let Some(clause) = &variant.where_clause {
+                // Binding payload fields for the where-check boxes scalar payloads
+                // (mux_int_value, ...); those boxes are owned temporaries that
+                // must be released once the check has run, or every constructed
+                // variant with a where clause leaks them.
+                let temp_mark = self.temp_mark();
                 let snapshot = self.variables.clone();
                 for (i, (field_name, type_node)) in variant.data.iter().flatten().enumerate() {
                     let Some(field_name) = field_name else {
@@ -123,6 +140,7 @@ impl<'a> CodeGenerator<'a> {
                 }
                 self.emit_where_checks(&clause.predicates, "where_variant")?;
                 self.variables = snapshot;
+                self.cleanup_temps_to(temp_mark)?;
             }
             let struct_val = self
                 .builder
@@ -364,22 +382,31 @@ impl<'a> CodeGenerator<'a> {
         let resolved_type = self.resolve_type(field_type)?;
 
         match resolved_type {
+            // Primitive fields are stored boxed (a `*mut Value` pointer), matching
+            // how explicitly-defaulted fields and later assignments store them.
+            // Storing the raw scalar instead would leave the upper bytes of the
+            // pointer-sized slot uninitialized, so a later boxed-pointer read
+            // (e.g. `mux_value_get_bool`) would dereference garbage whenever the
+            // object landed on non-zero reclaimed heap memory.
             Type::Primitive(PrimitiveType::Bool) => {
                 let false_val = self.context.bool_type().const_int(0, false);
+                let boxed = self.box_value(false_val.into());
                 self.builder
-                    .build_store(field_ptr, false_val)
+                    .build_store(field_ptr, boxed)
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Int) => {
                 let zero_val = self.context.i64_type().const_int(0, false);
+                let boxed = self.box_value(zero_val.into());
                 self.builder
-                    .build_store(field_ptr, zero_val)
+                    .build_store(field_ptr, boxed)
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Float) => {
                 let zero_val = self.context.f64_type().const_float(0.0);
+                let boxed = self.box_value(zero_val.into());
                 self.builder
-                    .build_store(field_ptr, zero_val)
+                    .build_store(field_ptr, boxed)
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Str) => {
@@ -447,6 +474,17 @@ impl<'a> CodeGenerator<'a> {
                     self.builder
                         .build_store(field_ptr, false_val)
                         .map_err(|e| e.to_string())?;
+                } else if self.is_enum_type(&Type::Named(class_name.clone(), type_args.clone())) {
+                    // Enum fields are stored inline as a struct. Default them to a
+                    // zeroed enum value (the first variant) - going through the
+                    // class constructor path would wrongly allocate a heap object
+                    // (mux_alloc_object) for the enum, which then leaks.
+                    if let Some(enum_type) = self.type_map.get(&class_name) {
+                        let zero = enum_type.into_struct_type().const_zero();
+                        self.builder
+                            .build_store(field_ptr, zero)
+                            .map_err(|e| e.to_string())?;
+                    }
                 } else {
                     // recursively call constructor for nested classes
                     let nested_obj =
@@ -468,6 +506,10 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let left_ptr = self.create_default_value_ptr(left_type)?;
         let right_ptr = self.create_default_value_ptr(right_type)?;
+        // mux_new_tuple clones its arguments, so the owned default values are
+        // ours to release; register them for statement-end cleanup.
+        self.register_temp(left_ptr.into());
+        self.register_temp(right_ptr.into());
 
         let tuple_value = self
             .generate_runtime_call("mux_new_tuple", &[left_ptr.into(), right_ptr.into()])
@@ -477,6 +519,9 @@ impl<'a> CodeGenerator<'a> {
             .generate_runtime_call("mux_tuple_value", &[tuple_value.into()])
             .expect("mux_tuple_value should always return a value");
 
+        // Owned (+1) tuple Value; register so a non-binding use is released and a
+        // binding transfers ownership instead of deep-cloning.
+        self.register_temp(wrapped_value);
         Ok(wrapped_value)
     }
 
