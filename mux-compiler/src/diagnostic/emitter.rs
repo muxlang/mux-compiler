@@ -2,6 +2,7 @@
 
 use super::{ColorConfig, Diagnostic, Files, LabelStyle, Level, Styles};
 use crate::lexer::Span;
+use anstream::eprintln;
 use std::cmp::{max, min};
 
 /// Trait for emitting diagnostics to output.
@@ -132,9 +133,8 @@ impl StandardEmitter {
         min_line: usize,
         width: usize,
     ) {
-        eprintln!(
-            "{} {}:{}:{}",
-            self.styles.dim("-->"),
+        let location = format!(
+            "--> {}:{}:{}",
             file_path,
             min_line,
             diagnostic
@@ -143,6 +143,7 @@ impl StandardEmitter {
                 .map(|l| l.span.col_start)
                 .unwrap_or(1)
         );
+        eprintln!("{}", self.styles.location(&location));
         eprintln!("{}", self.render_gutter(width));
     }
 
@@ -202,7 +203,7 @@ impl StandardEmitter {
             eprintln!("{}", self.render_gutter(width));
             eprintln!(
                 "{} {} {}",
-                self.styles.dim("="),
+                self.styles.line_number("="),
                 self.styles.help("help:"),
                 help
             );
