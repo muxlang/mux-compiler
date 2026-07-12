@@ -1,0 +1,10 @@
+// Execution workload: naive recursive Fibonacci (call-heavy).
+// Exercises function-call overhead and integer boxing in the runtime.
+func fib(int n) returns int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+print(fib(30).to_string())

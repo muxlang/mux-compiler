@@ -40,6 +40,16 @@ insta = { version = "1.43.1", features = ["yaml"] }
 ordered-float = "4.2"
 regex = "1"
 toml = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [build-dependencies]
 set-git-hooks-dir = "1.0"
+
+# Local/manual + non-blocking-CI benchmarks (see CONTRIBUTING.md). Not a merge gate.
+[[bench]]
+name = "compile"
+harness = false
+
+[[bench]]
+name = "execution"
+harness = false

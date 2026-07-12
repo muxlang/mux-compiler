@@ -1042,12 +1042,14 @@ fn report_clang_output_or_exit(
         Ok(output) if output.status.success() => {}
         Ok(output) => {
             eprintln!("clang failed: {}", String::from_utf8_lossy(&output.stderr));
+            process::exit(1);
         }
         Err(e) => {
             eprintln!(
                 "Failed to run clang: {}. IR file generated at: {}",
                 e, ir_file
             );
+            process::exit(1);
         }
     }
 }

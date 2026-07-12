@@ -1,0 +1,13 @@
+// Execution workload: insert N entries into a map, then read them all back.
+// Exercises map hashing, insertion, and indexed lookup in the runtime.
+auto m = {0: 0}
+for int i in range(1, 2000) {
+    m.put(i, i * 3)
+}
+
+auto total = 0
+for int i in range(0, 2000) {
+    total = total + m[i]
+}
+
+print(total.to_string())
