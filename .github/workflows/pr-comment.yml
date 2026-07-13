@@ -1,0 +1,65 @@
+name: PR Report Comment
+# Posts the valgrind / benchmark reports produced by the "Build" workflow as a
+# comment on the PR. This is a SEPARATE workflow triggered via workflow_run so
+# it runs in the trusted base-repo context (with a write token) even when the
+# "Build" run it reports on came from an untrusted fork PR. It only consumes the
+# uploaded report artifact as DATA — it never checks out or executes the PR's
+# code, so a fork PR can never reach the token or repo secrets.
+#
+# NOTE: workflow_run only fires for the copy of this file on the default branch,
+# so it takes effect once merged to main (not from the PR that adds it).
+on:
+  workflow_run:
+    workflows: ["Build"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read # download artifacts from the triggering run
+  pull-requests: write # post the comment
+
+jobs:
+  comment:
+    # Only PR-triggered Build runs carry a PR to comment on (skip push to main).
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download report payloads from the triggering run
+        continue-on-error: true # a path-skipped Build uploads no payloads
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: pr-comment-*
+          path: reports
+      - name: Post combined comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          reports=(reports/pr-comment-*/report.md)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No report payloads found; nothing to comment."
+            exit 0
+          fi
+          # Each payload carries the same PR number; take the first non-empty one.
+          pr=""
+          for nf in reports/pr-comment-*/pr-number.txt; do
+            pr="$(tr -dc '0-9' < "$nf")"
+            [ -n "$pr" ] && break
+          done
+          if [ -z "$pr" ]; then
+            echo "No PR number in payloads; nothing to comment."
+            exit 0
+          fi
+          {
+            for r in "${reports[@]}"; do
+              cat "$r"
+              printf '\n\n---\n\n'
+            done
+          } > body.md
+          # --body-file posts the content verbatim (no shell interpolation of the
+          # untrusted report text); the payload step already fenced/escaped it.
+          gh pr comment "$pr" --repo "$REPO" --body-file body.md
