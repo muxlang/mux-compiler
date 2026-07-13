@@ -1,0 +1,13 @@
+// Execution workload: build a large list by index-extension, then sum it.
+// Exercises list allocation, growth, and indexed reads in the runtime.
+list<int> xs = []
+for int i in range(0, 2000) {
+    xs[i] = i * 2
+}
+
+auto total = 0
+for int i in range(0, 2000) {
+    total = total + xs[i]
+}
+
+print(total.to_string())

@@ -622,8 +622,29 @@ fn report_clang_for_doctor(clang: Option<&str>) -> bool {
     false
 }
 
+// Running a clang binary that was just written and chmod'd can transiently fail
+// to exec (e.g. ETXTBSY on Linux, before the writer's file handle is fully
+// released). Retry a few times so version detection - and the doctor test that
+// writes a fake clang then execs it - is not flaky under load. A genuinely
+// missing clang still fails every attempt and returns None.
+fn clang_version_output(clang_cmd: &str) -> Option<std::process::Output> {
+    let mut attempt = 0;
+    loop {
+        match Command::new(clang_cmd).arg("--version").output() {
+            Ok(output) => return Some(output),
+            Err(_) => {
+                attempt += 1;
+                if attempt >= 5 {
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 fn extract_clang_major(clang_cmd: &str) -> Option<u32> {
-    let output = Command::new(clang_cmd).arg("--version").output().ok()?;
+    let output = clang_version_output(clang_cmd)?;
     if !output.status.success() {
         return None;
     }
@@ -1042,12 +1063,14 @@ fn report_clang_output_or_exit(
         Ok(output) if output.status.success() => {}
         Ok(output) => {
             eprintln!("clang failed: {}", String::from_utf8_lossy(&output.stderr));
+            process::exit(1);
         }
         Err(e) => {
             eprintln!(
                 "Failed to run clang: {}. IR file generated at: {}",
                 e, ir_file
             );
+            process::exit(1);
         }
     }
 }
@@ -1197,9 +1220,9 @@ fn main() {
 mod tests {
     use super::full_runtime_features;
     use super::{
-        REQUIRED_LLVM_MAJOR, default_cache_root, extract_clang_major, find_runtime_lib_in_dir,
-        llvm_config_candidates, normalize_runtime_features, pick_llvm_for_dev,
-        print_doctor_verdict, print_version_banner, report_clang_for_doctor,
+        REQUIRED_LLVM_MAJOR, clang_version_output, default_cache_root, extract_clang_major,
+        find_runtime_lib_in_dir, llvm_config_candidates, normalize_runtime_features,
+        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, report_clang_for_doctor,
         report_runtime_for_doctor, runtime_feature_key, runtime_profile, status_marker,
         validate_llvm_for_doctor,
     };
@@ -1371,6 +1394,15 @@ mod tests {
         )));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clang_version_detection_handles_missing_binary() {
+        // A binary that does not exist makes every exec attempt fail, so the
+        // retry loop exhausts and reports None (rather than hanging or panicking).
+        let missing = "mux-nonexistent-clang-binary-xyz";
+        assert!(clang_version_output(missing).is_none());
+        assert!(extract_clang_major(missing).is_none());
     }
 
     #[test]

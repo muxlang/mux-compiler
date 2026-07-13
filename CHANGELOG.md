@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`cargo bench` harness (criterion)**: Compiler-phase benchmarks (`lex`, `parse`, `semantics`,
+  `codegen`, end-to-end `pipeline`) run over the whole compiling `test_scripts` corpus, plus
+  end-to-end `execution` throughput benchmarks for a curated set of compiled workloads. A
+  stdlib-only `scripts/bench-report.py` aggregates the per-file medians into a box-and-whisker
+  per phase. Benchmarks are local/manual and a non-blocking CI report, never a merge gate.
+  Closes #247.
+
+### Changed
+- **Removed ad-hoc perf tooling**: Deleted `scripts/measure-baseline.sh`,
+  `scripts/check-timings.py`, and the orphaned `infra/ci/baselines/*.json` timing budgets, and
+  stripped the unused `--timings-file` plumbing from `run-checks.sh` / `integration-checks.sh`.
+  Also removed the unused `cargo-fuzz` setup under `mux-compiler/fuzz/`.
+
+### Fixed
+- **`mux build` / `mux run` now fail on link errors**: A failed `clang` link previously printed
+  the error but exited 0 (`build` reported success with no executable; `run` could fall through
+  and execute a stale binary from a prior build). `report_clang_output_or_exit` now exits
+  non-zero as its name implies.
+
 ## [0.4.1] - 2026-06-27
 
 ### Fixed

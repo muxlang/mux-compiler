@@ -1,0 +1,8 @@
+// Execution workload: repeated string concatenation (quadratic copy pressure).
+// Exercises UTF-8 string allocation and concat in the runtime.
+auto s = ""
+for int i in range(0, 6000) {
+    s = s + "ab"
+}
+
+print(s.length().to_string())

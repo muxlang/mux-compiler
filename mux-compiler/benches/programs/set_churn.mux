@@ -1,0 +1,15 @@
+// Execution workload: add N elements to a set, then membership-test them all.
+// Exercises set hashing, insertion, and contains in the runtime.
+auto s = {0}
+for int i in range(1, 2000) {
+    s.add(i)
+}
+
+auto hits = 0
+for int i in range(0, 2000) {
+    if s.contains(i) {
+        hits = hits + 1
+    }
+}
+
+print(hits.to_string())

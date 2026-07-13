@@ -48,11 +48,16 @@ Thanks for your interest! This guide explains how to contribute to Mux.
    ./scripts/integration-checks.sh
    ```
 
-9. Capture a profiling baseline when investigating slow checks or compile/runtime regressions:
+9. Run the benchmarks when investigating compile or runtime performance (local and
+   non-blocking CI; never a merge gate):
 
    ```bash
-   ./scripts/measure-baseline.sh
+   ./scripts/dev-cargo.sh bench       # phases over the compiling corpus + execution workloads
+   python3 scripts/bench-report.py    # box-and-whisker per phase -> target/bench-report/
    ```
+
+   Compare against a saved baseline with `cargo bench -- --save-baseline main`, then re-run
+   with `--baseline main`.
 
 10. Check for memory leaks and invalid accesses with Valgrind (requires `valgrind` installed):
 
@@ -114,10 +119,9 @@ We generally don't accept contributions that:
 - Canonical local verification: `./scripts/run-checks.sh`
 - Docker-backed integration verification: `./scripts/integration-checks.sh`
 - Valgrind memory checking: `./scripts/valgrind-checks.sh` (Leg A programs are PR-blocking; Leg B compiler run is report-only)
-- Profiling baseline capture: `./scripts/measure-baseline.sh`
+- Benchmarks: `cargo bench` (criterion) plus `scripts/bench-report.py` for the per-phase box-and-whisker; local/manual and non-blocking CI, never a merge gate
 - Compiler profiling: external tools only
 - Runtime profiling: external tools only
-- Fuzzing targets live under `mux-compiler/fuzz/` and are intended for local `cargo fuzz` runs.
 
 ---
 
