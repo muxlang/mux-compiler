@@ -85,12 +85,14 @@ The user will run `cargo test` and insta snapshot tests separately. Do not manua
   lexer, parser, and executable integration suites (insta snapshots); files under
   `test_scripts/error_cases/` only by the executable suite. Adding a script requires
   `cargo insta test --accept` and a review of the generated snapshots.
-- **List semantics are asymmetric**: statically provable negative or
-  out-of-bounds read indices are compile-time errors, while dynamic list reads
-  normalize negative indices before panicking only when the normalized index is
-  still out of bounds. List writes wrap negative indices and extend past the end
-  (`mux_list_set_value` in mux-runtime). Static checks and codegen changes must
-  respect the read/write split.
+- **List indexing is Python-style**: negative indices count from the end on both
+  reads and writes. A read is a compile-time error only when it is provably out of
+  bounds against a known length (a list literal) - i.e. past the end, or a negative
+  that reaches before the start; all other targets normalize the index at runtime
+  and panic only when the normalized index is still out of bounds. List writes wrap
+  negative indices and extend past the end (`mux_list_set_value` in mux-runtime).
+  Static checks (`semantics/const_checks.rs::check_const_index`) and codegen changes
+  must keep negatives valid down to `-length`.
 - **Compile-time guard rule**: checks built on `semantics/const_fold.rs` must be
   zero-false-positive. The folder returns `None` on anything unprovable (overflow,
   NaN, unknown identifiers) and the runtime check stays the fallback; Mux has no

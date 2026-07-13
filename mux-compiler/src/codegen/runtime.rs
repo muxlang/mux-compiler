@@ -538,6 +538,12 @@ impl<'a> CodeGenerator<'a> {
         );
 
         module.add_function(
+            "mux_value_map_get_value",
+            i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+            None,
+        );
+
+        module.add_function(
             "mux_map_contains",
             context
                 .bool_type()

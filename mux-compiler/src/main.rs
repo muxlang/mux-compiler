@@ -399,18 +399,37 @@ fn default_cache_root() -> PathBuf {
     env::temp_dir().join("mux-lang")
 }
 
-fn find_runtime_source_dir() -> Option<PathBuf> {
+/// Where the compiler found the `mux-runtime` source to build into the cache.
+enum RuntimeSource {
+    /// A local, mutable checkout: the sibling `../mux-runtime` or the directory
+    /// named by `MUX_RUNTIME_SRC`. Its contents can change without a version
+    /// bump, so a cached build must be validated against a source fingerprint.
+    Local(PathBuf),
+    /// An immutable crates.io registry checkout. The pinned `MUX_RUNTIME_VERSION`
+    /// already determines the contents, so a cached build is never stale.
+    Registry(PathBuf),
+}
+
+impl RuntimeSource {
+    fn path(&self) -> &Path {
+        match self {
+            RuntimeSource::Local(p) | RuntimeSource::Registry(p) => p,
+        }
+    }
+}
+
+fn find_runtime_source() -> Option<RuntimeSource> {
     let local_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("mux-runtime");
     if local_runtime.join("Cargo.toml").exists() {
-        return Some(local_runtime);
+        return Some(RuntimeSource::Local(local_runtime));
     }
 
     if let Ok(src) = env::var("MUX_RUNTIME_SRC") {
         let path = PathBuf::from(src);
         if path.join("Cargo.toml").exists() {
-            return Some(path);
+            return Some(RuntimeSource::Local(path));
         }
         eprintln!(
             "MUX_RUNTIME_SRC is set but Cargo.toml was not found: {}",
@@ -427,11 +446,92 @@ fn find_runtime_source_dir() -> Option<PathBuf> {
         let entry = entry.ok()?;
         let candidate = entry.path().join(&dir_name);
         if candidate.join("Cargo.toml").exists() {
-            return Some(candidate);
+            return Some(RuntimeSource::Registry(candidate));
         }
     }
 
     None
+}
+
+/// Name of the fingerprint file written next to a cached runtime library. It
+/// records the source fingerprint the library was built from so a later run can
+/// detect a local checkout that changed without a version bump.
+const RUNTIME_STAMP_FILE: &str = ".mux-runtime-source.stamp";
+
+/// Content fingerprint of a runtime source tree that changes whenever any
+/// `Cargo.toml` or `src/**/*.rs` file changes. Uses FNV-1a (stable and
+/// dependency-free) so a stamp written by one build is comparable across builds.
+/// Returns `None` only if the source cannot be read, which callers treat as
+/// "stale" so the library is rebuilt rather than trusted blindly.
+fn runtime_source_fingerprint(src: &Path) -> Option<String> {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn fold(hash: &mut u64, bytes: &[u8]) {
+        for &b in bytes {
+            *hash ^= u64::from(b);
+            *hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    let cargo_toml = src.join("Cargo.toml");
+    if cargo_toml.exists() {
+        files.push(cargo_toml);
+    }
+    collect_runtime_rs_files(&src.join("src"), &mut files);
+    files.sort();
+
+    // Nothing to fingerprint means the source is missing or empty; treat it as
+    // unverifiable so callers rebuild rather than trust a constant hash.
+    if files.is_empty() {
+        return None;
+    }
+
+    let mut hash = FNV_OFFSET;
+    for file in &files {
+        let rel = file.strip_prefix(src).unwrap_or(file);
+        fold(&mut hash, rel.to_string_lossy().as_bytes());
+        let contents = fs::read(file).ok()?;
+        fold(&mut hash, &contents);
+    }
+    Some(format!("{:016x}", hash))
+}
+
+fn collect_runtime_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_runtime_rs_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// True when the cached library in `profile_dir` was built from the current
+/// contents of local `src`. A missing or unreadable stamp, or an unreadable
+/// source, counts as stale.
+fn cached_runtime_is_fresh(profile_dir: &Path, src: &Path) -> bool {
+    let Some(current) = runtime_source_fingerprint(src) else {
+        return false;
+    };
+    match fs::read_to_string(profile_dir.join(RUNTIME_STAMP_FILE)) {
+        Ok(stored) => stored.trim() == current,
+        Err(_) => false,
+    }
+}
+
+/// Record the source fingerprint next to a freshly built library so future runs
+/// can detect staleness. Best-effort: a write failure only forgoes the fast
+/// cache path on the next run.
+fn record_runtime_fingerprint(profile_dir: &Path, src: &Path) {
+    if let Some(fingerprint) = runtime_source_fingerprint(src) {
+        let _ = fs::write(profile_dir.join(RUNTIME_STAMP_FILE), fingerprint);
+    }
 }
 
 fn build_runtime_in_cache(profile: &str, features: &[String]) -> Option<PathBuf> {
@@ -441,12 +541,25 @@ fn build_runtime_in_cache(profile: &str, features: &[String]) -> Option<PathBuf>
         .join(runtime_feature_key(features));
     let profile_dir = target_root.join(profile);
 
+    let source = find_runtime_source();
+
+    // Reuse a cached library only when it is not stale. For an immutable
+    // crates.io checkout the pinned version already determines the contents, so
+    // a hit is always fresh. For a local, mutable checkout the source can change
+    // without a version bump, so validate it against the recorded fingerprint.
     if let Some(lib) = find_runtime_lib_in_dir(&profile_dir) {
-        return lib.parent().map(|p| p.to_path_buf());
+        let fresh = match &source {
+            Some(RuntimeSource::Local(src)) => cached_runtime_is_fresh(&profile_dir, src),
+            _ => true,
+        };
+        if fresh {
+            return lib.parent().map(|p| p.to_path_buf());
+        }
+        eprintln!("Rebuilding mux-runtime (local source changed since last build)...");
     }
 
-    let runtime_src = match find_runtime_source_dir() {
-        Some(path) => path,
+    let runtime_src = match &source {
+        Some(source) => source.path().to_path_buf(),
         None => {
             eprintln!("Could not locate mux-runtime source in cargo registry.");
             return None;
@@ -461,7 +574,9 @@ fn build_runtime_in_cache(profile: &str, features: &[String]) -> Option<PathBuf>
         return None;
     }
 
-    eprintln!("Building mux-runtime (first run)...");
+    if find_runtime_lib_in_dir(&profile_dir).is_none() {
+        eprintln!("Building mux-runtime (first run)...");
+    }
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
         .arg("--manifest-path")
@@ -490,6 +605,12 @@ fn build_runtime_in_cache(profile: &str, features: &[String]) -> Option<PathBuf>
     }
 
     if let Some(lib) = find_runtime_lib_in_dir(&profile_dir) {
+        // Record the fingerprint of a local checkout so a later run can detect
+        // an edit that did not bump the version. Registry sources are immutable
+        // and keyed by version, so they need no stamp.
+        if let Some(RuntimeSource::Local(src)) = &source {
+            record_runtime_fingerprint(&profile_dir, src);
+        }
         return lib.parent().map(|p| p.to_path_buf());
     }
 
@@ -1220,10 +1341,11 @@ fn main() {
 mod tests {
     use super::full_runtime_features;
     use super::{
-        REQUIRED_LLVM_MAJOR, clang_version_output, default_cache_root, extract_clang_major,
-        find_runtime_lib_in_dir, llvm_config_candidates, normalize_runtime_features,
-        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, report_clang_for_doctor,
-        report_runtime_for_doctor, runtime_feature_key, runtime_profile, status_marker,
+        REQUIRED_LLVM_MAJOR, RUNTIME_STAMP_FILE, cached_runtime_is_fresh, clang_version_output,
+        default_cache_root, extract_clang_major, find_runtime_lib_in_dir, llvm_config_candidates,
+        normalize_runtime_features, pick_llvm_for_dev, print_doctor_verdict, print_version_banner,
+        record_runtime_fingerprint, report_clang_for_doctor, report_runtime_for_doctor,
+        runtime_feature_key, runtime_profile, runtime_source_fingerprint, status_marker,
         validate_llvm_for_doctor,
     };
     use std::path::PathBuf;
@@ -1334,6 +1456,69 @@ mod tests {
         std::fs::write(&dyn_path, b"x").unwrap();
         assert_eq!(find_runtime_lib_in_dir(&dyn_dir), Some(dyn_path));
         std::fs::remove_dir_all(&dyn_dir).ok();
+    }
+
+    /// Write a minimal runtime-like source tree (Cargo.toml + src/lib.rs) for
+    /// fingerprint tests.
+    fn write_runtime_src(dir: &std::path::Path, lib_body: &str) {
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), b"[package]\nname=\"mux-runtime\"\n").unwrap();
+        std::fs::write(dir.join("src").join("lib.rs"), lib_body).unwrap();
+    }
+
+    #[test]
+    fn runtime_source_fingerprint_is_stable_and_content_sensitive() {
+        let src = unique_tmp("rtfp_src");
+        write_runtime_src(&src, "pub fn a() {}\n");
+
+        let first = runtime_source_fingerprint(&src).expect("fingerprint");
+        // Same contents -> identical fingerprint.
+        assert_eq!(first, runtime_source_fingerprint(&src).unwrap());
+
+        // Editing a source file changes the fingerprint.
+        std::fs::write(
+            src.join("src").join("lib.rs"),
+            "pub fn a() { let _ = 1; }\n",
+        )
+        .unwrap();
+        assert_ne!(first, runtime_source_fingerprint(&src).unwrap());
+
+        // Adding a new source file also changes it.
+        let after_edit = runtime_source_fingerprint(&src).unwrap();
+        std::fs::write(src.join("src").join("extra.rs"), "pub fn b() {}\n").unwrap();
+        assert_ne!(after_edit, runtime_source_fingerprint(&src).unwrap());
+
+        // A missing source directory has no fingerprint.
+        assert!(runtime_source_fingerprint(&unique_tmp("rtfp_missing")).is_none());
+
+        std::fs::remove_dir_all(&src).ok();
+    }
+
+    #[test]
+    fn cached_runtime_freshness_tracks_recorded_fingerprint() {
+        let src = unique_tmp("rtfresh_src");
+        write_runtime_src(&src, "pub fn a() {}\n");
+        let profile_dir = unique_tmp("rtfresh_profile");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        // No stamp yet -> stale.
+        assert!(!cached_runtime_is_fresh(&profile_dir, &src));
+
+        // After recording, the cache is fresh for the same source.
+        record_runtime_fingerprint(&profile_dir, &src);
+        assert!(profile_dir.join(RUNTIME_STAMP_FILE).exists());
+        assert!(cached_runtime_is_fresh(&profile_dir, &src));
+
+        // Editing the source without re-recording makes it stale again.
+        std::fs::write(
+            src.join("src").join("lib.rs"),
+            "pub fn a() { let _ = 2; }\n",
+        )
+        .unwrap();
+        assert!(!cached_runtime_is_fresh(&profile_dir, &src));
+
+        std::fs::remove_dir_all(&src).ok();
+        std::fs::remove_dir_all(&profile_dir).ok();
     }
 
     #[test]

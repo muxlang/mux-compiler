@@ -1,5 +1,6 @@
-// A literal negative index is outside any list, so it is rejected at
-// compile time instead of panicking on every execution.
+// A negative index that reaches before the start of a known list literal is
+// provably out of bounds, so it is rejected at compile time. Valid negatives
+// (down to -length) count from the end like Python; see
+// test_scripts/list_negative_index.mux.
 
-auto nums = [1, 2, 3]
-print(nums[-1].to_string())
+print([1, 2, 3][-5].to_string())
