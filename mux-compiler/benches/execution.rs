@@ -19,7 +19,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 struct Workload {
     name: String,
@@ -31,8 +31,8 @@ fn programs_dir() -> PathBuf {
 }
 
 // Compile every workload once to target/bench-exes/<name>. A workload that fails
-// to compile (e.g. missing runtime/LLVM locally) is skipped with a note rather
-// than aborting the whole bench.
+// to compile fails the bench (see the assert below): these are curated programs
+// that must build wherever the runtime + LLVM/clang are available.
 static WORKLOADS: OnceLock<Vec<Workload>> = OnceLock::new();
 
 fn workloads() -> &'static [Workload] {
@@ -52,6 +52,7 @@ fn workloads() -> &'static [Workload] {
         sources.sort();
 
         let mut built = Vec::new();
+        let mut failed = Vec::new();
         for src in sources {
             let name = src
                 .file_stem()
@@ -66,19 +67,25 @@ fn workloads() -> &'static [Workload] {
                 .arg(&exe)
                 .status();
 
-            // Require both a success exit and an actual output file: a workload
-            // that fails to compile must not be run.
+            // Require both a success exit and an actual output file.
             match status {
                 Ok(s) if s.success() && exe.is_file() => built.push(Workload { name, exe }),
-                _ => eprintln!("execution bench: skipping {name} (compile failed)"),
+                _ => failed.push(name),
             }
         }
 
-        if built.is_empty() {
-            eprintln!(
-                "execution bench: no workloads compiled (is the runtime + LLVM/clang available?)"
-            );
-        }
+        // Surface build failures loudly rather than silently reporting a partial
+        // (or empty) set: a curated workload that will not compile is a real
+        // problem worth failing the bench for (needs the runtime + LLVM/clang).
+        assert!(
+            failed.is_empty(),
+            "execution workloads failed to compile: {failed:?} \
+             (is the runtime + LLVM/clang available?)"
+        );
+        assert!(
+            !built.is_empty(),
+            "no execution workloads found under benches/programs"
+        );
         built
     })
 }

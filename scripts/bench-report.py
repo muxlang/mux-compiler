@@ -207,7 +207,19 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
-    criterion_dir = args.criterion_dir or (repo_root / "target" / "criterion")
+
+    def confined(candidate: Path, what: str) -> Path:
+        # Resolve and require the path stay within the repo, so untrusted CLI
+        # arguments cannot read or write outside the project tree.
+        resolved = candidate.resolve()
+        if resolved != repo_root and repo_root not in resolved.parents:
+            print(f"error: {what} {resolved} is outside {repo_root}", file=sys.stderr)
+            raise SystemExit(2)
+        return resolved
+
+    criterion_dir = confined(
+        args.criterion_dir or (repo_root / "target" / "criterion"), "criterion dir"
+    )
     if not criterion_dir.is_dir():
         print(f"error: {criterion_dir} not found; run `cargo bench` first", file=sys.stderr)
         return 1
@@ -224,7 +236,10 @@ def main() -> int:
     counts = {name: len(groups[name]) for name in order}
     svg = render_svg(order, stats, counts)
 
-    output = args.output or (repo_root / "target" / "bench-report" / "phase-distribution.html")
+    output = confined(
+        args.output or (repo_root / "target" / "bench-report" / "phase-distribution.html"),
+        "output",
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(HTML.format(svg=svg), encoding="utf-8")
     print(f"wrote {output}")
