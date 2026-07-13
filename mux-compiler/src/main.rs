@@ -622,8 +622,26 @@ fn report_clang_for_doctor(clang: Option<&str>) -> bool {
     false
 }
 
+// Running a clang binary that was just written and chmod'd can transiently fail
+// to exec (e.g. ETXTBSY on Linux, before the writer's file handle is fully
+// released). Retry a few times so version detection - and the doctor test that
+// writes a fake clang then execs it - is not flaky under load. A genuinely
+// missing clang still fails every attempt and returns None.
+fn clang_version_output(clang_cmd: &str) -> Option<std::process::Output> {
+    for attempt in 0..5 {
+        match Command::new(clang_cmd).arg("--version").output() {
+            Ok(output) => return Some(output),
+            Err(_) if attempt + 1 < 5 => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 fn extract_clang_major(clang_cmd: &str) -> Option<u32> {
-    let output = Command::new(clang_cmd).arg("--version").output().ok()?;
+    let output = clang_version_output(clang_cmd)?;
     if !output.status.success() {
         return None;
     }
