@@ -416,9 +416,11 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    /// Report list indices that are provably out of bounds (negative, or past
-    /// the end of a list literal) and lookups of keys provably absent from a
-    /// map literal. Called after the index expression has been typechecked.
+    /// Report list indices that are provably out of bounds and lookups of keys
+    /// provably absent from a map literal. Negative indices count from the end
+    /// (Python-style), so on a list literal an index is out of bounds only when
+    /// it lands before the start or past the end; other targets are checked at
+    /// runtime. Called after the index expression has been typechecked.
     pub(super) fn check_const_index(
         &self,
         target: &ExpressionNode,
@@ -430,25 +432,21 @@ impl SemanticAnalyzer {
                 let Some(ConstValue::Int(value)) = const_fold::fold(index) else {
                     return Ok(());
                 };
-                if value < 0 {
-                    return Err(SemanticError::with_help(
-                        format!("list index out of bounds: index {}", value),
-                        index.span,
-                        "List indices start at 0; a negative index panics on every execution",
-                    ));
-                }
-                if let ExpressionKind::ListLiteral(elements) = &target.kind
-                    && value >= elements.len() as i64
-                {
-                    return Err(SemanticError::with_help(
-                        format!(
-                            "list index out of bounds: index {}, length {}",
-                            value,
-                            elements.len()
-                        ),
-                        index.span,
-                        "The index is always outside this list, so the access would panic on every execution",
-                    ));
+                // Negative indexes count from the end (Python-style), so they are
+                // only invalid when they reach before the start. The bounds are
+                // only provable when the list length is known (a list literal);
+                // for any other target the index is validated at runtime, where a
+                // negative index wraps and a still-out-of-bounds index panics.
+                if let ExpressionKind::ListLiteral(elements) = &target.kind {
+                    let len = elements.len() as i64;
+                    let effective = if value < 0 { len + value } else { value };
+                    if effective < 0 || effective >= len {
+                        return Err(SemanticError::with_help(
+                            format!("list index out of bounds: index {}, length {}", value, len),
+                            index.span,
+                            "The index is always outside this list, so the access would panic on every execution",
+                        ));
+                    }
                 }
                 Ok(())
             }

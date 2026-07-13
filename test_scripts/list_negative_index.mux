@@ -1,0 +1,20 @@
+// Negative list indexes count from the end, Python-style. Valid on both list
+// literals and variables; on unknown-length lists an out-of-range index is
+// caught at runtime.
+auto nums = [10, 20, 30]
+print(nums[-1].to_string()) // 30
+print(nums[-2].to_string()) // 20
+print(nums[-3].to_string()) // 10
+
+// Direct indexing of a list literal.
+print([1, 2, 3][-1].to_string()) // 3
+
+// Negative index computed at runtime still wraps.
+auto i = 0 - 2
+print(nums[i].to_string()) // 20
+
+// Works for other element types and when nested.
+list<string> words = ["a", "bb", "ccc"]
+print(words[-1]) // ccc
+auto grid = [[1, 2], [3, 4]]
+print(grid[-1][-1].to_string()) // 4

@@ -3254,46 +3254,35 @@ impl<'a> CodeGenerator<'a> {
 
         match &target_type {
             crate::semantics::Type::List(element_type) => {
-                // Extract raw List pointer from Value
-                let raw_list_ptr = self
-                    .builder
-                    .build_call(
-                        self.runtime_function("mux_value_get_list")
-                            .expect("mux_value_get_list must be declared in runtime"),
-                        &[target_val.into()],
-                        "extract_list",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .try_as_basic_value()
-                    .basic()
-                    .expect("mux_value_get_list should return a basic value")
-                    .into_pointer_value();
-
-                // Normalize the index to handle negative wraparound
-                let normalized_index = self.normalize_list_index(index_val, raw_list_ptr)?;
-
-                // Capture the length for the out-of-bounds panic message
-                // while the raw list pointer is still alive.
+                // Read the element directly from the list Value. Indexing the
+                // live list in O(1) avoids the old `mux_value_get_list` path,
+                // which cloned the entire backing vector on every access (O(n)
+                // per read, O(n^2) building/iterating a list by index in a loop).
                 let list_length = self
                     .builder
                     .build_call(
-                        self.runtime_function("mux_list_length")
-                            .ok_or("mux_list_length not found")?,
-                        &[raw_list_ptr.into()],
+                        self.runtime_function("mux_value_list_length")
+                            .ok_or("mux_value_list_length not found")?,
+                        &[target_val.into()],
                         "index_len",
                     )
                     .map_err(|e| e.to_string())?
                     .try_as_basic_value()
                     .basic()
-                    .ok_or("mux_list_length should return a basic value")?;
+                    .ok_or("mux_value_list_length should return a basic value")?;
 
-                // call mux_list_get_value (returns direct value or null)
+                // Normalize the index to handle negative wraparound.
+                let normalized_index =
+                    self.normalize_index_with_length(index_val, list_length.into_int_value())?;
+
+                // mux_value_list_get_value returns a direct owned value or null
+                // (out of bounds); it borrows the list Value without cloning it.
                 let raw_result = self
                     .builder
                     .build_call(
-                        self.runtime_function("mux_list_get_value")
-                            .expect("mux_list_get_value must be declared in runtime"),
-                        &[raw_list_ptr.into(), normalized_index.into()],
+                        self.runtime_function("mux_value_list_get_value")
+                            .ok_or("mux_value_list_get_value not found")?,
+                        &[target_val.into(), normalized_index.into()],
                         "list_raw",
                     )
                     .map_err(|e| e.to_string())?;
@@ -3301,16 +3290,8 @@ impl<'a> CodeGenerator<'a> {
                 let result_ptr = raw_result
                     .try_as_basic_value()
                     .basic()
-                    .expect("mux_list_get_value should return a basic value")
+                    .ok_or("mux_value_list_get_value should return a basic value")?
                     .into_pointer_value();
-
-                // Free the raw list pointer before continuing
-                let free_list = self
-                    .runtime_function("mux_free_list")
-                    .ok_or("mux_free_list not found")?;
-                self.builder
-                    .build_call(free_list, &[raw_list_ptr.into()], "free_list")
-                    .map_err(|e| e.to_string())?;
 
                 // Bounds-check the result pointer. Report the user's original
                 // index (pre-normalization) so `values[-5]` reads "-5", not the
@@ -3333,25 +3314,11 @@ impl<'a> CodeGenerator<'a> {
                 Ok(extracted_val)
             }
             crate::semantics::Type::Map(_, value_type) => {
-                // Extract raw Map pointer from Value
-                let raw_map_ptr = self
-                    .builder
-                    .build_call(
-                        self.runtime_function("mux_value_get_map")
-                            .expect("mux_value_get_map must be declared in runtime"),
-                        &[target_val.into()],
-                        "extract_map",
-                    )
-                    .map_err(|e| e.to_string())?
-                    .try_as_basic_value()
-                    .basic()
-                    .expect("mux_value_get_map should return a basic value")
-                    .into_pointer_value();
-
-                // map_get_or_panic handles the lookup, key-not-found panic
-                // block, and Optional unwrap, then frees the raw map.
+                // Look up the key directly in the map Value. This avoids the old
+                // `mux_value_get_map` path, which cloned the entire map on every
+                // access (O(n) per read, O(n^2) reading a map by key in a loop).
                 let value_ptr = self
-                    .map_get_or_panic(raw_map_ptr, index_val, Some(index.span()), "map")?
+                    .map_value_get_or_panic(target_val, index_val, Some(index.span()), "map")?
                     .into_pointer_value();
 
                 // Use extract_value_from_ptr to properly extract based on type
@@ -4000,6 +3967,51 @@ impl<'a> CodeGenerator<'a> {
             .expect("mux_map_get should return a basic value")
             .into_pointer_value();
 
+        self.unwrap_map_lookup_or_panic(optional_ptr, boxed_key, Some(map), span, block_prefix)
+    }
+
+    /// Look up `key` directly in a map `Value` and return the unwrapped value.
+    /// Unlike `map_get_or_panic`, this reads the live map without extracting a
+    /// cloned copy first, so indexing a map does not clone the whole map on
+    /// every access. Emits the same key-not-found panic on a missing key.
+    fn map_value_get_or_panic(
+        &mut self,
+        map_value: BasicValueEnum<'a>,
+        key: BasicValueEnum<'a>,
+        span: Option<&Span>,
+        block_prefix: &str,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let boxed_key = self.box_value(key);
+
+        let optional_ptr = self
+            .builder
+            .build_call(
+                self.runtime_function("mux_value_map_get_value")
+                    .ok_or("mux_value_map_get_value not found")?,
+                &[map_value.into(), boxed_key.into()],
+                &format!("{}_get", block_prefix),
+            )
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_value_map_get_value should return a basic value")?
+            .into_pointer_value();
+
+        self.unwrap_map_lookup_or_panic(optional_ptr, boxed_key, None, span, block_prefix)
+    }
+
+    /// Shared tail for map lookups: given the `Optional` result and the boxed
+    /// key, branch to a key-not-found panic when it is `None`, otherwise (in the
+    /// continue block) free `map_to_free` if present, unwrap the optional, and
+    /// return the contained value.
+    fn unwrap_map_lookup_or_panic(
+        &mut self,
+        optional_ptr: PointerValue<'a>,
+        boxed_key: PointerValue<'a>,
+        map_to_free: Option<PointerValue<'a>>,
+        span: Option<&Span>,
+        block_prefix: &str,
+    ) -> Result<BasicValueEnum<'a>, String> {
         let is_some = self
             .builder
             .build_call(
@@ -4040,14 +4052,17 @@ impl<'a> CodeGenerator<'a> {
             .build_unreachable()
             .map_err(|e| e.to_string())?;
 
-        // Continue block: free the raw map, then unwrap the optional
+        // Continue block: free the raw map (if the caller extracted one), then
+        // unwrap the optional.
         self.builder.position_at_end(continue_bb);
-        let free_map_fn = self
-            .runtime_function("mux_free_map")
-            .ok_or("mux_free_map not found")?;
-        self.builder
-            .build_call(free_map_fn, &[map.into()], "free_map")
-            .map_err(|e| e.to_string())?;
+        if let Some(map) = map_to_free {
+            let free_map_fn = self
+                .runtime_function("mux_free_map")
+                .ok_or("mux_free_map not found")?;
+            self.builder
+                .build_call(free_map_fn, &[map.into()], "free_map")
+                .map_err(|e| e.to_string())?;
+        }
 
         let unwrapped = self
             .builder
@@ -4368,9 +4383,7 @@ impl<'a> CodeGenerator<'a> {
         index_val: BasicValueEnum<'a>,
         list_ptr: PointerValue<'a>,
     ) -> Result<BasicValueEnum<'a>, String> {
-        let index_int = index_val.into_int_value();
-
-        // Get list length
+        // Get list length from the raw List pointer, then normalize.
         let list_length = self
             .builder
             .build_call(
@@ -4384,6 +4397,18 @@ impl<'a> CodeGenerator<'a> {
             .basic()
             .expect("mux_list_length should return a basic value")
             .into_int_value();
+
+        self.normalize_index_with_length(index_val, list_length)
+    }
+
+    /// Normalize a (possibly negative) index against a precomputed list length:
+    /// negative indices wrap from the end, non-negative pass through unchanged.
+    fn normalize_index_with_length(
+        &mut self,
+        index_val: BasicValueEnum<'a>,
+        list_length: inkwell::values::IntValue<'a>,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let index_int = index_val.into_int_value();
 
         // Check if index < 0
         let is_negative = self
