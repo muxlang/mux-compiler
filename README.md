@@ -6,7 +6,7 @@
 
 **The Programming Language For Everyone**
 
-[![Version](https://img.shields.io/badge/version-0.4.1-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![crates.io](https://img.shields.io/crates/v/mux-lang.svg?style=flat-square)](https://crates.io/crates/mux-lang)
 [![Documentation](https://img.shields.io/badge/docs-online-blue.svg?style=flat-square)](https://mux-lang.dev)
@@ -195,7 +195,7 @@ Profiling is done with external tools so it stays decoupled from the compiler an
 
 ⚠️ **Alpha Stage**: Mux is actively being developed. Expect breaking changes and incomplete features as we work toward a stable release.
 
-- **Current Version:** 0.4.1
+- **Current Version:** 0.5.0
 
 ## Versioning
 
