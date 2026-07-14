@@ -50,23 +50,31 @@ fn main() {
 
     generate_embedded_std_sources(&manifest_dir);
 
-    emit_runtime_version(workspace_root);
+    emit_runtime_version(&manifest_dir);
 }
 
-/// Read the locked `mux-runtime` version from the workspace `Cargo.lock` and
-/// emit it as `MUX_RUNTIME_VERSION`. Decouples the runtime version from the
-/// compiler version: the compiler releases independently while still resolving
-/// and reporting the exact runtime it was built against.
-fn emit_runtime_version(workspace_root: &Path) {
-    let lock_path = workspace_root.join("Cargo.lock");
+/// Read the locked `mux-runtime` version from the nearest `Cargo.lock` and emit
+/// it as `MUX_RUNTIME_VERSION`. Decouples the runtime version from the compiler
+/// version: the compiler releases independently while still resolving and
+/// reporting the exact runtime it was built against.
+///
+/// The lock normally lives at the workspace root (`manifest_dir/..`), but during
+/// `cargo package`/`publish` the crate is copied to `target/package/<pkg>/` with
+/// a freshly generated `Cargo.lock` inside that package dir. Search from the
+/// manifest dir upward and use the first `Cargo.lock` that actually records a
+/// `mux-runtime` entry, so both layouts resolve correctly.
+fn emit_runtime_version(manifest_dir: &Path) {
+    let (lock_path, version) = manifest_dir
+        .ancestors()
+        .map(|dir| dir.join("Cargo.lock"))
+        .find_map(|path| read_locked_runtime_version(&path).map(|version| (path, version)))
+        .unwrap_or_else(|| {
+            panic!(
+                "could not determine mux-runtime version from any Cargo.lock at or above {}",
+                manifest_dir.display()
+            )
+        });
     println!("cargo:rerun-if-changed={}", lock_path.display());
-
-    let version = read_locked_runtime_version(&lock_path).unwrap_or_else(|| {
-        panic!(
-            "could not determine mux-runtime version from {}",
-            lock_path.display()
-        )
-    });
     println!("cargo:rustc-env=MUX_RUNTIME_VERSION={}", version);
 }
 
