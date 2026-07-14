@@ -120,4 +120,4 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
 fi
 
-"$INSTALL_DIR/mux" --version
+"$INSTALL_DIR/mux" version

@@ -66,7 +66,7 @@ try {
         Write-Host "Added $InstallDir to user PATH. Restart your shell to use mux."
     }
 
-    & (Join-Path $InstallDir "mux.exe") --version
+    & (Join-Path $InstallDir "mux.exe") version
 }
 finally {
     if (Test-Path $tmpDir) {
