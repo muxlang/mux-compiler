@@ -1,16 +1,19 @@
 #!/bin/sh
 
-STAGED_FILES=$(git diff --cached --name-only)
-
 HAS_RUST=false
 
-for file in $STAGED_FILES; do
+# Read staged paths line by line (IFS= read) so a path containing spaces is not
+# word-split and mis-skipped. A here-doc (not a pipe) keeps the loop in this
+# shell so HAS_RUST persists.
+while IFS= read -r file; do
   case "$file" in
     mux-compiler/*|Cargo.toml|Cargo.lock|clippy.toml|scripts/run-checks.sh|scripts/dev-cargo.sh)
       HAS_RUST=true
       ;;
   esac
-done
+done <<EOF
+$(git diff --cached --name-only)
+EOF
 
 # If nothing matches (e.g. CI config, docs), skip all checks
 if [ "$HAS_RUST" = false ]; then
