@@ -86,18 +86,37 @@ jobs:
             "pr-comment-benchmarks|bench.log|Benchmarks (report-only)|report"
           )
           jobs_json="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs')"
+          # When the report jobs were path-skipped there are no artifacts. Only
+          # surface that explicitly for PRs that actually changed the CI/report
+          # workflows (the case where verifying the pipeline matters); staying
+          # quiet on unrelated PRs (docs, etc.) avoids comment noise.
+          touched_ci="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
+            --jq '.[].filename' | grep -Ec '^\.github/workflows/' || true)"
           : > body.md
           wrote=0
           for spec in "${specs[@]}"; do
             IFS='|' read -r art logname title kind <<< "$spec"
             logf="reports/$art/$logname"
-            [ -f "$logf" ] || continue
+            concl="$(printf '%s' "$jobs_json" | jq -r --arg n "$title" 'map(select(.name == $n)) | .[0].conclusion // ""')"
+            if [ ! -f "$logf" ]; then
+              # No log: job was path-skipped or produced nothing. Note it only on
+              # workflow-touching PRs.
+              if [ "${touched_ci:-0}" -gt 0 ]; then
+                case "$concl" in
+                  skipped) note="Skipped - no relevant source changed in this PR." ;;
+                  "") note="Job not found in this run." ;;
+                  *) note="No report produced (job conclusion: $concl)." ;;
+                esac
+                printf '## %s - skipped\n\n_%s_\n\n' "$title" "$note" >> body.md
+                wrote=1
+              fi
+              continue
+            fi
             if [ "$kind" = "gated" ]; then
-              concl="$(printf '%s' "$jobs_json" | jq -r --arg n "$title" 'map(select(.name == $n)) | .[0].conclusion // "unknown"')"
               case "$concl" in
                 success) status="PASSED" ;;
                 failure) status="FAILED" ;;
-                *) status="$concl" ;;
+                *) status="${concl:-unknown}" ;;
               esac
             else
               status="report-only"
@@ -118,7 +137,7 @@ jobs:
             wrote=1
           done
           if [ "$wrote" -eq 0 ]; then
-            echo "No expected report artifacts present; nothing to comment."
+            echo "Nothing to report for this PR; not commenting."
             exit 0
           fi
           printf '_Commit `%s` - [full run](%s)_\n' "$HEAD_SHA" "$RUN_URL" >> body.md
