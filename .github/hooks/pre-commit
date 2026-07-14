@@ -1,16 +1,18 @@
-#!/bin/sh
-
-STAGED_FILES=$(git diff --cached --name-only)
+#!/usr/bin/env bash
 
 HAS_RUST=false
 
-for file in $STAGED_FILES; do
+# Read staged paths NUL-delimited (-z) so paths with spaces, tabs, quotes,
+# backslashes, newlines, or non-ASCII bytes are matched literally instead of
+# word-split or read in Git's quoted/escaped form. Process substitution keeps
+# the loop in this shell so HAS_RUST persists.
+while IFS= read -r -d '' file; do
   case "$file" in
     mux-compiler/*|Cargo.toml|Cargo.lock|clippy.toml|scripts/run-checks.sh|scripts/dev-cargo.sh)
       HAS_RUST=true
       ;;
   esac
-done
+done < <(git diff --cached --name-only -z)
 
 # If nothing matches (e.g. CI config, docs), skip all checks
 if [ "$HAS_RUST" = false ]; then
@@ -26,8 +28,9 @@ if [ "$HAS_RUST" = true ]; then
     echo ""
     echo "Formatting check failed. Run 'cargo fmt' to fix."
     FAILED=1
+  else
+    echo "Formatting OK"
   fi
-  echo "Formatting OK"
 
   echo ""
   echo "Running Clippy (warnings denied)..."
@@ -35,8 +38,9 @@ if [ "$HAS_RUST" = true ]; then
     echo ""
     echo "Clippy check failed. Fix warnings before committing."
     FAILED=1
+  else
+    echo "Clippy OK"
   fi
-  echo "Clippy OK"
 
   echo ""
   echo "Running tests..."
@@ -44,8 +48,9 @@ if [ "$HAS_RUST" = true ]; then
     echo ""
     echo "Tests failed. Fix failing tests before committing."
     FAILED=1
+  else
+    echo "Tests OK"
   fi
-  echo "Tests OK"
 fi
 
 if [ "$FAILED" -ne 0 ]; then
