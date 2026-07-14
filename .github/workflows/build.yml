@@ -192,24 +192,22 @@ jobs:
           TITLE: "Valgrind Memory Checks"
           OUTCOME: ${{ steps.run.outcome }}
           LOG: valgrind.log
-          PR: ${{ github.event.pull_request.number }}
           SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mkdir -p pr-comment
-          if [ "$OUTCOME" = "success" ]; then status="✅ passed"; else status="❌ failed"; fi
+          if [ "$OUTCOME" = "success" ]; then status="PASSED"; else status="FAILED"; fi
           # Neutralize any ``` in untrusted output so a hostile PR can't break
           # out of the code fence and inject markdown into the posted comment.
           sanitized="$(sed 's/```/`\xE2\x80\x8b``/g' "$LOG" 2>/dev/null | tail -n 300)"
           {
-            printf '## %s — %s\n\n' "$TITLE" "$status"
+            printf '## %s - %s\n\n' "$TITLE" "$status"
             printf '<details><summary>Output (last 300 lines)</summary>\n\n'
             printf '```text\n'
             printf '%s\n' "${sanitized:-(no output captured)}"
             printf '```\n\n</details>\n\n'
-            printf '_Commit `%s` • [full run](%s)_\n' "$SHA" "$RUN_URL"
+            printf '_Commit `%s` - [full run](%s)_\n' "$SHA" "$RUN_URL"
           } > pr-comment/report.md
-          printf '%s' "$PR" > pr-comment/pr-number.txt
       - name: Upload PR comment payload
         if: ${{ always() && github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4
@@ -296,23 +294,21 @@ jobs:
           TITLE: "Benchmarks (report-only)"
           OUTCOME: ${{ steps.run.outcome }}
           LOG: bench.log
-          PR: ${{ github.event.pull_request.number }}
           SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mkdir -p pr-comment
-          if [ "$OUTCOME" = "success" ]; then status="✅ completed"; else status="⚠️ errored"; fi
+          if [ "$OUTCOME" = "success" ]; then status="completed"; else status="errored"; fi
           sanitized="$(sed 's/```/`\xE2\x80\x8b``/g' "$LOG" 2>/dev/null | tail -n 300)"
           {
-            printf '## %s — %s\n\n' "$TITLE" "$status"
-            printf '_Informational only — shared runners are too noisy to gate on. Full per-phase distribution is in the `benchmark-report` artifact._\n\n'
+            printf '## %s - %s\n\n' "$TITLE" "$status"
+            printf '_Informational only - shared runners are too noisy to gate on. Full per-phase distribution is in the `benchmark-report` artifact._\n\n'
             printf '<details><summary>Output (last 300 lines)</summary>\n\n'
             printf '```text\n'
             printf '%s\n' "${sanitized:-(no output captured)}"
             printf '```\n\n</details>\n\n'
-            printf '_Commit `%s` • [full run](%s)_\n' "$SHA" "$RUN_URL"
+            printf '_Commit `%s` - [full run](%s)_\n' "$SHA" "$RUN_URL"
           } > pr-comment/report.md
-          printf '%s' "$PR" > pr-comment/pr-number.txt
       - name: Upload PR comment payload
         if: ${{ always() && github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4

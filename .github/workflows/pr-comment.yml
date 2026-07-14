@@ -3,8 +3,13 @@ name: PR Report Comment
 # comment on the PR. This is a SEPARATE workflow triggered via workflow_run so
 # it runs in the trusted base-repo context (with a write token) even when the
 # "Build" run it reports on came from an untrusted fork PR. It only consumes the
-# uploaded report artifact as DATA — it never checks out or executes the PR's
+# uploaded report artifact as DATA - it never checks out or executes the PR's
 # code, so a fork PR can never reach the token or repo secrets.
+#
+# The target PR number comes ONLY from trusted run metadata, never from the
+# artifact: a fork controls its own Build workflow (pull_request runs the fork's
+# copy of it), so an artifact-supplied PR number could be forged to redirect
+# this write-token comment onto an unrelated PR.
 #
 # NOTE: workflow_run only fires for the copy of this file on the default branch,
 # so it takes effect once merged to main (not from the PR that adds it).
@@ -24,7 +29,32 @@ jobs:
     if: ${{ github.event.workflow_run.event == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve target PR from trusted metadata
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          # Populated for same-repo PRs; empty for fork PRs.
+          PR_FROM_EVENT: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          # SECURITY: take the target PR only from trusted run metadata, never
+          # from the downloaded artifact. A fork controls its own Build workflow
+          # and could forge a PR number to redirect this write-token comment. For
+          # forks the event's pull_requests[] is empty, so resolve it from the
+          # trusted head SHA instead.
+          pr="${PR_FROM_EVENT:-}"
+          if [ -z "$pr" ]; then
+            pr="$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
+                    --jq 'map(select(.state == "open")) | .[0].number // empty')"
+          fi
+          if [ -z "$pr" ]; then
+            echo "No open PR found for $HEAD_SHA; nothing to comment."
+          fi
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
       - name: Download report payloads from the triggering run
+        if: ${{ steps.pr.outputs.number != '' }}
         continue-on-error: true # a path-skipped Build uploads no payloads
         uses: actions/download-artifact@v4
         with:
@@ -33,9 +63,11 @@ jobs:
           pattern: pr-comment-*
           path: reports
       - name: Post combined comment
+        if: ${{ steps.pr.outputs.number != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.number }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -44,22 +76,13 @@ jobs:
             echo "No report payloads found; nothing to comment."
             exit 0
           fi
-          # Each payload carries the same PR number; take the first non-empty one.
-          pr=""
-          for nf in reports/pr-comment-*/pr-number.txt; do
-            pr="$(tr -dc '0-9' < "$nf")"
-            [ -n "$pr" ] && break
-          done
-          if [ -z "$pr" ]; then
-            echo "No PR number in payloads; nothing to comment."
-            exit 0
-          fi
           {
             for r in "${reports[@]}"; do
               cat "$r"
               printf '\n\n---\n\n'
             done
           } > body.md
-          # --body-file posts the content verbatim (no shell interpolation of the
-          # untrusted report text); the payload step already fenced/escaped it.
-          gh pr comment "$pr" --repo "$REPO" --body-file body.md
+          # --body-file posts content verbatim (no shell interpolation). The body
+          # is fork-influenced data but only ever lands on its own PR, and the
+          # payload step already fenced/escaped it.
+          gh pr comment "$PR" --repo "$REPO" --body-file body.md
