@@ -121,18 +121,25 @@ jobs:
             else
               status="report-only"
             fi
-            # Neutralize any ``` in the untrusted log so it cannot break out of
-            # the code fence and inject markdown into the trusted comment.
-            sanitized="$(sed 's/```/`\xE2\x80\x8b``/g' "$logf" | tail -n 300)"
+            content="$(tail -n 300 "$logf")"
+            # This log is fork-controlled. Prevent code-fence breakout by opening
+            # the block with MORE backticks than the longest backtick run in the
+            # content: a fence is only closed by an equal-or-longer run, so no
+            # line inside can terminate it. (Rewriting occurrences of ``` fails
+            # here - a longer run of backticks reconstructs a closing fence.)
+            maxrun="$(printf '%s' "$content" | { grep -oE '`+' || true; } | awk '{ if (length > m) m = length } END { print m + 0 }')"
+            fence_len=3
+            [ "${maxrun:-0}" -ge 3 ] && fence_len=$(( maxrun + 1 ))
+            fence="$(printf '`%.0s' $(seq "$fence_len"))"
             {
               printf '## %s - %s\n\n' "$title" "$status"
               if [ "$kind" = "report" ]; then
                 printf '_Informational only - shared runners are too noisy to gate on; full data is in the run artifacts._\n\n'
               fi
               printf '<details><summary>Output (last 300 lines)</summary>\n\n'
-              printf '```text\n'
-              printf '%s\n' "${sanitized:-(no output captured)}"
-              printf '```\n\n</details>\n\n'
+              printf '%stext\n' "$fence"
+              printf '%s\n' "${content:-(no output captured)}"
+              printf '%s\n\n</details>\n\n' "$fence"
             } >> body.md
             wrote=1
           done
