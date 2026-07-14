@@ -186,34 +186,13 @@ jobs:
         run: |
           set -o pipefail
           ./scripts/valgrind-checks.sh 2>&1 | tee valgrind.log
-      - name: Build PR comment payload
-        if: ${{ always() && github.event_name == 'pull_request' }}
-        env:
-          TITLE: "Valgrind Memory Checks"
-          OUTCOME: ${{ steps.run.outcome }}
-          LOG: valgrind.log
-          SHA: ${{ github.event.pull_request.head.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          mkdir -p pr-comment
-          if [ "$OUTCOME" = "success" ]; then status="PASSED"; else status="FAILED"; fi
-          # Neutralize any ``` in untrusted output so a hostile PR can't break
-          # out of the code fence and inject markdown into the posted comment.
-          sanitized="$(sed 's/```/`\xE2\x80\x8b``/g' "$LOG" 2>/dev/null | tail -n 300)"
-          {
-            printf '## %s - %s\n\n' "$TITLE" "$status"
-            printf '<details><summary>Output (last 300 lines)</summary>\n\n'
-            printf '```text\n'
-            printf '%s\n' "${sanitized:-(no output captured)}"
-            printf '```\n\n</details>\n\n'
-            printf '_Commit `%s` - [full run](%s)_\n' "$SHA" "$RUN_URL"
-          } > pr-comment/report.md
-      - name: Upload PR comment payload
+      - name: Upload valgrind log for PR comment
+        # Raw log only; the trusted pr-comment workflow escapes and renders it.
         if: ${{ always() && github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4
         with:
           name: pr-comment-valgrind
-          path: pr-comment/
+          path: valgrind.log
           if-no-files-found: warn
   benchmarks:
     name: Benchmarks (report-only)
@@ -288,33 +267,13 @@ jobs:
             target/bench-report/
             target/criterion/
           if-no-files-found: warn
-      - name: Build PR comment payload
-        if: ${{ always() && github.event_name == 'pull_request' }}
-        env:
-          TITLE: "Benchmarks (report-only)"
-          OUTCOME: ${{ steps.run.outcome }}
-          LOG: bench.log
-          SHA: ${{ github.event.pull_request.head.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          mkdir -p pr-comment
-          if [ "$OUTCOME" = "success" ]; then status="completed"; else status="errored"; fi
-          sanitized="$(sed 's/```/`\xE2\x80\x8b``/g' "$LOG" 2>/dev/null | tail -n 300)"
-          {
-            printf '## %s - %s\n\n' "$TITLE" "$status"
-            printf '_Informational only - shared runners are too noisy to gate on. Full per-phase distribution is in the `benchmark-report` artifact._\n\n'
-            printf '<details><summary>Output (last 300 lines)</summary>\n\n'
-            printf '```text\n'
-            printf '%s\n' "${sanitized:-(no output captured)}"
-            printf '```\n\n</details>\n\n'
-            printf '_Commit `%s` - [full run](%s)_\n' "$SHA" "$RUN_URL"
-          } > pr-comment/report.md
-      - name: Upload PR comment payload
+      - name: Upload benchmark log for PR comment
+        # Raw log only; the trusted pr-comment workflow escapes and renders it.
         if: ${{ always() && github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4
         with:
           name: pr-comment-benchmarks
-          path: pr-comment/
+          path: bench.log
           if-no-files-found: warn
   sonarqube:
     name: SonarQube

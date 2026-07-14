@@ -2,14 +2,18 @@ name: PR Report Comment
 # Posts the valgrind / benchmark reports produced by the "Build" workflow as a
 # comment on the PR. This is a SEPARATE workflow triggered via workflow_run so
 # it runs in the trusted base-repo context (with a write token) even when the
-# "Build" run it reports on came from an untrusted fork PR. It only consumes the
-# uploaded report artifact as DATA - it never checks out or executes the PR's
-# code, so a fork PR can never reach the token or repo secrets.
+# "Build" run it reports on came from an untrusted fork PR.
 #
-# The target PR number comes ONLY from trusted run metadata, never from the
-# artifact: a fork controls its own Build workflow (pull_request runs the fork's
-# copy of it), so an artifact-supplied PR number could be forged to redirect
-# this write-token comment onto an unrelated PR.
+# Threat model: a fork controls its own Build workflow (pull_request runs the
+# fork's copy), so EVERYTHING the Build uploads is untrusted. This workflow
+# therefore:
+#   - resolves the target PR only from trusted workflow_run metadata (head repo
+#     + branch + SHA), never from artifact data;
+#   - consumes only the raw logs from the exact expected artifacts and does the
+#     fence-escaping, length cap, and markdown assembly HERE (a fork cannot make
+#     the Build skip escaping it does not perform);
+#   - takes pass/fail from the trusted jobs API, not from the artifact.
+# It never checks out or executes the PR's code.
 #
 # NOTE: workflow_run only fires for the copy of this file on the default branch,
 # so it takes effect once merged to main (not from the PR that adds it).
@@ -20,7 +24,7 @@ on:
 
 permissions:
   contents: read
-  actions: read # download artifacts from the triggering run
+  actions: read # download artifacts + read job conclusions from the run
   pull-requests: write # post the comment
 
 jobs:
@@ -35,54 +39,87 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          # Populated for same-repo PRs; empty for fork PRs.
-          PR_FROM_EVENT: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
-          # SECURITY: take the target PR only from trusted run metadata, never
-          # from the downloaded artifact. A fork controls its own Build workflow
-          # and could forge a PR number to redirect this write-token comment. For
-          # forks the event's pull_requests[] is empty, so resolve it from the
-          # trusted head SHA instead.
-          pr="${PR_FROM_EVENT:-}"
-          if [ -z "$pr" ]; then
-            pr="$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
-                    --jq 'map(select(.state == "open")) | .[0].number // empty')"
+          # Match the triggering PR by its trusted head owner:branch, then confirm
+          # the head SHA and require exactly one open match. This is reliable for
+          # forks (workflow_run.pull_requests[] is empty for them) and cannot be
+          # influenced by artifact contents.
+          mapfile -t hits < <(
+            gh api "repos/$REPO/pulls?state=open&head=$HEAD_OWNER:$HEAD_BRANCH&per_page=100" \
+              --jq '.[] | "\(.number) \(.head.sha)"' \
+              | awk -v s="$HEAD_SHA" '$2 == s { print $1 }'
+          )
+          if [ "${#hits[@]}" -eq 1 ]; then
+            echo "number=${hits[0]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Expected exactly one open PR for $HEAD_OWNER:$HEAD_BRANCH@$HEAD_SHA, found ${#hits[@]}; nothing to comment."
+            echo "number=" >> "$GITHUB_OUTPUT"
           fi
-          if [ -z "$pr" ]; then
-            echo "No open PR found for $HEAD_SHA; nothing to comment."
-          fi
-          echo "number=$pr" >> "$GITHUB_OUTPUT"
-      - name: Download report payloads from the triggering run
+      - name: Download report artifacts from the triggering run
         if: ${{ steps.pr.outputs.number != '' }}
-        continue-on-error: true # a path-skipped Build uploads no payloads
+        continue-on-error: true # a path-skipped Build uploads no artifacts
         uses: actions/download-artifact@v4
         with:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: pr-comment-*
           path: reports
-      - name: Post combined comment
+      - name: Assemble and post comment
         if: ${{ steps.pr.outputs.number != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.number }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          reports=(reports/pr-comment-*/report.md)
-          if [ ${#reports[@]} -eq 0 ]; then
-            echo "No report payloads found; nothing to comment."
+          # Only these artifacts are consumed; any other pr-comment-* artifact a
+          # fork may have uploaded is ignored. Each raw log is treated as
+          # UNTRUSTED and escaped/capped HERE. Fields: artifact|logfile|job name|kind
+          specs=(
+            "pr-comment-valgrind|valgrind.log|Valgrind Memory Checks|gated"
+            "pr-comment-benchmarks|bench.log|Benchmarks (report-only)|report"
+          )
+          jobs_json="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs')"
+          : > body.md
+          wrote=0
+          for spec in "${specs[@]}"; do
+            IFS='|' read -r art logname title kind <<< "$spec"
+            logf="reports/$art/$logname"
+            [ -f "$logf" ] || continue
+            if [ "$kind" = "gated" ]; then
+              concl="$(printf '%s' "$jobs_json" | jq -r --arg n "$title" 'map(select(.name == $n)) | .[0].conclusion // "unknown"')"
+              case "$concl" in
+                success) status="PASSED" ;;
+                failure) status="FAILED" ;;
+                *) status="$concl" ;;
+              esac
+            else
+              status="report-only"
+            fi
+            # Neutralize any ``` in the untrusted log so it cannot break out of
+            # the code fence and inject markdown into the trusted comment.
+            sanitized="$(sed 's/```/`\xE2\x80\x8b``/g' "$logf" | tail -n 300)"
+            {
+              printf '## %s - %s\n\n' "$title" "$status"
+              if [ "$kind" = "report" ]; then
+                printf '_Informational only - shared runners are too noisy to gate on; full data is in the run artifacts._\n\n'
+              fi
+              printf '<details><summary>Output (last 300 lines)</summary>\n\n'
+              printf '```text\n'
+              printf '%s\n' "${sanitized:-(no output captured)}"
+              printf '```\n\n</details>\n\n'
+            } >> body.md
+            wrote=1
+          done
+          if [ "$wrote" -eq 0 ]; then
+            echo "No expected report artifacts present; nothing to comment."
             exit 0
           fi
-          {
-            for r in "${reports[@]}"; do
-              cat "$r"
-              printf '\n\n---\n\n'
-            done
-          } > body.md
-          # --body-file posts content verbatim (no shell interpolation). The body
-          # is fork-influenced data but only ever lands on its own PR, and the
-          # payload step already fenced/escaped it.
+          printf '_Commit `%s` - [full run](%s)_\n' "$HEAD_SHA" "$RUN_URL" >> body.md
           gh pr comment "$PR" --repo "$REPO" --body-file body.md
