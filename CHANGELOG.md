@@ -5,27 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-07-13
+
+This release completes the split of the former monorepo into independent repos.
+`mux-compiler` is now the canonical "Mux version" and resolves/reports the runtime
+version independently; the runtime, website, playground API, and syntax
+highlighting each live in and version from their own repos. Requires
+`mux-runtime` 0.5.0.
 
 ### Added
+- **Where-clause constraints**: `where { expr, ... }` attaches runtime constraints to
+  functions, methods, lambdas, interface methods, enum variants, fields, and classes.
+  Provable violations are compile errors (zero-false-positive); the runtime panic is the
+  fallback. Closes #224 (#235).
+- **Reject provable runtime panics at compile time**: The compiler now turns provable
+  runtime panics into compile-time errors, using the zero-false-positive const-fold path.
+  Closes #238.
 - **`cargo bench` harness (criterion)**: Compiler-phase benchmarks (`lex`, `parse`, `semantics`,
   `codegen`, end-to-end `pipeline`) run over the whole compiling `test_scripts` corpus, plus
   end-to-end `execution` throughput benchmarks for a curated set of compiled workloads. A
   stdlib-only `scripts/bench-report.py` aggregates the per-file medians into a box-and-whisker
   per phase. Benchmarks are local/manual and a non-blocking CI report, never a merge gate.
   Closes #247.
+- **Valgrind memory checking**: CI now runs compiled programs and the compiler under Valgrind
+  (Memcheck), gating on definite/indirect leaks and memory errors with checked-in suppressions
+  for benign third-party noise. Closes #246.
+- **Range-literal syntax diagnostic**: A targeted diagnostic for a digit followed by `..`
+  (range-literal syntax) replaces the previous generic parse error. Closes #245.
+- **Independent runtime version resolution**: The compiler resolves and reports the runtime
+  version independently of its own version, so `mux --version` reports both (e.g.
+  `mux 0.5.0 (runtime 0.5.0)`).
 
 ### Changed
+- **Repo split from the monorepo**: Extracted the runtime, website, playground API, and syntax
+  highlighting into their own repos; removed the root `VERSION` file and `sync-version` tooling;
+  scoped the SonarCloud analysis to the compiler; and rebound the project identity to
+  `muxlang/mux-compiler`. Internals documentation now points at `muxlang/mux-context`.
+- **CLI polish**: Colored diagnostics, styled help output, doctor glyphs, a version banner, and
+  a compile spinner. Closes #249.
+- **Runtime panic documentation and behavior updated** (#225, #230).
 - **Removed ad-hoc perf tooling**: Deleted `scripts/measure-baseline.sh`,
   `scripts/check-timings.py`, and the orphaned `infra/ci/baselines/*.json` timing budgets, and
   stripped the unused `--timings-file` plumbing from `run-checks.sh` / `integration-checks.sh`.
   Also removed the unused `cargo-fuzz` setup under `mux-compiler/fuzz/`.
+- **Slimmed the README** to a real README and pointed internals at `muxlang/mux-context`.
 
 ### Fixed
 - **`mux build` / `mux run` now fail on link errors**: A failed `clang` link previously printed
   the error but exited 0 (`build` reported success with no executable; `run` could fall through
   and execute a stale binary from a prior build). `report_clang_output_or_exit` now exits
   non-zero as its name implies.
+- **Reference-counting correctness**: Reference-count cleanup for owned temporaries plus
+  init/copy correctness fixes (#253); closures are now allocated with a reference-count header.
+  Closes #250 (#252).
+- **Collection read-path performance and correctness**: Fixed O(n^2) indexed reads,
+  runtime-cache staleness, and Python-style negative indexing on collection reads
+  (#256, #258, #259, #260).
+- **`match` usable as a statement**: `match` now works as a statement and the guarded-arm
+  exhaustiveness hole is closed (#233, #234, #243) (#242).
+- **Trailing commas**: Allow trailing commas before newline-closed collection delimiters (#244).
+- **Enum codegen**: Load enums from boxed pointers correctly in codegen (#237).
+- **Release checksum verification**: Verify release checksums by hash, not path.
+
+### Security
+- **`cmov` 0.5.3 -> 0.5.4**: Bumped to fix GHSA-3rjw-m598-pq24 (#254).
 
 ## [0.4.1] - 2026-06-27
 
