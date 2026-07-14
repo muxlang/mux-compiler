@@ -182,7 +182,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Valgrind checks
-        run: ./scripts/valgrind-checks.sh
+        id: run
+        run: |
+          set -o pipefail
+          ./scripts/valgrind-checks.sh 2>&1 | tee valgrind.log
+      - name: Upload valgrind log for PR comment
+        # Raw log only; the trusted pr-comment workflow escapes and renders it.
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-valgrind
+          path: valgrind.log
+          if-no-files-found: warn
   benchmarks:
     name: Benchmarks (report-only)
     needs: detect-changes
@@ -242,7 +253,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Run benchmarks
-        run: cargo bench -p mux-lang
+        id: run
+        run: |
+          set -o pipefail
+          cargo bench -p mux-lang 2>&1 | tee bench.log
       - name: Build per-phase distribution report
         run: python3 scripts/bench-report.py
       - name: Upload benchmark report
@@ -252,6 +266,14 @@ jobs:
           path: |
             target/bench-report/
             target/criterion/
+          if-no-files-found: warn
+      - name: Upload benchmark log for PR comment
+        # Raw log only; the trusted pr-comment workflow escapes and renders it.
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-benchmarks
+          path: bench.log
           if-no-files-found: warn
   sonarqube:
     name: SonarQube

@@ -1,0 +1,151 @@
+name: PR Report Comment
+# Posts the valgrind / benchmark reports produced by the "Build" workflow as a
+# comment on the PR. This is a SEPARATE workflow triggered via workflow_run so
+# it runs in the trusted base-repo context (with a write token) even when the
+# "Build" run it reports on came from an untrusted fork PR.
+#
+# Threat model: a fork controls its own Build workflow (pull_request runs the
+# fork's copy), so EVERYTHING the Build uploads is untrusted. This workflow
+# therefore:
+#   - resolves the target PR only from trusted workflow_run metadata (head repo
+#     + branch + SHA), never from artifact data;
+#   - consumes only the raw logs from the exact expected artifacts and does the
+#     fence-escaping, length cap, and markdown assembly HERE (a fork cannot make
+#     the Build skip escaping it does not perform);
+#   - takes pass/fail from the trusted jobs API, not from the artifact.
+# It never checks out or executes the PR's code.
+#
+# NOTE: workflow_run only fires for the copy of this file on the default branch,
+# so it takes effect once merged to main (not from the PR that adds it).
+on:
+  workflow_run:
+    workflows: ["Build"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read # download artifacts + read job conclusions from the run
+  pull-requests: write # post the comment
+
+jobs:
+  comment:
+    # Only PR-triggered Build runs carry a PR to comment on (skip push to main).
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target PR from trusted metadata
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          # Match the triggering PR by its trusted head owner:branch, then confirm
+          # the head SHA and require exactly one open match. This is reliable for
+          # forks (workflow_run.pull_requests[] is empty for them) and cannot be
+          # influenced by artifact contents.
+          mapfile -t hits < <(
+            gh api "repos/$REPO/pulls?state=open&head=$HEAD_OWNER:$HEAD_BRANCH&per_page=100" \
+              --jq '.[] | "\(.number) \(.head.sha)"' \
+              | awk -v s="$HEAD_SHA" '$2 == s { print $1 }'
+          )
+          if [ "${#hits[@]}" -eq 1 ]; then
+            echo "number=${hits[0]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Expected exactly one open PR for $HEAD_OWNER:$HEAD_BRANCH@$HEAD_SHA, found ${#hits[@]}; nothing to comment."
+            echo "number=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download report artifacts from the triggering run
+        if: ${{ steps.pr.outputs.number != '' }}
+        continue-on-error: true # a path-skipped Build uploads no artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: pr-comment-*
+          path: reports
+      - name: Assemble and post comment
+        if: ${{ steps.pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.number }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          # Only these artifacts are consumed; any other pr-comment-* artifact a
+          # fork may have uploaded is ignored. Each raw log is treated as
+          # UNTRUSTED and escaped/capped HERE. Fields: artifact|logfile|job name|kind
+          specs=(
+            "pr-comment-valgrind|valgrind.log|Valgrind Memory Checks|gated"
+            "pr-comment-benchmarks|bench.log|Benchmarks (report-only)|report"
+          )
+          jobs_json="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs')"
+          # When the report jobs were path-skipped there are no artifacts. Only
+          # surface that explicitly for PRs that actually changed the CI/report
+          # workflows (the case where verifying the pipeline matters); staying
+          # quiet on unrelated PRs (docs, etc.) avoids comment noise.
+          touched_ci="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
+            --jq '.[].filename' | grep -Ec '^\.github/workflows/' || true)"
+          : > body.md
+          wrote=0
+          for spec in "${specs[@]}"; do
+            IFS='|' read -r art logname title kind <<< "$spec"
+            logf="reports/$art/$logname"
+            concl="$(printf '%s' "$jobs_json" | jq -r --arg n "$title" 'map(select(.name == $n)) | .[0].conclusion // ""')"
+            if [ ! -f "$logf" ]; then
+              # No log: job was path-skipped or produced nothing. Note it only on
+              # workflow-touching PRs.
+              if [ "${touched_ci:-0}" -gt 0 ]; then
+                case "$concl" in
+                  skipped) note="Skipped - no relevant source changed in this PR." ;;
+                  "") note="Job not found in this run." ;;
+                  *) note="No report produced (job conclusion: $concl)." ;;
+                esac
+                printf '## %s - skipped\n\n_%s_\n\n' "$title" "$note" >> body.md
+                wrote=1
+              fi
+              continue
+            fi
+            if [ "$kind" = "gated" ]; then
+              case "$concl" in
+                success) status="PASSED" ;;
+                failure) status="FAILED" ;;
+                *) status="${concl:-unknown}" ;;
+              esac
+            else
+              status="report-only"
+            fi
+            content="$(tail -n 300 "$logf")"
+            # This log is fork-controlled. Prevent code-fence breakout by opening
+            # the block with MORE backticks than the longest backtick run in the
+            # content: a fence is only closed by an equal-or-longer run, so no
+            # line inside can terminate it. (Rewriting occurrences of ``` fails
+            # here - a longer run of backticks reconstructs a closing fence.)
+            maxrun="$(printf '%s' "$content" | { grep -oE '`+' || true; } | awk '{ if (length > m) m = length } END { print m + 0 }')"
+            fence_len=3
+            [ "${maxrun:-0}" -ge 3 ] && fence_len=$(( maxrun + 1 ))
+            fence="$(printf '`%.0s' $(seq "$fence_len"))"
+            {
+              printf '## %s - %s\n\n' "$title" "$status"
+              if [ "$kind" = "report" ]; then
+                printf '_Informational only - shared runners are too noisy to gate on; full data is in the run artifacts._\n\n'
+              fi
+              printf '<details><summary>Output (last 300 lines)</summary>\n\n'
+              printf '%stext\n' "$fence"
+              printf '%s\n' "${content:-(no output captured)}"
+              printf '%s\n\n</details>\n\n' "$fence"
+            } >> body.md
+            wrote=1
+          done
+          if [ "$wrote" -eq 0 ]; then
+            echo "Nothing to report for this PR; not commenting."
+            exit 0
+          fi
+          printf '_Commit `%s` - [full run](%s)_\n' "$HEAD_SHA" "$RUN_URL" >> body.md
+          gh pr comment "$PR" --repo "$REPO" --body-file body.md
