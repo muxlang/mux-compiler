@@ -1893,8 +1893,7 @@ impl<'a> CodeGenerator<'a> {
             | Type::Tuple(_, _)
             | Type::EmptyList
             | Type::EmptyMap
-            | Type::EmptySet
-            | Type::EmptySetOrMap => {
+            | Type::EmptySet => {
                 let left_ptr = self.ensure_pointer(left);
                 let right_ptr = self.ensure_pointer(right);
                 self.call_runtime_bool(left_ptr, right_ptr, "mux_value_equal", "value_equal")

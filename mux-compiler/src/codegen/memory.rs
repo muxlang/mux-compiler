@@ -540,7 +540,7 @@ impl<'a> CodeGenerator<'a> {
             // Void doesn't need tracking
             Type::Void | Type::Never => false,
             // Empty collections don't need tracking
-            Type::EmptyList | Type::EmptyMap | Type::EmptySet | Type::EmptySetOrMap => false,
+            Type::EmptyList | Type::EmptyMap | Type::EmptySet => false,
             // Instantiated types (like Pair<string, bool>) need RC
             Type::Instantiated(_, _) => true,
             // Module references don't need RC

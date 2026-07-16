@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Expected set<int>, found an empty map literal
+--> test_scripts/error_cases/empty_map_as_set.mux:4:18
+   |
+ 4 |     set<int> s = {:}
+   |                  ^
+   |
+= help: The empty set literal is `{}`; `{:}` is the empty map.

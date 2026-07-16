@@ -1737,7 +1737,7 @@ impl<'a> Parser<'a> {
                 self.check_no_postfix_increment_decrement(inner)?;
                 self.check_no_postfix_increment_decrement(index)
             }
-            ExpressionKind::ListLiteral(elems) | ExpressionKind::SetOrMapLiteral(elems) => {
+            ExpressionKind::ListLiteral(elems) | ExpressionKind::SetLiteral(elems) => {
                 self.check_no_postfix_increment_decrement_all(elems)
             }
             ExpressionKind::MapLiteral { entries, .. } => {
@@ -2195,7 +2195,11 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
 
         if self.check(TokenType::CloseBrace) {
-            return self.parse_empty_collection(start_span);
+            return self.parse_empty_set(start_span);
+        }
+        // No key expression can begin with `:`, so no lookahead past it is needed.
+        if self.check(TokenType::Colon) {
+            return self.parse_empty_map(start_span);
         }
 
         let first_expr = self.parse_expression()?;
@@ -2206,11 +2210,31 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_empty_collection(&mut self, start_span: Span) -> ParserResult<ExpressionNode> {
+    fn parse_empty_set(&mut self, start_span: Span) -> ParserResult<ExpressionNode> {
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after collection")?;
         Ok(ExpressionNode {
-            kind: ExpressionKind::SetOrMapLiteral(vec![]),
+            kind: ExpressionKind::SetLiteral(vec![]),
+            span: start_span.combine(&end_span),
+        })
+    }
+
+    fn parse_empty_map(&mut self, start_span: Span) -> ParserResult<ExpressionNode> {
+        self.consume_token(TokenType::Colon, "Expected ':' in empty map literal")?;
+        self.skip_newlines();
+        let end_span = self.consume_token(TokenType::CloseBrace, "Expected '}' after '{:'")?;
+        Ok(ExpressionNode {
+            kind: ExpressionKind::MapLiteral {
+                key_type: Box::new(TypeNode {
+                    kind: TypeKind::Auto,
+                    span: start_span,
+                }),
+                value_type: Box::new(TypeNode {
+                    kind: TypeKind::Auto,
+                    span: start_span,
+                }),
+                entries: vec![],
+            },
             span: start_span.combine(&end_span),
         })
     }
@@ -2251,7 +2275,7 @@ impl<'a> Parser<'a> {
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after collection")?;
         Ok(ExpressionNode {
-            kind: ExpressionKind::SetOrMapLiteral(elements),
+            kind: ExpressionKind::SetLiteral(elements),
             span: start_span.combine(&end_span),
         })
     }

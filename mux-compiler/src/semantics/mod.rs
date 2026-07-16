@@ -794,7 +794,7 @@ impl SemanticAnalyzer {
                 body,
                 ..
             } => self.resolve_lambda_type(params, return_type, body, expr.span),
-            ExpressionKind::SetOrMapLiteral(elements) => self.resolve_set_literal_type(elements),
+            ExpressionKind::SetLiteral(elements) => self.resolve_set_literal_type(elements),
             ExpressionKind::TupleLiteral(elements) => {
                 self.resolve_tuple_literal_type(elements, expr.span)
             }
@@ -1062,7 +1062,7 @@ impl SemanticAnalyzer {
         elements: &[ExpressionNode],
     ) -> Result<Type, SemanticError> {
         if elements.is_empty() {
-            return Ok(Type::EmptySetOrMap);
+            return Ok(Type::EmptySet);
         }
         let elem_type = self.get_expression_type(&elements[0])?;
         Ok(Type::Set(Box::new(elem_type)))

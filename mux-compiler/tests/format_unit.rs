@@ -62,7 +62,6 @@ fn format_unit_and_empty_types() {
     assert_eq!(format_type(&Type::EmptyList), "list<?>");
     assert_eq!(format_type(&Type::EmptyMap), "map<?, ?>");
     assert_eq!(format_type(&Type::EmptySet), "set<?>");
-    assert_eq!(format_type(&Type::EmptySetOrMap), "set<?>|map<?, ?>");
 }
 
 #[test]

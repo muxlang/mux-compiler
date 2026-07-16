@@ -190,7 +190,7 @@ impl SemanticAnalyzer {
             ExpressionKind::MapLiteral { entries, .. } => {
                 self.handle_map_literal_expression(entries, local_vars, free_vars)?;
             }
-            ExpressionKind::SetOrMapLiteral(elements) => {
+            ExpressionKind::SetLiteral(elements) => {
                 self.handle_set_literal_expression(elements, local_vars, free_vars)?;
             }
             ExpressionKind::TupleLiteral(elements) => {

@@ -1031,7 +1031,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(map_value)
     }
 
-    fn generate_set_or_map_literal_expression(
+    fn generate_set_literal_expression(
         &mut self,
         expr: &ExpressionNode,
         elements: &[ExpressionNode],
@@ -1696,7 +1696,7 @@ impl<'a> CodeGenerator<'a> {
             | ExpressionKind::ListAccess { .. }
             | ExpressionKind::ListLiteral(_)
             | ExpressionKind::MapLiteral { .. }
-            | ExpressionKind::SetOrMapLiteral(_)
+            | ExpressionKind::SetLiteral(_)
             | ExpressionKind::TupleLiteral(_) => true,
             // Everything else is either borrowed or not reference counted, and
             // must never be tracked — freeing a borrowed value (a field load, a
@@ -4274,8 +4274,8 @@ impl<'a> CodeGenerator<'a> {
             ExpressionKind::MapLiteral { entries, .. } => {
                 self.generate_map_literal_expression(entries)
             }
-            ExpressionKind::SetOrMapLiteral(elements) => {
-                self.generate_set_or_map_literal_expression(expr, elements)
+            ExpressionKind::SetLiteral(elements) => {
+                self.generate_set_literal_expression(expr, elements)
             }
             ExpressionKind::TupleLiteral(elements) => {
                 self.generate_tuple_literal_expression(elements)
