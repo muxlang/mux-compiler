@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **BREAKING: `{}` is now always the empty set; the empty map is `{:}`**. `{}` in
+  a map-typed position no longer resolves to an empty map - it is a compile error
+  that points at `{:}`, and the reverse (`{:}` where a set is expected) reports
+  the same way. Migration is mechanical: `map<K,V> m = {}` becomes
+  `map<K,V> m = {:}`. Set literals are unaffected. This supersedes the contextual
+  `{}` resolution added in 0.5.0: `Type::EmptySetOrMap` and its span-keyed
+  override map are removed, so the set/map ambiguity no longer reaches semantics
+  or codegen. Closes #266.
+
+### Fixed
+- **`auto` now rejects nested empty collections consistently**: `auto x = {1: []}`
+  and `auto x = [[]]` previously passed semantic analysis with an unresolved
+  element type, while the set/map equivalents were caught. All empty collection
+  kinds are now guarded.
+- **Empty-collection inference help text**: suggested `{}` for every collection,
+  including lists (`list<int> myVar = {}`). Each kind now shows its own literal
+  syntax (`[]`, `{:}`, `{}`).
+
 ## [0.5.0] - 2026-07-13
 
 This release completes the split of the former monorepo into independent repos.
