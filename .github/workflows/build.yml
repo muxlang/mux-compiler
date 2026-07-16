@@ -93,6 +93,27 @@ jobs:
         run: cargo fmt -- --check
       - name: Rust checks
         run: ./scripts/run-checks.sh
+      - name: Install cargo-insta
+        # Pinned, and matched to the insta library version in mux-compiler's
+        # Cargo.lock. This step gates correctness rather than reporting, so it
+        # must not float: `--locked` pins cargo-insta's dependencies, not
+        # cargo-insta itself, and a release that changed what
+        # `--unreferenced=reject` means could stop enforcing without failing.
+        # Comparing the version rather than `command -v` so a cached ~/.cargo/bin
+        # from an earlier run cannot silently win over the pin.
+        env:
+          CARGO_INSTA_VERSION: 1.47.2
+        run: |
+          set -euo pipefail
+          if ! cargo insta --version 2>/dev/null | grep -qx "cargo-insta $CARGO_INSTA_VERSION"; then
+            cargo install cargo-insta --version "$CARGO_INSTA_VERSION" --locked --force
+          fi
+      - name: Reject orphaned snapshots
+        # test_scripts/ is auto-discovered, so deleting a script leaves its
+        # snapshot behind, referenced by nothing and asserting nothing. Those
+        # orphans read as coverage that does not exist - see #269. Runs here to
+        # reuse the uninstrumented build from the step above.
+        run: cargo insta test -p mux-lang --unreferenced=reject
       - name: Install cargo-llvm-cov
         run: command -v cargo-llvm-cov || cargo install cargo-llvm-cov --locked
       - name: Coverage
