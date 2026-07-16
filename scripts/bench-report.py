@@ -23,6 +23,12 @@ from pathlib import Path
 
 # Phase groups in pipeline order; any other group found (e.g. execution) is
 # appended after these.
+#
+# `--summary-json` feeds the PR-comment workflow, which has its own whitelist of
+# phase labels (BENCH_FAST_PHASES / BENCH_SLOW_PHASES in
+# .github/workflows/pr-comment.yml) and drops anything not on it. A phase added
+# here shows up in the JSON and this script's own report, but stays out of the PR
+# charts until it is added there too.
 PREFERRED_ORDER = ["lex", "parse", "semantics", "codegen", "pipeline", "execution"]
 
 
@@ -204,6 +210,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("criterion_dir", nargs="?", type=Path)
     parser.add_argument("-o", "--output", type=Path)
+    parser.add_argument(
+        "--summary-json",
+        type=Path,
+        help="also write a compact {phases:[{name,median_ns,n}]} JSON here "
+        "(consumed by the PR-comment workflow to render charts).",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
@@ -243,6 +255,19 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(HTML.format(svg=svg), encoding="utf-8")
     print(f"wrote {output}")
+
+    if args.summary_json is not None:
+        summary_json = confined(args.summary_json, "summary json")
+        summary_json.parent.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "phases": [
+                {"name": name, "median_ns": stats[name]["q2"], "n": counts[name]}
+                for name in order
+            ]
+        }
+        summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print(f"wrote {summary_json}")
+
     for name in order:
         s = stats[name]
         print(

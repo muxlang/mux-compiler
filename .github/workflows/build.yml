@@ -258,7 +258,7 @@ jobs:
           set -o pipefail
           cargo bench -p mux-lang 2>&1 | tee bench.log
       - name: Build per-phase distribution report
-        run: python3 scripts/bench-report.py
+        run: python3 scripts/bench-report.py --summary-json bench-summary.json
       - name: Upload benchmark report
         uses: actions/upload-artifact@v4
         with:
@@ -268,12 +268,16 @@ jobs:
             target/criterion/
           if-no-files-found: warn
       - name: Upload benchmark log for PR comment
-        # Raw log only; the trusted pr-comment workflow escapes and renders it.
+        # Raw log (escaped/rendered by the trusted pr-comment workflow) plus the
+        # compact per-phase summary it turns into charts. Both are fork-controlled
+        # and re-validated there; nothing here is trusted.
         if: ${{ always() && github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4
         with:
           name: pr-comment-benchmarks
-          path: bench.log
+          path: |
+            bench.log
+            bench-summary.json
           if-no-files-found: warn
   sonarqube:
     name: SonarQube
