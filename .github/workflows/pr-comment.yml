@@ -92,6 +92,99 @@ jobs:
           # quiet on unrelated PRs (docs, etc.) avoids comment noise.
           touched_ci="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
             --jq '.[].filename' | grep -Ec '^\.github/workflows/' || true)"
+
+          # INJECTION MODEL: charts/tables below must contain ONLY data this step
+          # can prove safe - integers/floats we numeric-validate, and phase labels
+          # from the fixed whitelist BELOW (never a string read from an artifact).
+          # A fork-controlled name/median that fails validation is dropped, not
+          # echoed. The one place raw fork text appears is the escaped <details>.
+
+          # Render the fork-controlled raw log inside a code fence it cannot break
+          # out of: open with MORE backticks than the longest backtick run inside
+          # (a fence only closes on an equal-or-longer run).
+          emit_raw_details() {
+            local logf="$1" summary="$2" content maxrun fence_len fence
+            content="$(tail -n 300 "$logf")"
+            maxrun="$(printf '%s' "$content" | { grep -oE '`+' || true; } | awk '{ if (length > m) m = length } END { print m + 0 }')"
+            fence_len=3
+            [ "${maxrun:-0}" -ge 3 ] && fence_len=$(( maxrun + 1 ))
+            fence="$(printf '`%.0s' $(seq "$fence_len"))"
+            printf '<details><summary>%s</summary>\n\n' "$summary"
+            printf '%stext\n' "$fence"
+            printf '%s\n' "${content:-(no output captured)}"
+            printf '%s\n\n</details>\n\n' "$fence"
+          }
+
+          is_num() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
+
+          human_ns() {
+            awk -v ns="$1" 'BEGIN {
+              if (ns >= 1e9) printf "%.3g s", ns/1e9;
+              else if (ns >= 1e6) printf "%.3g ms", ns/1e6;
+              else if (ns >= 1e3) printf "%.3g us", ns/1e3;
+              else printf "%.3g ns", ns;
+            }'
+          }
+
+          # One xychart-beta bar per magnitude group so orders-of-magnitude phases
+          # do not flatten (mermaid xychart has no log axis). $1 unit label, $2 ns
+          # divisor, $3 chart title, remaining args: whitelisted phase names.
+          emit_bench_group() {
+            local unit="$1" divisor="$2" title="$3"; shift 3
+            local name med val labels="" values="" any=0
+            for name in "$@"; do
+              med="$(jq -r --arg p "$name" '(.phases[] | select(.name == $p) | .median_ns) // empty' "$SUMMARY" 2>/dev/null || true)"
+              is_num "$med" || continue
+              val="$(awk -v m="$med" -v d="$divisor" 'BEGIN { printf "%.4g", m / d }')"
+              labels="${labels:+$labels, }\"$name\""
+              values="${values:+$values, }$val"
+              any=1
+            done
+            [ "$any" -eq 1 ] || return 0
+            printf '```mermaid\n'
+            printf 'xychart-beta\n'
+            printf '    title "%s"\n' "$title"
+            printf '    x-axis [%s]\n' "$labels"
+            printf '    y-axis "%s"\n' "$unit"
+            printf '    bar [%s]\n' "$values"
+            printf '```\n\n'
+          }
+
+          emit_bench_report() {
+            # SUMMARY is a fork-produced JSON; jq reads it but every value is
+            # numeric-validated and every label is a trusted literal below.
+            [ -f "$SUMMARY" ] || return 0
+            emit_bench_group "microseconds" 1000 "Compile phases (median)" lex parse semantics codegen
+            emit_bench_group "milliseconds" 1000000 "Pipeline + execution (median)" pipeline execution
+            local name med n rows=""
+            for name in lex parse semantics codegen pipeline execution; do
+              med="$(jq -r --arg p "$name" '(.phases[] | select(.name == $p) | .median_ns) // empty' "$SUMMARY" 2>/dev/null || true)"
+              is_num "$med" || continue
+              n="$(jq -r --arg p "$name" '(.phases[] | select(.name == $p) | .n) // empty' "$SUMMARY" 2>/dev/null || true)"
+              [[ "$n" =~ ^[0-9]+$ ]] || n="?"
+              rows="${rows}| \`$name\` | $(human_ns "$med") | $n |"$'\n'
+            done
+            [ -n "$rows" ] || return 0
+            printf '| Phase | Median | Samples |\n|:--|--:|--:|\n%s\n' "$rows"
+          }
+
+          # Leg A prints "N program(s), M failure(s)"; take those two integers only.
+          emit_valgrind_pie() {
+            local logf="$1" line total fails clean
+            line="$(grep -Eo '[0-9]+ program\(s\), [0-9]+ failure\(s\)' "$logf" | tail -n 1 || true)"
+            [ -n "$line" ] || return 0
+            total="$(printf '%s' "$line" | grep -Eo '^[0-9]+' || true)"
+            fails="$(printf '%s' "$line" | grep -Eo '[0-9]+ failure' | grep -Eo '^[0-9]+' || true)"
+            { [[ "$total" =~ ^[0-9]+$ ]] && [[ "$fails" =~ ^[0-9]+$ ]] && [ "$total" -gt 0 ] && [ "$fails" -le "$total" ]; } || return 0
+            clean=$(( total - fails ))
+            printf '```mermaid\n'
+            printf 'pie showData\n'
+            printf '    title Leg A: compiled programs under Valgrind (%s total)\n' "$total"
+            printf '    "Clean" : %s\n' "$clean"
+            printf '    "Leaking" : %s\n' "$fails"
+            printf '```\n\n'
+          }
+
           : > body.md
           wrote=0
           for spec in "${specs[@]}"; do
@@ -121,25 +214,19 @@ jobs:
             else
               status="report-only"
             fi
-            content="$(tail -n 300 "$logf")"
-            # This log is fork-controlled. Prevent code-fence breakout by opening
-            # the block with MORE backticks than the longest backtick run in the
-            # content: a fence is only closed by an equal-or-longer run, so no
-            # line inside can terminate it. (Rewriting occurrences of ``` fails
-            # here - a longer run of backticks reconstructs a closing fence.)
-            maxrun="$(printf '%s' "$content" | { grep -oE '`+' || true; } | awk '{ if (length > m) m = length } END { print m + 0 }')"
-            fence_len=3
-            [ "${maxrun:-0}" -ge 3 ] && fence_len=$(( maxrun + 1 ))
-            fence="$(printf '`%.0s' $(seq "$fence_len"))"
             {
               printf '## %s - %s\n\n' "$title" "$status"
-              if [ "$kind" = "report" ]; then
+              if [ "$art" = "pr-comment-valgrind" ]; then
+                emit_valgrind_pie "$logf"
+                emit_raw_details "$logf" "Full valgrind output (last 300 lines)"
+              elif [ "$art" = "pr-comment-benchmarks" ]; then
                 printf '_Informational only - shared runners are too noisy to gate on; full data is in the run artifacts._\n\n'
+                SUMMARY="reports/$art/bench-summary.json"
+                emit_bench_report
+                emit_raw_details "$logf" "Full benchmark output (last 300 lines)"
+              else
+                emit_raw_details "$logf" "Output (last 300 lines)"
               fi
-              printf '<details><summary>Output (last 300 lines)</summary>\n\n'
-              printf '%stext\n' "$fence"
-              printf '%s\n' "${content:-(no output captured)}"
-              printf '%s\n\n</details>\n\n' "$fence"
             } >> body.md
             wrote=1
           done
