@@ -23,6 +23,12 @@ from pathlib import Path
 
 # Phase groups in pipeline order; any other group found (e.g. execution) is
 # appended after these.
+#
+# `--summary-json` feeds the PR-comment workflow, which has its own whitelist of
+# phase labels (BENCH_FAST_PHASES / BENCH_SLOW_PHASES in
+# .github/workflows/pr-comment.yml) and drops anything not on it. A phase added
+# here shows up in the JSON and this script's own report, but stays out of the PR
+# charts until it is added there too.
 PREFERRED_ORDER = ["lex", "parse", "semantics", "codegen", "pipeline", "execution"]
 
 
@@ -261,6 +267,7 @@ def main() -> int:
         }
         summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         print(f"wrote {summary_json}")
+
     for name in order:
         s = stats[name]
         print(
