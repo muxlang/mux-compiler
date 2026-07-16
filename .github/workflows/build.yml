@@ -93,6 +93,14 @@ jobs:
         run: cargo fmt -- --check
       - name: Rust checks
         run: ./scripts/run-checks.sh
+      - name: Install cargo-insta
+        run: command -v cargo-insta || cargo install cargo-insta --locked
+      - name: Reject orphaned snapshots
+        # test_scripts/ is auto-discovered, so deleting a script leaves its
+        # snapshot behind, referenced by nothing and asserting nothing. Those
+        # orphans read as coverage that does not exist - see #269. Runs here to
+        # reuse the uninstrumented build from the step above.
+        run: cargo insta test -p mux-lang --unreferenced=reject
       - name: Install cargo-llvm-cov
         run: command -v cargo-llvm-cov || cargo install cargo-llvm-cov --locked
       - name: Coverage
