@@ -130,11 +130,6 @@ impl SemanticAnalyzer {
         // Codegen queries a single, shared analyzer for expression types
         // (e.g. to disambiguate an empty `{}` literal as a map vs a set), but
         // each imported module is analyzed with its own throwaway analyzer
-        // instance. Merge that instance's span-keyed overrides back into the
-        // main analyzer so codegen can resolve them for code that lives in
-        // this module.
-        self.expression_type_overrides
-            .extend(module_analyzer.expression_type_overrides.clone());
         if !errors.is_empty() {
             resolver.borrow_mut().finish_import(module_path);
             let error_messages: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
@@ -316,11 +311,6 @@ impl SemanticAnalyzer {
             submodule_path.replace('.', "/") + ".mux",
         ));
         let errors = submodule_analyzer.analyze(&submodule_nodes, Some(files));
-        // See the comment in analyze_imported_module: codegen queries the
-        // main analyzer's span-keyed expression type overrides, so this
-        // submodule's overrides must be merged back in.
-        self.expression_type_overrides
-            .extend(submodule_analyzer.expression_type_overrides.clone());
         if !errors.is_empty() {
             resolver.borrow_mut().finish_import(submodule_path);
             let error_messages: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();

@@ -78,7 +78,8 @@ impl SemanticAnalyzer {
         }
         if Self::type_contains_empty_collection(&expr_type) {
             return Err(SemanticError::with_help(
-                "Cannot infer type for expression containing empty set/map literal".to_string(),
+                "Cannot infer type for expression containing an empty collection literal"
+                    .to_string(),
                 expr.span,
                 "Use explicit type annotations for all empty collection literals.",
             ));
@@ -92,7 +93,7 @@ impl SemanticAnalyzer {
 
     fn type_contains_empty_collection(ty: &Type) -> bool {
         match ty {
-            Type::EmptySet | Type::EmptyMap => true,
+            Type::EmptySet | Type::EmptyMap | Type::EmptyList => true,
             Type::Map(key_type, value_type) => {
                 Self::type_contains_empty_collection(key_type)
                     || Self::type_contains_empty_collection(value_type)

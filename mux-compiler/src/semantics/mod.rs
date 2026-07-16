@@ -57,7 +57,6 @@ pub struct SemanticAnalyzer {
     pub lambda_captures: std::collections::HashMap<Span, Vec<(String, Type)>>, // Track captured variables for each lambda
     pub current_return_type: Option<Type>, // Track current function/lambda return type
     pub current_class_type_params: Option<Vec<(String, GenericBounds)>>, // Track class-level type params with bounds for method analysis
-    expression_type_overrides: std::collections::HashMap<Span, Type>, // Override resolved types for expressions (e.g., {} resolved to EmptyMap in map context)
     fresh_type_var_counter: usize, // Generates globally-unique names so a callee's type variables never collide with the caller's
     // Import statements are resolved during the hoisting pass (so interfaces
     // they bring into scope are visible to classes hoisted later in the same
@@ -114,7 +113,6 @@ impl SemanticAnalyzer {
             lambda_captures: std::collections::HashMap::new(),
             current_return_type: None,
             current_class_type_params: None,
-            expression_type_overrides: std::collections::HashMap::new(),
             fresh_type_var_counter: 0,
             hoisted_import_spans: HashSet::new(),
             class_invariants: HashMap::new(),
@@ -263,7 +261,6 @@ impl SemanticAnalyzer {
             lambda_captures: std::collections::HashMap::new(),
             current_return_type: None,
             current_class_type_params: None,
-            expression_type_overrides: std::collections::HashMap::new(),
             fresh_type_var_counter: 0,
             hoisted_import_spans: HashSet::new(),
             class_invariants: HashMap::new(),
@@ -753,9 +750,6 @@ impl SemanticAnalyzer {
     }
 
     pub fn get_expression_type(&mut self, expr: &ExpressionNode) -> Result<Type, SemanticError> {
-        if let Some(override_type) = self.expression_type_overrides.get(&expr.span) {
-            return Ok(override_type.clone());
-        }
         match &expr.kind {
             ExpressionKind::Literal(_) => self.infer_literal_type(expr),
             ExpressionKind::None => Ok(Type::Optional(Box::new(Type::Never))),
