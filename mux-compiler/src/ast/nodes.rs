@@ -177,7 +177,7 @@ pub enum ExpressionKind {
         value_type: Box<TypeNode>,
         entries: Vec<(ExpressionNode, ExpressionNode)>,
     },
-    SetOrMapLiteral(Vec<ExpressionNode>),
+    SetLiteral(Vec<ExpressionNode>),
     TupleLiteral(Vec<ExpressionNode>),
     If {
         cond: Box<ExpressionNode>,

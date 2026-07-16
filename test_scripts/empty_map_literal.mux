@@ -1,0 +1,29 @@
+func main() returns void {
+    // `{:}` is the empty map, `{}` is the empty set
+    map<string, int> m = {:}
+    set<int> s = {}
+    print(m.to_string())
+    print(s.to_string())
+    print(m.size().to_string())
+    print(s.size().to_string())
+
+    // still usable after construction
+    m["a"] = 1
+    s.add(5)
+    print(m.to_string())
+    print(s.to_string())
+
+    // empty map nested as a map value
+    map<int, map<int, int>> nested = {1: {:}}
+    print(nested.to_string())
+
+    // empty set nested as a map value
+    map<int, set<int>> mixed = {1: {}}
+    print(mixed.to_string())
+
+    // whitespace and newlines inside the literal
+    map<string, string> spaced = { : }
+    print(spaced.to_string())
+
+    return
+}

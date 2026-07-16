@@ -1,0 +1,7 @@
+// Should fail: the nested empty list leaves the map's value type unresolved, so
+// `auto` cannot infer it. Nested empties must be caught, not just bare ones.
+func main() returns void {
+    auto x = {1: []}
+    print(x.to_string())
+    return
+}

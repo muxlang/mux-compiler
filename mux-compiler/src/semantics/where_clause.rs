@@ -335,7 +335,7 @@ fn collect_identifiers(
             collect_identifiers(index, fields, found, contains_lambda);
         }
         ExpressionKind::ListLiteral(elements)
-        | ExpressionKind::SetOrMapLiteral(elements)
+        | ExpressionKind::SetLiteral(elements)
         | ExpressionKind::TupleLiteral(elements) => {
             for element in elements {
                 collect_identifiers(element, fields, found, contains_lambda);

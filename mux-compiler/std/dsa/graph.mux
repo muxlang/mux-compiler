@@ -203,7 +203,7 @@ class Graph<T is Hashable & Stringable> is Collection<T> {
     // Kahn's algorithm. Returns none when the graph has a cycle, since no
     // valid linear ordering exists.
     func topological_sort() returns optional<list<T>> {
-        map<T, int> in_degree = {}
+        map<T, int> in_degree = {:}
         int i = 0
         while i < self.vertices.size() {
             in_degree.put(self.vertices[i], 0)

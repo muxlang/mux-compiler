@@ -75,8 +75,7 @@ impl<'a> CodeGenerator<'a> {
             | Type::Reference(_)
             | Type::EmptyList
             | Type::EmptyMap
-            | Type::EmptySet
-            | Type::EmptySetOrMap => Ok(self.ptr_type()),
+            | Type::EmptySet => Ok(self.ptr_type()),
             Type::Generic(_) => Err("Generic types should be resolved".to_string()),
             Type::Instantiated(_, _) => Err("Instantiated types should be resolved".to_string()),
             Type::Variable(name) => {
@@ -199,7 +198,6 @@ impl<'a> CodeGenerator<'a> {
             Type::EmptyList => TypeKind::List(Box::new(auto_node())),
             Type::EmptyMap => TypeKind::Map(Box::new(auto_node()), Box::new(auto_node())),
             Type::EmptySet => TypeKind::Set(Box::new(auto_node())),
-            Type::EmptySetOrMap => TypeKind::Set(Box::new(auto_node())),
             Type::Function {
                 params, returns, ..
             } => TypeKind::Function {
@@ -280,8 +278,7 @@ impl<'a> CodeGenerator<'a> {
             | Type::Never
             | Type::EmptyList
             | Type::EmptyMap
-            | Type::EmptySet
-            | Type::EmptySetOrMap => Ok(type_.clone()),
+            | Type::EmptySet => Ok(type_.clone()),
             Type::Generic(name) | Type::Variable(name) => {
                 if seen_generic_params.contains(name) {
                     return Err(format!("Cyclic generic resolution for '{}'", name));
@@ -387,7 +384,6 @@ impl<'a> CodeGenerator<'a> {
             | Type::EmptyList
             | Type::EmptyMap
             | Type::EmptySet
-            | Type::EmptySetOrMap
             | Type::Module(_) => Ok(type_.clone()),
             Type::Variable(name) | Type::Generic(name) => handle_var_fn(name),
             Type::Named(name, type_args) => {

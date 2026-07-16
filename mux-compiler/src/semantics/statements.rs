@@ -63,29 +63,23 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         self.analyze_expression(expr)?;
         let expr_type = self.get_expression_type(expr)?;
-        if matches!(
-            expr_type,
-            Type::EmptyList | Type::EmptyMap | Type::EmptySet | Type::EmptySetOrMap
-        ) {
-            let collection_type = match expr_type {
-                Type::EmptyList => "list",
-                Type::EmptyMap => "map",
-                Type::EmptySet => "set",
-                Type::EmptySetOrMap => "set or map",
+        if matches!(expr_type, Type::EmptyList | Type::EmptyMap | Type::EmptySet) {
+            let (collection_type, example) = match expr_type {
+                Type::EmptyList => ("list", "list<int> myVar = []"),
+                Type::EmptyMap => ("map", "map<string, int> myVar = {:}"),
+                Type::EmptySet => ("set", "set<int> myVar = {}"),
                 _ => unreachable!(),
             };
             return Err(SemanticError::with_help(
                 format!("Cannot infer type for empty {} literal", collection_type),
                 expr.span,
-                format!(
-                    "Use an explicit type annotation, e.g. {}<int> myVar = {{}}",
-                    collection_type
-                ),
+                format!("Use an explicit type annotation, e.g. {}", example),
             ));
         }
-        if Self::type_contains_empty_set_or_map(&expr_type) {
+        if Self::type_contains_empty_collection(&expr_type) {
             return Err(SemanticError::with_help(
-                "Cannot infer type for expression containing empty set/map literal".to_string(),
+                "Cannot infer type for expression containing an empty collection literal"
+                    .to_string(),
                 expr.span,
                 "Use explicit type annotations for all empty collection literals.",
             ));
@@ -97,23 +91,23 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    fn type_contains_empty_set_or_map(ty: &Type) -> bool {
+    fn type_contains_empty_collection(ty: &Type) -> bool {
         match ty {
-            Type::EmptySetOrMap => true,
+            Type::EmptySet | Type::EmptyMap | Type::EmptyList => true,
             Type::Map(key_type, value_type) => {
-                Self::type_contains_empty_set_or_map(key_type)
-                    || Self::type_contains_empty_set_or_map(value_type)
+                Self::type_contains_empty_collection(key_type)
+                    || Self::type_contains_empty_collection(value_type)
             }
-            Type::Set(elem_type) => Self::type_contains_empty_set_or_map(elem_type),
-            Type::List(elem_type) => Self::type_contains_empty_set_or_map(elem_type),
-            Type::Optional(inner) => Self::type_contains_empty_set_or_map(inner),
+            Type::Set(elem_type) => Self::type_contains_empty_collection(elem_type),
+            Type::List(elem_type) => Self::type_contains_empty_collection(elem_type),
+            Type::Optional(inner) => Self::type_contains_empty_collection(inner),
             Type::Result(ok, err) => {
-                Self::type_contains_empty_set_or_map(ok)
-                    || Self::type_contains_empty_set_or_map(err)
+                Self::type_contains_empty_collection(ok)
+                    || Self::type_contains_empty_collection(err)
             }
             Type::Tuple(left, right) => {
-                Self::type_contains_empty_set_or_map(left)
-                    || Self::type_contains_empty_set_or_map(right)
+                Self::type_contains_empty_collection(left)
+                    || Self::type_contains_empty_collection(right)
             }
             _ => false,
         }
@@ -144,13 +138,16 @@ impl SemanticAnalyzer {
         expr: &ExpressionNode,
     ) -> Result<(), SemanticError> {
         match &expr.kind {
-            ExpressionKind::SetOrMapLiteral(elements) if elements.is_empty() => {
-                self.resolve_empty_set_or_map(expected_type, expr.span);
+            ExpressionKind::SetLiteral(elements) if elements.is_empty() => {
+                Self::reject_empty_set_as_map(expected_type, expr.span)?;
+            }
+            ExpressionKind::MapLiteral { entries, .. } if entries.is_empty() => {
+                Self::reject_empty_map_as_set(expected_type, expr.span)?;
             }
             ExpressionKind::MapLiteral { entries, .. } => {
                 self.resolve_map_literal_children(expected_type, entries)?;
             }
-            ExpressionKind::SetOrMapLiteral(elements) => {
+            ExpressionKind::SetLiteral(elements) => {
                 self.resolve_typed_collection_elements(expected_type, elements)?;
             }
             ExpressionKind::ListLiteral(elements) => {
@@ -161,13 +158,32 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    fn resolve_empty_set_or_map(&mut self, expected_type: &Type, span: Span) {
-        let resolved = match expected_type {
-            Type::Map(_, _) => Type::EmptyMap,
-            Type::Set(_) => Type::EmptySet,
-            _ => return,
-        };
-        self.expression_type_overrides.insert(span, resolved);
+    fn reject_empty_set_as_map(expected_type: &Type, span: Span) -> Result<(), SemanticError> {
+        if matches!(expected_type, Type::Map(_, _)) {
+            return Err(SemanticError::with_help(
+                format!(
+                    "Expected {}, found an empty set literal",
+                    format_type(expected_type)
+                ),
+                span,
+                "The empty map literal is `{:}`; `{}` is the empty set.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn reject_empty_map_as_set(expected_type: &Type, span: Span) -> Result<(), SemanticError> {
+        if matches!(expected_type, Type::Set(_)) {
+            return Err(SemanticError::with_help(
+                format!(
+                    "Expected {}, found an empty map literal",
+                    format_type(expected_type)
+                ),
+                span,
+                "The empty set literal is `{}`; `{:}` is the empty map.",
+            ));
+        }
+        Ok(())
     }
 
     fn resolve_map_literal_children(

@@ -60,7 +60,7 @@ impl SemanticAnalyzer {
             ExpressionKind::MapLiteral { entries, .. } => {
                 self.analyze_map_literal_expr(expr, entries)
             }
-            ExpressionKind::SetOrMapLiteral(elements) => self.analyze_set_literal_expr(elements),
+            ExpressionKind::SetLiteral(elements) => self.analyze_set_literal_expr(elements),
             ExpressionKind::TupleLiteral(elements) => {
                 self.analyze_tuple_literal_expr(expr, elements)
             }

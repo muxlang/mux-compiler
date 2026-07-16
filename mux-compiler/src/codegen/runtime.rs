@@ -1415,15 +1415,12 @@ impl<'a> CodeGenerator<'a> {
             // Reference types - unwrap the reference
             Type::Reference(inner) => self.extract_value_from_ptr(data_ptr, inner, variant_name),
             // Other types that shouldn't appear in Optional/Result
-            Type::Void
-            | Type::Never
-            | Type::EmptyList
-            | Type::EmptyMap
-            | Type::EmptySet
-            | Type::EmptySetOrMap => Err(format!(
-                "Unsupported type {:?} for extraction from {}",
-                wrapped_type, variant_name
-            )),
+            Type::Void | Type::Never | Type::EmptyList | Type::EmptyMap | Type::EmptySet => {
+                Err(format!(
+                    "Unsupported type {:?} for extraction from {}",
+                    wrapped_type, variant_name
+                ))
+            }
             Type::Function { .. } => Err(format!(
                 "Unsupported type Function for extraction from {}",
                 variant_name
