@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-16
 
 ### Changed
 - **BREAKING: `{}` is now always the empty set; the empty map is `{:}`**. `{}` in
@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{}` resolution added in 0.5.0: `Type::EmptySetOrMap` and its span-keyed
   override map are removed, so the set/map ambiguity no longer reaches semantics
   or codegen. Closes #266.
+- **Valgrind and benchmark PR reports render as charts**: the PR comment now shows
+  a leak split pie, per-phase median bars, and an exact-numbers table instead of
+  raw log dumps; raw logs stay in the collapsed details. All rendered values are
+  whitelisted or numeric-validated since Build artifacts are fork-controlled (#267).
+- **CI fails on orphaned insta snapshots**: deleting or renaming a `test_scripts/`
+  file no longer strands its snapshot as phantom coverage; 52 accumulated orphans
+  were deleted and the gate keeps new ones out (#271).
 
 ### Fixed
 - **`auto` now rejects nested empty collections consistently**: `auto x = {1: []}`
