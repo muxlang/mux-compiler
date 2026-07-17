@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Field access not supported for expression type Identifier". The module's own
   code could already read the constant; only the namespaced access from an
   importing file was missing. A same-named local in the caller does not shadow
-  the module constant.
+  the module constant. (Known limitation: two imported modules that declare the
+  same-named constant collide under the flat global-name model, tracked in #279.)
 - **`auto` now rejects nested empty collections consistently**: `auto x = {1: []}`
   and `auto x = [[]]` previously passed semantic analysis with an unresolved
   element type, while the set/map equivalents were caught. All empty collection
