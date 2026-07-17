@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or codegen. Closes #266.
 
 ### Fixed
+- **Cross-module constant access**: reading a `const` defined in an imported
+  module through the module namespace (`math.PI`) now compiles. Previously only
+  stdlib module constants resolved; a user module constant fell through to
+  "Field access not supported for expression type Identifier". The module's own
+  code could already read the constant; only the namespaced access from an
+  importing file was missing. A same-named local in the caller does not shadow
+  the module constant.
 - **`auto` now rejects nested empty collections consistently**: `auto x = {1: []}`
   and `auto x = [[]]` previously passed semantic analysis with an unresolved
   element type, while the set/map equivalents were caught. All empty collection

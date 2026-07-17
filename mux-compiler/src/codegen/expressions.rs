@@ -3344,6 +3344,9 @@ impl<'a> CodeGenerator<'a> {
         if let Some(value) = self.try_generate_stdlib_constant_field_access(expr, field)? {
             return Ok(value);
         }
+        if let Some(value) = self.try_generate_module_constant_field_access(expr, field)? {
+            return Ok(value);
+        }
         if let Some(value) = self.try_generate_tuple_field_access(expr, field)? {
             return Ok(value);
         }
@@ -3399,6 +3402,47 @@ impl<'a> CodeGenerator<'a> {
             ConstantValue::Bool(b) => self.context.bool_type().const_int(b as u64, false).into(),
         };
         Ok(Some(generated))
+    }
+
+    /// `module.CONST` for a user-defined imported module (as opposed to a stdlib
+    /// module handled above). A module-level `const` is emitted as a global keyed
+    /// by its own name and initialized in that module's init function, exactly the
+    /// slot the module's own code reads when it names the constant. Resolve the
+    /// field through the global table (never locals, so a same-named local in the
+    /// caller cannot shadow the module constant) and load it like any global.
+    fn try_generate_module_constant_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let ExpressionKind::Identifier(module_name) = &expr.kind else {
+            return Ok(None);
+        };
+        if self
+            .analyzer
+            .symbol_table()
+            .lookup(module_name)
+            .map(|s| s.kind != crate::semantics::SymbolKind::Import)
+            .unwrap_or(true)
+        {
+            return Ok(None);
+        }
+        let is_constant = self
+            .analyzer
+            .imported_symbols()
+            .get(module_name)
+            .and_then(|syms| syms.get(field))
+            .map(|s| s.kind == crate::semantics::SymbolKind::Constant)
+            .unwrap_or(false);
+        if !is_constant {
+            return Ok(None);
+        }
+        let Some((ptr, var_type, type_node)) = self.global_variables.get(field) else {
+            return Ok(None);
+        };
+        let (ptr_copy, var_type_copy, type_node_copy) = (*ptr, *var_type, type_node.clone());
+        self.generate_identifier_from_binding(field, ptr_copy, var_type_copy, &type_node_copy)
+            .map(Some)
     }
 
     fn try_generate_tuple_field_access(
