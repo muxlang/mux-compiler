@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including lists (`list<int> myVar = {}`). Each kind now shows its own literal
   syntax (`[]`, `{:}`, `{}`).
 
+### Security
+- **Lockfile bump for the postgres stack**: `postgres-protocol` 0.6.11 -> 0.6.12
+  (RUSTSEC-2026-0179 SCRAM CPU-exhaustion DoS, RUSTSEC-2026-0180 hstore decode
+  panic) and `tokio-postgres` 0.7.17 -> 0.7.18 (RUSTSEC-2026-0178 short DataRow
+  panic). Transitive via mux-runtime's `postgres` dependency; `cargo audit` is
+  clean again.
+
 ## [0.5.0] - 2026-07-13
 
 This release completes the split of the former monorepo into independent repos.
