@@ -547,8 +547,23 @@ impl<'a> CodeGenerator<'a> {
         // producing invalid LLVM IR ("instruction does not dominate all uses").
         // RC cleanup is unaffected: it tracks allocas through the RC scope stack,
         // not this table.
+        //
+        // Restore on every exit path, including the error paths inside
+        // generate_match_body: codegen errors are terminal today, but leaving the
+        // table half-mutated would be a latent trap if error recovery is ever
+        // added.
         let saved_variables = self.variables.clone();
+        let result = self.generate_match_body(function, expr, arms);
+        self.variables = saved_variables;
+        result
+    }
 
+    fn generate_match_body(
+        &mut self,
+        function: &FunctionValue<'a>,
+        expr: &ExpressionNode,
+        arms: &[crate::ast::MatchArm],
+    ) -> Result<(), String> {
         let (expr_val, match_expr) = self.prepare_match_expression(expr)?;
         let match_expr_type = self.resolve_match_expression_type(&match_expr)?;
         let is_enum = self.is_enum_match_type(&match_expr_type);
@@ -558,8 +573,6 @@ impl<'a> CodeGenerator<'a> {
         } else {
             self.generate_switch_match(function, &match_expr_type, expr_val, arms)?;
         }
-
-        self.variables = saved_variables;
 
         Ok(())
     }
