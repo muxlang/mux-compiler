@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or codegen. Closes #266.
 
 ### Fixed
+- **Recursive and mutually-recursive functions in imported modules**: a call to
+  a function in the same imported module (including a recursive self-call) was
+  emitted against the bare, unmangled LLVM name and failed with "Undefined
+  function: <name>". The current-function name recorded while generating an
+  imported module body is now the mangled `module!name`, so same-module calls
+  resolve through the existing nested-name logic. A related failure - a
+  non-identifier argument such as `n - 1` in a recursive call reporting
+  "Undefined variable" - is fixed by resolving argument types through the
+  codegen fallback tables when the analyzer's function scope is unavailable.
 - **`auto` now rejects nested empty collections consistently**: `auto x = {1: []}`
   and `auto x = [[]]` previously passed semantic analysis with an unresolved
   element type, while the set/map equivalents were caught. All empty collection

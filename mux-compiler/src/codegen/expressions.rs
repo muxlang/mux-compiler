@@ -3186,7 +3186,12 @@ impl<'a> CodeGenerator<'a> {
         let llvm_param_types = func.get_type().get_param_types();
         let mut call_args = Vec::with_capacity(args.len());
         for (idx, arg) in args.iter().enumerate() {
-            let arg_type = self.get_resolved_expression_type(arg)?;
+            // Use the fallback resolver: when the callee is an imported module
+            // function, the analyzer's scope for this body was already popped, so
+            // a non-identifier argument (e.g. `n - 1` in a recursive call) cannot
+            // be resolved through the analyzer alone. The fallback consults
+            // codegen's own parameter/variable tables.
+            let arg_type = self.resolve_expression_type_with_fallback(arg)?;
 
             let needs_copy = if let Type::Named(class_name, _) = &arg_type {
                 if let Some(symbol) = self.analyzer.symbol_table().lookup(class_name) {
