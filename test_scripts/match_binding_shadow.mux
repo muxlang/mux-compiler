@@ -1,0 +1,49 @@
+// A match-arm pattern binding, and any arm-body local, is scoped to the match:
+// a later declaration that reuses the name must get a fresh slot rather than the
+// arm-local one (which would produce invalid LLVM IR). Also checks that a match
+// arm reassigning an outer variable still persists after the match.
+enum Shape {
+    Circle(float radius),
+    Rect(float w, float h)
+}
+
+func main() returns void {
+    auto num = 8
+    match num {
+        0 { print("zero") }
+        n if n % 2 == 0 { print("even: " + n.to_string()) }
+        _ { print("odd") }
+    }
+    // reuse the guard binding's name after the match
+    auto n = 42
+    print("after guard: " + n.to_string())
+
+    auto s = Shape.Circle(3.0)
+    match s {
+        Circle(r) { print("circle r=" + r.to_string()) }
+        Rect(w, h) { print("rect") }
+    }
+    // reuse the enum payload binding's name after the match
+    auto r = "reused"
+    print("after payload: " + r)
+
+    // an arm-body local, reused after the match
+    match num {
+        8 {
+            auto msg = "in arm"
+            print(msg)
+        }
+        _ { print("no") }
+    }
+    auto msg = "after arm"
+    print(msg)
+
+    // a match arm reassigning an outer variable persists
+    auto x = 1
+    match num {
+        8 { x = 99 }
+        _ { x = 0 }
+    }
+    print("outer x: " + x.to_string())
+    return
+}

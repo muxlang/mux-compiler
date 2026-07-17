@@ -539,6 +539,16 @@ impl<'a> CodeGenerator<'a> {
         expr: &ExpressionNode,
         arms: &[crate::ast::MatchArm],
     ) -> Result<(), String> {
+        // Pattern bindings (e.g. `n` in `n if n % 2 == 0`) and any arm-body
+        // locals are scoped to the match. Snapshot the variable table and restore
+        // it afterwards so those names do not leak into the enclosing scope. Left
+        // in place, a later `auto n` would reuse the arm-local slot - an alloca
+        // created inside a conditional arm block that does not dominate the store,
+        // producing invalid LLVM IR ("instruction does not dominate all uses").
+        // RC cleanup is unaffected: it tracks allocas through the RC scope stack,
+        // not this table.
+        let saved_variables = self.variables.clone();
+
         let (expr_val, match_expr) = self.prepare_match_expression(expr)?;
         let match_expr_type = self.resolve_match_expression_type(&match_expr)?;
         let is_enum = self.is_enum_match_type(&match_expr_type);
@@ -549,11 +559,7 @@ impl<'a> CodeGenerator<'a> {
             self.generate_switch_match(function, &match_expr_type, expr_val, arms)?;
         }
 
-        if let ExpressionKind::Identifier(temp_name) = &match_expr.kind
-            && temp_name.starts_with("match_temp_")
-        {
-            self.variables.remove(temp_name);
-        }
+        self.variables = saved_variables;
 
         Ok(())
     }
