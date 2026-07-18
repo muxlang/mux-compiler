@@ -1205,6 +1205,10 @@ impl<'a> CodeGenerator<'a> {
         increment: bool,
         allow_global: bool,
     ) -> Result<BasicValueEnum<'a>, String> {
+        if let ExpressionKind::FieldAccess { expr: obj, field } = &expr.kind {
+            return self.generate_field_update_unary_expression(obj, field, increment);
+        }
+
         let ExpressionKind::Identifier(name) = &expr.kind else {
             return Err(format!(
                 "Cannot {} on non-identifier",
@@ -1261,6 +1265,31 @@ impl<'a> CodeGenerator<'a> {
         // integer avoids leaking it on every `++`/`--`.
         let int_type = Type::Primitive(PrimitiveType::Int);
         self.overwrite_slot_with_owned(ptr, new_val.into(), &int_type)?;
+        Ok(new_val.into())
+    }
+
+    /// `obj.field++` / `obj.field--`. Reads the current int field value, adjusts
+    /// it by one, and writes it back through the same field-store path as a plain
+    /// `obj.field = ...` assignment (so reference counting and where-invariants are
+    /// handled). Semantics already guarantees the field is int-typed.
+    fn generate_field_update_unary_expression(
+        &mut self,
+        obj: &ExpressionNode,
+        field: &str,
+        increment: bool,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let current = self.generate_field_access_expression(obj, field)?;
+        let current_val = self.get_raw_int_value(current)?;
+        let one = self.context.i64_type().const_int(1, false);
+        let new_val = if increment {
+            self.builder
+                .build_int_add(current_val, one, "field_incr_result")
+        } else {
+            self.builder
+                .build_int_sub(current_val, one, "field_decr_result")
+        }
+        .map_err(|e| e.to_string())?;
+        self.assign_to_field_access(obj, field, new_val.into())?;
         Ok(new_val.into())
     }
 
@@ -2564,7 +2593,11 @@ impl<'a> CodeGenerator<'a> {
                 }
                 Ok(result)
             }
-            _ => Err("Assignment to non-identifier/deref not implemented".to_string()),
+            ExpressionKind::FieldAccess { expr, field } => {
+                self.assign_to_field_access(expr, field, result)?;
+                Ok(result)
+            }
+            _ => Err("Assignment to non-identifier/deref/field not implemented".to_string()),
         }
     }
 
