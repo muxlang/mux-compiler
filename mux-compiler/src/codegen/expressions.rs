@@ -3219,7 +3219,14 @@ impl<'a> CodeGenerator<'a> {
         let llvm_param_types = func.get_type().get_param_types();
         let mut call_args = Vec::with_capacity(args.len());
         for (idx, arg) in args.iter().enumerate() {
-            let arg_type = self.get_resolved_expression_type(arg)?;
+            // Resolve every argument's type through the fallback resolver. This
+            // applies to all named calls, not only imported-module ones: the
+            // analyzer's scope for a function body may already be popped by the
+            // time codegen runs (always so for imported-module bodies), which
+            // breaks a non-identifier argument like `n - 1` in a recursive call.
+            // The fallback consults codegen's own parameter/variable tables and is
+            // otherwise equivalent, so it is the correct default here.
+            let arg_type = self.resolve_expression_type_with_fallback(arg)?;
 
             let needs_copy = if let Type::Named(class_name, _) = &arg_type {
                 if let Some(symbol) = self.analyzer.symbol_table().lookup(class_name) {

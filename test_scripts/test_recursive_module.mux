@@ -1,0 +1,12 @@
+// Recursive and mutually-recursive functions defined in an imported module.
+// A same-module call (including a recursive self-call) must resolve to the
+// module-mangled symbol, and a non-identifier argument like `n - 1` must
+// resolve its type from codegen's own scope when the analyzer's is gone.
+import recursivemod
+
+func main() returns void {
+    print("fib(10): " + recursivemod.fibonacci(10).to_string())
+    print("10 even? " + recursivemod.is_even(10).to_string())
+    print("7 even? " + recursivemod.is_even(7).to_string())
+    return
+}

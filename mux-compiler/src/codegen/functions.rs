@@ -431,6 +431,20 @@ impl<'a> CodeGenerator<'a> {
     }
 
     pub(super) fn generate_function(&mut self, func: &FunctionNode) -> Result<(), String> {
+        self.generate_function_recorded(func, &func.name)
+    }
+
+    /// Generate `func`'s body while recording `record_name` as the current
+    /// function name. For a plain function this is `func.name`; for an imported
+    /// module function it is the mangled `module!name`, so a call to a sibling in
+    /// the same module (including a recursive self-call) resolves through
+    /// `find_nested_mangled_function_name` to `module!sibling` instead of the
+    /// bare, non-existent LLVM symbol.
+    fn generate_function_recorded(
+        &mut self,
+        func: &FunctionNode,
+        record_name: &str,
+    ) -> Result<(), String> {
         // Save state that might be overwritten by nested function generation
         // (e.g., when generating specialized methods for generic classes used in this function)
         let saved_function_name = self.current_function_name.take();
@@ -450,7 +464,7 @@ impl<'a> CodeGenerator<'a> {
         let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
         let saved_closure_temp_values = std::mem::take(&mut self.closure_temp_values);
 
-        self.current_function_name = Some(func.name.clone());
+        self.current_function_name = Some(record_name.to_string());
         self.current_function_return_type = Some(
             self.analyzer
                 .resolve_type(&func.return_type)
@@ -547,7 +561,7 @@ impl<'a> CodeGenerator<'a> {
         // Delegate to the regular implementation
         // but first we need to temporarily store it under the source name too
         self.functions.insert(func.name.clone(), function);
-        let result = self.generate_function(func);
+        let result = self.generate_function_recorded(func, llvm_name);
         // Remove the temporary entry
         self.functions.remove(&func.name);
         result

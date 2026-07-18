@@ -1,0 +1,23 @@
+// Module whose functions call themselves and each other, imported by
+// test_recursive_module.mux. Exercises name mangling of same-module calls
+// (recursive self-calls and mutual recursion) from inside an imported module.
+func fibonacci(int n) returns int {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+func is_even(int n) returns bool {
+    if n == 0 {
+        return true
+    }
+    return is_odd(n - 1)
+}
+
+func is_odd(int n) returns bool {
+    if n == 0 {
+        return false
+    }
+    return is_even(n - 1)
+}
