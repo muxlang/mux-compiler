@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or codegen. Closes #266.
 
 ### Fixed
+- **Match-arm bindings no longer leak past the match**: a match-arm pattern
+  binding (e.g. `n` in `n if n % 2 == 0`) or an arm-body local stayed in the
+  codegen variable table after the match, so a later declaration reusing the
+  name (`auto n = 3`) reused the arm-local slot. That slot's alloca lived in a
+  conditional arm block that did not dominate the later store, so the program
+  failed with invalid LLVM IR ("instruction does not dominate all uses"). Match
+  bindings are now scoped to the match; a subsequent same-named declaration gets
+  a fresh slot. Reassignment of an outer variable inside an arm still persists.
 - **Recursive and mutually-recursive functions in imported modules**: a call to
   a function in the same imported module (including a recursive self-call) was
   emitted against the bare, unmangled LLVM name and failed with "Undefined
