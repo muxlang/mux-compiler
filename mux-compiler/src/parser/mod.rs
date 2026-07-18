@@ -2551,7 +2551,12 @@ impl<'a> Parser<'a> {
     fn parse_if_expression(&mut self, token_span: Span) -> ParserResult<ExpressionNode> {
         let cond = self.parse_expression()?;
         let then_expr = self.parse_if_branch_expression("then expression")?;
+        // Allow newlines around `else` (`}\nelse` and `else\nif`), matching the
+        // statement-form if. An if-expression always requires an else, so skipping
+        // to it is unambiguous.
+        self.skip_newlines();
         self.consume_token(TokenType::Else, "Expected 'else' after then branch")?;
+        self.skip_newlines();
         // `else if ...` chains into a nested if-expression; a bare `else` takes a
         // block. The nested If becomes this expression's else branch, so no new AST
         // shape is needed.

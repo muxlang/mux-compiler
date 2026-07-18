@@ -14,6 +14,14 @@ func grade(int score) returns string {
     }
 }
 
+// Newlines are allowed around `else` (`}` then `else` on the next line, and
+// `else` then `if` on the next line), matching the statement-form if.
+func tier(int n) returns string {
+    return if n >= 100 { "high" }
+    else if n >= 10 { "mid" }
+    else { "low" }
+}
+
 func main() returns void {
     // single-line form
     auto x = 5
@@ -33,5 +41,9 @@ func main() returns void {
         "small"
     }
     print(label)
+
+    print(tier(500))
+    print(tier(50))
+    print(tier(5))
     return
 }
