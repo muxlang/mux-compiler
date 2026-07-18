@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   importing file was missing. A same-named local in the caller does not shadow
   the module constant. (Known limitation: two imported modules that declare the
   same-named constant collide under the flat global-name model, tracked in #279.)
+- **Compound assignment and increment on class fields**: `self.value++`,
+  `self.value += n`, and the `obj.field` forms now compile. Previously `++`/`--`
+  on a field failed codegen with "Cannot increment on non-identifier" and `+=`/`-=`
+  with "Assignment to non-identifier/deref not implemented", even though semantic
+  analysis accepted them. Both now route through the same field-store path as a
+  plain `obj.field = ...` assignment, so reference counting and where-clause field
+  invariants still apply.
 - **`auto` now rejects nested empty collections consistently**: `auto x = {1: []}`
   and `auto x = [[]]` previously passed semantic analysis with an unresolved
   element type, while the set/map equivalents were caught. All empty collection

@@ -1,0 +1,61 @@
+// Field lvalue operators: ++, --, +=, -= on class fields, both from inside a
+// method (self.field) and directly on an object (obj.field), including through
+// a reference-typed parameter. Covers int and float fields, and a where-clause
+// constrained field so the field-store invariant still fires.
+
+class Counter {
+    int value
+
+    common func from_start(int start) returns Counter {
+        auto c = Counter.new()
+        c.value = start
+        return c
+    }
+
+    func increment() returns void {
+        self.value++
+        return
+    }
+
+    func add(int n) returns void {
+        self.value += n
+        return
+    }
+
+    func get_value() returns int {
+        return self.value
+    }
+}
+
+class Account {
+    float balance where { balance >= 0.0 }
+
+    common func open(float initial) returns Account {
+        auto a = Account.new()
+        a.balance = initial
+        return a
+    }
+}
+
+func deposit(&Account a, float amt) returns void {
+    a.balance += amt
+    return
+}
+
+func main() returns void {
+    auto c = Counter.from_start(10)
+    c.increment()
+    c.increment()
+    c.add(5)
+    print("counter after method ops: " + c.get_value().to_string())
+
+    c.value--
+    c.value += 100
+    print("counter after direct ops: " + c.get_value().to_string())
+
+    auto a = Account.open(100.0)
+    a.balance += 50.5
+    deposit(&a, 10.0)
+    print("account balance: " + a.balance.to_string())
+    return
+}
