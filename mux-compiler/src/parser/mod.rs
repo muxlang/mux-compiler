@@ -1804,7 +1804,23 @@ impl<'a> Parser<'a> {
     ) -> ParserResult<()> {
         for stmt in body {
             if let StatementKind::Expression(expr) = &stmt.kind {
-                self.check_no_postfix_increment_decrement(expr)?;
+                // A bare `x++` / `x--` is a valid standalone statement, in a lambda
+                // body just as in any other function body. Only reject a postfix
+                // `++`/`--` that is *nested* inside a larger expression, so check
+                // the operand rather than the statement expression itself when the
+                // statement is exactly a postfix increment/decrement.
+                if let ExpressionKind::Unary {
+                    op,
+                    expr: inner,
+                    postfix: true,
+                    ..
+                } = &expr.kind
+                    && matches!(op, UnaryOp::Incr | UnaryOp::Decr)
+                {
+                    self.check_no_postfix_increment_decrement(inner)?;
+                } else {
+                    self.check_no_postfix_increment_decrement(expr)?;
+                }
             }
         }
         Ok(())
@@ -2550,13 +2566,22 @@ impl<'a> Parser<'a> {
 
     fn parse_if_expression(&mut self, token_span: Span) -> ParserResult<ExpressionNode> {
         let cond = self.parse_expression()?;
-        self.consume_token(TokenType::OpenBrace, "Expected '{' after if condition")?;
-        let then_expr = self.parse_expression()?;
-        self.consume_token(TokenType::CloseBrace, "Expected '}' after then expression")?;
+        let then_expr = self.parse_if_branch_expression("then expression")?;
+        // Allow newlines around `else` (`}\nelse` and `else\nif`), matching the
+        // statement-form if. An if-expression always requires an else, so skipping
+        // to it is unambiguous.
+        self.skip_newlines();
         self.consume_token(TokenType::Else, "Expected 'else' after then branch")?;
-        self.consume_token(TokenType::OpenBrace, "Expected '{' after else")?;
-        let else_expr = self.parse_expression()?;
-        self.consume_token(TokenType::CloseBrace, "Expected '}' after else expression")?;
+        self.skip_newlines();
+        // `else if ...` chains into a nested if-expression; a bare `else` takes a
+        // block. The nested If becomes this expression's else branch, so no new AST
+        // shape is needed.
+        let else_expr = if self.check(TokenType::If) {
+            let if_span = self.advance().span;
+            self.parse_if_expression(if_span)?
+        } else {
+            self.parse_if_branch_expression("else expression")?
+        };
         let span = token_span.combine(&self.previous().span);
         Ok(ExpressionNode {
             kind: ExpressionKind::If {
@@ -2566,6 +2591,24 @@ impl<'a> Parser<'a> {
             },
             span,
         })
+    }
+
+    /// Parse one branch of an if-expression: `{ <expr> }`. Newlines are allowed
+    /// around the value expression so a branch can span multiple lines; the branch
+    /// is still a single value, not a statement block.
+    fn parse_if_branch_expression(&mut self, what: &str) -> ParserResult<ExpressionNode> {
+        self.consume_token(
+            TokenType::OpenBrace,
+            &format!("Expected '{{' before {}", what),
+        )?;
+        self.skip_newlines();
+        let expr = self.parse_expression()?;
+        self.skip_newlines();
+        self.consume_token(
+            TokenType::CloseBrace,
+            &format!("Expected '}}' after {}", what),
+        )?;
+        Ok(expr)
     }
 
     fn parse_postfixed_primary(

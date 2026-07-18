@@ -1,0 +1,32 @@
+// A closure may mutate a captured variable with `++`/`--`, not only with `=`.
+// The parser previously rejected a standalone `count++` inside a lambda body as
+// if it were a postfix increment nested in an expression (which is disallowed).
+// A bare `x++` statement is allowed in a lambda body just like anywhere else.
+
+func make_counter() returns func() returns int {
+    auto count = 0
+    return func() returns int {
+        count++
+        return count
+    }
+}
+
+func make_countdown(int start) returns func() returns int {
+    auto n = start
+    return func() returns int {
+        n--
+        return n
+    }
+}
+
+func main() returns void {
+    auto next = make_counter()
+    print("count: " + next().to_string())  // 1
+    print("count: " + next().to_string())  // 2
+    print("count: " + next().to_string())  // 3
+
+    auto down = make_countdown(3)
+    print("down: " + down().to_string())   // 2
+    print("down: " + down().to_string())   // 1
+    return
+}
