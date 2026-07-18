@@ -27,6 +27,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (branch type-agreement checks still apply). Closes #281.
 
 ### Fixed
+- **`++`/`--` on a captured variable inside a closure**: a standalone `count++`
+  in a lambda body was rejected by the parser's no-postfix-in-expression guard as
+  if it were nested in an expression, even though a bare `x++` statement is valid
+  anywhere. The guard now only rejects a postfix `++`/`--` genuinely nested inside
+  a larger expression (e.g. `a + y++`), which stays disallowed by design. Codegen
+  already handled the captured increment. Closes #280.
+- **Match-arm bindings no longer leak past the match**: a match-arm pattern
+  binding (e.g. `n` in `n if n % 2 == 0`) or an arm-body local stayed in the
+  codegen variable table after the match, so a later declaration reusing the
+  name (`auto n = 3`) reused the arm-local slot. That slot's alloca lived in a
+  conditional arm block that did not dominate the later store, so the program
+  failed with invalid LLVM IR ("instruction does not dominate all uses"). Match
+  bindings are now scoped to the match; a subsequent same-named declaration gets
+  a fresh slot. Reassignment of an outer variable inside an arm still persists.
+- **Recursive and mutually-recursive functions in imported modules**: a call to
+  a function in the same imported module (including a recursive self-call) was
+  emitted against the bare, unmangled LLVM name and failed with "Undefined
+  function: <name>". The current-function name recorded while generating an
+  imported module body is now the mangled `module!name`, so same-module calls
+  resolve through the existing nested-name logic. A related failure - a
+  non-identifier argument such as `n - 1` in a recursive call reporting
+  "Undefined variable" - is fixed by resolving argument types through the
+  codegen fallback tables when the analyzer's function scope is unavailable.
+- **Cross-module constant access**: reading a `const` defined in an imported
+  module through the module namespace (`math.PI`) now compiles. Previously only
+  stdlib module constants resolved; a user module constant fell through to
+  "Field access not supported for expression type Identifier". The module's own
+  code could already read the constant; only the namespaced access from an
+  importing file was missing. A same-named local in the caller does not shadow
+  the module constant. (Known limitation: two imported modules that declare the
+  same-named constant collide under the flat global-name model, tracked in #279.)
+- **Compound assignment and increment on class fields**: `self.value++`,
+  `self.value += n`, and the `obj.field` forms now compile. Previously `++`/`--`
+  on a field failed codegen with "Cannot increment on non-identifier" and `+=`/`-=`
+  with "Assignment to non-identifier/deref not implemented", even though semantic
+  analysis accepted them. Both now route through the same field-store path as a
+  plain `obj.field = ...` assignment, so reference counting and where-clause field
+  invariants still apply.
 - **`auto` now rejects nested empty collections consistently**: `auto x = {1: []}`
   and `auto x = [[]]` previously passed semantic analysis with an unresolved
   element type, while the set/map equivalents were caught. All empty collection

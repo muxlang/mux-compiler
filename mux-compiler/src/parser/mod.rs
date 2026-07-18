@@ -1804,7 +1804,23 @@ impl<'a> Parser<'a> {
     ) -> ParserResult<()> {
         for stmt in body {
             if let StatementKind::Expression(expr) = &stmt.kind {
-                self.check_no_postfix_increment_decrement(expr)?;
+                // A bare `x++` / `x--` is a valid standalone statement, in a lambda
+                // body just as in any other function body. Only reject a postfix
+                // `++`/`--` that is *nested* inside a larger expression, so check
+                // the operand rather than the statement expression itself when the
+                // statement is exactly a postfix increment/decrement.
+                if let ExpressionKind::Unary {
+                    op,
+                    expr: inner,
+                    postfix: true,
+                    ..
+                } = &expr.kind
+                    && matches!(op, UnaryOp::Incr | UnaryOp::Decr)
+                {
+                    self.check_no_postfix_increment_decrement(inner)?;
+                } else {
+                    self.check_no_postfix_increment_decrement(expr)?;
+                }
             }
         }
         Ok(())

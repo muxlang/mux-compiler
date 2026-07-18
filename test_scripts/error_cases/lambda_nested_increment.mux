@@ -1,0 +1,11 @@
+// A postfix ++/-- nested inside a larger expression stays disallowed, in a
+// lambda body just as anywhere else (only a standalone `x++` statement is
+// allowed). Guards the invariant preserved by the closure-capture ++ fix.
+func main() returns void {
+    auto f = func(int y) returns int {
+        auto a = 1
+        return a + y++
+    }
+    print(f(2).to_string())
+    return
+}
