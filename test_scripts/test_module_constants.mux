@@ -1,0 +1,19 @@
+// Cross-module constant access: reading a `const` defined in an imported
+// module through the module namespace (constmath.PI). A same-named local must
+// not shadow the module constant. Covers float, int, and string constants,
+// and a module constant used inside a larger expression.
+import constmath
+
+func main() returns void {
+    auto local_pi = 999.0
+    print("local pi: " + local_pi.to_string())
+    print("module pi: " + constmath.PI.to_string())
+    print("max sides: " + constmath.MAX_SIDES.to_string())
+    print("unit: " + constmath.UNIT)
+
+    auto circumference = 2.0 * constmath.PI * 10.0
+    print("circumference: " + circumference.to_string())
+
+    print("area via module func: " + constmath.circle_area(2.0).to_string())
+    return
+}
