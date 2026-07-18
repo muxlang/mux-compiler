@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   override map are removed, so the set/map ambiguity no longer reaches semantics
   or codegen. Closes #266.
 
+### Added
+- **`if` expressions support `else if` chains and multi-line branches**: an `if`
+  used in expression position (`auto g = if c { a } else { b }`) previously
+  accepted only a single-line, single-`else` form. It now accepts `else if`
+  chains and branches whose value spans multiple lines, matching the statement
+  form. Each branch is still a single value expression; a chain parses as a
+  nested if-expression, so no new AST shape, semantics, or codegen was needed
+  (branch type-agreement checks still apply). Closes #281.
+
 ### Fixed
 - **`++`/`--` on a captured variable inside a closure**: a standalone `count++`
   in a lambda body was rejected by the parser's no-postfix-in-expression guard as
