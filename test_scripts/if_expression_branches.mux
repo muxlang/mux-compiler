@@ -1,0 +1,37 @@
+// if used as an expression: single-line, else-if chains, and multi-line
+// branches whose value spans lines. Each branch is a single value expression;
+// an else-if chain is parsed as a nested if-expression in the else branch.
+
+func grade(int score) returns string {
+    return if score >= 90 {
+        "A"
+    } else if score >= 80 {
+        "B"
+    } else if score >= 70 {
+        "C"
+    } else {
+        "F"
+    }
+}
+
+func main() returns void {
+    // single-line form
+    auto x = 5
+    auto sign = if x > 0 { "positive" } else { "non-positive" }
+    print(sign)
+
+    // multi-line else-if chain via a function
+    print(grade(95))
+    print(grade(85))
+    print(grade(72))
+    print(grade(40))
+
+    // multi-line branches inline
+    auto label = if x >= 10 {
+        "big"
+    } else {
+        "small"
+    }
+    print(label)
+    return
+}
