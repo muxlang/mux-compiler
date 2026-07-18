@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or codegen. Closes #266.
 
 ### Fixed
+- **`++`/`--` on a captured variable inside a closure**: a standalone `count++`
+  in a lambda body was rejected by the parser's no-postfix-in-expression guard as
+  if it were nested in an expression, even though a bare `x++` statement is valid
+  anywhere. The guard now only rejects a postfix `++`/`--` genuinely nested inside
+  a larger expression (e.g. `a + y++`), which stays disallowed by design. Codegen
+  already handled the captured increment. Closes #280.
 - **Match-arm bindings no longer leak past the match**: a match-arm pattern
   binding (e.g. `n` in `n if n % 2 == 0`) or an arm-body local stayed in the
   codegen variable table after the match, so a later declaration reusing the
