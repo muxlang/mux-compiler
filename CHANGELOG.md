@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-18
 
 ### Changed
 - **BREAKING: `{}` is now always the empty set; the empty map is `{:}`**. `{}` in
@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{}` resolution added in 0.5.0: `Type::EmptySetOrMap` and its span-keyed
   override map are removed, so the set/map ambiguity no longer reaches semantics
   or codegen. Closes #266.
+- **Valgrind and benchmark PR reports render as charts**: the PR comment now shows
+  a leak split pie, per-phase median bars, and an exact-numbers table instead of
+  raw log dumps; raw logs stay in the collapsed details. All rendered values are
+  whitelisted or numeric-validated since Build artifacts are fork-controlled (#267).
+- **CI fails on orphaned insta snapshots**: deleting or renaming a `test_scripts/`
+  file no longer strands its snapshot as phantom coverage; 52 accumulated orphans
+  were deleted and the gate keeps new ones out (#271).
 
 ### Added
 - **`if` expressions support `else if` chains and multi-line branches**: an `if`
@@ -72,6 +79,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Empty-collection inference help text**: suggested `{}` for every collection,
   including lists (`list<int> myVar = {}`). Each kind now shows its own literal
   syntax (`[]`, `{:}`, `{}`).
+
+### Security
+- **Lockfile bump for the postgres stack**: `postgres-protocol` 0.6.11 -> 0.6.12
+  (RUSTSEC-2026-0179 SCRAM CPU-exhaustion DoS, RUSTSEC-2026-0180 hstore decode
+  panic) and `tokio-postgres` 0.7.17 -> 0.7.18 (RUSTSEC-2026-0178 short DataRow
+  panic); `postgres-types` 0.2.13 -> 0.2.14 moved with the stack (no advisory of
+  its own). Transitive via mux-runtime's `postgres` dependency; `cargo audit` is
+  clean again.
 
 ## [0.5.0] - 2026-07-13
 
