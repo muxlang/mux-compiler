@@ -1205,6 +1205,10 @@ impl<'a> CodeGenerator<'a> {
         increment: bool,
         allow_global: bool,
     ) -> Result<BasicValueEnum<'a>, String> {
+        if let ExpressionKind::FieldAccess { expr: obj, field } = &expr.kind {
+            return self.generate_field_update_unary_expression(obj, field, increment);
+        }
+
         let ExpressionKind::Identifier(name) = &expr.kind else {
             return Err(format!(
                 "Cannot {} on non-identifier",
@@ -1261,6 +1265,31 @@ impl<'a> CodeGenerator<'a> {
         // integer avoids leaking it on every `++`/`--`.
         let int_type = Type::Primitive(PrimitiveType::Int);
         self.overwrite_slot_with_owned(ptr, new_val.into(), &int_type)?;
+        Ok(new_val.into())
+    }
+
+    /// `obj.field++` / `obj.field--`. Reads the current int field value, adjusts
+    /// it by one, and writes it back through the same field-store path as a plain
+    /// `obj.field = ...` assignment (so reference counting and where-invariants are
+    /// handled). Semantics already guarantees the field is int-typed.
+    fn generate_field_update_unary_expression(
+        &mut self,
+        obj: &ExpressionNode,
+        field: &str,
+        increment: bool,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let current = self.generate_field_access_expression(obj, field)?;
+        let current_val = self.get_raw_int_value(current)?;
+        let one = self.context.i64_type().const_int(1, false);
+        let new_val = if increment {
+            self.builder
+                .build_int_add(current_val, one, "field_incr_result")
+        } else {
+            self.builder
+                .build_int_sub(current_val, one, "field_decr_result")
+        }
+        .map_err(|e| e.to_string())?;
+        self.assign_to_field_access(obj, field, new_val.into())?;
         Ok(new_val.into())
     }
 
@@ -2564,7 +2593,11 @@ impl<'a> CodeGenerator<'a> {
                 }
                 Ok(result)
             }
-            _ => Err("Assignment to non-identifier/deref not implemented".to_string()),
+            ExpressionKind::FieldAccess { expr, field } => {
+                self.assign_to_field_access(expr, field, result)?;
+                Ok(result)
+            }
+            _ => Err("Assignment to non-identifier/deref/field not implemented".to_string()),
         }
     }
 
@@ -3186,7 +3219,14 @@ impl<'a> CodeGenerator<'a> {
         let llvm_param_types = func.get_type().get_param_types();
         let mut call_args = Vec::with_capacity(args.len());
         for (idx, arg) in args.iter().enumerate() {
-            let arg_type = self.get_resolved_expression_type(arg)?;
+            // Resolve every argument's type through the fallback resolver. This
+            // applies to all named calls, not only imported-module ones: the
+            // analyzer's scope for a function body may already be popped by the
+            // time codegen runs (always so for imported-module bodies), which
+            // breaks a non-identifier argument like `n - 1` in a recursive call.
+            // The fallback consults codegen's own parameter/variable tables and is
+            // otherwise equivalent, so it is the correct default here.
+            let arg_type = self.resolve_expression_type_with_fallback(arg)?;
 
             let needs_copy = if let Type::Named(class_name, _) = &arg_type {
                 if let Some(symbol) = self.analyzer.symbol_table().lookup(class_name) {
@@ -3344,6 +3384,9 @@ impl<'a> CodeGenerator<'a> {
         if let Some(value) = self.try_generate_stdlib_constant_field_access(expr, field)? {
             return Ok(value);
         }
+        if let Some(value) = self.try_generate_module_constant_field_access(expr, field)? {
+            return Ok(value);
+        }
         if let Some(value) = self.try_generate_tuple_field_access(expr, field)? {
             return Ok(value);
         }
@@ -3362,29 +3405,37 @@ impl<'a> CodeGenerator<'a> {
         ))
     }
 
+    /// If `expr.field` names a constant imported from a module, return the module
+    /// name. Shared preamble for the stdlib and user-module constant field-access
+    /// paths: `expr` must be an `Identifier` bound to an `Import`, and `field` must
+    /// be a `Constant` exported by that module.
+    fn imported_constant_module(&self, expr: &ExpressionNode, field: &str) -> Option<String> {
+        let ExpressionKind::Identifier(module_name) = &expr.kind else {
+            return None;
+        };
+        let symbol = self.analyzer.symbol_table().lookup(module_name)?;
+        if symbol.kind != crate::semantics::SymbolKind::Import {
+            return None;
+        }
+        let field_sym = self
+            .analyzer
+            .imported_symbols()
+            .get(module_name)?
+            .get(field)?;
+        if field_sym.kind != crate::semantics::SymbolKind::Constant {
+            return None;
+        }
+        Some(module_name.clone())
+    }
+
     fn try_generate_stdlib_constant_field_access(
         &mut self,
         expr: &ExpressionNode,
         field: &str,
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        let ExpressionKind::Identifier(module_name) = &expr.kind else {
+        let Some(module_name) = self.imported_constant_module(expr, field) else {
             return Ok(None);
         };
-        let Some(symbol) = self.analyzer.symbol_table().lookup(module_name) else {
-            return Ok(None);
-        };
-        if symbol.kind != crate::semantics::SymbolKind::Import {
-            return Ok(None);
-        }
-        let Some(module_syms) = self.analyzer.imported_symbols().get(module_name) else {
-            return Ok(None);
-        };
-        let Some(field_sym) = module_syms.get(field) else {
-            return Ok(None);
-        };
-        if field_sym.kind != crate::semantics::SymbolKind::Constant {
-            return Ok(None);
-        }
 
         use crate::semantics::stdlib::{ConstantValue, lookup_stdlib_item};
         let full_name = format!("{}.{}", module_name, field);
@@ -3399,6 +3450,43 @@ impl<'a> CodeGenerator<'a> {
             ConstantValue::Bool(b) => self.context.bool_type().const_int(b as u64, false).into(),
         };
         Ok(Some(generated))
+    }
+
+    /// `module.CONST` for a user-defined imported module (as opposed to a stdlib
+    /// module, handled just above). A module-level `const` is emitted as a global
+    /// keyed by its own name and initialized in that module's init function -
+    /// exactly the slot the module's own code reads when it names the constant.
+    /// Resolve the field through the global table (never locals, so a same-named
+    /// local in the caller cannot shadow the module constant) and load it like
+    /// any global.
+    ///
+    /// Known limitation: because module globals are keyed by bare name, two
+    /// imported modules that declare the same-named constant collide - both
+    /// resolve to whichever was declared last. This is a pre-existing property of
+    /// the flat global-name model (it affects a module's own reads too, not just
+    /// this namespaced access); tracked in issue #279. Single-module and
+    /// distinct-name cross-module constants are correct.
+    fn try_generate_module_constant_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.imported_constant_module(expr, field).is_none() {
+            return Ok(None);
+        }
+        let Some((ptr, var_type, type_node)) = self.global_variables.get(field) else {
+            // Semantics confirmed this is a module constant, so its global must
+            // exist. Absence is an internal invariant violation, not a "not my
+            // case" fall-through - surface it instead of masking it as the
+            // generic "field access not supported" error downstream.
+            return Err(format!(
+                "internal error: module constant '{}' has no global slot in codegen",
+                field
+            ));
+        };
+        let (ptr_copy, var_type_copy, type_node_copy) = (*ptr, *var_type, type_node.clone());
+        self.generate_identifier_from_binding(field, ptr_copy, var_type_copy, &type_node_copy)
+            .map(Some)
     }
 
     fn try_generate_tuple_field_access(
