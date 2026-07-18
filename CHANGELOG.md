@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or codegen. Closes #266.
 
 ### Fixed
+- **`++`/`--` on a captured variable inside a closure**: a standalone `count++`
+  in a lambda body was rejected by the parser's no-postfix-in-expression guard as
+  if it were nested in an expression, even though a bare `x++` statement is valid
+  anywhere. The guard now only rejects a postfix `++`/`--` genuinely nested inside
+  a larger expression (e.g. `a + y++`), which stays disallowed by design. Codegen
+  already handled the captured increment. Closes #280.
 - **`auto` now rejects nested empty collections consistently**: `auto x = {1: []}`
   and `auto x = [[]]` previously passed semantic analysis with an unresolved
   element type, while the set/map equivalents were caught. All empty collection
