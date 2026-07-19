@@ -359,10 +359,17 @@ impl<'a> CodeGenerator<'a> {
             .all_symbols()
             .iter()
             .filter(|(_, symbol)| symbol.kind == crate::semantics::SymbolKind::Constant)
-            .filter_map(|(name, symbol)| {
-                // `llvm_name` is `module!name` for an imported constant.
-                let (module, _) = symbol.llvm_name.as_ref()?.split_once('!')?;
-                Some((name.clone(), module.to_string(), name.clone()))
+            .filter_map(|(local_name, symbol)| {
+                // `llvm_name` is `module!original_name`. Both halves matter: a
+                // renamed import (`... as MY_CONST`) is referenced by the local
+                // name but stored in the module's table under the original one,
+                // so keying the lookup by the local name would silently miss it.
+                let (module, original_name) = symbol.llvm_name.as_ref()?.split_once('!')?;
+                Some((
+                    local_name.clone(),
+                    module.to_string(),
+                    original_name.to_string(),
+                ))
             })
             .collect();
 
