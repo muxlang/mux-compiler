@@ -387,29 +387,21 @@ impl<'a> CodeGenerator<'a> {
     /// `import cfg.LIMIT as CAP` binds the same storage twice). Decrementing per
     /// name would over-release it and free the value out from under the
     /// remaining references. Sorted so the emitted IR stays deterministic.
+    ///
+    /// Covers the module tables as well as the main-module view. A module's
+    /// constants live only in its own table unless the main module imported
+    /// them directly, so draining just `global_variables` would leave every
+    /// module-private constant (one reached as `cfg.NAME`, never imported) at a
+    /// permanent refcount of 1. Valgrind reports those as "still reachable"
+    /// rather than lost, because the global slot still points at them, so the
+    /// leak legs of CI stay green while the memory is never freed.
     fn emit_global_teardown(&mut self) -> Result<(), String> {
         let rc_dec = self
             .runtime_function("mux_rc_dec")
             .ok_or("mux_rc_dec not found")?;
         let ptr_type = self.context.ptr_type(AddressSpace::default());
 
-        let owned_globals: Vec<(String, inkwell::values::PointerValue<'a>)> = self
-            .global_variables
-            .iter()
-            .filter(|(_, (_, llvm_type, ty))| {
-                // Only globals whose storage is a boxed RC pointer can be
-                // decremented. Value-semantic types stored inline (e.g. custom
-                // enums held as a struct) are not RC pointers - loading and
-                // decrementing them would dereference a non-pointer. References
-                // and functions borrow their target and are managed elsewhere.
-                llvm_type.is_pointer_type()
-                    && self.type_needs_rc_tracking(ty)
-                    && !matches!(ty, Type::Reference(_) | Type::Function { .. })
-            })
-            .map(|(name, (alloca, _, _))| (name.clone(), *alloca))
-            .collect();
-
-        let mut owned_globals = owned_globals;
+        let mut owned_globals = self.collect_teardown_slots();
         owned_globals.sort_by(|a, b| a.0.cmp(&b.0));
         let mut released = std::collections::HashSet::new();
         owned_globals.retain(|(_, alloca)| released.insert(*alloca));
@@ -424,6 +416,45 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    /// Every RC-owned global slot that program exit is responsible for
+    /// releasing, gathered from the main-module view and every module table.
+    /// Names are qualified by module so the emitted IR labels stay unique;
+    /// callers dedupe by slot, since one slot can appear under several names.
+    fn collect_teardown_slots(&self) -> Vec<(String, inkwell::values::PointerValue<'a>)> {
+        let main_table = std::iter::once((None, &self.global_variables));
+        let module_tables = self
+            .module_globals
+            .iter()
+            .map(|(module, table)| (Some(module.as_str()), table));
+
+        main_table
+            .chain(module_tables)
+            .flat_map(|(module, table)| {
+                table
+                    .iter()
+                    .filter_map(move |(name, (alloca, llvm_type, ty))| {
+                        // Only globals whose storage is a boxed RC pointer can be
+                        // decremented. Value-semantic types stored inline (e.g.
+                        // custom enums held as a struct) are not RC pointers -
+                        // loading and decrementing them would dereference a
+                        // non-pointer. References and functions borrow their target
+                        // and are managed elsewhere.
+                        if !llvm_type.is_pointer_type()
+                            || !self.type_needs_rc_tracking(ty)
+                            || matches!(ty, Type::Reference(_) | Type::Function { .. })
+                        {
+                            return None;
+                        }
+                        let label = match module {
+                            Some(module) => format!("{}_{}", module, name),
+                            None => name.clone(),
+                        };
+                        Some((label, *alloca))
+                    })
+            })
+            .collect()
     }
 
     pub(super) fn get_module_name(&self, nodes: &[AstNode]) -> String {

@@ -144,6 +144,17 @@ impl SemanticAnalyzer {
                 ),
             ));
         }
+        // The throwaway analyzer is the only thing that resolved this module's
+        // own imports, so its module table is the sole record of them. Without
+        // merging it, a module reachable only transitively (main imports a,
+        // which imports b) never reaches codegen: its globals are never
+        // declared and referencing them fails with "Undefined variable" even
+        // though semantic analysis resolved them fine. Existing entries win, so
+        // a module already registered keeps the AST analyzed in its own right.
+        for (path, nodes) in std::mem::take(&mut module_analyzer.all_module_asts) {
+            self.all_module_asts.entry(path).or_insert(nodes);
+        }
+
         Ok(self.collect_declared_module_symbols(module_nodes, &module_analyzer))
     }
 

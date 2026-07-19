@@ -511,6 +511,25 @@ impl SemanticAnalyzer {
             self.filter_module_export_symbols(&module_analyzer.symbol_table.all_symbols);
         self.required_runtime_features
             .extend(module_analyzer.required_runtime_features.iter().cloned());
+        // This throwaway analyzer is the only thing that resolved the imported
+        // module's own imports, so its module table is the sole record of them.
+        // Without merging it, a module reachable only transitively (main imports
+        // a, which imports b) never reaches codegen: its globals are never
+        // declared, and referencing them fails with "Undefined variable" even
+        // though semantic analysis resolved them. Existing entries win, so a
+        // module already registered keeps the AST analyzed in its own right.
+        for (path, nodes) in std::mem::take(&mut module_analyzer.all_module_asts) {
+            self.all_module_asts.entry(path).or_insert(nodes);
+        }
+        // Init order matters: main calls these in sequence, and a module's
+        // constants must be initialized before any module that reads them. The
+        // imported module's own dependencies are appended here, ahead of the
+        // module itself (pushed below), so they initialize first.
+        for dependency in std::mem::take(&mut module_analyzer.module_dependencies) {
+            if !self.module_dependencies.contains(&dependency) {
+                self.module_dependencies.push(dependency);
+            }
+        }
 
         match spec {
             ImportSpec::Module { alias } => {

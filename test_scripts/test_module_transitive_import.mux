@@ -1,0 +1,12 @@
+// modglobal_e is imported directly; the modules it imports (modglobal_c,
+// modglobal_a) are reachable only through it. Those transitive modules must
+// still have their globals declared and their init run, in dependency order,
+// or reads of their constants resolve to zero (or fail to compile outright).
+import modglobal_e
+
+func main() returns void {
+    print("transitive const (want 10):   " + modglobal_e.threshold_plus(3).to_string())
+    print("transitive string (want alpha): " + modglobal_e.banner())
+    print("transitive rename (want 55):  " + modglobal_e.capped().to_string())
+    return
+}
