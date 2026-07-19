@@ -435,36 +435,6 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    /// Fold everything an imported module's throwaway analyzer discovered back
-    /// into this one.
-    ///
-    /// That analyzer is the only thing that resolved the imported module's own
-    /// imports, so its module table is the sole record of them. Without this, a
-    /// module reachable only transitively (main imports a, which imports b)
-    /// never reaches codegen: its globals are never declared, and referencing
-    /// them fails with "Undefined variable" even though semantic analysis
-    /// resolved them. Existing AST entries win, so a module already registered
-    /// keeps the AST analyzed in its own right.
-    ///
-    /// Dependency order matters as well: main calls the init functions in
-    /// sequence, and a module's constants must be initialized before any module
-    /// that reads them. The imported module's own dependencies are appended
-    /// here, ahead of the module itself, so they initialize first.
-    pub(super) fn absorb_module_analyzer(&mut self, module_analyzer: &mut SemanticAnalyzer) {
-        self.required_runtime_features
-            .extend(module_analyzer.required_runtime_features.iter().cloned());
-
-        for (path, nodes) in std::mem::take(&mut module_analyzer.all_module_asts) {
-            self.all_module_asts.entry(path).or_insert(nodes);
-        }
-
-        for dependency in std::mem::take(&mut module_analyzer.module_dependencies) {
-            if !self.module_dependencies.contains(&dependency) {
-                self.module_dependencies.push(dependency);
-            }
-        }
-    }
-
     pub(super) fn analyze_import_statement(
         &mut self,
         module_path: &str,
@@ -477,25 +447,6 @@ impl SemanticAnalyzer {
             return Ok(());
         }
 
-        let resolver = self
-            .module_resolver
-            .clone()
-            .ok_or_else(|| SemanticError::new("Module resolver not available", span))?;
-
-        let (has_file, has_directory) = resolver.borrow().check_module_path(module_path);
-
-        if has_file && has_directory {
-            return Err(SemanticError::with_help(
-                format!("Ambiguous import: '{}'", module_path),
-                span,
-                format!(
-                    "Both {}.mux and {}/ directory exist. Please remove one.",
-                    module_path.replace('.', "/"),
-                    module_path.replace('.', "/")
-                ),
-            ));
-        }
-
         let files = files.ok_or_else(|| {
             SemanticError::new(
                 "Files registry must be available for import processing",
@@ -503,84 +454,7 @@ impl SemanticAnalyzer {
             )
         })?;
 
-        if has_directory {
-            self.handle_directory_import(module_path, spec, span, resolver, files)?;
-            return Ok(());
-        }
-
-        let module_nodes = resolver
-            .borrow_mut()
-            .resolve_import_path(module_path, self.current_file.as_deref(), files)
-            .map_err(|e| {
-                SemanticError::with_help(
-                    format!("Failed to import module '{}'", module_path),
-                    span,
-                    e.to_string(),
-                )
-            })?;
-
-        let mut module_analyzer = SemanticAnalyzer::new_for_module(resolver.clone());
-        module_analyzer.set_current_file(std::path::PathBuf::from(
-            module_path.replace('.', "/") + ".mux",
-        ));
-        let errors = module_analyzer.analyze(&module_nodes, Some(files));
-        if !errors.is_empty() {
-            let error_messages: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
-            return Err(SemanticError::with_help(
-                format!("Errors in imported module '{}'", module_path),
-                span,
-                format!(
-                    "Fix the following errors in '{}':\n  {}",
-                    module_path,
-                    error_messages.join("\n  ")
-                ),
-            ));
-        }
-
-        let module_symbols =
-            self.filter_module_export_symbols(&module_analyzer.symbol_table.all_symbols);
-        self.absorb_module_analyzer(&mut module_analyzer);
-
-        match spec {
-            ImportSpec::Module { alias } => {
-                if let Some(namespace) = alias {
-                    self.add_module_namespace(namespace, module_symbols, module_path, span)?;
-                }
-            }
-            ImportSpec::Item { item, alias } => {
-                let symbol_name = alias.as_ref().unwrap_or(item);
-                self.import_single_symbol(&module_symbols, item, symbol_name, module_path, span)?;
-            }
-            ImportSpec::Items { items } => {
-                for (item, alias) in items {
-                    let symbol_name = alias.as_ref().unwrap_or(item);
-                    self.import_single_symbol(
-                        &module_symbols,
-                        item,
-                        symbol_name,
-                        module_path,
-                        span,
-                    )?;
-                }
-            }
-            ImportSpec::Wildcard => {
-                self.import_all_symbols(&module_symbols, module_path, span)?;
-            }
-        }
-
-        resolver
-            .borrow_mut()
-            .cache_module(module_path, module_nodes.clone());
-        resolver.borrow_mut().finish_import(module_path);
-
-        self.all_module_asts
-            .insert(module_path.to_string(), module_nodes);
-
-        if !self.module_dependencies.contains(&module_path.to_string()) {
-            self.module_dependencies.push(module_path.to_string());
-        }
-
-        Ok(())
+        self.import_module_from_resolver(module_path, spec, span, files)
     }
 
     pub(super) fn analyze_statement(
