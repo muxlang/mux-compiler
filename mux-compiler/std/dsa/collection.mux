@@ -1,7 +1,12 @@
+// A read-oriented view over a group of T values. Deliberately excludes
+// mutation: `clear()` was removed because it is the one member no builtin
+// collection can provide (the runtime has no mux_*_clear), it was unused by
+// every stdlib algorithm, and requiring it kept `list<T>` and `set<T>` from
+// satisfying this interface. Implementations may still offer their own
+// `clear()` as a regular method.
 interface Collection<T> {
     func len() returns int
     func is_empty() returns bool
-    func clear() returns void
     func to_list() returns list<T>
     func contains(T value) returns bool
 }

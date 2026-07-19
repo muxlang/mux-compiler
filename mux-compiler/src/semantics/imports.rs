@@ -22,8 +22,9 @@ impl SemanticAnalyzer {
 
         for (name, symbol) in symbols {
             let mut mangled_symbol = symbol.clone();
-            // Set llvm_name for functions
-            if matches!(symbol.kind, SymbolKind::Function) {
+            // Set llvm_name for functions and module constants (both are emitted
+            // under module!name so same-named symbols in two modules differ)
+            if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
                 mangled_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, name));
             }
             mangled_symbols.insert(name, mangled_symbol);
@@ -154,18 +155,19 @@ impl SemanticAnalyzer {
         let module_name_for_mangling = Self::sanitize_module_path(module_path);
         for (name, symbol) in module_symbols {
             let name_str = name.as_str();
-            let is_unmangled_builtin_function = matches!(symbol.kind, SymbolKind::Function)
-                && (name_str.starts_with("print")
-                    || name_str.starts_with("read_line")
-                    || name_str.starts_with("range")
-                    || name_str.starts_with("some")
-                    || name_str.starts_with("none")
-                    || name_str.starts_with("ok")
-                    || name_str.starts_with("err"));
+            let is_unmangled_builtin_function =
+                matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant)
+                    && (name_str.starts_with("print")
+                        || name_str.starts_with("read_line")
+                        || name_str.starts_with("range")
+                        || name_str.starts_with("some")
+                        || name_str.starts_with("none")
+                        || name_str.starts_with("ok")
+                        || name_str.starts_with("err"));
 
             if !is_unmangled_builtin_function && !self.symbol_table.all_symbols.contains_key(name) {
                 let mut mangled_symbol = symbol.clone();
-                if matches!(symbol.kind, SymbolKind::Function) {
+                if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
                     mangled_symbol.llvm_name =
                         Some(format!("{}!{}", module_name_for_mangling, name));
                 }
@@ -549,7 +551,7 @@ impl SemanticAnalyzer {
 
         for (name, symbol) in symbols {
             let mut mangled_symbol = symbol.clone();
-            if matches!(symbol.kind, SymbolKind::Function) {
+            if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
                 mangled_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, name));
             }
             mangled_symbols.insert(name.clone(), mangled_symbol);
@@ -604,8 +606,8 @@ impl SemanticAnalyzer {
             imported_symbol.original_name = Some(item_name.to_string());
         }
 
-        // Set llvm_name for functions (mangled with module path)
-        if matches!(symbol.kind, SymbolKind::Function) {
+        // Set llvm_name for functions and module constants (mangled with module path)
+        if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
             let module_name_for_mangling = module_path.replace(['.', '/'], "_");
             imported_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, item_name));
         }
@@ -637,7 +639,7 @@ impl SemanticAnalyzer {
         for (name, symbol) in module_symbols {
             let mut imported_symbol = symbol.clone();
 
-            if matches!(symbol.kind, SymbolKind::Function) {
+            if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
                 imported_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, name));
             }
 

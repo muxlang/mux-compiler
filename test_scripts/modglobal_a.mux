@@ -1,0 +1,12 @@
+// Paired with modglobal_b.mux: both declare the same global names on purpose,
+// so test_module_global_scoping.mux can prove they no longer collide.
+const int SHARED = 111
+const string LABEL = "alpha"
+
+func a_shared() returns int {
+    return SHARED
+}
+
+func a_label() returns string {
+    return LABEL
+}

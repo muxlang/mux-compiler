@@ -52,7 +52,20 @@ pub struct CodeGenerator<'a> {
     string_counter: usize,
     label_counter: usize,
     variables: HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
+    /// Globals visible to the code currently being generated, keyed by their
+    /// bare source name. Swapped per module (see `module_globals`) so every
+    /// lookup site can keep using the unqualified name.
     global_variables: HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
+    /// Per-module global tables, keyed by sanitized module name, each mapping a
+    /// bare global name to its slot. Module-level globals are emitted as
+    /// `module!name` in LLVM so two modules declaring the same constant no
+    /// longer collide; this table is what makes the right set visible while a
+    /// given module's init and functions are generated.
+    module_globals:
+        HashMap<String, HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>>,
+    /// Sanitized name of the module whose globals are being declared/generated,
+    /// or `None` for the main module (whose globals keep unqualified symbols).
+    current_module_prefix: Option<String>,
     functions: HashMap<String, FunctionValue<'a>>,
     function_nodes: HashMap<String, FunctionNode>,
     current_function_name: Option<String>,
@@ -242,7 +255,14 @@ impl<'a> CodeGenerator<'a> {
         llvm_type: BasicTypeEnum<'a>,
         resolved_type: ResolvedType,
     ) {
-        let global = self.module.add_global(llvm_type, None, name);
+        // Module globals are emitted as `module!name` so same-named constants in
+        // two modules get distinct LLVM symbols; the map stays keyed by the bare
+        // name because only one module's globals are visible at a time.
+        let llvm_name = match &self.current_module_prefix {
+            Some(prefix) => format!("{}!{}", prefix, name),
+            None => name.to_string(),
+        };
+        let global = self.module.add_global(llvm_type, None, &llvm_name);
         global.set_initializer(&llvm_type.const_zero());
         self.global_variables.insert(
             name.to_string(),
@@ -329,6 +349,28 @@ impl<'a> CodeGenerator<'a> {
             .collect()
     }
 
+    /// Run `f` with `module_name`'s globals installed as the visible set,
+    /// restoring the previous set afterwards (on success or error). This is what
+    /// lets a module's own code refer to its globals by their bare names while
+    /// they live under `module!name` in LLVM.
+    fn with_module_globals<T>(
+        &mut self,
+        module_name: &str,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let sanitized = Self::sanitize_module_path(module_name);
+        let saved = std::mem::replace(
+            &mut self.global_variables,
+            self.module_globals
+                .get(&sanitized)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        let result = f(self);
+        self.global_variables = saved;
+        result
+    }
+
     fn generate_imported_user_functions(
         &mut self,
         imported_functions: &[(String, FunctionNode)],
@@ -336,7 +378,10 @@ impl<'a> CodeGenerator<'a> {
         for (module_name_mangled, func) in imported_functions {
             if func.type_params.is_empty() {
                 let mangled_name = format!("{}!{}", module_name_mangled, func.name);
-                self.generate_function_with_llvm_name(func, &mangled_name)?;
+                // A module function reads its own module's globals by bare name.
+                self.with_module_globals(module_name_mangled, |me| {
+                    me.generate_function_with_llvm_name(func, &mangled_name)
+                })?;
             }
         }
         Ok(())
@@ -492,6 +537,8 @@ impl<'a> CodeGenerator<'a> {
             label_counter: 0,
             variables: HashMap::new(),
             global_variables: HashMap::new(),
+            module_globals: HashMap::new(),
+            current_module_prefix: None,
             functions: HashMap::new(),
             function_nodes: HashMap::new(),
             current_function_name: None,
@@ -596,23 +643,39 @@ impl<'a> CodeGenerator<'a> {
         self.generate_vtables(nodes)?;
         self.generate_enum_and_class_constructors(nodes)?;
 
-        let top_level_statements = self.collect_top_level_statements(nodes);
         let user_functions = self.collect_non_generic_main_functions(main_module_nodes);
         let main_top_level_statements = self.collect_top_level_statements(main_module_nodes);
-
-        self.declare_top_level_globals(&top_level_statements)?;
-
         let modules_data = self.collect_module_init_data();
 
-        for (module_name, module_top_level_statements) in modules_data {
-            self.generate_module_init(&module_top_level_statements, &module_name)?;
+        // Declare each module's globals into its own table, emitted as
+        // `module!name`, then the main module's under bare names. Only the
+        // module being generated has its globals visible, so two modules
+        // declaring the same constant no longer share one slot.
+        for (module_name, module_top_level_statements) in &modules_data {
+            let sanitized = Self::sanitize_module_path(module_name);
+            self.global_variables = HashMap::new();
+            self.current_module_prefix = Some(sanitized.clone());
+            self.declare_top_level_globals(module_top_level_statements)?;
+            self.current_module_prefix = None;
+            self.module_globals
+                .insert(sanitized, std::mem::take(&mut self.global_variables));
+        }
+        self.declare_top_level_globals(&main_top_level_statements)?;
+        let main_globals = self.global_variables.clone();
+
+        for (module_name, module_top_level_statements) in &modules_data {
+            self.with_module_globals(module_name, |me| {
+                me.generate_module_init(module_top_level_statements, module_name)
+            })?;
         }
 
+        self.global_variables = main_globals.clone();
         let module_name = self.get_module_name(main_module_nodes);
         self.generate_module_init(&main_top_level_statements, &module_name)?;
         self.generate_main_function(&module_name)?;
 
         self.generate_imported_user_functions(&imported_functions)?;
+        self.global_variables = main_globals;
         self.generate_main_user_functions(&user_functions)?;
         self.generate_class_methods_for_all_nodes(nodes)?;
 

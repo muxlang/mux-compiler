@@ -1015,11 +1015,28 @@ impl<'a> CodeGenerator<'a> {
                     me.call_runtime_function("mux_list_is_empty", &[raw_list])
                 })
             }
-            "size" => {
-                self.ensure_no_args("size", args)?;
+            "size" | "len" => {
+                self.ensure_no_args(method_name, args)?;
                 self.with_extracted_list(obj_value, |me, raw_list| {
                     me.call_runtime_function("mux_list_length", &[raw_list])
                 })
+            }
+            "contains" => {
+                self.ensure_arg_count("contains", args, 1)?;
+                let arg_val = self.generate_expression(&args[0])?;
+                let boxed = self.box_value(arg_val);
+                self.with_extracted_list(obj_value, |me, raw_list| {
+                    me.call_runtime_function("mux_list_contains", &[raw_list, boxed.into()])
+                })
+            }
+            // `Collection<T>` member. A list is already its own list, so this
+            // returns the same list rather than copying - but it must hand back
+            // an owned (+1) reference like every other returning method does
+            // (e.g. mux_set_to_list allocates), or the caller's release
+            // underflows the refcount and corrupts the heap.
+            "to_list" => {
+                self.ensure_no_args("to_list", args)?;
+                self.rc_inc_if_pointer(obj_value)
             }
             "to_string" => {
                 self.ensure_no_args("to_string", args)?;
@@ -1180,8 +1197,9 @@ impl<'a> CodeGenerator<'a> {
                     me.call_runtime_function("mux_map_values", &[extract_map])
                 })
             }
-            "get_pairs" => {
-                self.ensure_no_args("get_pairs", args)?;
+            // A map's elements are its key/value pairs, so `to_list` is `get_pairs`.
+            "get_pairs" | "to_list" => {
+                self.ensure_no_args(method_name, args)?;
                 self.with_extracted_map(obj_value, |me, extract_map| {
                     me.call_runtime_function("mux_map_pairs", &[extract_map])
                 })
@@ -1207,8 +1225,8 @@ impl<'a> CodeGenerator<'a> {
                         .expect("mux_map_contains should return a basic value"))
                 })
             }
-            "size" => {
-                self.ensure_no_args("size", args)?;
+            "size" | "len" => {
+                self.ensure_no_args(method_name, args)?;
                 self.with_extracted_map(obj_value, |me, extract_map| {
                     me.call_runtime_function("mux_map_size", &[extract_map])
                 })
@@ -1274,8 +1292,8 @@ impl<'a> CodeGenerator<'a> {
                     me.call_runtime_function("mux_set_contains", &[extract_set, elem_ptr.into()])
                 })
             }
-            "size" => {
-                self.ensure_no_args("size", args)?;
+            "size" | "len" => {
+                self.ensure_no_args(method_name, args)?;
                 self.with_extracted_set(obj_value, |me, extract_set| {
                     me.call_runtime_function("mux_set_size", &[extract_set])
                 })

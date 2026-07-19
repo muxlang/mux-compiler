@@ -1,0 +1,19 @@
+// Two imported modules declaring the same-named globals must not share a slot,
+// whether read from inside the owning module or through its namespace.
+import modglobal_a
+import modglobal_b
+
+func main() returns void {
+    // read from inside each owning module
+    print("a_shared: " + modglobal_a.a_shared().to_string())
+    print("b_shared: " + modglobal_b.b_shared().to_string())
+    print("a_label:  " + modglobal_a.a_label())
+    print("b_label:  " + modglobal_b.b_label())
+
+    // read through each module namespace
+    print("a.SHARED: " + modglobal_a.SHARED.to_string())
+    print("b.SHARED: " + modglobal_b.SHARED.to_string())
+    print("a.LABEL:  " + modglobal_a.LABEL)
+    print("b.LABEL:  " + modglobal_b.LABEL)
+    return
+}

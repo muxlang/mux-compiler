@@ -2329,6 +2329,16 @@ impl SemanticAnalyzer {
             Type::Variable(var) | Type::Generic(var) => {
                 self.type_implements_interface_with_variable(var, interface_name, interface_args)
             }
+            // Builtin collections satisfy `Collection<T>` structurally: they
+            // provide len/is_empty/to_list/contains over their element type, so
+            // a plain `list` or `set` can be passed to the generic algorithms.
+            // A map is excluded on purpose - its `contains` takes a key while
+            // `to_list` yields pairs, so there is no single coherent T.
+            Type::List(elem) | Type::Set(elem) => {
+                interface_name == "Collection"
+                    && (interface_args.is_empty()
+                        || interface_args == std::slice::from_ref(elem.as_ref()))
+            }
             _ => false,
         }
     }
@@ -2682,9 +2692,23 @@ impl SemanticAnalyzer {
                 return_type: Type::Primitive(PrimitiveType::Bool),
                 is_static: false,
             }),
-            "size" => Some(MethodSig {
+            // `len` is the `Collection<T>` spelling of `size`; both are kept so
+            // existing code and the interface agree.
+            "size" | "len" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Int),
+                is_static: false,
+            }),
+            "contains" => Some(MethodSig {
+                params: vec![elem_type.clone()],
+                return_type: Type::Primitive(PrimitiveType::Bool),
+                is_static: false,
+            }),
+            // Identity for a list, but required by `Collection<T>` so a list can
+            // be passed to the generic algorithms.
+            "to_list" => Some(MethodSig {
+                params: vec![],
+                return_type: Type::List(Box::new(elem_type.clone())),
                 is_static: false,
             }),
             "to_string" => Some(MethodSig {
@@ -2741,7 +2765,7 @@ impl SemanticAnalyzer {
                 return_type: Type::Optional(Box::new(value_type.clone())),
                 is_static: false,
             }),
-            "size" => Some(MethodSig {
+            "size" | "len" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Int),
                 is_static: false,
@@ -2749,6 +2773,17 @@ impl SemanticAnalyzer {
             "is_empty" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Bool),
+                is_static: false,
+            }),
+            // A map's elements are its key/value pairs, so `to_list` matches
+            // `get_pairs`. (A map is deliberately not a `Collection<T>`: its
+            // `contains` takes a key while this yields pairs, so T is ambiguous.)
+            "to_list" => Some(MethodSig {
+                params: vec![],
+                return_type: Type::List(Box::new(Type::Tuple(
+                    Box::new(key_type.clone()),
+                    Box::new(value_type.clone()),
+                ))),
                 is_static: false,
             }),
             "to_string" => Some(MethodSig {
@@ -2777,7 +2812,7 @@ impl SemanticAnalyzer {
                 return_type: Type::Primitive(PrimitiveType::Bool),
                 is_static: false,
             }),
-            "size" => Some(MethodSig {
+            "size" | "len" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Int),
                 is_static: false,
@@ -3071,8 +3106,16 @@ fn infer_missing_param_from_bounds(
 fn owner_concrete_type_args(owner_concrete_type: &Type) -> Option<&[Type]> {
     match owner_concrete_type {
         Type::Named(_, args) => Some(args.as_slice()),
+        // Builtin collections carry their element type the same way a class
+        // carries its type arguments, so `E is Collection<T>` can infer `T` from
+        // `E = list<int>` exactly as it does from `E = Stack<int>`. Without this,
+        // a signature whose T appears only in the bound (e.g.
+        // `reverse<T, E is Collection<T>>(E c) returns list<T>`) is uninferable
+        // for a plain list or set.
+        Type::List(elem) | Type::Set(elem) => Some(std::slice::from_ref(elem.as_ref())),
         Type::Reference(inner) => match inner.as_ref() {
             Type::Named(_, args) => Some(args.as_slice()),
+            Type::List(elem) | Type::Set(elem) => Some(std::slice::from_ref(elem.as_ref())),
             _ => None,
         },
         _ => None,
