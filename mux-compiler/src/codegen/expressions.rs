@@ -3479,22 +3479,31 @@ impl<'a> CodeGenerator<'a> {
             .and_then(|mangled| mangled.split('!').next())
             .map(str::to_string);
 
-        let entry = owning_module
-            .as_ref()
-            .and_then(|module| self.module_globals.get(module))
-            .and_then(|globals| globals.get(field))
-            .or_else(|| self.global_variables.get(field));
-
-        let Some((ptr, var_type, type_node)) = entry else {
-            // Semantics confirmed this is a module constant, so its global must
-            // exist. Absence is an internal invariant violation, not a "not my
-            // case" fall-through - surface it instead of masking it as the
-            // generic "field access not supported" error downstream.
-            return Err(format!(
-                "internal error: module constant '{}' has no global slot in codegen",
-                field
-            ));
+        // When the owning module is known, its table is the only correct source:
+        // falling back to `global_variables` here would read whichever module's
+        // globals happen to be swapped in, silently yielding a same-named
+        // constant from the *calling* module - exactly the bug this scoping
+        // fixes. Only an unmangled symbol (no `llvm_name`, e.g. a main-module
+        // constant) legitimately falls back.
+        let entry = match owning_module.as_ref() {
+            Some(module) => self
+                .module_globals
+                .get(module)
+                .and_then(|globals| globals.get(field))
+                .ok_or_else(|| {
+                    format!(
+                        "internal error: module constant '{}' has no global slot in module '{}'",
+                        field, module
+                    )
+                })?,
+            None => self.global_variables.get(field).ok_or_else(|| {
+                format!(
+                    "internal error: module constant '{}' has no global slot in codegen",
+                    field
+                )
+            })?,
         };
+        let (ptr, var_type, type_node) = entry;
         let (ptr_copy, var_type_copy, type_node_copy) = (*ptr, *var_type, type_node.clone());
         self.generate_identifier_from_binding(field, ptr_copy, var_type_copy, &type_node_copy)
             .map(Some)
