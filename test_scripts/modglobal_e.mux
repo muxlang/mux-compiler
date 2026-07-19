@@ -1,0 +1,20 @@
+// A non-main module that pulls constants into its own scope and references
+// them by bare name from its own functions. Covers all three direct-import
+// forms: wildcard, selective, and renamed. Importing LABEL from modglobal_a
+// also proves the alias resolves to that module's slot, not the same-named
+// constant in modglobal_b.
+import modglobal_c.*
+import modglobal_a.(LABEL)
+import modglobal_c.LIMIT as CAP
+
+func threshold_plus(int extra) returns int {
+    return err_threshold + extra
+}
+
+func banner() returns string {
+    return LABEL + " @ " + print_width.to_string()
+}
+
+func capped() returns int {
+    return CAP
+}

@@ -23,8 +23,8 @@ use inkwell::values::{FunctionValue, PointerValue};
 use std::collections::HashMap;
 
 use crate::ast::{
-    AstNode, EnumVariantField, Field, FunctionNode, StatementKind, StatementNode, TraitBound,
-    TypeNode,
+    AstNode, EnumVariantField, Field, FunctionNode, ImportSpec, StatementKind, StatementNode,
+    TraitBound, TypeNode,
 };
 use crate::semantics::{GenericContext, SemanticAnalyzer, Type, Type as ResolvedType};
 
@@ -385,6 +385,80 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
+    /// The `(source module, spec)` of every import in a module's own AST that
+    /// brings names directly into scope. A bare `import logger` is excluded: it
+    /// is reached as `logger.NAME` field access, not by bare name.
+    fn collect_direct_imports(nodes: &[AstNode]) -> Vec<(String, ImportSpec)> {
+        nodes
+            .iter()
+            .filter_map(|node| match node {
+                AstNode::Statement(StatementNode {
+                    kind: StatementKind::Import { module_path, spec },
+                    ..
+                }) if !matches!(spec, ImportSpec::Module { .. }) => {
+                    Some((Self::sanitize_module_path(module_path), spec.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Resolve one import spec against the source module's globals into
+    /// `(local name, original name)` pairs. A wildcard takes every global the
+    /// source module declared; the named forms take only what they list, under
+    /// their alias when renamed.
+    fn resolve_import_aliases(
+        spec: &ImportSpec,
+        source_globals: &HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
+    ) -> Vec<(String, String)> {
+        match spec {
+            ImportSpec::Wildcard => source_globals
+                .keys()
+                .map(|name| (name.clone(), name.clone()))
+                .collect(),
+            ImportSpec::Item { item, alias } => {
+                vec![(alias.clone().unwrap_or_else(|| item.clone()), item.clone())]
+            }
+            ImportSpec::Items { items } => items
+                .iter()
+                .map(|(item, alias)| (alias.clone().unwrap_or_else(|| item.clone()), item.clone()))
+                .collect(),
+            ImportSpec::Module { .. } => Vec::new(),
+        }
+    }
+
+    /// Alias constants a non-main module imported directly into that module's
+    /// own global table. `alias_directly_imported_constants` handles the main
+    /// module from the analyzer's flattened symbol table, but that table says
+    /// nothing about what a non-main module pulled into its own scope, so a
+    /// module function referencing a wildcard-imported constant by bare name
+    /// failed to resolve. Storage stays in the owning module's table; this only
+    /// makes it reachable from the importing module's view.
+    fn alias_imported_constants_into_modules(&mut self) {
+        let module_paths: Vec<String> = self.analyzer.all_module_asts().keys().cloned().collect();
+        for module_path in module_paths {
+            let nodes = match self.analyzer.all_module_asts().get(&module_path) {
+                Some(nodes) => nodes.clone(),
+                None => continue,
+            };
+            let target = Self::sanitize_module_path(&module_path);
+            let mut aliases = Vec::new();
+            for (source, spec) in Self::collect_direct_imports(&nodes) {
+                let Some(source_globals) = self.module_globals.get(&source) else {
+                    continue;
+                };
+                for (local_name, original) in Self::resolve_import_aliases(&spec, source_globals) {
+                    if let Some(entry) = source_globals.get(&original).cloned() {
+                        aliases.push((local_name, entry));
+                    }
+                }
+            }
+            if let Some(target_globals) = self.module_globals.get_mut(&target) {
+                target_globals.extend(aliases);
+            }
+        }
+    }
+
     /// Run `f` with `module_name`'s globals installed as the visible set,
     /// restoring the previous set afterwards (on success or error). This is what
     /// lets a module's own code refer to its globals by their bare names while
@@ -706,6 +780,9 @@ impl<'a> CodeGenerator<'a> {
             self.module_globals
                 .insert(sanitized, std::mem::take(&mut self.global_variables));
         }
+        // Every module's table exists now, so cross-module aliases can be
+        // resolved in either direction.
+        self.alias_imported_constants_into_modules();
         self.declare_top_level_globals(&main_top_level_statements)?;
         // A constant brought directly into scope (`import cfg.*`, or a selective
         // import) is referenced by its bare name from the importing module, so
