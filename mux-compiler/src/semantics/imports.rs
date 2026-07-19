@@ -155,15 +155,18 @@ impl SemanticAnalyzer {
         let module_name_for_mangling = Self::sanitize_module_path(module_path);
         for (name, symbol) in module_symbols {
             let name_str = name.as_str();
-            let is_unmangled_builtin_function =
-                matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant)
-                    && (name_str.starts_with("print")
-                        || name_str.starts_with("read_line")
-                        || name_str.starts_with("range")
-                        || name_str.starts_with("some")
-                        || name_str.starts_with("none")
-                        || name_str.starts_with("ok")
-                        || name_str.starts_with("err"));
+            // Builtin *functions* (print, read_line, range, some, none, ok, err)
+            // keep unmangled names. Constants are never builtins here, so a
+            // module constant that merely starts with one of these prefixes
+            // (e.g. `err_code`, `print_width`) must not be skipped.
+            let is_unmangled_builtin_function = matches!(symbol.kind, SymbolKind::Function)
+                && (name_str.starts_with("print")
+                    || name_str.starts_with("read_line")
+                    || name_str.starts_with("range")
+                    || name_str.starts_with("some")
+                    || name_str.starts_with("none")
+                    || name_str.starts_with("ok")
+                    || name_str.starts_with("err"));
 
             if !is_unmangled_builtin_function && !self.symbol_table.all_symbols.contains_key(name) {
                 let mut mangled_symbol = symbol.clone();

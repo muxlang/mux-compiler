@@ -349,6 +349,35 @@ impl<'a> CodeGenerator<'a> {
             .collect()
     }
 
+    /// Make constants imported directly into the current scope reachable by
+    /// their bare name. Their storage stays in the owning module's table; this
+    /// adds an alias so `import cfg.*` followed by a bare `err_code` resolves,
+    /// while a constant only reachable as `cfg.err_code` stays out of the view.
+    fn alias_directly_imported_constants(&mut self) {
+        let aliases: Vec<(String, String, String)> = self
+            .analyzer
+            .all_symbols()
+            .iter()
+            .filter(|(_, symbol)| symbol.kind == crate::semantics::SymbolKind::Constant)
+            .filter_map(|(name, symbol)| {
+                // `llvm_name` is `module!name` for an imported constant.
+                let (module, _) = symbol.llvm_name.as_ref()?.split_once('!')?;
+                Some((name.clone(), module.to_string(), name.clone()))
+            })
+            .collect();
+
+        for (local_name, module, original_name) in aliases {
+            if let Some(entry) = self
+                .module_globals
+                .get(&module)
+                .and_then(|globals| globals.get(&original_name))
+                .cloned()
+            {
+                self.global_variables.insert(local_name, entry);
+            }
+        }
+    }
+
     /// Run `f` with `module_name`'s globals installed as the visible set,
     /// restoring the previous set afterwards (on success or error). This is what
     /// lets a module's own code refer to its globals by their bare names while
@@ -661,6 +690,11 @@ impl<'a> CodeGenerator<'a> {
                 .insert(sanitized, std::mem::take(&mut self.global_variables));
         }
         self.declare_top_level_globals(&main_top_level_statements)?;
+        // A constant brought directly into scope (`import cfg.*`, or a selective
+        // import) is referenced by its bare name from the importing module, so
+        // alias it into that module's view. The slot still lives in the owning
+        // module's table - this only makes it reachable, it does not duplicate it.
+        self.alias_directly_imported_constants();
         let main_globals = self.global_variables.clone();
 
         for (module_name, module_top_level_statements) in &modules_data {
@@ -677,7 +711,23 @@ impl<'a> CodeGenerator<'a> {
         self.generate_imported_user_functions(&imported_functions)?;
         self.global_variables = main_globals;
         self.generate_main_user_functions(&user_functions)?;
-        self.generate_class_methods_for_all_nodes(nodes)?;
+
+        // Class methods need the same per-module scoping as free functions: a
+        // method on a module's class reads that module's globals by bare name.
+        // Generating every class against the main module's table would leave a
+        // module constant referenced by one of its methods unresolvable.
+        let module_asts: Vec<(String, Vec<AstNode>)> = self
+            .analyzer
+            .all_module_asts()
+            .iter()
+            .map(|(path, nodes)| (path.clone(), nodes.clone()))
+            .collect();
+        for (module_path, module_nodes) in &module_asts {
+            self.with_module_globals(module_path, |me| {
+                me.generate_class_methods_for_all_nodes(module_nodes)
+            })?;
+        }
+        self.generate_class_methods_for_all_nodes(main_module_nodes)?;
 
         Ok(())
     }
