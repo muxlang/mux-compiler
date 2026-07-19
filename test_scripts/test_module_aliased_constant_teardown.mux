@@ -1,0 +1,12 @@
+// One constant reachable under two names: LIMIT via the wildcard, CAP via the
+// rename. Both bind the same storage, so global teardown must release that slot
+// once. Releasing per name freed the value while the other name still referred
+// to it (a use-after-free caught only under Valgrind, not by output).
+import modglobal_c.*
+import modglobal_c.LIMIT as CAP
+
+func main() returns void {
+    print("limit (want 55): " + LIMIT.to_string())
+    print("cap   (want 55): " + CAP.to_string())
+    return
+}

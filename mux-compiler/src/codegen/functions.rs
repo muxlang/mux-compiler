@@ -380,6 +380,13 @@ impl<'a> CodeGenerator<'a> {
     /// Release every owned global variable once at program exit so persistent
     /// globals are not reported as leaked. Reference and function globals borrow
     /// their target and must not be decremented.
+    ///
+    /// Deduplicated by slot, not by name: a directly-imported constant is
+    /// aliased into the importing module's view under its local name, so one
+    /// slot can be reachable under several names (`import cfg.*` plus
+    /// `import cfg.LIMIT as CAP` binds the same storage twice). Decrementing per
+    /// name would over-release it and free the value out from under the
+    /// remaining references. Sorted so the emitted IR stays deterministic.
     fn emit_global_teardown(&mut self) -> Result<(), String> {
         let rc_dec = self
             .runtime_function("mux_rc_dec")
@@ -401,6 +408,11 @@ impl<'a> CodeGenerator<'a> {
             })
             .map(|(name, (alloca, _, _))| (name.clone(), *alloca))
             .collect();
+
+        let mut owned_globals = owned_globals;
+        owned_globals.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut released = std::collections::HashSet::new();
+        owned_globals.retain(|(_, alloca)| released.insert(*alloca));
 
         for (name, alloca) in owned_globals {
             let value = self
