@@ -1,0 +1,17 @@
+// A module whose class method reads a module-level constant, used by
+// test_module_class_globals.mux.
+const int SHARED = 111
+
+class Scaler {
+    int factor
+
+    common func of(int factor) returns Scaler {
+        auto s = Scaler.new()
+        s.factor = factor
+        return s
+    }
+
+    func scaled() returns int {
+        return self.factor * SHARED
+    }
+}

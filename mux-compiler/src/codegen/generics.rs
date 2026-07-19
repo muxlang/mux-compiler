@@ -752,29 +752,22 @@ impl<'a> CodeGenerator<'a> {
                 continue;
             }
 
-            // If a type parameter was not directly inferred from arguments, try to infer it
-            // from already-inferred parameters via their trait bound type arguments.
-            // Example: in `max<T, E is Collection<T>>(E collection)`, inferring `E = Stack<int>`
-            // lets us infer `T = int`.
-            let inferred_from_bounds: Option<Type> = None;
-
-            if let Some(concrete_type) = inferred_from_bounds {
-                concrete_types.push(concrete_type);
-            } else if let Some(context) = &self.generic_context {
-                if let Some(concrete_type) = context.type_params.get(type_param_name) {
-                    concrete_types.push(concrete_type.clone());
-                    continue;
-                }
-                return Err(format!(
-                    "Could not infer concrete type for generic parameter {} in function {}",
-                    type_param_name, func_node.name
-                ));
-            } else {
-                return Err(format!(
-                    "Could not infer concrete type for generic parameter {} in function {}",
-                    type_param_name, func_node.name
-                ));
+            // Bound-driven inference (e.g. `E = list<int>` giving `T = int` via
+            // `E is Collection<T>`) already ran above via
+            // `infer_missing_type_params_from_bounds`. The only remaining source
+            // is an enclosing generic instantiation's own type parameters.
+            if let Some(concrete_type) = self
+                .generic_context
+                .as_ref()
+                .and_then(|context| context.type_params.get(type_param_name))
+            {
+                concrete_types.push(concrete_type.clone());
+                continue;
             }
+            return Err(format!(
+                "Could not infer concrete type for generic parameter {} in function {}",
+                type_param_name, func_node.name
+            ));
         }
         Ok(concrete_types)
     }

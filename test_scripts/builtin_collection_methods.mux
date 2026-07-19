@@ -1,0 +1,43 @@
+// Builtin list and set satisfy Collection<T>, so the generic std.dsa
+// algorithms accept them directly. Also covers the Collection members added to
+// the builtins (len/contains/to_list) and map's len/to_list.
+import std.dsa.*
+import std.dsa.collection.Collection
+
+func main() returns void {
+    auto nums = [5, 3, 8, 1, 2]
+
+    // generic algorithms over a plain list
+    print("sort:     " + algorithm.sort(nums).to_string())
+    print("bsearch:  " + algorithm.binary_search([1, 3, 5, 8], 5).to_string())
+    print("reverse:  " + algorithm.reverse(nums).to_string())
+    print("index_of: " + algorithm.index_of(nums, 8).to_string())
+    print("unique:   " + algorithm.unique([1, 1, 2, 2, 3]).to_string())
+    print("sum:      " + algorithm.sum_ints(nums).to_string())
+
+    // Collection members on a list
+    print("len:      " + nums.len().to_string())
+    print("contains: " + nums.contains(8).to_string())
+    print("to_list:  " + nums.to_list().to_string())
+
+    // Mux is value-semantic, so to_list() must hand back an independent copy:
+    // mutating the result must leave the receiver untouched.
+    auto copied = nums.to_list()
+    copied.push_back(99)
+    print("copy:     " + copied.to_string())
+    print("original: " + nums.to_string())
+
+    // a set is a Collection too
+    set<int> s = {4, 2, 9}
+    print("set len:  " + s.len().to_string())
+    match algorithm.max(s) {
+        some(v) { print("set max:  " + v.to_string()) }
+        none { print("set max:  empty") }
+    }
+
+    // a map is not a Collection, but has len and to_list (its key/value pairs)
+    map<string, int> m = {"a": 1, "b": 2}
+    print("map len:  " + m.len().to_string())
+    print("map pairs:" + m.to_list().to_string())
+    return
+}

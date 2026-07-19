@@ -1015,11 +1015,31 @@ impl<'a> CodeGenerator<'a> {
                     me.call_runtime_function("mux_list_is_empty", &[raw_list])
                 })
             }
-            "size" => {
-                self.ensure_no_args("size", args)?;
+            "size" | "len" => {
+                self.ensure_no_args(method_name, args)?;
                 self.with_extracted_list(obj_value, |me, raw_list| {
                     me.call_runtime_function("mux_list_length", &[raw_list])
                 })
+            }
+            "contains" => {
+                self.ensure_arg_count("contains", args, 1)?;
+                let arg_val = self.generate_expression(&args[0])?;
+                let boxed = self.box_value(arg_val);
+                self.with_extracted_list(obj_value, |me, raw_list| {
+                    me.call_runtime_function("mux_list_contains", &[raw_list, boxed.into()])
+                })
+            }
+            // `Collection<T>` member. A list is already a list, but Mux is
+            // value-semantic, so this must hand back an independent deep copy
+            // rather than an alias of the receiver - every other implementor
+            // allocates (e.g. mux_set_to_list), and returning the receiver
+            // would let a mutation through the result be observed on the
+            // original. The clone is owned (+1), matching the return
+            // convention, so the caller's release cannot underflow.
+            "to_list" => {
+                self.ensure_no_args("to_list", args)?;
+                let cloned = self.deep_clone_value(obj_value.into_pointer_value())?;
+                Ok(cloned.into())
             }
             "to_string" => {
                 self.ensure_no_args("to_string", args)?;
@@ -1180,8 +1200,9 @@ impl<'a> CodeGenerator<'a> {
                     me.call_runtime_function("mux_map_values", &[extract_map])
                 })
             }
-            "get_pairs" => {
-                self.ensure_no_args("get_pairs", args)?;
+            // A map's elements are its key/value pairs, so `to_list` is `get_pairs`.
+            "get_pairs" | "to_list" => {
+                self.ensure_no_args(method_name, args)?;
                 self.with_extracted_map(obj_value, |me, extract_map| {
                     me.call_runtime_function("mux_map_pairs", &[extract_map])
                 })
@@ -1207,8 +1228,8 @@ impl<'a> CodeGenerator<'a> {
                         .expect("mux_map_contains should return a basic value"))
                 })
             }
-            "size" => {
-                self.ensure_no_args("size", args)?;
+            "size" | "len" => {
+                self.ensure_no_args(method_name, args)?;
                 self.with_extracted_map(obj_value, |me, extract_map| {
                     me.call_runtime_function("mux_map_size", &[extract_map])
                 })
@@ -1274,8 +1295,8 @@ impl<'a> CodeGenerator<'a> {
                     me.call_runtime_function("mux_set_contains", &[extract_set, elem_ptr.into()])
                 })
             }
-            "size" => {
-                self.ensure_no_args("size", args)?;
+            "size" | "len" => {
+                self.ensure_no_args(method_name, args)?;
                 self.with_extracted_set(obj_value, |me, extract_set| {
                     me.call_runtime_function("mux_set_size", &[extract_set])
                 })

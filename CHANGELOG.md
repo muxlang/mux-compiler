@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`list` and `set` satisfy `Collection<T>`**: the generic `std.dsa.algorithm`
+  functions (`sort`, `binary_search`, `reverse`, `index_of`, `unique`, `max`,
+  `min`, `any`, `all`, `count`, `sum_ints`, `sum_floats`) now accept a plain
+  `list` or `set`, not only a `Collection` class such as `stack.Stack`. Builtin
+  collections previously satisfied no interface at all, so passing one failed
+  with a confusing "Undefined variable 'items'". `list` gains `len()`,
+  `contains()`, and `to_list()`; `set` and `map` gain `len()`. Closes #277.
+
+### Changed
+- **BREAKING: `clear()` removed from the `Collection<T>` interface**. It was the
+  one member no builtin collection could provide (the runtime has no
+  `mux_*_clear`) and it was unused by every stdlib algorithm, so requiring it
+  kept `list` and `set` out of the interface. `Collection` is now a read-oriented
+  view (`len`, `is_empty`, `to_list`, `contains`); implementations may still
+  offer their own `clear()` as a regular method, and the dsa classes do.
+
+### Fixed
+- **Same-named globals in different modules no longer collide**: module-level
+  globals were emitted and keyed by their bare name, so two imported modules
+  each declaring e.g. `const int SHARED` shared one slot and both resolved to
+  whichever was declared last - silently returning the wrong value from a
+  module's own functions as well as through its namespace. Each module's globals
+  are now emitted as `module!name` into a per-module table, and only the owning
+  module's globals are visible while its init and functions are generated.
+  Namespaced reads resolve through the symbol's mangled name, so an aliased
+  import (`import shapes.circle as c`) resolves correctly too. Closes #279.
+- **`map.to_list()`**: reported "Undefined method" despite being listed as added
+  in 0.4.0 (#209); `set.to_list()` worked. It now returns the map's key/value
+  pairs, matching `get_pairs()`.
+- **Type parameters inferable through a builtin's bound**: a signature whose type
+  parameter appears only in a bound (e.g.
+  `reverse<T, E is Collection<T>>(E c) returns list<T>`) could not infer `T` when
+  `E` was a builtin, because only class types exposed their type arguments to
+  bound-driven inference. Removes a dead inference placeholder that was hardcoded
+  to `None`.
+
 ## [0.6.0] - 2026-07-18
 
 ### Changed

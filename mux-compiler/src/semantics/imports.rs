@@ -22,8 +22,9 @@ impl SemanticAnalyzer {
 
         for (name, symbol) in symbols {
             let mut mangled_symbol = symbol.clone();
-            // Set llvm_name for functions
-            if matches!(symbol.kind, SymbolKind::Function) {
+            // Set llvm_name for functions and module constants (both are emitted
+            // under module!name so same-named symbols in two modules differ)
+            if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
                 mangled_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, name));
             }
             mangled_symbols.insert(name, mangled_symbol);
@@ -114,6 +115,36 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// Fold everything an imported module's throwaway analyzer discovered back
+    /// into this one.
+    ///
+    /// That analyzer is the only thing that resolved the imported module's own
+    /// imports, so its module table is the sole record of them. Without this, a
+    /// module reachable only transitively (main imports a, which imports b)
+    /// never reaches codegen: its globals are never declared, and referencing
+    /// them fails with "Undefined variable" even though semantic analysis
+    /// resolved them. Existing AST entries win, so a module already registered
+    /// keeps the AST analyzed in its own right.
+    ///
+    /// Dependency order matters as well: main calls the init functions in
+    /// sequence, and a module's constants must be initialized before any module
+    /// that reads them. The imported module's own dependencies are appended
+    /// here, ahead of the module itself, so they initialize first.
+    fn absorb_module_analyzer(&mut self, module_analyzer: &mut SemanticAnalyzer) {
+        self.required_runtime_features
+            .extend(module_analyzer.required_runtime_features.iter().cloned());
+
+        for (path, nodes) in std::mem::take(&mut module_analyzer.all_module_asts) {
+            self.all_module_asts.entry(path).or_insert(nodes);
+        }
+
+        for dependency in std::mem::take(&mut module_analyzer.module_dependencies) {
+            if !self.module_dependencies.contains(&dependency) {
+                self.module_dependencies.push(dependency);
+            }
+        }
+    }
+
     fn analyze_imported_module(
         &mut self,
         module_nodes: &[AstNode],
@@ -143,6 +174,8 @@ impl SemanticAnalyzer {
                 ),
             ));
         }
+        self.absorb_module_analyzer(&mut module_analyzer);
+
         Ok(self.collect_declared_module_symbols(module_nodes, &module_analyzer))
     }
 
@@ -154,6 +187,10 @@ impl SemanticAnalyzer {
         let module_name_for_mangling = Self::sanitize_module_path(module_path);
         for (name, symbol) in module_symbols {
             let name_str = name.as_str();
+            // Builtin *functions* (print, read_line, range, some, none, ok, err)
+            // keep unmangled names. Constants are never builtins here, so a
+            // module constant that merely starts with one of these prefixes
+            // (e.g. `err_code`, `print_width`) must not be skipped.
             let is_unmangled_builtin_function = matches!(symbol.kind, SymbolKind::Function)
                 && (name_str.starts_with("print")
                     || name_str.starts_with("read_line")
@@ -165,7 +202,7 @@ impl SemanticAnalyzer {
 
             if !is_unmangled_builtin_function && !self.symbol_table.all_symbols.contains_key(name) {
                 let mut mangled_symbol = symbol.clone();
-                if matches!(symbol.kind, SymbolKind::Function) {
+                if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
                     mangled_symbol.llvm_name =
                         Some(format!("{}!{}", module_name_for_mangling, name));
                 }
@@ -225,7 +262,7 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    fn import_module_from_resolver(
+    pub(super) fn import_module_from_resolver(
         &mut self,
         module_path: &str,
         spec: &ImportSpec,
@@ -549,7 +586,7 @@ impl SemanticAnalyzer {
 
         for (name, symbol) in symbols {
             let mut mangled_symbol = symbol.clone();
-            if matches!(symbol.kind, SymbolKind::Function) {
+            if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
                 mangled_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, name));
             }
             mangled_symbols.insert(name.clone(), mangled_symbol);
@@ -604,8 +641,8 @@ impl SemanticAnalyzer {
             imported_symbol.original_name = Some(item_name.to_string());
         }
 
-        // Set llvm_name for functions (mangled with module path)
-        if matches!(symbol.kind, SymbolKind::Function) {
+        // Set llvm_name for functions and module constants (mangled with module path)
+        if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
             let module_name_for_mangling = module_path.replace(['.', '/'], "_");
             imported_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, item_name));
         }
@@ -637,7 +674,7 @@ impl SemanticAnalyzer {
         for (name, symbol) in module_symbols {
             let mut imported_symbol = symbol.clone();
 
-            if matches!(symbol.kind, SymbolKind::Function) {
+            if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
                 imported_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, name));
             }
 

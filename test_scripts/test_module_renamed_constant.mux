@@ -1,0 +1,8 @@
+// A constant imported under a different local name is referenced by the alias
+// but stored in its module's table under the original name.
+import modglobal_c.LIMIT as MAX_LIMIT
+
+func main() returns void {
+    print("renamed const (want 55): " + MAX_LIMIT.to_string())
+    return
+}

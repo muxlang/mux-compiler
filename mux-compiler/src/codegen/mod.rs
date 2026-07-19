@@ -23,8 +23,8 @@ use inkwell::values::{FunctionValue, PointerValue};
 use std::collections::HashMap;
 
 use crate::ast::{
-    AstNode, EnumVariantField, Field, FunctionNode, StatementKind, StatementNode, TraitBound,
-    TypeNode,
+    AstNode, EnumVariantField, Field, FunctionNode, ImportSpec, StatementKind, StatementNode,
+    TraitBound, TypeNode,
 };
 use crate::semantics::{GenericContext, SemanticAnalyzer, Type, Type as ResolvedType};
 
@@ -52,7 +52,20 @@ pub struct CodeGenerator<'a> {
     string_counter: usize,
     label_counter: usize,
     variables: HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
+    /// Globals visible to the code currently being generated, keyed by their
+    /// bare source name. Swapped per module (see `module_globals`) so every
+    /// lookup site can keep using the unqualified name.
     global_variables: HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
+    /// Per-module global tables, keyed by sanitized module name, each mapping a
+    /// bare global name to its slot. Module-level globals are emitted as
+    /// `module!name` in LLVM so two modules declaring the same constant no
+    /// longer collide; this table is what makes the right set visible while a
+    /// given module's init and functions are generated.
+    module_globals:
+        HashMap<String, HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>>,
+    /// Sanitized name of the module whose globals are being declared/generated,
+    /// or `None` for the main module (whose globals keep unqualified symbols).
+    current_module_prefix: Option<String>,
     functions: HashMap<String, FunctionValue<'a>>,
     function_nodes: HashMap<String, FunctionNode>,
     current_function_name: Option<String>,
@@ -242,7 +255,14 @@ impl<'a> CodeGenerator<'a> {
         llvm_type: BasicTypeEnum<'a>,
         resolved_type: ResolvedType,
     ) {
-        let global = self.module.add_global(llvm_type, None, name);
+        // Module globals are emitted as `module!name` so same-named constants in
+        // two modules get distinct LLVM symbols; the map stays keyed by the bare
+        // name because only one module's globals are visible at a time.
+        let llvm_name = match &self.current_module_prefix {
+            Some(prefix) => format!("{}!{}", prefix, name),
+            None => name.to_string(),
+        };
+        let global = self.module.add_global(llvm_type, None, &llvm_name);
         global.set_initializer(&llvm_type.const_zero());
         self.global_variables.insert(
             name.to_string(),
@@ -329,6 +349,148 @@ impl<'a> CodeGenerator<'a> {
             .collect()
     }
 
+    /// Make constants imported directly into the current scope reachable by
+    /// their bare name. Their storage stays in the owning module's table; this
+    /// adds an alias so `import cfg.*` followed by a bare `err_code` resolves,
+    /// while a constant only reachable as `cfg.err_code` stays out of the view.
+    fn alias_directly_imported_constants(&mut self) {
+        let aliases: Vec<(String, String, String)> = self
+            .analyzer
+            .all_symbols()
+            .iter()
+            .filter(|(_, symbol)| symbol.kind == crate::semantics::SymbolKind::Constant)
+            .filter_map(|(local_name, symbol)| {
+                // `llvm_name` is `module!original_name`. Both halves matter: a
+                // renamed import (`... as MY_CONST`) is referenced by the local
+                // name but stored in the module's table under the original one,
+                // so keying the lookup by the local name would silently miss it.
+                let (module, original_name) = symbol.llvm_name.as_ref()?.split_once('!')?;
+                Some((
+                    local_name.clone(),
+                    module.to_string(),
+                    original_name.to_string(),
+                ))
+            })
+            .collect();
+
+        for (local_name, module, original_name) in aliases {
+            if let Some(entry) = self
+                .module_globals
+                .get(&module)
+                .and_then(|globals| globals.get(&original_name))
+                .cloned()
+            {
+                self.global_variables.insert(local_name, entry);
+            }
+        }
+    }
+
+    /// The `(source module, spec)` of every import in a module's own AST that
+    /// brings names directly into scope. A bare `import logger` is excluded: it
+    /// is reached as `logger.NAME` field access, not by bare name.
+    fn collect_direct_imports(nodes: &[AstNode]) -> Vec<(String, ImportSpec)> {
+        nodes
+            .iter()
+            .filter_map(|node| match node {
+                AstNode::Statement(StatementNode {
+                    kind: StatementKind::Import { module_path, spec },
+                    ..
+                }) if !matches!(spec, ImportSpec::Module { .. }) => {
+                    Some((Self::sanitize_module_path(module_path), spec.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Resolve one import spec against the source module's globals into
+    /// `(local name, original name)` pairs. A wildcard takes every global the
+    /// source module declared; the named forms take only what they list, under
+    /// their alias when renamed.
+    fn resolve_import_aliases(
+        spec: &ImportSpec,
+        source_globals: &HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
+    ) -> Vec<(String, String)> {
+        match spec {
+            ImportSpec::Wildcard => source_globals
+                .keys()
+                .map(|name| (name.clone(), name.clone()))
+                .collect(),
+            ImportSpec::Item { item, alias } => {
+                vec![(alias.clone().unwrap_or_else(|| item.clone()), item.clone())]
+            }
+            ImportSpec::Items { items } => items
+                .iter()
+                .map(|(item, alias)| (alias.clone().unwrap_or_else(|| item.clone()), item.clone()))
+                .collect(),
+            ImportSpec::Module { .. } => Vec::new(),
+        }
+    }
+
+    /// Alias constants a non-main module imported directly into that module's
+    /// own global table. `alias_directly_imported_constants` handles the main
+    /// module from the analyzer's flattened symbol table, but that table says
+    /// nothing about what a non-main module pulled into its own scope, so a
+    /// module function referencing a wildcard-imported constant by bare name
+    /// failed to resolve. Storage stays in the owning module's table; this only
+    /// makes it reachable from the importing module's view.
+    fn alias_imported_constants_into_modules(&mut self) {
+        let module_paths: Vec<String> = self.analyzer.all_module_asts().keys().cloned().collect();
+        for module_path in module_paths {
+            let nodes = match self.analyzer.all_module_asts().get(&module_path) {
+                Some(nodes) => nodes.clone(),
+                None => continue,
+            };
+            let target = Self::sanitize_module_path(&module_path);
+            let mut aliases = Vec::new();
+            for (source, spec) in Self::collect_direct_imports(&nodes) {
+                let Some(source_globals) = self.module_globals.get(&source) else {
+                    continue;
+                };
+                for (local_name, original) in Self::resolve_import_aliases(&spec, source_globals) {
+                    if let Some(entry) = source_globals.get(&original).cloned() {
+                        aliases.push((local_name, entry));
+                    }
+                }
+            }
+            if let Some(target_globals) = self.module_globals.get_mut(&target) {
+                target_globals.extend(aliases);
+            }
+        }
+    }
+
+    /// Run `f` with `module_name`'s globals installed as the visible set,
+    /// restoring the previous set afterwards (on success or error). This is what
+    /// lets a module's own code refer to its globals by their bare names while
+    /// they live under `module!name` in LLVM.
+    /// Every module reachable here was seeded into `module_globals` from the
+    /// same `all_module_asts` set, so a missing key means the tables have
+    /// drifted apart. Defaulting to an empty set would turn that into a
+    /// confusing "Undefined variable" far from the cause, so fail loudly.
+    fn with_module_globals<T>(
+        &mut self,
+        module_name: &str,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let sanitized = Self::sanitize_module_path(module_name);
+        let globals = self
+            .module_globals
+            .get(&sanitized)
+            .cloned()
+            .ok_or_else(|| {
+                format!("internal error: no global table registered for module '{sanitized}'")
+            })?;
+        // The prefix must travel with the table: anything that declares a
+        // global while `f` runs has to mangle it into this module, not leak an
+        // unprefixed name into the swapped-in view.
+        let saved = std::mem::replace(&mut self.global_variables, globals);
+        let saved_prefix = self.current_module_prefix.replace(sanitized);
+        let result = f(self);
+        self.global_variables = saved;
+        self.current_module_prefix = saved_prefix;
+        result
+    }
+
     fn generate_imported_user_functions(
         &mut self,
         imported_functions: &[(String, FunctionNode)],
@@ -336,7 +498,10 @@ impl<'a> CodeGenerator<'a> {
         for (module_name_mangled, func) in imported_functions {
             if func.type_params.is_empty() {
                 let mangled_name = format!("{}!{}", module_name_mangled, func.name);
-                self.generate_function_with_llvm_name(func, &mangled_name)?;
+                // A module function reads its own module's globals by bare name.
+                self.with_module_globals(module_name_mangled, |me| {
+                    me.generate_function_with_llvm_name(func, &mangled_name)
+                })?;
             }
         }
         Ok(())
@@ -492,6 +657,8 @@ impl<'a> CodeGenerator<'a> {
             label_counter: 0,
             variables: HashMap::new(),
             global_variables: HashMap::new(),
+            module_globals: HashMap::new(),
+            current_module_prefix: None,
             functions: HashMap::new(),
             function_nodes: HashMap::new(),
             current_function_name: None,
@@ -596,25 +763,65 @@ impl<'a> CodeGenerator<'a> {
         self.generate_vtables(nodes)?;
         self.generate_enum_and_class_constructors(nodes)?;
 
-        let top_level_statements = self.collect_top_level_statements(nodes);
         let user_functions = self.collect_non_generic_main_functions(main_module_nodes);
         let main_top_level_statements = self.collect_top_level_statements(main_module_nodes);
-
-        self.declare_top_level_globals(&top_level_statements)?;
-
         let modules_data = self.collect_module_init_data();
 
-        for (module_name, module_top_level_statements) in modules_data {
-            self.generate_module_init(&module_top_level_statements, &module_name)?;
+        // Declare each module's globals into its own table, emitted as
+        // `module!name`, then the main module's under bare names. Only the
+        // module being generated has its globals visible, so two modules
+        // declaring the same constant no longer share one slot.
+        for (module_name, module_top_level_statements) in &modules_data {
+            let sanitized = Self::sanitize_module_path(module_name);
+            self.global_variables = HashMap::new();
+            self.current_module_prefix = Some(sanitized.clone());
+            self.declare_top_level_globals(module_top_level_statements)?;
+            self.current_module_prefix = None;
+            self.module_globals
+                .insert(sanitized, std::mem::take(&mut self.global_variables));
+        }
+        // Every module's table exists now, so cross-module aliases can be
+        // resolved in either direction.
+        self.alias_imported_constants_into_modules();
+        self.declare_top_level_globals(&main_top_level_statements)?;
+        // A constant brought directly into scope (`import cfg.*`, or a selective
+        // import) is referenced by its bare name from the importing module, so
+        // alias it into that module's view. The slot still lives in the owning
+        // module's table - this only makes it reachable, it does not duplicate it.
+        self.alias_directly_imported_constants();
+        let main_globals = self.global_variables.clone();
+
+        for (module_name, module_top_level_statements) in &modules_data {
+            self.with_module_globals(module_name, |me| {
+                me.generate_module_init(module_top_level_statements, module_name)
+            })?;
         }
 
+        self.global_variables = main_globals.clone();
         let module_name = self.get_module_name(main_module_nodes);
         self.generate_module_init(&main_top_level_statements, &module_name)?;
         self.generate_main_function(&module_name)?;
 
         self.generate_imported_user_functions(&imported_functions)?;
+        self.global_variables = main_globals;
         self.generate_main_user_functions(&user_functions)?;
-        self.generate_class_methods_for_all_nodes(nodes)?;
+
+        // Class methods need the same per-module scoping as free functions: a
+        // method on a module's class reads that module's globals by bare name.
+        // Generating every class against the main module's table would leave a
+        // module constant referenced by one of its methods unresolvable.
+        let module_asts: Vec<(String, Vec<AstNode>)> = self
+            .analyzer
+            .all_module_asts()
+            .iter()
+            .map(|(path, nodes)| (path.clone(), nodes.clone()))
+            .collect();
+        for (module_path, module_nodes) in &module_asts {
+            self.with_module_globals(module_path, |me| {
+                me.generate_class_methods_for_all_nodes(module_nodes)
+            })?;
+        }
+        self.generate_class_methods_for_all_nodes(main_module_nodes)?;
 
         Ok(())
     }

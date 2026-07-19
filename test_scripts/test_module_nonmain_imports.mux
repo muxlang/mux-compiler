@@ -1,0 +1,14 @@
+// A non-main module must see the constants it imported directly into its own
+// scope. Its globals live in its own table, so the import aliases have to be
+// added there too, not only to the main module's view.
+import modglobal_e
+import modglobal_a
+import modglobal_b
+import modglobal_c
+
+func main() returns void {
+    print("wildcard  (want 10):      " + modglobal_e.threshold_plus(3).to_string())
+    print("selective (want alpha):   " + modglobal_e.banner())
+    print("renamed   (want 55):      " + modglobal_e.capped().to_string())
+    return
+}

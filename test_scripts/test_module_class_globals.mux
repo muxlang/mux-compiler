@@ -1,0 +1,10 @@
+// A class defined in a module, whose method reads a module-level constant.
+// The method must be generated with its own module's globals visible, not the
+// importing module's, or the constant is unresolvable.
+import modglobal_d.*
+
+func main() returns void {
+    auto s = Scaler.of(3)
+    print("scaled (want 333): " + s.scaled().to_string())
+    return
+}
