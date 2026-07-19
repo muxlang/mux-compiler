@@ -389,21 +389,31 @@ impl<'a> CodeGenerator<'a> {
     /// restoring the previous set afterwards (on success or error). This is what
     /// lets a module's own code refer to its globals by their bare names while
     /// they live under `module!name` in LLVM.
+    /// Every module reachable here was seeded into `module_globals` from the
+    /// same `all_module_asts` set, so a missing key means the tables have
+    /// drifted apart. Defaulting to an empty set would turn that into a
+    /// confusing "Undefined variable" far from the cause, so fail loudly.
     fn with_module_globals<T>(
         &mut self,
         module_name: &str,
         f: impl FnOnce(&mut Self) -> Result<T, String>,
     ) -> Result<T, String> {
         let sanitized = Self::sanitize_module_path(module_name);
-        let saved = std::mem::replace(
-            &mut self.global_variables,
-            self.module_globals
-                .get(&sanitized)
-                .cloned()
-                .unwrap_or_default(),
-        );
+        let globals = self
+            .module_globals
+            .get(&sanitized)
+            .cloned()
+            .ok_or_else(|| {
+                format!("internal error: no global table registered for module '{sanitized}'")
+            })?;
+        // The prefix must travel with the table: anything that declares a
+        // global while `f` runs has to mangle it into this module, not leak an
+        // unprefixed name into the swapped-in view.
+        let saved = std::mem::replace(&mut self.global_variables, globals);
+        let saved_prefix = self.current_module_prefix.replace(sanitized);
         let result = f(self);
         self.global_variables = saved;
+        self.current_module_prefix = saved_prefix;
         result
     }
 

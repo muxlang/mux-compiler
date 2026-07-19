@@ -1029,14 +1029,17 @@ impl<'a> CodeGenerator<'a> {
                     me.call_runtime_function("mux_list_contains", &[raw_list, boxed.into()])
                 })
             }
-            // `Collection<T>` member. A list is already its own list, so this
-            // returns the same list rather than copying - but it must hand back
-            // an owned (+1) reference like every other returning method does
-            // (e.g. mux_set_to_list allocates), or the caller's release
-            // underflows the refcount and corrupts the heap.
+            // `Collection<T>` member. A list is already a list, but Mux is
+            // value-semantic, so this must hand back an independent deep copy
+            // rather than an alias of the receiver - every other implementor
+            // allocates (e.g. mux_set_to_list), and returning the receiver
+            // would let a mutation through the result be observed on the
+            // original. The clone is owned (+1), matching the return
+            // convention, so the caller's release cannot underflow.
             "to_list" => {
                 self.ensure_no_args("to_list", args)?;
-                self.rc_inc_if_pointer(obj_value)
+                let cloned = self.deep_clone_value(obj_value.into_pointer_value())?;
+                Ok(cloned.into())
             }
             "to_string" => {
                 self.ensure_no_args("to_string", args)?;

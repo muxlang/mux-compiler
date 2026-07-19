@@ -410,7 +410,10 @@ impl<'a> CodeGenerator<'a> {
 
     /// Deep-clone a reference-counted value, returning a fresh, uniquely-owned,
     /// refcount-isolated copy (`mux_value_deep_clone`).
-    fn deep_clone_value(&mut self, ptr: PointerValue<'a>) -> Result<PointerValue<'a>, String> {
+    pub(super) fn deep_clone_value(
+        &mut self,
+        ptr: PointerValue<'a>,
+    ) -> Result<PointerValue<'a>, String> {
         let clone_fn = self
             .runtime_function("mux_value_deep_clone")
             .ok_or("mux_value_deep_clone not found")?;

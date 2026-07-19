@@ -20,6 +20,13 @@ func main() returns void {
     print("contains: " + nums.contains(8).to_string())
     print("to_list:  " + nums.to_list().to_string())
 
+    // Mux is value-semantic, so to_list() must hand back an independent copy:
+    // mutating the result must leave the receiver untouched.
+    auto copied = nums.to_list()
+    copied.push_back(99)
+    print("copy:     " + copied.to_string())
+    print("original: " + nums.to_string())
+
     // a set is a Collection too
     set<int> s = {4, 2, 9}
     print("set len:  " + s.len().to_string())
