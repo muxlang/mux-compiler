@@ -1186,10 +1186,20 @@ fn report_clang_output_or_exit(
     match clang_output {
         Ok(output) if output.status.success() => {}
         Ok(output) => {
-            eprintln!("clang failed: {}", String::from_utf8_lossy(&output.stderr));
+            // A non-zero clang exit means the IR we emitted did not link. That
+            // is a compiler bug, not a mistake in the user's program, so route
+            // it through the friendly internal-error report (mux-context#24).
+            spinner::stop();
+            report_internal_compiler_error(&format!(
+                "linking failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim_end()
+            ));
             process::exit(1);
         }
         Err(e) => {
+            // clang was found but could not be executed - an environment problem
+            // rather than a compiler bug. Keep the IR path so the user can retry.
+            spinner::stop();
             eprintln!(
                 "Failed to run clang: {}. IR file generated at: {}",
                 e, ir_file
@@ -1279,25 +1289,31 @@ fn internal_compiler_error_report(
     file: Option<&str>,
     show_backtrace_hint: bool,
 ) -> String {
-    let mut out = String::from(
-        "\nerror: internal compiler error - this is a bug in mux itself, not a problem with your code\n",
-    );
+    let mut out = String::from("\nerror: internal compiler error\n");
     if !detail.is_empty() {
         out.push_str(&format!("  {}\n", detail));
     }
     if let Some(file) = file {
         out.push_str(&format!("  while compiling: {}\n", file));
     }
-    out.push_str("note: please report this at https://github.com/muxlang/mux-compiler/issues\n");
-    // Only point at "the file above" when a file line was actually emitted; a
-    // panic before argument parsing has no file to show.
-    if file.is_some() {
-        out.push_str("      include the file above and the output of `mux --version`\n");
+    // The "tip:" wording requested in mux-context#24: point the user at where to
+    // report and what to include, without implying their code is at fault. Only
+    // say "the file above" when a file line was actually emitted; a panic before
+    // argument parsing has no file to show.
+    let subject = if file.is_some() {
+        "the file above"
     } else {
-        out.push_str("      include the input file and the output of `mux --version`\n");
-    }
+        "the file you ran"
+    };
+    out.push_str(&format!(
+        "tip: please report this error, along with {} and your system details\n",
+        subject
+    ));
+    out.push_str(
+        "     (the output of `mux --version`), to the Mux maintainers at https://github.com/muxlang/mux-compiler\n",
+    );
     if show_backtrace_hint {
-        out.push_str("      re-run with RUST_BACKTRACE=1 to include the internal error details\n");
+        out.push_str("     re-run with RUST_BACKTRACE=1 to include the internal error details\n");
     }
     out
 }
@@ -1482,7 +1498,8 @@ mod tests {
         assert!(report.contains("internal compiler error"));
         assert!(report.contains("codegen error: boom"));
         assert!(report.contains("while compiling: foo.mux"));
-        assert!(report.contains("include the file above"));
+        assert!(report.contains("please report this error"));
+        assert!(report.contains("the file above"));
         // The backtrace hint is suppressed when RUST_BACKTRACE is already set.
         assert!(!report.contains("RUST_BACKTRACE"));
     }
@@ -1491,9 +1508,9 @@ mod tests {
     fn internal_error_report_without_file_avoids_a_dangling_reference() {
         let report = internal_compiler_error_report("boom", None, true);
         assert!(!report.contains("while compiling:"));
-        // Must not tell the user to include "the file above" when none was shown.
-        assert!(!report.contains("include the file above"));
-        assert!(report.contains("include the input file"));
+        // Must not point at "the file above" when no file line was shown.
+        assert!(!report.contains("the file above"));
+        assert!(report.contains("the file you ran"));
         assert!(report.contains("re-run with RUST_BACKTRACE=1"));
     }
 
