@@ -1135,12 +1135,15 @@ fn generate_ir_or_exit(
 ) {
     if let Err(e) = codegen.generate(nodes) {
         spinner::stop();
-        eprintln!("Codegen error: {}", e);
+        // A codegen failure is an internal compiler bug, not a language-level
+        // error in the user's program, so it gets the internal-error framing
+        // rather than a bare message.
+        report_internal_compiler_error(&format!("codegen error: {}", e));
         process::exit(1);
     }
     if let Err(e) = codegen.emit_ir_to_file(ir_file) {
         spinner::stop();
-        eprintln!("Failed to emit IR: {}", e);
+        report_internal_compiler_error(&format!("failed to emit IR: {}", e));
         process::exit(1);
     }
 }
@@ -1232,8 +1235,87 @@ fn run_executable_or_exit(exe_file: &Path) {
     }
 }
 
+/// The `.mux` file currently being compiled, so an internal failure (a codegen
+/// error or a panic) can point the user at the input that triggered it. Set once
+/// after argument parsing; read from the panic hook, which has no other handle
+/// on it.
+static COMPILING_FILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn set_compiling_file(path: &Path) {
+    if let Ok(mut slot) = COMPILING_FILE.lock() {
+        *slot = Some(path.display().to_string());
+    }
+}
+
+fn compiling_file() -> Option<String> {
+    COMPILING_FILE.lock().ok().and_then(|slot| slot.clone())
+}
+
+/// Report an internal compiler failure - a codegen error or a panic - in a way
+/// that makes clear it is a bug in mux, not a mistake in the user's program, and
+/// points them at where to report it. Language-level problems (lex, parse,
+/// semantics) do NOT use this: those are the user's code and keep their normal
+/// diagnostics. `detail` is the underlying error string or panic message.
+fn report_internal_compiler_error(detail: &str) {
+    eprintln!();
+    eprintln!(
+        "error: internal compiler error - this is a bug in mux itself, not a problem \
+         with your code"
+    );
+    if !detail.is_empty() {
+        eprintln!("  {}", detail);
+    }
+    if let Some(file) = compiling_file() {
+        eprintln!("  while compiling: {}", file);
+    }
+    eprintln!("note: please report this at https://github.com/muxlang/mux-compiler/issues");
+    eprintln!("      include the file above and the output of `mux --version`");
+    if env::var_os("RUST_BACKTRACE").is_none() {
+        eprintln!("      re-run with RUST_BACKTRACE=1 to include the internal error details");
+    }
+}
+
+/// Extract a concise "<message> (at <file>:<line>:<col>)" description from a
+/// panic, for the friendly internal-error report.
+fn panic_detail(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let payload = info.payload();
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unexpected internal panic".to_string());
+    match info.location() {
+        Some(loc) => format!(
+            "{} (at {}:{}:{})",
+            message,
+            loc.file(),
+            loc.line(),
+            loc.column()
+        ),
+        None => message,
+    }
+}
+
+/// Install a panic hook that reframes any compiler panic (a failed `assert`,
+/// `unwrap`, `expect`, or `unreachable!`) as an internal compiler error rather
+/// than letting Rust's raw "thread 'main' panicked" text reach the user. The
+/// full panic and backtrace are preserved for maintainers when RUST_BACKTRACE is
+/// set; the friendly message is the default.
+fn install_internal_error_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        spinner::stop();
+        if env::var_os("RUST_BACKTRACE").is_some() {
+            default_hook(info);
+        }
+        report_internal_compiler_error(&panic_detail(info));
+    }));
+}
+
 fn main() {
+    install_internal_error_panic_hook();
     let (file_path, do_run, output, intermediate) = parse_args_or_exit();
+    set_compiling_file(&file_path);
 
     ensure_mux_extension_or_exit(&file_path);
 
