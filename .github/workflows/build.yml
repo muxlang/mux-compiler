@@ -215,6 +215,71 @@ jobs:
           name: pr-comment-valgrind
           path: valgrind.log
           if-no-files-found: warn
+  rc_leak_check:
+    name: RC Leak Check
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    # PR-blocking: runs the executable-integration suite against a mux-runtime
+    # built with the `rc-leak-check` feature, which asserts at process exit that
+    # every reference-counted Value block was released (see mux-runtime
+    # src/refcount.rs). This is exact, unlike the Valgrind leg: it catches
+    # "still reachable" leaks - a module global or enum payload left at refcount
+    # 1 (mux-compiler#284) - that Valgrind's definite/indirect policy ignores. A
+    # leaking program exits 101 with a diagnostic, so its snapshot no longer
+    # matches and the suite fails.
+    env:
+      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
+      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
+      LLVM_SYS_221_STRICT_VERSIONING: "1"
+      CC: clang-22
+      CXX: clang++-22
+      # build.rs needs a runtime source to be happy; the actual link is
+      # overridden below with MUX_RUNTIME_LIB so compiled programs pick up the
+      # feature-enabled static library instead of this default build.
+      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: muxlang/mux-runtime
+          ref: main
+          path: mux-runtime
+      - name: Clear stale runtime cache
+        run: rm -rf ~/.cache/mux-lang/runtime
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: 1.93.1
+          components: llvm-tools-preview
+      - name: Install LLVM 22
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
+          sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
+          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build leak-check runtime
+        # Plain Rust, no LLVM: produces mux-runtime/target/debug/libmux_runtime.a
+        # with the live RC-allocation counter compiled in.
+        run: cargo build --manifest-path mux-runtime/Cargo.toml --features rc-leak-check
+      - name: Executable suite under leak-check runtime
+        # MUX_RUNTIME_LIB overrides the linked runtime for every program the
+        # suite compiles, so each one runs the exit-time leak assertion.
+        env:
+          MUX_RUNTIME_LIB: ${{ github.workspace }}/mux-runtime/target/debug/libmux_runtime.a
+        run: cargo test -p mux-lang --test executable_integration
   benchmarks:
     name: Benchmarks (report-only)
     needs: detect-changes
