@@ -1242,8 +1242,17 @@ fn run_executable_or_exit(exe_file: &Path) {
 static COMPILING_FILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 fn set_compiling_file(path: &Path) {
+    // Store the path relative to the current directory, matching how
+    // `diagnostic::Files::add` renders diagnostic paths, so the reported path is
+    // identical across machines and CI rather than an absolute developer path.
+    let relative = if path.is_absolute() {
+        path.strip_prefix(env::current_dir().unwrap_or_else(|_| path.to_path_buf()))
+            .unwrap_or(path)
+    } else {
+        path
+    };
     if let Ok(mut slot) = COMPILING_FILE.lock() {
-        *slot = Some(path.display().to_string());
+        *slot = Some(relative.display().to_string());
     }
 }
 
@@ -1265,11 +1274,18 @@ fn report_internal_compiler_error(detail: &str) {
     if !detail.is_empty() {
         eprintln!("  {}", detail);
     }
-    if let Some(file) = compiling_file() {
+    let file = compiling_file();
+    if let Some(ref file) = file {
         eprintln!("  while compiling: {}", file);
     }
     eprintln!("note: please report this at https://github.com/muxlang/mux-compiler/issues");
-    eprintln!("      include the file above and the output of `mux --version`");
+    // Only point at "the file above" when a file line was actually emitted; a
+    // panic before argument parsing has no file to show.
+    if file.is_some() {
+        eprintln!("      include the file above and the output of `mux --version`");
+    } else {
+        eprintln!("      include the input file and the output of `mux --version`");
+    }
     if env::var_os("RUST_BACKTRACE").is_none() {
         eprintln!("      re-run with RUST_BACKTRACE=1 to include the internal error details");
     }
