@@ -1,0 +1,7 @@
+// Imported module carrying heap-allocated, module-private constants (a string,
+// a list, and a map). probe.mux reads these so the still-reachable check covers
+// cross-module global teardown, the exact shape of mux-compiler#284 where every
+// module-private constant sat at a permanent refcount of 1 and was never freed.
+const string BANNER = "imported banner text"
+const list<int> WEIGHTS = [3, 5, 7, 11, 13]
+const map<string, int> TABLE = {"one": 1, "two": 2, "three": 3}

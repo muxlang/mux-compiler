@@ -1,0 +1,21 @@
+// Control fixture for the Valgrind still-reachable regression check. It builds
+// the same runtime surface as probe.mux (a string, two lists, a map) but keeps
+// every value in locals with no module-level constants and no imports, so all
+// of it is released by ordinary scope teardown. Its "still reachable" total is
+// therefore the fixed runtime baseline. Leg C asserts probe.mux matches it; any
+// difference is leaked module globals.
+func main() returns void {
+    auto local_label = "probe local constant"
+    auto local_seq = [2, 4, 6, 8]
+    auto local_table = {"x": 10, "y": 20}
+    auto banner = "imported banner text"
+    auto weights = [3, 5, 7, 11, 13]
+    auto table = {"one": 1, "two": 2, "three": 3}
+    print(local_label)
+    print(local_seq[0].to_string())
+    print(local_table["x"].to_string())
+    print(banner)
+    print(weights[0].to_string())
+    print(table["one"].to_string())
+    return
+}
