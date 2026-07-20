@@ -307,10 +307,10 @@ run_leg_globals() {
     local abs_delta=$(( delta < 0 ? -delta : delta ))
     if [[ "$delta" -gt 0 ]]; then
       echo "  FAIL: module constants add ${abs_delta} still-reachable bytes over baseline."
+      echo "        A module-private constant is not released at global teardown (see #284)."
     else
       echo "  FAIL: probe has ${abs_delta} fewer still-reachable bytes than control (unexpected; check fixtures)."
     fi
-    echo "        A module-private constant is not released at global teardown (see #284)."
   else
     echo "  PASS: module globals add no still-reachable bytes over baseline."
   fi
