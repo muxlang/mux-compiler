@@ -2,9 +2,10 @@
 //!
 //! This module handles tracking RC-allocated variables and generating cleanup code.
 
-use super::CodeGenerator;
+use super::{CodeGenerator, RcSlot};
 use crate::semantics::Type;
 use inkwell::AddressSpace;
+use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, PointerValue};
 
 impl<'a> CodeGenerator<'a> {
@@ -29,7 +30,7 @@ impl<'a> CodeGenerator<'a> {
         self.cleanup_all_closure_temps()?;
 
         // Collect all variables from all scopes to avoid borrow issues
-        let all_vars: Vec<(String, PointerValue<'a>)> = self
+        let all_vars: Vec<(String, RcSlot<'a>)> = self
             .rc_scope_stack
             .iter()
             .rev()
@@ -47,42 +48,226 @@ impl<'a> CodeGenerator<'a> {
         self.generate_closure_cleanup_for_vars(&all_closures)
     }
 
-    /// Generate mux_rc_dec calls for a list of variables.
+    /// Release a list of tracked scope slots. Boxed `*mut Value` slots are
+    /// decremented directly; inline enum-struct slots are released with
+    /// `emit_enum_drop`, which decrements only the pointer payloads of the
+    /// value's active variant.
     pub(super) fn generate_cleanup_for_vars(
         &mut self,
-        vars: &[(String, PointerValue<'a>)],
+        vars: &[(String, RcSlot<'a>)],
     ) -> Result<(), String> {
         let rc_dec = self
             .runtime_function("mux_rc_dec")
             .ok_or("mux_rc_dec not found")?;
         let ptr_type = self.context.ptr_type(AddressSpace::default());
 
-        for (name, alloca) in vars {
-            // Load the pointer value from the alloca
-            let value = self
-                .builder
-                .build_load(ptr_type, *alloca, &format!("rc_load_{}", name))
-                .map_err(|e| e.to_string())?;
-
-            // Call mux_rc_dec
-            self.builder
-                .build_call(rc_dec, &[value.into()], &format!("rc_dec_{}", name))
-                .map_err(|e| e.to_string())?;
+        for (name, slot) in vars {
+            match slot {
+                RcSlot::Boxed(alloca) => {
+                    let value = self
+                        .builder
+                        .build_load(ptr_type, *alloca, &format!("rc_load_{}", name))
+                        .map_err(|e| e.to_string())?;
+                    self.builder
+                        .build_call(rc_dec, &[value.into()], &format!("rc_dec_{}", name))
+                        .map_err(|e| e.to_string())?;
+                }
+                RcSlot::EnumStruct { enum_name, alloca } => {
+                    self.emit_enum_drop(enum_name, *alloca)?;
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Add a cleanup slot to the current scope, skipping it if the same storage
+    /// slot is already tracked there - a duplicate would be decremented twice at
+    /// cleanup. Shared by the boxed and enum tracking entry points.
+    fn track_slot(&mut self, name: &str, slot: RcSlot<'a>) {
+        if let Some(current_scope) = self.rc_scope_stack.last_mut() {
+            if current_scope
+                .iter()
+                .any(|(_, s)| s.alloca() == slot.alloca())
+            {
+                return;
+            }
+            current_scope.push((name.to_string(), slot));
+        }
     }
 
     /// Track an RC-allocated variable in the current scope.
     /// The variable will have mux_rc_dec called on it when the scope ends.
     pub(super) fn track_rc_variable(&mut self, name: &str, alloca: PointerValue<'a>) {
-        if let Some(current_scope) = self.rc_scope_stack.last_mut() {
-            // Avoid duplicate tracking of the same storage slot inside a scope.
-            // Duplicates can lead to double decrements during cleanup.
-            if current_scope.iter().any(|(_, p)| *p == alloca) {
-                return;
-            }
-            current_scope.push((name.to_string(), alloca));
+        self.track_slot(name, RcSlot::Boxed(alloca));
+    }
+
+    /// Track an inline enum-struct local so its active variant's pointer payloads
+    /// are released when the scope ends. Enums are value-semantic structs, not
+    /// boxed `*mut Value`s, so they need `emit_enum_drop` rather than a plain
+    /// `mux_rc_dec` - see `RcSlot`.
+    pub(super) fn track_enum_variable(
+        &mut self,
+        name: &str,
+        enum_name: &str,
+        alloca: PointerValue<'a>,
+    ) {
+        self.track_slot(
+            name,
+            RcSlot::EnumStruct {
+                enum_name: enum_name.to_string(),
+                alloca,
+            },
+        );
+    }
+
+    /// If `ty` is a user-declared enum (not the built-in `optional`/`result`,
+    /// which are boxed `*mut Value`s rather than inline structs), return its
+    /// name. Used to decide whether a struct-valued local needs enum drop-glue.
+    pub(super) fn user_enum_type_name(&self, ty: &Type) -> Option<String> {
+        let Type::Named(name, _) = ty else {
+            return None;
+        };
+        if name == "optional" || name == "result" {
+            return None;
         }
+        self.enum_variants.contains_key(name).then(|| name.clone())
+    }
+
+    /// Whether any variant of `enum_name` carries at least one pointer (RC)
+    /// payload field. Enums that only hold inline scalars (a plain C-style enum)
+    /// own nothing and need no drop-glue, so tracking and `emit_enum_drop` skip
+    /// them entirely.
+    pub(super) fn enum_has_rc_payload(&self, enum_name: &str) -> bool {
+        let Some(variants) = self.enum_variants.get(enum_name).cloned() else {
+            return false;
+        };
+        variants.iter().any(|variant| {
+            self.variant_field_types(enum_name, variant)
+                .map(|fields| {
+                    (0..fields.len()).any(|i| {
+                        self.variant_field_llvm_type(enum_name, variant, &fields, i)
+                            .map(|t| t.is_pointer_type())
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    /// Release an inline enum value held at `struct_alloca` by decrementing only
+    /// the pointer payloads of its active variant. The variant is selected at
+    /// runtime by switching on the discriminant, mirroring construction, which
+    /// retains a payload only when it is a pointer (`rc_inc_if_pointer`): a union
+    /// slot typed as a pointer can hold a raw scalar for another variant, so an
+    /// unconditional decrement would corrupt memory. Scalar-only variants fall
+    /// through to the merge block untouched. No-op for enums with no pointer
+    /// payloads.
+    pub(super) fn emit_enum_drop(
+        &mut self,
+        enum_name: &str,
+        struct_alloca: PointerValue<'a>,
+    ) -> Result<(), String> {
+        if !self.enum_has_rc_payload(enum_name) {
+            return Ok(());
+        }
+
+        // generate_enum_type always stores a StructType here; match rather than
+        // `into_struct_type()` so a violated invariant surfaces as a diagnostic
+        // instead of panicking the compiler.
+        let struct_type = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(struct_type)) => *struct_type,
+            Some(_) => {
+                return Err(format!(
+                    "Enum {} type map entry is not a struct type",
+                    enum_name
+                ));
+            }
+            None => return Err(format!("Enum {} not found in type map", enum_name)),
+        };
+        let rc_dec = self
+            .runtime_function("mux_rc_dec")
+            .ok_or("mux_rc_dec not found")?;
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        let current_block = self
+            .builder
+            .get_insert_block()
+            .ok_or("emit_enum_drop: builder has no insertion block")?;
+        let function = current_block
+            .get_parent()
+            .ok_or("emit_enum_drop: insertion block has no parent function")?;
+
+        // Load the discriminant (struct field 0).
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(struct_type, struct_alloca, 0, "enum_drop_tag_ptr")
+            .map_err(|e| e.to_string())?;
+        let discriminant = self
+            .builder
+            .build_load(self.context.i32_type(), tag_ptr, "enum_drop_tag")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+
+        let merge_block = self.context.append_basic_block(function, "enum_drop_merge");
+
+        // One switch case per variant that actually owns a pointer payload.
+        let variants = self
+            .enum_variants
+            .get(enum_name)
+            .cloned()
+            .ok_or_else(|| format!("Enum {} has no variant list", enum_name))?;
+        let mut cases = Vec::new();
+        for variant in &variants {
+            let fields = self.variant_field_types(enum_name, variant)?;
+            let pointer_fields: Vec<usize> = (0..fields.len())
+                .filter(|&i| {
+                    self.variant_field_llvm_type(enum_name, variant, &fields, i)
+                        .map(|t| t.is_pointer_type())
+                        .unwrap_or(false)
+                })
+                .collect();
+            if pointer_fields.is_empty() {
+                continue;
+            }
+            let index = self.get_variant_index(enum_name, variant)?;
+            let case_block = self
+                .context
+                .append_basic_block(function, &format!("enum_drop_{}_{}", enum_name, variant));
+            self.builder.position_at_end(case_block);
+            for field_index in pointer_fields {
+                let data_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        struct_type,
+                        struct_alloca,
+                        (field_index + 1) as u32,
+                        "enum_drop_field_ptr",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let payload = self
+                    .builder
+                    .build_load(ptr_type, data_ptr, "enum_drop_payload")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_call(rc_dec, &[payload.into()], "enum_drop_dec")
+                    .map_err(|e| e.to_string())?;
+            }
+            self.builder
+                .build_unconditional_branch(merge_block)
+                .map_err(|e| e.to_string())?;
+            cases.push((
+                self.context.i32_type().const_int(index as u64, false),
+                case_block,
+            ));
+        }
+
+        // Emit the switch on the original block, then continue at the merge.
+        self.builder.position_at_end(current_block);
+        self.builder
+            .build_switch(discriminant, merge_block, &cases)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(merge_block);
+        Ok(())
     }
 
     /// Track a closure-typed variable in the current scope. Its slot will have
