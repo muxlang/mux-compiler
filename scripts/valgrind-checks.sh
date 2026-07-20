@@ -273,11 +273,13 @@ measure_still_reachable() {
 
   bytes="$(grep -m1 'still reachable:' "$log" |
     sed -E 's/.*still reachable:[[:space:]]*([0-9,]+).*/\1/' | tr -d ',')"
-  rm -f "$log"
   if [[ -z "$bytes" ]]; then
     echo "Leg C: could not parse 'still reachable' total for $script" >&2
+    cat "$log" >&2
+    rm -f "$log"
     return 1
   fi
+  rm -f "$log"
   printf '%s' "$bytes"
 }
 
