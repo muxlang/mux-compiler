@@ -36,6 +36,12 @@ impl<'a> CodeGenerator<'a> {
 
         if let Some((existing_ptr, _, _)) = existing_var {
             if value.is_struct_value() {
+                // NOTE: reassigning an inline enum struct into an existing slot
+                // does not yet release the previous value's pointer payloads, so
+                // enum reassignment and loop-rebind leak them (tracked as a known
+                // limitation; the initial-binding and global-teardown paths are
+                // handled). A complete fix needs zero-initialized enum slots plus
+                // drop-before-store here and in assign_to_identifier.
                 self.builder
                     .build_store(existing_ptr, value)
                     .map_err(|e| e.to_string())?;
@@ -60,6 +66,15 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
             self.variables
                 .insert(name.to_string(), (alloca, var_type, resolved_type.clone()));
+            // Inline enum structs own the pointer payloads of their active
+            // variant; track the slot so those payloads are released when the
+            // scope ends. Plain value structs (classes are boxed, not inline)
+            // and scalar-only enums own nothing here and are skipped.
+            if let Some(enum_name) = self.user_enum_type_name(resolved_type)
+                && self.enum_has_rc_payload(&enum_name)
+            {
+                self.track_enum_variable(name, &enum_name, alloca);
+            }
         } else if let Some(func) = function {
             // Hoisted, null-initialized entry-block slot: because the store below
             // runs on every pass (e.g. a variable declared inside a loop body),
@@ -1590,7 +1605,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn variant_field_types(
+    pub(super) fn variant_field_types(
         &self,
         enum_name: &str,
         variant_name: &str,
@@ -1605,7 +1620,7 @@ impl<'a> CodeGenerator<'a> {
             .ok_or_else(|| format!("Variant {} not found in enum {}", variant_name, enum_name))
     }
 
-    fn variant_field_llvm_type(
+    pub(super) fn variant_field_llvm_type(
         &self,
         enum_name: &str,
         variant_name: &str,

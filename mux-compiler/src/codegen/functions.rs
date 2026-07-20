@@ -396,33 +396,20 @@ impl<'a> CodeGenerator<'a> {
     /// rather than lost, because the global slot still points at them, so the
     /// leak legs of CI stay green while the memory is never freed.
     fn emit_global_teardown(&mut self) -> Result<(), String> {
-        let rc_dec = self
-            .runtime_function("mux_rc_dec")
-            .ok_or("mux_rc_dec not found")?;
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-
         let mut owned_globals = self.collect_teardown_slots();
         owned_globals.sort_by(|a, b| a.0.cmp(&b.0));
         let mut released = std::collections::HashSet::new();
-        owned_globals.retain(|(_, alloca)| released.insert(*alloca));
-
-        for (name, alloca) in owned_globals {
-            let value = self
-                .builder
-                .build_load(ptr_type, alloca, &format!("global_teardown_load_{}", name))
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(rc_dec, &[value.into()], &format!("global_dec_{}", name))
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+        owned_globals.retain(|(_, slot)| released.insert(slot.alloca()));
+        // Reuse the local-scope cleanup dispatch: boxed globals are decremented
+        // directly and inline enum-struct globals get variant-tag drop-glue.
+        self.generate_cleanup_for_vars(&owned_globals)
     }
 
     /// Every RC-owned global slot that program exit is responsible for
     /// releasing, gathered from the main-module view and every module table.
     /// Names are qualified by module so the emitted IR labels stay unique;
     /// callers dedupe by slot, since one slot can appear under several names.
-    fn collect_teardown_slots(&self) -> Vec<(String, inkwell::values::PointerValue<'a>)> {
+    fn collect_teardown_slots(&self) -> Vec<(String, super::RcSlot<'a>)> {
         let main_table = std::iter::once((None, &self.global_variables));
         let module_tables = self
             .module_globals
@@ -435,23 +422,39 @@ impl<'a> CodeGenerator<'a> {
                 table
                     .iter()
                     .filter_map(move |(name, (alloca, llvm_type, ty))| {
-                        // Only globals whose storage is a boxed RC pointer can be
-                        // decremented. Value-semantic types stored inline (e.g.
-                        // custom enums held as a struct) are not RC pointers -
-                        // loading and decrementing them would dereference a
-                        // non-pointer. References and functions borrow their target
-                        // and are managed elsewhere.
+                        let label = match module {
+                            Some(module) => format!("{}_{}", module, name),
+                            None => name.clone(),
+                        };
+                        // Inline custom-enum globals are value-semantic structs,
+                        // not boxed RC pointers, so they need variant-tag drop-glue
+                        // to release their active variant's pointer payloads. Only
+                        // enums that actually own a pointer payload are worth a
+                        // slot.
+                        if let Some(enum_name) = self.user_enum_type_name(ty) {
+                            if self.enum_has_rc_payload(&enum_name) {
+                                return Some((
+                                    label,
+                                    super::RcSlot::EnumStruct {
+                                        enum_name,
+                                        alloca: *alloca,
+                                    },
+                                ));
+                            }
+                            return None;
+                        }
+                        // Otherwise only globals whose storage is a boxed RC
+                        // pointer can be decremented; loading and decrementing an
+                        // inline non-pointer would dereference a non-pointer.
+                        // References and functions borrow their target and are
+                        // managed elsewhere.
                         if !llvm_type.is_pointer_type()
                             || !self.type_needs_rc_tracking(ty)
                             || matches!(ty, Type::Reference(_) | Type::Function { .. })
                         {
                             return None;
                         }
-                        let label = match module {
-                            Some(module) => format!("{}_{}", module, name),
-                            None => name.clone(),
-                        };
-                        Some((label, *alloca))
+                        Some((label, super::RcSlot::Boxed(*alloca)))
                     })
             })
             .collect()
