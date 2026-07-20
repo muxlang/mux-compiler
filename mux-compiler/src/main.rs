@@ -1135,12 +1135,15 @@ fn generate_ir_or_exit(
 ) {
     if let Err(e) = codegen.generate(nodes) {
         spinner::stop();
-        eprintln!("Codegen error: {}", e);
+        // A codegen failure is an internal compiler bug, not a language-level
+        // error in the user's program, so it gets the internal-error framing
+        // rather than a bare message.
+        report_internal_compiler_error(&format!("codegen error: {}", e));
         process::exit(1);
     }
     if let Err(e) = codegen.emit_ir_to_file(ir_file) {
         spinner::stop();
-        eprintln!("Failed to emit IR: {}", e);
+        report_internal_compiler_error(&format!("failed to emit IR: {}", e));
         process::exit(1);
     }
 }
@@ -1232,8 +1235,127 @@ fn run_executable_or_exit(exe_file: &Path) {
     }
 }
 
+/// The `.mux` file currently being compiled, so an internal failure (a codegen
+/// error or a panic) can point the user at the input that triggered it. Set once
+/// after argument parsing; read from the panic hook, which has no other handle
+/// on it.
+static COMPILING_FILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Render `path` relative to the current directory when it is absolute, matching
+/// how `diagnostic::Files::add` renders diagnostic paths, so a reported path is
+/// identical across machines and CI rather than an absolute developer path. A
+/// path outside the current directory (or already relative) is returned as-is.
+fn relativize_to_cwd(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.strip_prefix(env::current_dir().unwrap_or_else(|_| path.to_path_buf()))
+            .unwrap_or(path)
+            .to_path_buf()
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn set_compiling_file(path: &Path) {
+    if let Ok(mut slot) = COMPILING_FILE.lock() {
+        *slot = Some(relativize_to_cwd(path).display().to_string());
+    }
+}
+
+fn compiling_file() -> Option<String> {
+    COMPILING_FILE.lock().ok().and_then(|slot| slot.clone())
+}
+
+/// Report an internal compiler failure - a codegen error or a panic - in a way
+/// that makes clear it is a bug in mux, not a mistake in the user's program, and
+/// points them at where to report it. Language-level problems (lex, parse,
+/// semantics) do NOT use this: those are the user's code and keep their normal
+/// diagnostics. `detail` is the underlying error string or panic message.
+/// Build the internal-compiler-error report text. Split from the printing
+/// wrapper so its wording - which file line it shows, and whether it points at
+/// "the file above" or the RUST_BACKTRACE hint - is unit-testable without
+/// capturing stderr or a real panic.
+fn internal_compiler_error_report(
+    detail: &str,
+    file: Option<&str>,
+    show_backtrace_hint: bool,
+) -> String {
+    let mut out = String::from(
+        "\nerror: internal compiler error - this is a bug in mux itself, not a problem with your code\n",
+    );
+    if !detail.is_empty() {
+        out.push_str(&format!("  {}\n", detail));
+    }
+    if let Some(file) = file {
+        out.push_str(&format!("  while compiling: {}\n", file));
+    }
+    out.push_str("note: please report this at https://github.com/muxlang/mux-compiler/issues\n");
+    // Only point at "the file above" when a file line was actually emitted; a
+    // panic before argument parsing has no file to show.
+    if file.is_some() {
+        out.push_str("      include the file above and the output of `mux --version`\n");
+    } else {
+        out.push_str("      include the input file and the output of `mux --version`\n");
+    }
+    if show_backtrace_hint {
+        out.push_str("      re-run with RUST_BACKTRACE=1 to include the internal error details\n");
+    }
+    out
+}
+
+fn report_internal_compiler_error(detail: &str) {
+    let file = compiling_file();
+    let show_backtrace_hint = env::var_os("RUST_BACKTRACE").is_none();
+    eprint!(
+        "{}",
+        internal_compiler_error_report(detail, file.as_deref(), show_backtrace_hint)
+    );
+}
+
+/// Format a panic's message and optional source location into a concise
+/// "<message> (at <file>:<line>:<col>)" detail line. Pure, so it is unit-tested
+/// directly; `panic_detail` handles pulling these fields out of the hook info.
+fn format_panic_detail(message: &str, location: Option<(&str, u32, u32)>) -> String {
+    match location {
+        Some((file, line, col)) => format!("{} (at {}:{}:{})", message, file, line, col),
+        None => message.to_string(),
+    }
+}
+
+/// Extract a concise description from a panic, for the friendly internal-error
+/// report.
+fn panic_detail(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let payload = info.payload();
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unexpected internal panic".to_string());
+    let location = info
+        .location()
+        .map(|loc| (loc.file(), loc.line(), loc.column()));
+    format_panic_detail(&message, location)
+}
+
+/// Install a panic hook that reframes any compiler panic (a failed `assert`,
+/// `unwrap`, `expect`, or `unreachable!`) as an internal compiler error rather
+/// than letting Rust's raw "thread 'main' panicked" text reach the user. The
+/// full panic and backtrace are preserved for maintainers when RUST_BACKTRACE is
+/// set; the friendly message is the default.
+fn install_internal_error_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        spinner::stop();
+        if env::var_os("RUST_BACKTRACE").is_some() {
+            default_hook(info);
+        }
+        report_internal_compiler_error(&panic_detail(info));
+    }));
+}
+
 fn main() {
+    install_internal_error_panic_hook();
     let (file_path, do_run, output, intermediate) = parse_args_or_exit();
+    set_compiling_file(&file_path);
 
     ensure_mux_extension_or_exit(&file_path);
 
@@ -1342,16 +1464,67 @@ mod tests {
     use super::full_runtime_features;
     use super::{
         REQUIRED_LLVM_MAJOR, RUNTIME_STAMP_FILE, cached_runtime_is_fresh, clang_version_output,
-        default_cache_root, extract_clang_major, find_runtime_lib_in_dir, llvm_config_candidates,
-        normalize_runtime_features, pick_llvm_for_dev, print_doctor_verdict, print_version_banner,
-        record_runtime_fingerprint, report_clang_for_doctor, report_runtime_for_doctor,
-        runtime_feature_key, runtime_profile, runtime_source_fingerprint, status_marker,
-        validate_llvm_for_doctor,
+        default_cache_root, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
+        internal_compiler_error_report, llvm_config_candidates, normalize_runtime_features,
+        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, record_runtime_fingerprint,
+        relativize_to_cwd, report_clang_for_doctor, report_runtime_for_doctor, runtime_feature_key,
+        runtime_profile, runtime_source_fingerprint, status_marker, validate_llvm_for_doctor,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn sv(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn internal_error_report_names_the_file_when_present() {
+        let report = internal_compiler_error_report("codegen error: boom", Some("foo.mux"), false);
+        assert!(report.contains("internal compiler error"));
+        assert!(report.contains("codegen error: boom"));
+        assert!(report.contains("while compiling: foo.mux"));
+        assert!(report.contains("include the file above"));
+        // The backtrace hint is suppressed when RUST_BACKTRACE is already set.
+        assert!(!report.contains("RUST_BACKTRACE"));
+    }
+
+    #[test]
+    fn internal_error_report_without_file_avoids_a_dangling_reference() {
+        let report = internal_compiler_error_report("boom", None, true);
+        assert!(!report.contains("while compiling:"));
+        // Must not tell the user to include "the file above" when none was shown.
+        assert!(!report.contains("include the file above"));
+        assert!(report.contains("include the input file"));
+        assert!(report.contains("re-run with RUST_BACKTRACE=1"));
+    }
+
+    #[test]
+    fn internal_error_report_omits_empty_detail() {
+        let report = internal_compiler_error_report("", Some("foo.mux"), false);
+        // An empty detail produces no stray "  \n" line before the file line.
+        assert!(!report.contains("\n  \n"));
+        assert!(report.contains("while compiling: foo.mux"));
+    }
+
+    #[test]
+    fn panic_detail_formats_message_and_location() {
+        assert_eq!(
+            format_panic_detail("boom", Some(("src/x.rs", 4, 2))),
+            "boom (at src/x.rs:4:2)"
+        );
+        assert_eq!(format_panic_detail("boom", None), "boom");
+    }
+
+    #[test]
+    fn relativize_strips_the_cwd_prefix() {
+        let cwd = std::env::current_dir().unwrap();
+        let absolute = cwd.join("sub").join("file.mux");
+        assert_eq!(relativize_to_cwd(&absolute), PathBuf::from("sub/file.mux"));
+        // An already-relative path is returned unchanged.
+        let relative = Path::new("already/relative.mux");
+        assert_eq!(
+            relativize_to_cwd(relative),
+            PathBuf::from("already/relative.mux")
+        );
     }
 
     fn unique_tmp(tag: &str) -> PathBuf {
