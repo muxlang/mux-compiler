@@ -234,10 +234,12 @@ jobs:
       LLVM_SYS_221_STRICT_VERSIONING: "1"
       CC: clang-22
       CXX: clang++-22
-      # build.rs needs a runtime source to be happy; the actual link is
-      # overridden below with MUX_RUNTIME_LIB so compiled programs pick up the
-      # feature-enabled static library instead of this default build.
       MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
+      # The compiler builds the runtime from MUX_RUNTIME_SRC with these features,
+      # so no manual cross-manifest build is needed. The list must be a superset
+      # of every program's required features, so it is the full set plus
+      # rc-leak-check; keep it in sync with mux-runtime's `full` feature.
+      MUX_RUNTIME_FEATURES: core,json,csv,net,sql,sync,rc-leak-check
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -270,15 +272,11 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-      - name: Build leak-check runtime
-        # Plain Rust, no LLVM: produces mux-runtime/target/debug/libmux_runtime.a
-        # with the live RC-allocation counter compiled in.
-        run: cargo build --manifest-path mux-runtime/Cargo.toml --features rc-leak-check
       - name: Executable suite under leak-check runtime
-        # MUX_RUNTIME_LIB overrides the linked runtime for every program the
-        # suite compiles, so each one runs the exit-time leak assertion.
-        env:
-          MUX_RUNTIME_LIB: ${{ github.workspace }}/mux-runtime/target/debug/libmux_runtime.a
+        # The compiler builds mux-runtime with MUX_RUNTIME_FEATURES (above), so
+        # every program links the leak-check runtime and runs the exit-time
+        # assertion. A leaked block exits 101 with a diagnostic, so its snapshot
+        # no longer matches and the suite fails.
         run: cargo test -p mux-lang --test executable_integration
   benchmarks:
     name: Benchmarks (report-only)
