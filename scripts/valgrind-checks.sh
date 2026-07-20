@@ -263,8 +263,12 @@ measure_still_reachable() {
 
   # Run in the fixture directory so relative imports resolve. still-reachable is
   # deterministic, so no exit-code handling is needed here - only the report.
+  local rc=0
   ( cd "$dir" && timeout "$program_timeout" valgrind "${globals_valgrind_flags[@]}" "./$name" ) \
-    >/dev/null 2>"$log" || true
+    >/dev/null 2>"$log" || rc=$?
+  if [[ "$rc" -eq 124 ]]; then
+    echo "Leg C: timed out after ${program_timeout}s running $name (fixture may have hung)" >&2
+  fi
   rm -f "$bin" "$ll"
 
   bytes="$(grep -m1 'still reachable:' "$log" |
@@ -299,7 +303,13 @@ run_leg_globals() {
   echo "  control.mux still reachable: ${control_bytes} bytes"
   if [[ "$probe_bytes" -ne "$control_bytes" ]]; then
     g_failure=1
-    echo "  FAIL: module constants add $((probe_bytes - control_bytes)) still-reachable bytes over baseline."
+    local delta=$(( probe_bytes - control_bytes ))
+    local abs_delta=$(( delta < 0 ? -delta : delta ))
+    if [[ "$delta" -gt 0 ]]; then
+      echo "  FAIL: module constants add ${abs_delta} still-reachable bytes over baseline."
+    else
+      echo "  FAIL: probe has ${abs_delta} fewer still-reachable bytes than control (unexpected; check fixtures)."
+    fi
     echo "        A module-private constant is not released at global teardown (see #284)."
   else
     echo "  PASS: module globals add no still-reachable bytes over baseline."

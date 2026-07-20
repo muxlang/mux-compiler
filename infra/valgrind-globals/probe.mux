@@ -4,6 +4,11 @@
 // and cross-module global teardown. If that teardown regresses (mux-compiler
 // #284), these constants stay reachable at exit and the program's
 // "still reachable" byte total rises above control.mux's fixed baseline.
+//
+// NOTE: probe.mux uses `import consts_module.*` whereas control.mux imports
+// nothing. Leg C's validity assumes module-import bookkeeping itself adds zero
+// extra "still reachable" bytes after correct teardown. If that invariant is
+// ever violated, the baseline comparison diverges spuriously.
 import consts_module.*
 
 const string LOCAL_LABEL = "probe local constant"
