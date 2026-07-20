@@ -31,6 +31,30 @@ use crate::semantics::{GenericContext, SemanticAnalyzer, Type, Type as ResolvedT
 type ClassTypeParamBounds = Vec<(String, Vec<(String, Vec<Type>)>)>;
 type EnumVariantFieldMap = HashMap<String, HashMap<String, Vec<EnumVariantField>>>;
 
+/// What a tracked RC scope slot holds, so end-of-scope cleanup releases it the
+/// right way. A boxed value is a `*mut Value` decremented directly; a custom
+/// enum is stored inline as a `{ i32 tag, fields... }` struct, so it needs
+/// variant-tag drop-glue to release only the pointer payloads of its active
+/// variant (see `emit_enum_drop`).
+#[derive(Clone)]
+pub(super) enum RcSlot<'a> {
+    Boxed(PointerValue<'a>),
+    EnumStruct {
+        enum_name: String,
+        alloca: PointerValue<'a>,
+    },
+}
+
+impl<'a> RcSlot<'a> {
+    /// The storage slot backing this entry, used to dedupe tracking so one slot
+    /// is never released twice within a scope.
+    fn alloca(&self) -> PointerValue<'a> {
+        match self {
+            RcSlot::Boxed(alloca) | RcSlot::EnumStruct { alloca, .. } => *alloca,
+        }
+    }
+}
+
 pub struct CodeGenerator<'a> {
     context: &'a Context,
     module: Module<'a>,
@@ -73,7 +97,7 @@ pub struct CodeGenerator<'a> {
     generic_context: Option<GenericContext>,
     context_stack: Vec<GenericContext>,
     generated_methods: HashMap<String, bool>,
-    rc_scope_stack: Vec<Vec<(String, PointerValue<'a>)>>,
+    rc_scope_stack: Vec<Vec<(String, RcSlot<'a>)>>,
     /// Owned RC temporaries produced during the current statement's expression
     /// evaluation that have not been bound to a variable. They are decremented
     /// at the statement boundary so intermediate values (string literals,

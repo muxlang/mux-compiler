@@ -1,0 +1,26 @@
+// Probe fixture for the Valgrind still-reachable regression check (Leg C of
+// scripts/valgrind-checks.sh). It holds its own module-private heap constants
+// and reads imported ones from consts_module.mux, exercising both same-module
+// and cross-module global teardown. If that teardown regresses (mux-compiler
+// #284), these constants stay reachable at exit and the program's
+// "still reachable" byte total rises above control.mux's fixed baseline.
+//
+// NOTE: probe.mux uses `import consts_module.*` whereas control.mux imports
+// nothing. Leg C's validity assumes module-import bookkeeping itself adds zero
+// extra "still reachable" bytes after correct teardown. If that invariant is
+// ever violated, the baseline comparison diverges spuriously.
+import consts_module.*
+
+const string LOCAL_LABEL = "probe local constant"
+const list<int> LOCAL_SEQ = [2, 4, 6, 8]
+const map<string, int> LOCAL_TABLE = {"x": 10, "y": 20}
+
+func main() returns void {
+    print(LOCAL_LABEL)
+    print(LOCAL_SEQ[0].to_string())
+    print(LOCAL_TABLE["x"].to_string())
+    print(BANNER)
+    print(WEIGHTS[0].to_string())
+    print(TABLE["one"].to_string())
+    return
+}
