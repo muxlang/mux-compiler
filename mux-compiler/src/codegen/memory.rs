@@ -5,6 +5,7 @@
 use super::{CodeGenerator, RcSlot};
 use crate::semantics::Type;
 use inkwell::AddressSpace;
+use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, PointerValue};
 
 impl<'a> CodeGenerator<'a> {
@@ -79,20 +80,25 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    /// Track an RC-allocated variable in the current scope.
-    /// The variable will have mux_rc_dec called on it when the scope ends.
-    pub(super) fn track_rc_variable(&mut self, name: &str, alloca: PointerValue<'a>) {
+    /// Add a cleanup slot to the current scope, skipping it if the same storage
+    /// slot is already tracked there - a duplicate would be decremented twice at
+    /// cleanup. Shared by the boxed and enum tracking entry points.
+    fn track_slot(&mut self, name: &str, slot: RcSlot<'a>) {
         if let Some(current_scope) = self.rc_scope_stack.last_mut() {
-            // Avoid duplicate tracking of the same storage slot inside a scope.
-            // Duplicates can lead to double decrements during cleanup.
             if current_scope
                 .iter()
-                .any(|(_, slot)| slot.alloca() == alloca)
+                .any(|(_, s)| s.alloca() == slot.alloca())
             {
                 return;
             }
-            current_scope.push((name.to_string(), RcSlot::Boxed(alloca)));
+            current_scope.push((name.to_string(), slot));
         }
+    }
+
+    /// Track an RC-allocated variable in the current scope.
+    /// The variable will have mux_rc_dec called on it when the scope ends.
+    pub(super) fn track_rc_variable(&mut self, name: &str, alloca: PointerValue<'a>) {
+        self.track_slot(name, RcSlot::Boxed(alloca));
     }
 
     /// Track an inline enum-struct local so its active variant's pointer payloads
@@ -105,21 +111,13 @@ impl<'a> CodeGenerator<'a> {
         enum_name: &str,
         alloca: PointerValue<'a>,
     ) {
-        if let Some(current_scope) = self.rc_scope_stack.last_mut() {
-            if current_scope
-                .iter()
-                .any(|(_, slot)| slot.alloca() == alloca)
-            {
-                return;
-            }
-            current_scope.push((
-                name.to_string(),
-                RcSlot::EnumStruct {
-                    enum_name: enum_name.to_string(),
-                    alloca,
-                },
-            ));
-        }
+        self.track_slot(
+            name,
+            RcSlot::EnumStruct {
+                enum_name: enum_name.to_string(),
+                alloca,
+            },
+        );
     }
 
     /// If `ty` is a user-declared enum (not the built-in `optional`/`result`,
@@ -173,11 +171,19 @@ impl<'a> CodeGenerator<'a> {
             return Ok(());
         }
 
-        let struct_type = self
-            .type_map
-            .get(enum_name)
-            .ok_or_else(|| format!("Enum {} not found in type map", enum_name))?
-            .into_struct_type();
+        // generate_enum_type always stores a StructType here; match rather than
+        // `into_struct_type()` so a violated invariant surfaces as a diagnostic
+        // instead of panicking the compiler.
+        let struct_type = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(struct_type)) => *struct_type,
+            Some(_) => {
+                return Err(format!(
+                    "Enum {} type map entry is not a struct type",
+                    enum_name
+                ));
+            }
+            None => return Err(format!("Enum {} not found in type map", enum_name)),
+        };
         let rc_dec = self
             .runtime_function("mux_rc_dec")
             .ok_or("mux_rc_dec not found")?;
