@@ -1,5 +1,9 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-Codegen error: Undefined variable: List
+error: internal compiler error - this is a bug in mux itself, not a problem with your code
+  codegen error: Undefined variable: List
+  while compiling: test_scripts/error_cases/parser_generic_without_bracket.mux
+note: please report this at https://github.com/muxlang/mux-compiler/issues
+      include the file above and the output of `mux --version`

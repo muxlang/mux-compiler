@@ -3,6 +3,33 @@ use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::LazyLock;
+
+/// Matches the compiler-source location embedded in a panic's internal-error
+/// report, e.g. `(at mux-compiler/src/codegen/memory.rs:42:9)`. The line and
+/// column shift whenever the compiler is edited, so they are masked to keep
+/// panic snapshots stable.
+static PANIC_LOC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(at (?P<path>[^:)]+):\d+:\d+\)").unwrap());
+
+/// The distinctive first line of an internal-compiler-error report.
+const INTERNAL_ERROR_MARKER: &str = "error: internal compiler error - this is a bug in mux";
+
+/// Make an internal-compiler-error report deterministic. A compiler panic runs
+/// under `RUST_BACKTRACE=1` (set by `compile_and_execute_file`), so the default
+/// panic hook prints a non-deterministic backtrace before the friendly report;
+/// keep only the report (from its marker onward). Then mask the compiler-source
+/// location so a panic snapshot does not churn on every recompile. Output with no
+/// such report is returned unchanged.
+fn normalize_internal_error(output: &str) -> String {
+    let report = match output.find(INTERNAL_ERROR_MARKER) {
+        Some(idx) => &output[idx..],
+        None => output,
+    };
+    PANIC_LOC_RE
+        .replace_all(report, "(at $path:LINE:COL)")
+        .into_owned()
+}
 
 fn compile_and_execute_file(test_file: &Path) -> (String, String) {
     let abs_path = fs::canonicalize(test_file).unwrap_or_else(|e| {
@@ -155,6 +182,7 @@ fn run_snapshot_test(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
 
     let normalized = ipv4_re.replace_all(&output_to_snapshot, "$host:PORT");
     let normalized = ipv6_re.replace_all(&normalized, "[$host]:PORT");
+    let normalized = normalize_internal_error(&normalized);
     assert_snapshot!(
         format!("executable_integration__{}", snapshot_name),
         normalized
