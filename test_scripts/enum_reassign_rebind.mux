@@ -25,4 +25,12 @@ for int i in range(0, 3) {
     }
 }
 
+// Reassign from a ternary: both arms are owned constructors, so the whole
+// expression is owned and the previous value must still be released.
+s = if true { Status.Active("ternary") } else { Status.Inactive(0) }
+match s {
+    Active(msg) { print("ternary: " + msg) }
+    Inactive(code) { print("unexpected Inactive") }
+}
+
 print("=== enum reassign/rebind done ===")

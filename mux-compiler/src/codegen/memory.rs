@@ -126,12 +126,27 @@ impl<'a> CodeGenerator<'a> {
     /// release its previous enum before storing (issue #290): a borrowed form
     /// (an identifier or field load) still aliases its source, so dropping the
     /// old value could free memory the source references or, on self-assignment
-    /// (`s = s`), the value being stored. Conservative - only a call (a variant
-    /// constructor, or a function/method that returns an enum by value, both of
-    /// which own their result) qualifies; every other form is treated as
-    /// borrowed and keeps the store-without-release behavior.
+    /// (`s = s`), the value being stored.
+    ///
+    /// A call (a variant constructor, or a function/method that returns an enum
+    /// by value) owns its result. A ternary owns its result when both arms do -
+    /// e.g. `cond ? Status.Active(x) : Status.Inactive(y)` is owned - so it must
+    /// not be misclassified as borrowed. Every other form (identifier, field or
+    /// index load) is treated as borrowed, keeping the store-without-release
+    /// behavior.
     pub(super) fn rhs_produces_owned_enum(kind: &crate::ast::ExpressionKind) -> bool {
-        matches!(kind, crate::ast::ExpressionKind::Call { .. })
+        match kind {
+            crate::ast::ExpressionKind::Call { .. } => true,
+            crate::ast::ExpressionKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                Self::rhs_produces_owned_enum(&then_expr.kind)
+                    && Self::rhs_produces_owned_enum(&else_expr.kind)
+            }
+            _ => false,
+        }
     }
 
     /// If `ty` is a user-declared enum (not the built-in `optional`/`result`,
