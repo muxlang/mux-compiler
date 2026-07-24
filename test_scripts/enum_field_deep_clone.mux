@@ -1,0 +1,38 @@
+enum Status { Active(string), Inactive(int) }
+
+class Holder {
+    Status st
+
+    func set(Status s) returns void {
+        self.st = s
+        return
+    }
+
+    func show() returns void {
+        match self.st {
+            Active(m) { print("field: " + m) }
+            Inactive(n) { print("field: inactive") }
+        }
+        return
+    }
+}
+
+func main() returns void {
+    auto h = Holder.new()
+    auto s = Status.Active("first")
+
+    // Assign a borrowed enum into a field: the field must own an independent
+    // deep copy, not alias s.
+    h.set(s)
+
+    // Change s; the field must be unaffected.
+    s = Status.Active("second")
+
+    h.show()             // expect: field: first
+    match s { Active(m) { print("s: " + m) } Inactive(n) { print("s: inactive") } }
+
+    // Overwrite the field with a fresh owned value; previous payload released.
+    h.set(Status.Inactive(9))
+    h.show()             // expect: field: inactive
+    return
+}
