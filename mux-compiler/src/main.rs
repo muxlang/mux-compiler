@@ -273,23 +273,36 @@ fn full_runtime_features() -> Vec<String> {
         .collect()
 }
 
-fn find_runtime_lib_in_dir(dir: &Path) -> Option<PathBuf> {
-    let static_lib = if cfg!(target_family = "windows") {
+/// Path to the static runtime archive in `dir` for the target platform. The
+/// single source of the archive filename, so runtime discovery and static-only
+/// classification cannot disagree.
+fn runtime_static_lib_path(dir: &Path) -> PathBuf {
+    if cfg!(target_family = "windows") {
         dir.join("mux_runtime.lib")
     } else {
         dir.join("libmux_runtime.a")
-    };
-    if static_lib.exists() {
-        return Some(static_lib);
     }
+}
 
-    let dynamic_lib = if cfg!(target_family = "windows") {
+/// Path to the dynamic runtime library in `dir` for the target platform. Shared
+/// with `runtime_static_lib_path` as the one place the runtime lib names live.
+fn runtime_dynamic_lib_path(dir: &Path) -> PathBuf {
+    if cfg!(target_family = "windows") {
         dir.join("mux_runtime.dll")
     } else if cfg!(target_os = "macos") {
         dir.join("libmux_runtime.dylib")
     } else {
         dir.join("libmux_runtime.so")
-    };
+    }
+}
+
+fn find_runtime_lib_in_dir(dir: &Path) -> Option<PathBuf> {
+    let static_lib = runtime_static_lib_path(dir);
+    if static_lib.exists() {
+        return Some(static_lib);
+    }
+
+    let dynamic_lib = runtime_dynamic_lib_path(dir);
     if dynamic_lib.exists() {
         return Some(dynamic_lib);
     }
@@ -303,21 +316,10 @@ fn find_runtime_lib_in_dir(dir: &Path) -> Option<PathBuf> {
 /// never resolved; the cdylib records those dependencies itself. Used to decide
 /// whether to link the runtime's native deps explicitly (issue #291).
 fn runtime_lib_dir_is_static_only(dir: &Path) -> bool {
-    let static_lib = if cfg!(target_family = "windows") {
-        dir.join("mux_runtime.lib")
-    } else {
-        dir.join("libmux_runtime.a")
-    };
-    if !static_lib.exists() {
+    if !runtime_static_lib_path(dir).exists() {
         return false;
     }
-    let dynamic_lib = if cfg!(target_family = "windows") {
-        dir.join("mux_runtime.dll")
-    } else if cfg!(target_os = "macos") {
-        dir.join("libmux_runtime.dylib")
-    } else {
-        dir.join("libmux_runtime.so")
-    };
+    let dynamic_lib = runtime_dynamic_lib_path(dir);
     !dynamic_lib.exists()
 }
 
