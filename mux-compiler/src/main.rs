@@ -1177,33 +1177,60 @@ fn find_clang_or_exit() -> String {
     }
 }
 
+/// Build the internal-error detail line for a failed link from clang's stderr.
+/// Trailing whitespace is trimmed so the report does not end with a blank line;
+/// pure so the wording is unit-tested without spawning clang.
+fn clang_failure_detail(stderr: &[u8]) -> String {
+    format!(
+        "linking failed: {}",
+        String::from_utf8_lossy(stderr).trim_end()
+    )
+}
+
+/// What the driver should do about clang's result. Decided without side effects
+/// so the branching is unit-testable; the exit/report wiring stays in the thin
+/// `report_clang_output_or_exit` wrapper.
+enum ClangOutcome {
+    /// The executable linked successfully.
+    Linked,
+    /// A non-zero clang exit: the IR we emitted did not link, which is a compiler
+    /// bug rather than a user mistake, so it becomes an internal-error report.
+    LinkFailed(String),
+    /// clang was found but could not be executed - an environment problem. The
+    /// message keeps the IR path so the user can retry.
+    SpawnFailed(String),
+}
+
+fn classify_clang_output(
+    clang_output: std::io::Result<std::process::Output>,
+    ir_file: &str,
+) -> ClangOutcome {
+    match clang_output {
+        Ok(output) if output.status.success() => ClangOutcome::Linked,
+        Ok(output) => ClangOutcome::LinkFailed(clang_failure_detail(&output.stderr)),
+        Err(e) => ClangOutcome::SpawnFailed(format!(
+            "Failed to run clang: {}. IR file generated at: {}",
+            e, ir_file
+        )),
+    }
+}
+
 fn report_clang_output_or_exit(
     clang_output: std::io::Result<std::process::Output>,
     _do_run: bool,
     _file_path: &Path,
     ir_file: &str,
 ) {
-    match clang_output {
-        Ok(output) if output.status.success() => {}
-        Ok(output) => {
-            // A non-zero clang exit means the IR we emitted did not link. That
-            // is a compiler bug, not a mistake in the user's program, so route
-            // it through the friendly internal-error report (mux-context#24).
+    match classify_clang_output(clang_output, ir_file) {
+        ClangOutcome::Linked => {}
+        ClangOutcome::LinkFailed(detail) => {
             spinner::stop();
-            report_internal_compiler_error(&format!(
-                "linking failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim_end()
-            ));
+            report_internal_compiler_error(&detail);
             process::exit(1);
         }
-        Err(e) => {
-            // clang was found but could not be executed - an environment problem
-            // rather than a compiler bug. Keep the IR path so the user can retry.
+        ClangOutcome::SpawnFailed(message) => {
             spinner::stop();
-            eprintln!(
-                "Failed to run clang: {}. IR file generated at: {}",
-                e, ir_file
-            );
+            eprintln!("{}", message);
             process::exit(1);
         }
     }
@@ -1291,7 +1318,14 @@ fn internal_compiler_error_report(
 ) -> String {
     let mut out = String::from("\nerror: internal compiler error\n");
     if !detail.is_empty() {
-        out.push_str(&format!("  {}\n", detail));
+        // Indent every line: a linking failure feeds multi-line clang/linker
+        // stderr in as `detail`, and indenting only the first line would leave
+        // the rest starting at column 0 (a panic message is always single-line).
+        for line in detail.lines() {
+            out.push_str("  ");
+            out.push_str(line);
+            out.push('\n');
+        }
     }
     if let Some(file) = file {
         out.push_str(&format!("  while compiling: {}\n", file));
@@ -1479,12 +1513,13 @@ fn main() {
 mod tests {
     use super::full_runtime_features;
     use super::{
-        REQUIRED_LLVM_MAJOR, RUNTIME_STAMP_FILE, cached_runtime_is_fresh, clang_version_output,
-        default_cache_root, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
-        internal_compiler_error_report, llvm_config_candidates, normalize_runtime_features,
-        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, record_runtime_fingerprint,
-        relativize_to_cwd, report_clang_for_doctor, report_runtime_for_doctor, runtime_feature_key,
-        runtime_profile, runtime_source_fingerprint, status_marker, validate_llvm_for_doctor,
+        REQUIRED_LLVM_MAJOR, RUNTIME_STAMP_FILE, cached_runtime_is_fresh, clang_failure_detail,
+        clang_version_output, compiling_file, default_cache_root, extract_clang_major,
+        find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
+        llvm_config_candidates, normalize_runtime_features, pick_llvm_for_dev,
+        print_doctor_verdict, print_version_banner, record_runtime_fingerprint, relativize_to_cwd,
+        report_clang_for_doctor, report_runtime_for_doctor, runtime_feature_key, runtime_profile,
+        runtime_source_fingerprint, set_compiling_file, status_marker, validate_llvm_for_doctor,
     };
     use std::path::{Path, PathBuf};
 
@@ -1515,11 +1550,77 @@ mod tests {
     }
 
     #[test]
+    fn internal_error_report_indents_every_line_of_a_multiline_detail() {
+        // A link failure feeds multi-line linker stderr in as `detail`; each
+        // line must be indented, not just the first.
+        let detail = "linking failed: ld: error: undefined symbol: pow\n>>> referenced by main";
+        let report = internal_compiler_error_report(detail, Some("foo.mux"), false);
+        assert!(report.contains("  linking failed: ld: error: undefined symbol: pow\n"));
+        assert!(report.contains("  >>> referenced by main\n"));
+    }
+
+    #[test]
+    fn clang_failure_detail_labels_and_trims_stderr() {
+        assert_eq!(
+            clang_failure_detail(b"ld: undefined symbol: pow\n\n"),
+            "linking failed: ld: undefined symbol: pow"
+        );
+        assert_eq!(clang_failure_detail(b""), "linking failed: ");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_clang_output_distinguishes_link_and_spawn_failures() {
+        use super::{ClangOutcome, classify_clang_output};
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{ExitStatus, Output};
+
+        let success = Output {
+            status: ExitStatus::from_raw(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert!(matches!(
+            classify_clang_output(Ok(success), "out.ll"),
+            ClangOutcome::Linked
+        ));
+
+        let failed = Output {
+            status: ExitStatus::from_raw(1 << 8), // exit code 1
+            stdout: Vec::new(),
+            stderr: b"undefined reference to pow".to_vec(),
+        };
+        match classify_clang_output(Ok(failed), "out.ll") {
+            ClangOutcome::LinkFailed(detail) => {
+                assert!(detail.contains("linking failed: undefined reference to pow"))
+            }
+            _ => panic!("expected LinkFailed"),
+        }
+
+        let spawn_err = Err(std::io::Error::other("boom"));
+        match classify_clang_output(spawn_err, "out.ll") {
+            ClangOutcome::SpawnFailed(message) => {
+                assert!(message.contains("Failed to run clang"));
+                assert!(message.contains("out.ll"));
+            }
+            _ => panic!("expected SpawnFailed"),
+        }
+    }
+
+    #[test]
     fn internal_error_report_omits_empty_detail() {
         let report = internal_compiler_error_report("", Some("foo.mux"), false);
         // An empty detail produces no stray "  \n" line before the file line.
         assert!(!report.contains("\n  \n"));
         assert!(report.contains("while compiling: foo.mux"));
+    }
+
+    #[test]
+    fn compiling_file_records_the_relativized_input() {
+        // The panic hook reads the current input through this global; a relative
+        // path is stored as-is so an internal-error report can name it.
+        set_compiling_file(Path::new("scratch/prog.mux"));
+        assert_eq!(compiling_file().as_deref(), Some("scratch/prog.mux"));
     }
 
     #[test]
