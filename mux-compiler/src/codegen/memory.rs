@@ -153,12 +153,26 @@ impl<'a> CodeGenerator<'a> {
     /// whose ownership transfers into the slot. An owned value is stored
     /// directly; a borrowed one (an identifier or field load, which still points
     /// at its source's payloads) is deep-cloned first so the binding owns an
-    /// independent value (`store_struct_value`, issue #298). Conservative - only
-    /// a call (a variant constructor, or a function/method that returns an enum
-    /// by value, both of which own their result) is treated as owned; every
-    /// other form is treated as borrowed and deep-cloned, which is always safe.
+    /// independent value (`store_struct_value`, issue #298).
+    ///
+    /// A call (a variant constructor, or a function/method that returns an enum
+    /// by value) owns its result. A ternary owns its result when both arms do -
+    /// e.g. `cond ? Status.Active(x) : Status.Inactive(y)` is owned - so it must
+    /// not be misclassified as borrowed. Every other form (identifier, field or
+    /// index load) is treated as borrowed and deep-cloned, which is always safe.
     pub(super) fn rhs_produces_owned_enum(kind: &crate::ast::ExpressionKind) -> bool {
-        matches!(kind, crate::ast::ExpressionKind::Call { .. })
+        match kind {
+            crate::ast::ExpressionKind::Call { .. } => true,
+            crate::ast::ExpressionKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                Self::rhs_produces_owned_enum(&then_expr.kind)
+                    && Self::rhs_produces_owned_enum(&else_expr.kind)
+            }
+            _ => false,
+        }
     }
 
     /// If `ty` is a user-declared enum (not the built-in `optional`/`result`,

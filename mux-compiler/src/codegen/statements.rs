@@ -53,36 +53,14 @@ impl<'a> CodeGenerator<'a> {
                 self.overwrite_slot_with_owned(existing_ptr, value, resolved_type)?;
             }
         } else if value.is_struct_value() {
-            let (alloca, zero_initialized) = if let Some(func) = function {
-                (self.create_entry_block_alloca(*func, var_type, name)?, true)
-            } else {
-                (
-                    self.builder
-                        .build_alloca(var_type, name)
-                        .map_err(|e| e.to_string())?,
-                    false,
-                )
-            };
-            // An entry-block enum slot is created once but a declaration inside a
-            // loop body reuses it every iteration; release the previous
-            // iteration's value before overwriting, or all but the last leak
-            // (issue #290), and deep-clone a borrowed copy so it owns an
-            // independent value (issue #298). Releasing the old value is only
-            // safe for the zero-initialized entry-block slot (its first-iteration
-            // null payload makes the drop a no-op); the rare no-function fallback
-            // alloca holds garbage, so it is stored without a release.
-            self.store_struct_value(alloca, value, resolved_type, rhs_owned, zero_initialized)?;
-            self.variables
-                .insert(name.to_string(), (alloca, var_type, resolved_type.clone()));
-            // Inline enum structs own the pointer payloads of their active
-            // variant; track the slot so those payloads are released when the
-            // scope ends. Plain value structs (classes are boxed, not inline)
-            // and scalar-only enums own nothing here and are skipped.
-            if let Some(enum_name) = self.user_enum_type_name(resolved_type)
-                && self.enum_has_rc_payload(&enum_name)
-            {
-                self.track_enum_variable(name, &enum_name, alloca);
-            }
+            self.declare_struct_variable(
+                name,
+                var_type,
+                value,
+                resolved_type,
+                function,
+                rhs_owned,
+            )?;
         } else if let Some(func) = function {
             // Hoisted, null-initialized entry-block slot: because the store below
             // runs on every pass (e.g. a variable declared inside a loop body),
@@ -123,6 +101,51 @@ impl<'a> CodeGenerator<'a> {
                     resolved_type.clone(),
                 ),
             );
+        }
+        Ok(())
+    }
+
+    /// Bind a fresh inline-struct local (an enum value, most importantly), which
+    /// is stored by value rather than as a boxed pointer. Split out of
+    /// `declare_variable` to keep that dispatcher's cognitive complexity down.
+    fn declare_struct_variable(
+        &mut self,
+        name: &str,
+        var_type: BasicTypeEnum<'a>,
+        value: BasicValueEnum<'a>,
+        resolved_type: &ResolvedType,
+        function: Option<&FunctionValue<'a>>,
+        rhs_owned: bool,
+    ) -> Result<(), String> {
+        let (alloca, zero_initialized) = if let Some(func) = function {
+            (self.create_entry_block_alloca(*func, var_type, name)?, true)
+        } else {
+            (
+                self.builder
+                    .build_alloca(var_type, name)
+                    .map_err(|e| e.to_string())?,
+                false,
+            )
+        };
+        // An entry-block enum slot is created once but a declaration inside a
+        // loop body reuses it every iteration; release the previous iteration's
+        // value before overwriting, or all but the last leak (issue #290), and
+        // deep-clone a borrowed copy so it owns an independent value (issue
+        // #298). Releasing the old value is only safe for the zero-initialized
+        // entry-block slot (its first-iteration null payload makes the drop a
+        // no-op); the rare no-function fallback alloca holds garbage, so it is
+        // stored without a release.
+        self.store_struct_value(alloca, value, resolved_type, rhs_owned, zero_initialized)?;
+        self.variables
+            .insert(name.to_string(), (alloca, var_type, resolved_type.clone()));
+        // Inline enum structs own the pointer payloads of their active variant;
+        // track the slot so those payloads are released when the scope ends.
+        // Plain value structs (classes are boxed, not inline) and scalar-only
+        // enums own nothing here and are skipped.
+        if let Some(enum_name) = self.user_enum_type_name(resolved_type)
+            && self.enum_has_rc_payload(&enum_name)
+        {
+            self.track_enum_variable(name, &enum_name, alloca);
         }
         Ok(())
     }
