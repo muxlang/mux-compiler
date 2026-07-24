@@ -1,0 +1,28 @@
+// Regression test for mux-compiler#290: reassigning an enum variable, and
+// rebinding a loop-local enum each iteration, must release the previous value's
+// heap payload rather than leak it. The rc-leak-check CI leg asserts zero live
+// blocks at exit; this script also prints the final values to confirm the
+// overwrites keep working.
+
+enum Status { Active(string), Inactive(int) }
+
+// Direct reassignment: "first" then "second" must be released, not leaked.
+auto s = Status.Active("first")
+s = Status.Active("second")
+s = Status.Inactive(9)
+
+match s {
+    Active(msg) { print("unexpected Active: " + msg) }
+    Inactive(code) { print("final: Inactive(" + code.to_string() + ")") }
+}
+
+// Loop-rebind: every iteration but the last previously leaked its payload.
+for int i in range(0, 3) {
+    auto loop_status = Status.Active("iter-" + i.to_string())
+    match loop_status {
+        Active(msg) { print("loop: " + msg) }
+        Inactive(code) { print("unexpected Inactive") }
+    }
+}
+
+print("=== enum reassign/rebind done ===")

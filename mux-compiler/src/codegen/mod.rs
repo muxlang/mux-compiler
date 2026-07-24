@@ -735,14 +735,26 @@ impl<'a> CodeGenerator<'a> {
 
         let alloca = builder.build_alloca(ty, name).map_err(|e| e.to_string())?;
 
-        // Pointer locals can be hoisted to the entry block even when their
-        // declaration is inside conditional control flow. Initialize them to
-        // null so cleanup paths never decrement uninitialized memory.
-        if matches!(ty, BasicTypeEnum::PointerType(_)) {
-            let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
-            builder
-                .build_store(alloca, null_ptr)
-                .map_err(|e| e.to_string())?;
+        // Pointer and inline-struct locals can be hoisted to the entry block
+        // even when their declaration is inside conditional control flow, or
+        // reused across loop iterations. Zero-initialize them so cleanup and
+        // drop-before-store paths never read uninitialized memory: a null
+        // pointer is a no-op for `mux_rc_dec`, and a zeroed enum struct has a
+        // null active payload so `emit_enum_drop` is a no-op before the first
+        // real store.
+        match ty {
+            BasicTypeEnum::PointerType(_) => {
+                let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+                builder
+                    .build_store(alloca, null_ptr)
+                    .map_err(|e| e.to_string())?;
+            }
+            BasicTypeEnum::StructType(struct_type) => {
+                builder
+                    .build_store(alloca, struct_type.const_zero())
+                    .map_err(|e| e.to_string())?;
+            }
+            _ => {}
         }
 
         Ok(alloca)

@@ -2072,8 +2072,11 @@ impl<'a> CodeGenerator<'a> {
         right: &ExpressionNode,
     ) -> Result<BasicValueEnum<'a>, String> {
         let right_val = self.generate_expression(right)?;
+        let rhs_owned = Self::rhs_produces_owned_enum(&right.kind);
         match &left.kind {
-            ExpressionKind::Identifier(name) => self.assign_to_identifier(name, right_val),
+            ExpressionKind::Identifier(name) => {
+                self.assign_to_identifier(name, right_val, rhs_owned)
+            }
             ExpressionKind::Unary {
                 op: UnaryOp::Deref,
                 expr: deref_expr,
@@ -2094,6 +2097,7 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         name: &str,
         right_val: BasicValueEnum<'a>,
+        rhs_owned: bool,
     ) -> Result<BasicValueEnum<'a>, String> {
         if let Some(result) = self.try_assign_identifier_to_method_field(name, right_val)? {
             return Ok(result);
@@ -2120,8 +2124,11 @@ impl<'a> CodeGenerator<'a> {
         };
 
         if is_enum {
-            // Enum values are stored inline (not as owned boxed pointers), so
-            // there is no previous occupant to release.
+            // Enum values are stored inline (not as owned boxed pointers).
+            // Release the slot's previous value's payloads before overwriting so
+            // reassignment does not leak them (issue #290); a no-op for the
+            // built-in optional/result (not user enums) and for a borrowed RHS.
+            self.release_enum_slot_before_overwrite(ptr_copy, &type_node_copy, rhs_owned)?;
             self.builder
                 .build_store(ptr_copy, right_val)
                 .map_err(|e| e.to_string())?;

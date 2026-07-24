@@ -120,6 +120,20 @@ impl<'a> CodeGenerator<'a> {
         );
     }
 
+    /// Whether an assignment/binding right-hand side produces a freshly-owned
+    /// enum value - one whose pointer payloads have already been retained and
+    /// whose ownership transfers into the slot. Only such a value lets the slot
+    /// release its previous enum before storing (issue #290): a borrowed form
+    /// (an identifier or field load) still aliases its source, so dropping the
+    /// old value could free memory the source references or, on self-assignment
+    /// (`s = s`), the value being stored. Conservative - only a call (a variant
+    /// constructor, or a function/method that returns an enum by value, both of
+    /// which own their result) qualifies; every other form is treated as
+    /// borrowed and keeps the store-without-release behavior.
+    pub(super) fn rhs_produces_owned_enum(kind: &crate::ast::ExpressionKind) -> bool {
+        matches!(kind, crate::ast::ExpressionKind::Call { .. })
+    }
+
     /// If `ty` is a user-declared enum (not the built-in `optional`/`result`,
     /// which are boxed `*mut Value`s rather than inline structs), return its
     /// name. Used to decide whether a struct-valued local needs enum drop-glue.
@@ -152,6 +166,30 @@ impl<'a> CodeGenerator<'a> {
                 })
                 .unwrap_or(false)
         })
+    }
+
+    /// Release the enum value currently in `slot` before it is overwritten, so
+    /// reassigning an enum variable (or rebinding a loop-local each iteration)
+    /// does not leak the previous value's heap payloads (issue #290). A no-op
+    /// unless `resolved_type` is a user enum that owns a pointer payload and the
+    /// incoming value is freshly owned (`rhs_owned`); the slot must already hold
+    /// a valid enum or be zero-initialized, both of which `emit_enum_drop`
+    /// handles null-safely. Storing the new value is the caller's job.
+    pub(super) fn release_enum_slot_before_overwrite(
+        &mut self,
+        slot: PointerValue<'a>,
+        resolved_type: &Type,
+        rhs_owned: bool,
+    ) -> Result<(), String> {
+        if !rhs_owned {
+            return Ok(());
+        }
+        if let Some(enum_name) = self.user_enum_type_name(resolved_type)
+            && self.enum_has_rc_payload(&enum_name)
+        {
+            self.emit_enum_drop(&enum_name, slot)?;
+        }
+        Ok(())
     }
 
     /// Release an inline enum value held at `struct_alloca` by decrementing only
