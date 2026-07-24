@@ -614,14 +614,65 @@ impl SemanticAnalyzer {
                     where_clause.as_ref(),
                 )
             }
-            AstNode::Enum { variants, .. } => self.analyze_enum_where_clauses(variants),
+            AstNode::Enum { variants, .. } => {
+                self.validate_enum_variant_type_arities(variants);
+                self.analyze_enum_where_clauses(variants)
+            }
             AstNode::Interface {
                 type_params,
+                fields,
                 methods,
                 ..
-            } => self.analyze_interface_where_clauses(type_params, methods),
+            } => {
+                self.validate_interface_member_type_arities(fields, methods);
+                self.analyze_interface_where_clauses(type_params, methods)
+            }
             AstNode::Statement(stmt) => self.analyze_statement(stmt, files),
         }
+    }
+
+    /// Arity-check every enum variant payload type in the second pass, where all
+    /// type symbols are registered. Collection resolves these with errors
+    /// swallowed (`unwrap_or`), so a bad generic arity in a payload - e.g.
+    /// `V(list)` or a user generic with the wrong argument count - would
+    /// otherwise be silently accepted (issue #289).
+    fn validate_enum_variant_type_arities(&mut self, variants: &[EnumVariant]) {
+        let mut errors = Vec::new();
+        for variant in variants {
+            for (_, type_node) in variant.data.iter().flatten() {
+                if let Err(e) = self.validate_type_arity(type_node) {
+                    errors.push(e);
+                }
+            }
+        }
+        self.errors.extend(errors);
+    }
+
+    /// Arity-check interface field and method-signature types in the second
+    /// pass, for the same reason as enum payloads: collection swallows their
+    /// resolution errors (issue #289).
+    fn validate_interface_member_type_arities(
+        &mut self,
+        fields: &[Field],
+        methods: &[FunctionNode],
+    ) {
+        let mut errors = Vec::new();
+        for field in fields {
+            if let Err(e) = self.validate_type_arity(&field.type_) {
+                errors.push(e);
+            }
+        }
+        for method in methods {
+            for param in &method.params {
+                if let Err(e) = self.validate_type_arity(&param.type_) {
+                    errors.push(e);
+                }
+            }
+            if let Err(e) = self.validate_type_arity(&method.return_type) {
+                errors.push(e);
+            }
+        }
+        self.errors.extend(errors);
     }
 
     pub(super) fn analyze_function(

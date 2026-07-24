@@ -823,6 +823,64 @@ impl SemanticAnalyzer {
         Ok(Type::Named(name.to_string(), resolved_args))
     }
 
+    /// Validate only the generic arity of every named type inside `type_node`,
+    /// recursing into type arguments and element types. Unlike `resolve_type`
+    /// this reports nothing but arity mismatches (issue #289): it does not
+    /// resolve names, so it never false-positives on a forward reference to a
+    /// not-yet-registered type, and it skips the Result-error-implements-Error
+    /// check. Used in the second analysis pass to arity-check enum variant
+    /// payloads and interface member signatures, whose types the collection pass
+    /// resolves with errors swallowed (unlike class fields, which are
+    /// re-resolved in `analyze_class`).
+    pub(super) fn validate_type_arity(&self, type_node: &TypeNode) -> Result<(), SemanticError> {
+        match &type_node.kind {
+            TypeKind::Named(name, args) => {
+                if let Some(required) = builtin_generic_arity(name) {
+                    if args.len() != required {
+                        return Err(SemanticError::with_help(
+                            format!(
+                                "'{}' requires {} type argument{}, got {}",
+                                name,
+                                required,
+                                if required == 1 { "" } else { "s" },
+                                args.len()
+                            ),
+                            type_node.span,
+                            missing_type_args_help(name),
+                        ));
+                    }
+                } else if let Some(symbol) = self.symbol_table.lookup(name)
+                    && !symbol.type_params.is_empty()
+                {
+                    self.validate_type_argument_count(name, &symbol, args, type_node.span)?;
+                }
+                for arg in args {
+                    self.validate_type_arity(arg)?;
+                }
+                Ok(())
+            }
+            TypeKind::List(inner) | TypeKind::Set(inner) | TypeKind::Reference(inner) => {
+                self.validate_type_arity(inner)
+            }
+            TypeKind::Map(key, value) => {
+                self.validate_type_arity(key)?;
+                self.validate_type_arity(value)
+            }
+            TypeKind::Tuple(left, right) => {
+                self.validate_type_arity(left)?;
+                self.validate_type_arity(right)
+            }
+            TypeKind::Function { params, returns } => {
+                for param in params {
+                    self.validate_type_arity(param)?;
+                }
+                self.validate_type_arity(returns)
+            }
+            TypeKind::TraitObject(inner) => self.validate_type_arity(inner),
+            TypeKind::Primitive(_) | TypeKind::Auto => Ok(()),
+        }
+    }
+
     pub fn get_expression_type(&mut self, expr: &ExpressionNode) -> Result<Type, SemanticError> {
         match &expr.kind {
             ExpressionKind::Literal(_) => self.infer_literal_type(expr),
