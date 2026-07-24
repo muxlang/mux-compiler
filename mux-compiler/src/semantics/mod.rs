@@ -41,6 +41,32 @@ type GenericBounds = Vec<GenericBound>;
 type ResolvedInterface = (Vec<Type>, HashMap<String, MethodSig>);
 type ClassFieldInfo = (Type, bool);
 
+/// The number of type arguments a built-in generic type requires, or `None` for
+/// a name that is not a built-in generic. Used to reject a built-in collection
+/// or wrapper written without its type arguments (issue #289).
+fn builtin_generic_arity(name: &str) -> Option<usize> {
+    match name {
+        "list" | "set" | "optional" => Some(1),
+        "map" | "result" | "tuple" => Some(2),
+        _ => None,
+    }
+}
+
+/// A `help` line showing a correctly parameterized form of a built-in generic,
+/// for the "requires type argument(s)" diagnostic (issue #289).
+fn missing_type_args_help(name: &str) -> String {
+    let example = match name {
+        "list" => "list<int>",
+        "set" => "set<int>",
+        "map" => "map<string, int>",
+        "tuple" => "tuple<int, string>",
+        "optional" => "optional<int>",
+        "result" => "result<int, Error>",
+        _ => "Type<...>",
+    };
+    format!("Add the type argument(s) in angle brackets, e.g. {example}")
+}
+
 pub struct SemanticAnalyzer {
     pub(super) symbol_table: SymbolTable,
     current_bounds: std::collections::HashMap<String, GenericBounds>,
@@ -607,7 +633,14 @@ impl SemanticAnalyzer {
         self.collect_interface_preconditions(ast);
         self.collect_where_preconditions(ast);
         self.analyze_nodes(ast, files);
-        std::mem::take(&mut self.errors)
+        // Two-pass analysis (hoist/collection, then body analysis) can resolve
+        // the same field or signature type twice, so a type error on it is
+        // recorded twice. Collapse exact duplicates - identical message and
+        // span - so each distinct problem is reported once.
+        let mut errors = std::mem::take(&mut self.errors);
+        let mut seen = HashSet::new();
+        errors.retain(|e| seen.insert((e.message.clone(), e.span)));
+        errors
     }
 
     fn add_builtin_functions(&mut self) {
@@ -690,6 +723,35 @@ impl SemanticAnalyzer {
                         ));
                     }
                     return Ok(Type::Result(Box::new(resolved_ok), Box::new(resolved_err)));
+                }
+
+                // Built-in generic types always require their type arguments.
+                // The correctly-arg'd forms are handled before reaching here
+                // (list/map/set/tuple become dedicated TypeKind variants in the
+                // parser; optional/result are matched just above), so any of
+                // these names arriving here is missing or has the wrong number
+                // of type arguments (issue #289).
+                if let Some(required) = builtin_generic_arity(name) {
+                    return Err(SemanticError::with_help(
+                        format!(
+                            "'{}' requires {} type argument{}, got {}",
+                            name,
+                            required,
+                            if required == 1 { "" } else { "s" },
+                            type_args.len()
+                        ),
+                        type_node.span,
+                        missing_type_args_help(name),
+                    ));
+                }
+
+                // A user-declared generic type used without (or with the wrong
+                // number of) type arguments; non-generic named types have no
+                // type parameters and are unaffected (issue #289).
+                if let Some(symbol) = self.symbol_table.lookup(name)
+                    && !symbol.type_params.is_empty()
+                {
+                    self.validate_type_argument_count(name, &symbol, type_args, type_node.span)?;
                 }
 
                 // named types are assumed to be classes, enums, or interfaces
