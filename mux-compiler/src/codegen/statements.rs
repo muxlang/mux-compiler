@@ -40,13 +40,10 @@ impl<'a> CodeGenerator<'a> {
                 // Reassigning an inline enum struct into an existing slot (a
                 // re-declared local or a pre-declared global) must release the
                 // previous value's pointer payloads first, or it leaks them
-                // (issue #290). Gated on an owned RHS so a borrowed copy is not
-                // dropped from under its source; the slot holds a valid enum or
-                // is zero-initialized, both null-safe for the drop.
-                self.release_enum_slot_before_overwrite(existing_ptr, resolved_type, rhs_owned)?;
-                self.builder
-                    .build_store(existing_ptr, value)
-                    .map_err(|e| e.to_string())?;
+                // (issue #290), and a borrowed copy is deep-cloned so it owns an
+                // independent value (issue #298). The slot holds a valid enum or
+                // is zero-initialized, both null-safe for the release.
+                self.store_struct_value(existing_ptr, value, resolved_type, rhs_owned, true)?;
             } else {
                 // Re-declaring an existing slot (a loop-local declared each
                 // iteration, or a pre-declared top-level global) must release the
@@ -69,15 +66,12 @@ impl<'a> CodeGenerator<'a> {
             // An entry-block enum slot is created once but a declaration inside a
             // loop body reuses it every iteration; release the previous
             // iteration's value before overwriting, or all but the last leak
-            // (issue #290). Only safe for the zero-initialized entry-block slot
-            // (its first-iteration null payload makes the drop a no-op); the
-            // rare no-function fallback alloca holds garbage and is skipped.
-            if zero_initialized {
-                self.release_enum_slot_before_overwrite(alloca, resolved_type, rhs_owned)?;
-            }
-            self.builder
-                .build_store(alloca, value)
-                .map_err(|e| e.to_string())?;
+            // (issue #290), and deep-clone a borrowed copy so it owns an
+            // independent value (issue #298). Releasing the old value is only
+            // safe for the zero-initialized entry-block slot (its first-iteration
+            // null payload makes the drop a no-op); the rare no-function fallback
+            // alloca holds garbage, so it is stored without a release.
+            self.store_struct_value(alloca, value, resolved_type, rhs_owned, zero_initialized)?;
             self.variables
                 .insert(name.to_string(), (alloca, var_type, resolved_type.clone()));
             // Inline enum structs own the pointer payloads of their active

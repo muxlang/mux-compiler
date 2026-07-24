@@ -2126,12 +2126,10 @@ impl<'a> CodeGenerator<'a> {
         if is_enum {
             // Enum values are stored inline (not as owned boxed pointers).
             // Release the slot's previous value's payloads before overwriting so
-            // reassignment does not leak them (issue #290); a no-op for the
-            // built-in optional/result (not user enums) and for a borrowed RHS.
-            self.release_enum_slot_before_overwrite(ptr_copy, &type_node_copy, rhs_owned)?;
-            self.builder
-                .build_store(ptr_copy, right_val)
-                .map_err(|e| e.to_string())?;
+            // reassignment does not leak them (issue #290), and deep-clone a
+            // borrowed copy so it owns an independent value (issue #298). A plain
+            // store for the built-in optional/result (not user enums).
+            self.store_struct_value(ptr_copy, right_val, &type_node_copy, rhs_owned, true)?;
         } else {
             // Value-semantic overwrite: copy a borrowed value type so `x = y`
             // does not alias, release the previous occupant, then store.
