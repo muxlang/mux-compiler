@@ -1,0 +1,14 @@
+// Regression for mux-compiler#289 (and a Greptile review concern): a generic
+// type referenced with the wrong number of type arguments BEFORE it is declared
+// must still be validated. The two-pass analysis registers all type symbols
+// before field types are resolved, so this forward reference is caught.
+class Wrapper {
+    Pair<int> p
+}
+
+class Pair<A, B> {
+    A first
+    B second
+}
+
+print("unreachable")

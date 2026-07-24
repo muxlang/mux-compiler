@@ -697,69 +697,7 @@ impl SemanticAnalyzer {
                 )),
             },
             TypeKind::Named(name, type_args) => {
-                // Handle type parameters (generic type variables)
-                if type_args.is_empty()
-                    && let Some(symbol) = self.symbol_table.lookup(name)
-                    && matches!(symbol.kind, SymbolKind::Type)
-                {
-                    return Ok(Type::Variable(name.clone()));
-                }
-
-                // Handle built-in generic types
-                if name == "optional" && type_args.len() == 1 {
-                    let resolved_arg = self.resolve_type(&type_args[0])?;
-                    return Ok(Type::Optional(Box::new(resolved_arg)));
-                } else if name == "result" && type_args.len() == 2 {
-                    let resolved_ok = self.resolve_type(&type_args[0])?;
-                    let resolved_err = self.resolve_type(&type_args[1])?;
-                    if !self.type_implements_interface(&resolved_err, "Error") {
-                        return Err(SemanticError::with_help(
-                            format!(
-                                "Result error type must implement Error, but found {}",
-                                format_type(&resolved_err)
-                            ),
-                            type_node.span,
-                            "Use an error type that implements Error (requires message() -> string).",
-                        ));
-                    }
-                    return Ok(Type::Result(Box::new(resolved_ok), Box::new(resolved_err)));
-                }
-
-                // Built-in generic types always require their type arguments.
-                // The correctly-arg'd forms are handled before reaching here
-                // (list/map/set/tuple become dedicated TypeKind variants in the
-                // parser; optional/result are matched just above), so any of
-                // these names arriving here is missing or has the wrong number
-                // of type arguments (issue #289).
-                if let Some(required) = builtin_generic_arity(name) {
-                    return Err(SemanticError::with_help(
-                        format!(
-                            "'{}' requires {} type argument{}, got {}",
-                            name,
-                            required,
-                            if required == 1 { "" } else { "s" },
-                            type_args.len()
-                        ),
-                        type_node.span,
-                        missing_type_args_help(name),
-                    ));
-                }
-
-                // A user-declared generic type used without (or with the wrong
-                // number of) type arguments; non-generic named types have no
-                // type parameters and are unaffected (issue #289).
-                if let Some(symbol) = self.symbol_table.lookup(name)
-                    && !symbol.type_params.is_empty()
-                {
-                    self.validate_type_argument_count(name, &symbol, type_args, type_node.span)?;
-                }
-
-                // named types are assumed to be classes, enums, or interfaces
-                let resolved_args = type_args
-                    .iter()
-                    .map(|arg| self.resolve_type(arg))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(Type::Named(name.clone(), resolved_args))
+                self.resolve_named_type(name, type_args, type_node.span)
             }
             TypeKind::Function { params, returns } => {
                 let resolved_params = params
@@ -809,6 +747,80 @@ impl SemanticAnalyzer {
                 "Use an explicit type annotation instead of 'auto'",
             )),
         }
+    }
+
+    /// Resolve a `TypeKind::Named` annotation: a generic type parameter, a
+    /// built-in wrapper (`optional`/`result`), or a user class/enum/interface.
+    /// Split out of `resolve_type` to keep that dispatcher's cognitive
+    /// complexity within the gate (SonarQube rust:S3776).
+    fn resolve_named_type(
+        &self,
+        name: &str,
+        type_args: &[TypeNode],
+        span: Span,
+    ) -> Result<Type, SemanticError> {
+        // A generic type parameter (e.g. `T`) resolves to a type variable.
+        if type_args.is_empty()
+            && let Some(symbol) = self.symbol_table.lookup(name)
+            && matches!(symbol.kind, SymbolKind::Type)
+        {
+            return Ok(Type::Variable(name.to_string()));
+        }
+
+        // Correctly-parameterized built-in wrappers.
+        if name == "optional" && type_args.len() == 1 {
+            let resolved_arg = self.resolve_type(&type_args[0])?;
+            return Ok(Type::Optional(Box::new(resolved_arg)));
+        } else if name == "result" && type_args.len() == 2 {
+            let resolved_ok = self.resolve_type(&type_args[0])?;
+            let resolved_err = self.resolve_type(&type_args[1])?;
+            if !self.type_implements_interface(&resolved_err, "Error") {
+                return Err(SemanticError::with_help(
+                    format!(
+                        "Result error type must implement Error, but found {}",
+                        format_type(&resolved_err)
+                    ),
+                    span,
+                    "Use an error type that implements Error (requires message() -> string).",
+                ));
+            }
+            return Ok(Type::Result(Box::new(resolved_ok), Box::new(resolved_err)));
+        }
+
+        // Built-in generic types always require their type arguments. The
+        // correctly-arg'd forms are handled before reaching here (list/map/set/
+        // tuple become dedicated TypeKind variants in the parser; optional/result
+        // are matched just above), so any of these names arriving here is missing
+        // or has the wrong number of type arguments (issue #289).
+        if let Some(required) = builtin_generic_arity(name) {
+            return Err(SemanticError::with_help(
+                format!(
+                    "'{}' requires {} type argument{}, got {}",
+                    name,
+                    required,
+                    if required == 1 { "" } else { "s" },
+                    type_args.len()
+                ),
+                span,
+                missing_type_args_help(name),
+            ));
+        }
+
+        // A user-declared generic type used without (or with the wrong number
+        // of) type arguments; non-generic named types have no type parameters
+        // and are unaffected (issue #289).
+        if let Some(symbol) = self.symbol_table.lookup(name)
+            && !symbol.type_params.is_empty()
+        {
+            self.validate_type_argument_count(name, &symbol, type_args, span)?;
+        }
+
+        // Named types are otherwise assumed to be classes, enums, or interfaces.
+        let resolved_args = type_args
+            .iter()
+            .map(|arg| self.resolve_type(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Type::Named(name.to_string(), resolved_args))
     }
 
     pub fn get_expression_type(&mut self, expr: &ExpressionNode) -> Result<Type, SemanticError> {
