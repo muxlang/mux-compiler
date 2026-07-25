@@ -13,7 +13,7 @@ static PANIC_LOC_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\(at (?P<path>[^:)]+):\d+:\d+\)").unwrap());
 
 /// The distinctive first line of an internal-compiler-error report.
-const INTERNAL_ERROR_MARKER: &str = "error: internal compiler error - this is a bug in mux";
+const INTERNAL_ERROR_MARKER: &str = "error: internal compiler error";
 
 /// Make an internal-compiler-error report deterministic. A compiler panic runs
 /// under `RUST_BACKTRACE=1` (set by `compile_and_execute_file`), so the default
