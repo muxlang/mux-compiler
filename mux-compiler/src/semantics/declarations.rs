@@ -123,21 +123,19 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    fn collect_class_symbol(
+    /// Compute the (name, trait-bound-names) list for a declaration's type
+    /// parameters and register each parameter name as a type symbol, so
+    /// annotations that reference it resolve to a type variable. Shared by class
+    /// and enum collection.
+    fn register_type_param_symbols(
         &mut self,
-        name: &str,
-        traits: &[TraitRef],
-        fields: &[Field],
-        methods: &[FunctionNode],
         type_params: &[(String, Vec<TraitBound>)],
         span: &Span,
-    ) -> Result<(), SemanticError> {
-        let implemented_interfaces = self.resolve_implemented_interfaces(traits, span)?;
-        let type_param_bounds: Vec<(String, Vec<String>)> = type_params
+    ) -> Vec<(String, Vec<String>)> {
+        let bounds: Vec<(String, Vec<String>)> = type_params
             .iter()
             .map(|(p, b)| (p.clone(), b.iter().map(|tb| tb.name.clone()).collect()))
             .collect();
-
         for (param_name, _) in type_params {
             let _ = self.symbol_table.add_symbol(
                 param_name,
@@ -148,6 +146,20 @@ impl SemanticAnalyzer {
                 ),
             );
         }
+        bounds
+    }
+
+    fn collect_class_symbol(
+        &mut self,
+        name: &str,
+        traits: &[TraitRef],
+        fields: &[Field],
+        methods: &[FunctionNode],
+        type_params: &[(String, Vec<TraitBound>)],
+        span: &Span,
+    ) -> Result<(), SemanticError> {
+        let implemented_interfaces = self.resolve_implemented_interfaces(traits, span)?;
+        let type_param_bounds = self.register_type_param_symbols(type_params, span);
 
         let (fields_map, _) = self.collect_class_fields(name, fields, span)?;
         let methods_map = self.collect_class_methods(methods, name, type_params)?;
@@ -449,23 +461,9 @@ impl SemanticAnalyzer {
         // Record the enum's type parameters like classes do, so a generic enum
         // used with the wrong number of type arguments is caught by the arity
         // check (which reads the symbol's type_params) rather than silently
-        // accepted (issue #289 review). Also register each parameter name as a
-        // type symbol so variant payloads that reference it resolve to a type
-        // variable, matching collect_class_symbol.
-        let type_param_bounds: Vec<(String, Vec<String>)> = type_params
-            .iter()
-            .map(|(p, b)| (p.clone(), b.iter().map(|tb| tb.name.clone()).collect()))
-            .collect();
-        for (param_name, _) in type_params {
-            let _ = self.symbol_table.add_symbol(
-                param_name,
-                Self::make_symbol(
-                    SymbolKind::Type,
-                    *span,
-                    Some(Type::Generic(param_name.clone())),
-                ),
-            );
-        }
+        // accepted (issue #289 review), and register each parameter as a type
+        // symbol so variant payloads referencing it resolve to a type variable.
+        let type_param_bounds = self.register_type_param_symbols(type_params, span);
 
         let mut methods = std::collections::HashMap::new();
         let mut variant_names = Vec::new();
