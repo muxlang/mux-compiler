@@ -273,28 +273,54 @@ fn full_runtime_features() -> Vec<String> {
         .collect()
 }
 
-fn find_runtime_lib_in_dir(dir: &Path) -> Option<PathBuf> {
-    let static_lib = if cfg!(target_family = "windows") {
+/// Path to the static runtime archive in `dir` for the target platform. The
+/// single source of the archive filename, so runtime discovery and static-only
+/// classification cannot disagree.
+fn runtime_static_lib_path(dir: &Path) -> PathBuf {
+    if cfg!(target_family = "windows") {
         dir.join("mux_runtime.lib")
     } else {
         dir.join("libmux_runtime.a")
-    };
-    if static_lib.exists() {
-        return Some(static_lib);
     }
+}
 
-    let dynamic_lib = if cfg!(target_family = "windows") {
+/// Path to the dynamic runtime library in `dir` for the target platform. Shared
+/// with `runtime_static_lib_path` as the one place the runtime lib names live.
+fn runtime_dynamic_lib_path(dir: &Path) -> PathBuf {
+    if cfg!(target_family = "windows") {
         dir.join("mux_runtime.dll")
     } else if cfg!(target_os = "macos") {
         dir.join("libmux_runtime.dylib")
     } else {
         dir.join("libmux_runtime.so")
-    };
+    }
+}
+
+fn find_runtime_lib_in_dir(dir: &Path) -> Option<PathBuf> {
+    let static_lib = runtime_static_lib_path(dir);
+    if static_lib.exists() {
+        return Some(static_lib);
+    }
+
+    let dynamic_lib = runtime_dynamic_lib_path(dir);
     if dynamic_lib.exists() {
         return Some(dynamic_lib);
     }
 
     None
+}
+
+/// Whether `dir` provides only the static `libmux_runtime.a` with no dynamic
+/// library beside it. A static archive carries no `NEEDED` entries, so when it
+/// is linked alone its undefined native symbols (libm's `pow`, zlib, ...) are
+/// never resolved; the cdylib records those dependencies itself. Used to decide
+/// whether to link the runtime's native deps explicitly (issue #291).
+fn runtime_lib_dir_is_static_only(dir: &Path) -> bool {
+    if !runtime_static_lib_path(dir).exists() {
+        return false;
+    }
+    let dynamic_lib = runtime_dynamic_lib_path(dir);
+    !dynamic_lib.exists()
 }
 
 fn runtime_lib_from_env() -> Option<PathBuf> {
@@ -1489,6 +1515,23 @@ fn main() {
     };
     clang_args.push(gc_sections_flag);
     clang_args.push("-lmux_runtime".to_string());
+
+    // A static-only libmux_runtime.a carries no NEEDED entries, so its undefined
+    // native symbols must be resolved explicitly - otherwise a program using
+    // libm (e.g. `**`/`pow`) fails to link with "undefined reference to pow"
+    // (issue #291). These must follow -lmux_runtime so the archive's references
+    // are satisfied by the libraries after it. The cdylib pulls these in on its
+    // own, so only the static-only case needs them. Skipped on Windows (the
+    // import lib records its own deps) and macOS (libSystem provides them).
+    if !cfg!(target_os = "windows")
+        && !cfg!(target_os = "macos")
+        && runtime_lib_dir_is_static_only(&lib_dir)
+    {
+        for native_lib in ["-lm", "-lz", "-lpthread", "-ldl"] {
+            clang_args.push(native_lib.to_string());
+        }
+    }
+
     clang_args.push("-o".to_string());
     clang_args.push(
         exe_file
@@ -1518,8 +1561,9 @@ mod tests {
         find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
         llvm_config_candidates, normalize_runtime_features, pick_llvm_for_dev,
         print_doctor_verdict, print_version_banner, record_runtime_fingerprint, relativize_to_cwd,
-        report_clang_for_doctor, report_runtime_for_doctor, runtime_feature_key, runtime_profile,
-        runtime_source_fingerprint, set_compiling_file, status_marker, validate_llvm_for_doctor,
+        report_clang_for_doctor, report_runtime_for_doctor, runtime_feature_key,
+        runtime_lib_dir_is_static_only, runtime_profile, runtime_source_fingerprint,
+        set_compiling_file, status_marker, validate_llvm_for_doctor,
     };
     use std::path::{Path, PathBuf};
 
@@ -1746,6 +1790,27 @@ mod tests {
         let dyn_path = dyn_dir.join(dynamic_lib_name());
         std::fs::write(&dyn_path, b"x").unwrap();
         assert_eq!(find_runtime_lib_in_dir(&dyn_dir), Some(dyn_path));
+        std::fs::remove_dir_all(&dyn_dir).ok();
+    }
+
+    #[test]
+    fn static_only_detection_requires_archive_without_shared_lib() {
+        // Static archive alone -> static-only.
+        let static_dir = unique_tmp("rtlib_static_only");
+        std::fs::create_dir_all(&static_dir).unwrap();
+        std::fs::write(static_dir.join(static_lib_name()), b"x").unwrap();
+        assert!(runtime_lib_dir_is_static_only(&static_dir));
+
+        // Shared library beside it -> not static-only (it carries NEEDED).
+        std::fs::write(static_dir.join(dynamic_lib_name()), b"x").unwrap();
+        assert!(!runtime_lib_dir_is_static_only(&static_dir));
+        std::fs::remove_dir_all(&static_dir).ok();
+
+        // No archive at all -> not static-only.
+        let dyn_dir = unique_tmp("rtlib_dyn_only");
+        std::fs::create_dir_all(&dyn_dir).unwrap();
+        std::fs::write(dyn_dir.join(dynamic_lib_name()), b"x").unwrap();
+        assert!(!runtime_lib_dir_is_static_only(&dyn_dir));
         std::fs::remove_dir_all(&dyn_dir).ok();
     }
 
