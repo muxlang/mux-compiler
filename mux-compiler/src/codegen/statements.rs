@@ -27,6 +27,7 @@ impl<'a> CodeGenerator<'a> {
         value: BasicValueEnum<'a>,
         resolved_type: &ResolvedType,
         function: Option<&FunctionValue<'a>>,
+        rhs_owned: bool,
     ) -> Result<(), String> {
         if self.try_declare_closure_variable(name, value, resolved_type, function)? {
             return Ok(());
@@ -36,12 +37,13 @@ impl<'a> CodeGenerator<'a> {
 
         if let Some((existing_ptr, _, _)) = existing_var {
             if value.is_struct_value() {
-                // NOTE: reassigning an inline enum struct into an existing slot
-                // does not yet release the previous value's pointer payloads, so
-                // enum reassignment and loop-rebind leak them (tracked as a known
-                // limitation; the initial-binding and global-teardown paths are
-                // handled). A complete fix needs zero-initialized enum slots plus
-                // drop-before-store here and in assign_to_identifier.
+                // Reassigning an inline enum struct into an existing slot (a
+                // re-declared local or a pre-declared global) must release the
+                // previous value's pointer payloads first, or it leaks them
+                // (issue #290). Gated on an owned RHS so a borrowed copy is not
+                // dropped from under its source; the slot holds a valid enum or
+                // is zero-initialized, both null-safe for the drop.
+                self.release_enum_slot_before_overwrite(existing_ptr, resolved_type, rhs_owned)?;
                 self.builder
                     .build_store(existing_ptr, value)
                     .map_err(|e| e.to_string())?;
@@ -54,27 +56,14 @@ impl<'a> CodeGenerator<'a> {
                 self.overwrite_slot_with_owned(existing_ptr, value, resolved_type)?;
             }
         } else if value.is_struct_value() {
-            let alloca = if let Some(func) = function {
-                self.create_entry_block_alloca(*func, var_type, name)?
-            } else {
-                self.builder
-                    .build_alloca(var_type, name)
-                    .map_err(|e| e.to_string())?
-            };
-            self.builder
-                .build_store(alloca, value)
-                .map_err(|e| e.to_string())?;
-            self.variables
-                .insert(name.to_string(), (alloca, var_type, resolved_type.clone()));
-            // Inline enum structs own the pointer payloads of their active
-            // variant; track the slot so those payloads are released when the
-            // scope ends. Plain value structs (classes are boxed, not inline)
-            // and scalar-only enums own nothing here and are skipped.
-            if let Some(enum_name) = self.user_enum_type_name(resolved_type)
-                && self.enum_has_rc_payload(&enum_name)
-            {
-                self.track_enum_variable(name, &enum_name, alloca);
-            }
+            self.declare_struct_variable(
+                name,
+                var_type,
+                value,
+                resolved_type,
+                function,
+                rhs_owned,
+            )?;
         } else if let Some(func) = function {
             // Hoisted, null-initialized entry-block slot: because the store below
             // runs on every pass (e.g. a variable declared inside a loop body),
@@ -115,6 +104,54 @@ impl<'a> CodeGenerator<'a> {
                     resolved_type.clone(),
                 ),
             );
+        }
+        Ok(())
+    }
+
+    /// Bind a fresh inline-struct local (an enum value, most importantly), which
+    /// is stored by value rather than as a boxed pointer. Split out of
+    /// `declare_variable` to keep that dispatcher's cognitive complexity down.
+    fn declare_struct_variable(
+        &mut self,
+        name: &str,
+        var_type: BasicTypeEnum<'a>,
+        value: BasicValueEnum<'a>,
+        resolved_type: &ResolvedType,
+        function: Option<&FunctionValue<'a>>,
+        rhs_owned: bool,
+    ) -> Result<(), String> {
+        let (alloca, zero_initialized) = if let Some(func) = function {
+            (self.create_entry_block_alloca(*func, var_type, name)?, true)
+        } else {
+            (
+                self.builder
+                    .build_alloca(var_type, name)
+                    .map_err(|e| e.to_string())?,
+                false,
+            )
+        };
+        // An entry-block enum slot is created once but a declaration inside a
+        // loop body reuses it every iteration; release the previous iteration's
+        // value before overwriting, or all but the last leak (issue #290). Only
+        // safe for the zero-initialized entry-block slot (its first-iteration
+        // null payload makes the drop a no-op); the rare no-function fallback
+        // alloca holds garbage and is skipped.
+        if zero_initialized {
+            self.release_enum_slot_before_overwrite(alloca, resolved_type, rhs_owned)?;
+        }
+        self.builder
+            .build_store(alloca, value)
+            .map_err(|e| e.to_string())?;
+        self.variables
+            .insert(name.to_string(), (alloca, var_type, resolved_type.clone()));
+        // Inline enum structs own the pointer payloads of their active variant;
+        // track the slot so those payloads are released when the scope ends.
+        // Plain value structs (classes are boxed, not inline) and scalar-only
+        // enums own nothing here and are skipped.
+        if let Some(enum_name) = self.user_enum_type_name(resolved_type)
+            && self.enum_has_rc_payload(&enum_name)
+        {
+            self.track_enum_variable(name, &enum_name, alloca);
         }
         Ok(())
     }
@@ -606,7 +643,8 @@ impl<'a> CodeGenerator<'a> {
             .resolve_type(&resolved_type)
             .unwrap_or_else(|_| resolved_type.clone());
         let var_type = value.get_type();
-        self.declare_variable(name, var_type, value, &concrete_type, function)
+        let rhs_owned = Self::rhs_produces_owned_enum(&expr.kind);
+        self.declare_variable(name, var_type, value, &concrete_type, function, rhs_owned)
     }
 
     fn generate_typed_decl_statement(
@@ -622,7 +660,8 @@ impl<'a> CodeGenerator<'a> {
             .analyzer
             .resolve_type(type_node)
             .map_err(|e| format!("Failed to resolve type for {}: {}", name, e.message))?;
-        self.declare_variable(name, var_type, value, &resolved_type, function)
+        let rhs_owned = Self::rhs_produces_owned_enum(&expr.kind);
+        self.declare_variable(name, var_type, value, &resolved_type, function, rhs_owned)
     }
 
     fn generate_const_decl_statement(
