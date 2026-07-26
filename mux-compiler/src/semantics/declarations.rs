@@ -654,8 +654,12 @@ impl SemanticAnalyzer {
                     where_clause.as_ref(),
                 )
             }
-            AstNode::Enum { variants, .. } => {
-                self.validate_enum_variant_type_arities(variants);
+            AstNode::Enum {
+                type_params,
+                variants,
+                ..
+            } => {
+                self.validate_enum_variant_type_arities(type_params, variants);
                 self.analyze_enum_where_clauses(variants)
             }
             AstNode::Interface {
@@ -664,7 +668,7 @@ impl SemanticAnalyzer {
                 methods,
                 ..
             } => {
-                self.validate_interface_member_type_arities(fields, methods);
+                self.validate_interface_member_type_arities(type_params, fields, methods);
                 self.analyze_interface_where_clauses(type_params, methods)
             }
             AstNode::Statement(stmt) => self.analyze_statement(stmt, files),
@@ -676,11 +680,15 @@ impl SemanticAnalyzer {
     /// swallowed (`unwrap_or`), so a bad generic arity in a payload - e.g.
     /// `V(list)` or a user generic with the wrong argument count - would
     /// otherwise be silently accepted (issue #289).
-    fn validate_enum_variant_type_arities(&mut self, variants: &[EnumVariant]) {
+    fn validate_enum_variant_type_arities(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        variants: &[EnumVariant],
+    ) {
         let mut errors = Vec::new();
         for variant in variants {
             for (_, type_node) in variant.data.iter().flatten() {
-                if let Err(e) = self.validate_type_arity(type_node) {
+                if let Err(e) = self.validate_type_arity(type_node, type_params) {
                     errors.push(e);
                 }
             }
@@ -690,25 +698,35 @@ impl SemanticAnalyzer {
 
     /// Arity-check interface field and method-signature types in the second
     /// pass, for the same reason as enum payloads: collection swallows their
-    /// resolution errors (issue #289).
+    /// resolution errors (issue #289). `type_params` are the interface's own
+    /// type parameters, skipped so a signature referencing one is not mistaken
+    /// for a generic type.
     fn validate_interface_member_type_arities(
         &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
         fields: &[Field],
         methods: &[FunctionNode],
     ) {
         let mut errors = Vec::new();
         for field in fields {
-            if let Err(e) = self.validate_type_arity(&field.type_) {
+            if let Err(e) = self.validate_type_arity(&field.type_, type_params) {
                 errors.push(e);
             }
         }
         for method in methods {
+            // A method's own generic parameters are in scope for its signature
+            // in addition to the interface's.
+            let params: Vec<(String, Vec<TraitBound>)> = type_params
+                .iter()
+                .cloned()
+                .chain(method.type_params.iter().cloned())
+                .collect();
             for param in &method.params {
-                if let Err(e) = self.validate_type_arity(&param.type_) {
+                if let Err(e) = self.validate_type_arity(&param.type_, &params) {
                     errors.push(e);
                 }
             }
-            if let Err(e) = self.validate_type_arity(&method.return_type) {
+            if let Err(e) = self.validate_type_arity(&method.return_type, &params) {
                 errors.push(e);
             }
         }

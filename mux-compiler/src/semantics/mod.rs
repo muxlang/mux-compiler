@@ -832,51 +832,63 @@ impl SemanticAnalyzer {
     /// payloads and interface member signatures, whose types the collection pass
     /// resolves with errors swallowed (unlike class fields, which are
     /// re-resolved in `analyze_class`).
-    pub(super) fn validate_type_arity(&self, type_node: &TypeNode) -> Result<(), SemanticError> {
+    ///
+    /// `local_params` are the enclosing declaration's type parameters (e.g. `T`
+    /// in `enum E<T>`). They are type variables, not generic types, so a name
+    /// matching one is skipped - otherwise a payload like `V(T)` could be
+    /// mistaken for an unrelated global generic that happens to be named `T`.
+    pub(super) fn validate_type_arity(
+        &self,
+        type_node: &TypeNode,
+        local_params: &[(String, Vec<TraitBound>)],
+    ) -> Result<(), SemanticError> {
         match &type_node.kind {
             TypeKind::Named(name, args) => {
-                if let Some(required) = builtin_generic_arity(name) {
-                    if args.len() != required {
-                        return Err(SemanticError::with_help(
-                            format!(
-                                "'{}' requires {} type argument{}, got {}",
-                                name,
-                                required,
-                                if required == 1 { "" } else { "s" },
-                                args.len()
-                            ),
-                            type_node.span,
-                            missing_type_args_help(name),
-                        ));
+                let is_local_param = local_params.iter().any(|(p, _)| p == name);
+                if !is_local_param {
+                    if let Some(required) = builtin_generic_arity(name) {
+                        if args.len() != required {
+                            return Err(SemanticError::with_help(
+                                format!(
+                                    "'{}' requires {} type argument{}, got {}",
+                                    name,
+                                    required,
+                                    if required == 1 { "" } else { "s" },
+                                    args.len()
+                                ),
+                                type_node.span,
+                                missing_type_args_help(name),
+                            ));
+                        }
+                    } else if let Some(symbol) = self.symbol_table.lookup(name)
+                        && !symbol.type_params.is_empty()
+                    {
+                        self.validate_type_argument_count(name, &symbol, args, type_node.span)?;
                     }
-                } else if let Some(symbol) = self.symbol_table.lookup(name)
-                    && !symbol.type_params.is_empty()
-                {
-                    self.validate_type_argument_count(name, &symbol, args, type_node.span)?;
                 }
                 for arg in args {
-                    self.validate_type_arity(arg)?;
+                    self.validate_type_arity(arg, local_params)?;
                 }
                 Ok(())
             }
             TypeKind::List(inner) | TypeKind::Set(inner) | TypeKind::Reference(inner) => {
-                self.validate_type_arity(inner)
+                self.validate_type_arity(inner, local_params)
             }
             TypeKind::Map(key, value) => {
-                self.validate_type_arity(key)?;
-                self.validate_type_arity(value)
+                self.validate_type_arity(key, local_params)?;
+                self.validate_type_arity(value, local_params)
             }
             TypeKind::Tuple(left, right) => {
-                self.validate_type_arity(left)?;
-                self.validate_type_arity(right)
+                self.validate_type_arity(left, local_params)?;
+                self.validate_type_arity(right, local_params)
             }
             TypeKind::Function { params, returns } => {
                 for param in params {
-                    self.validate_type_arity(param)?;
+                    self.validate_type_arity(param, local_params)?;
                 }
-                self.validate_type_arity(returns)
+                self.validate_type_arity(returns, local_params)
             }
-            TypeKind::TraitObject(inner) => self.validate_type_arity(inner),
+            TypeKind::TraitObject(inner) => self.validate_type_arity(inner, local_params),
             TypeKind::Primitive(_) | TypeKind::Auto => Ok(()),
         }
     }
