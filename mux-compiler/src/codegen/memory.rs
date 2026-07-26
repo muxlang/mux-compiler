@@ -240,6 +240,10 @@ impl<'a> CodeGenerator<'a> {
             .filter(|name| self.enum_has_rc_payload(name));
         let to_store = if let Some(enum_name) = &enum_name {
             let owned = self.materialize_owned_enum(value, enum_name, rhs_owned)?;
+            // Ownership of an owned RHS transfers into this slot, so it must no
+            // longer be released as a statement temporary. (A borrowed RHS was
+            // never tracked, so this is a no-op there.)
+            self.untrack_enum_temp(value);
             if release_old {
                 // The slot holds a valid enum or is zero-initialized; emit_enum_drop
                 // is null-safe on the zeroed case (the first loop pass / a skipped
@@ -725,6 +729,22 @@ impl<'a> CodeGenerator<'a> {
         }
         self.enum_temp_values
             .push((value, slot, enum_name.to_string()));
+    }
+
+    /// Remove an inline-enum value from the pending-temporary set because its
+    /// ownership has been transferred (stored into a variable or field slot, or
+    /// merged into a ternary's phi result). After this it is not dropped at the
+    /// statement boundary. Returns whether it was tracked.
+    pub(super) fn untrack_enum_temp(&mut self, value: BasicValueEnum<'a>) -> bool {
+        if let Some(pos) = self
+            .enum_temp_values
+            .iter()
+            .rposition(|(v, _, _)| *v == value)
+        {
+            self.enum_temp_values.remove(pos);
+            return true;
+        }
+        false
     }
 
     /// Current number of registered temporaries. Capture this before evaluating

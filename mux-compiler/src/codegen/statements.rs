@@ -615,18 +615,11 @@ impl<'a> CodeGenerator<'a> {
         let is_enum = self.is_enum_match_type(&match_expr_type);
 
         if is_enum {
-            // An owned inline enum subject (a constructor/call/ternary result, not
-            // a borrowed variable) must be released once the match is done - the
-            // arms only borrow its payloads, so its constructor-retained payload
-            // would otherwise leak (issue #298 review). Register it BEFORE the
-            // arms so it is dropped on both the fall-through path (statement
-            // cleanup) and any arm's early-return path (return cleanup), even when
-            // every arm returns and the match-end block is unreachable.
-            if Self::rhs_produces_owned_enum(&expr.kind)
-                && let Some(enum_name) = self.user_enum_type_name(&match_expr_type)
-            {
-                self.register_enum_temp(expr_val, &enum_name);
-            }
+            // An owned inline enum subject was tracked as an enum temporary when
+            // produced (register_enum_temp at the constructor), and the arms only
+            // borrow its payloads, so statement cleanup (fall-through) and return
+            // cleanup (an arm that returns) release it - including when every arm
+            // returns and the match-end block is unreachable. Nothing to do here.
             self.generate_enum_match(function, &match_expr, &match_expr_type, expr_val, arms)?;
         } else {
             self.generate_switch_match(function, &match_expr_type, expr_val, arms)?;
@@ -1117,17 +1110,11 @@ impl<'a> CodeGenerator<'a> {
                 self.generate_match_statement_inner(function, expr, arms)?;
             }
             StatementKind::Expression(expr) => {
-                let value = self.generate_expression(expr)?;
-                // A discarded owned enum value (e.g. a bare `Enum.Variant(x)`
-                // statement) must be released, or its constructor-retained
-                // payload leaks. Register it so statement/return cleanup drops it
-                // on every exit path. Borrowed forms own nothing and are skipped.
-                if Self::rhs_produces_owned_enum(&expr.kind)
-                    && let Ok(ty) = self.resolve_expression_type_with_fallback(expr)
-                    && let Some(enum_name) = self.user_enum_type_name(&ty)
-                {
-                    self.register_enum_temp(value, &enum_name);
-                }
+                // A discarded owned enum value (a bare `Enum.Variant(x)`
+                // statement) is released by statement cleanup: it was tracked as
+                // an enum temporary when produced (register_enum_temp at the
+                // constructor) and never transferred to a slot.
+                self.generate_expression(expr)?;
             }
             StatementKind::Function(func) => {
                 self.generate_nested_function_statement(func, function)?;

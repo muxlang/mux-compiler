@@ -403,27 +403,9 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<Vec<BasicMetadataValueEnum<'a>>, String> {
         let mut call_args = vec![];
         for arg in args {
-            let value = self.generate_expression(arg)?;
-            self.register_owned_enum_arg(value, arg);
-            call_args.push(value.into());
+            call_args.push(self.generate_expression(arg)?.into());
         }
         Ok(call_args)
-    }
-
-    /// If `value` is an owned inline enum passed by value (a constructor, call, or
-    /// ternary result), register it as a temporary so the caller releases it once
-    /// the statement completes. A callee borrows its enum parameters
-    /// (`store_enum_parameter` does not track them for release), so the caller
-    /// keeps ownership of the argument and must drop it (issue #298 review). A
-    /// borrowed argument (an identifier/field load) owns nothing and is skipped.
-    fn register_owned_enum_arg(&mut self, value: BasicValueEnum<'a>, arg: &ExpressionNode) {
-        if Self::rhs_produces_owned_enum(&arg.kind)
-            && value.is_struct_value()
-            && let Ok(ty) = self.resolve_expression_type_with_fallback(arg)
-            && let Some(enum_name) = self.user_enum_type_name(&ty)
-        {
-            self.register_enum_temp(value, &enum_name);
-        }
     }
 
     /// Normalize one arm of a ternary that yields an inline enum value so the
@@ -512,8 +494,23 @@ impl<'a> CodeGenerator<'a> {
             .build_phi(then_val.get_type(), "if_result")
             .map_err(|e| e.to_string())?;
         phi.add_incoming(&[(&then_val, then_bb_end), (&else_val, else_bb_end)]);
+        let result = phi.as_basic_value();
 
-        Ok(phi.as_basic_value())
+        // If this ternary yields an owned inline enum, its arms were tracked enum
+        // temporaries (a constructor) or fresh deep-clones; they merge into the
+        // phi, so untrack them and track the phi instead - the phi is the single
+        // owned value the rest of the statement sees, released or transferred as
+        // one (issue #298 review).
+        if result.is_struct_value()
+            && let Ok(arm_type) = self.resolve_expression_type_with_fallback(then_expr)
+            && let Some(enum_name) = self.user_enum_type_name(&arm_type)
+            && self.enum_has_rc_payload(&enum_name)
+        {
+            self.untrack_enum_temp(then_val);
+            self.untrack_enum_temp(else_val);
+            self.register_enum_temp(result, &enum_name);
+        }
+        Ok(result)
     }
 
     fn generate_lambda_expression(
@@ -3006,11 +3003,18 @@ impl<'a> CodeGenerator<'a> {
                 &format!("{}_call", constructor_name),
             )
             .map_err(|e| e.to_string())?;
-        Ok(Some(
-            call.try_as_basic_value()
-                .basic()
-                .expect("constructor call should return a basic value"),
-        ))
+        let value = call
+            .try_as_basic_value()
+            .basic()
+            .expect("constructor call should return a basic value");
+        // A freshly constructed enum owns its payload (the constructor retained
+        // it). Track it as a temporary so it is released at the statement
+        // boundary or on an early-return path unless its ownership is transferred
+        // into a variable/field slot first, which untracks it (issue #298
+        // review). This covers every consumption site - a discarded statement, a
+        // match subject, a call argument, a collection element - uniformly.
+        self.register_enum_temp(value, enum_name);
+        Ok(Some(value))
     }
 
     fn try_generate_generic_type_method_call(
@@ -3324,11 +3328,10 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(copied.into());
                 copied.into()
             } else {
-                let value = self.generate_expression(arg)?;
-                // An owned inline enum argument is borrowed by the callee, so the
-                // caller must release it after the call (issue #298 review).
-                self.register_owned_enum_arg(value, arg);
-                value
+                // An owned inline enum argument was tracked as an enum temporary
+                // when produced; the callee borrows its parameter, so statement
+                // cleanup releases the argument (issue #298 review).
+                self.generate_expression(arg)?
             };
 
             let coerced = if let Some(expected) = llvm_param_types.get(idx) {

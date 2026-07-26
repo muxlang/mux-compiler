@@ -40,6 +40,11 @@ func main() returns void {
     // Owned enum passed as a function argument.
     consume(Status.Active("arg"))
 
+    // Owned enums as collection elements (the collection copies them, so the
+    // constructed originals must be released).
+    auto items = [Status.Active("i1"), Status.Inactive(2)]
+    print("items: " + items.len().to_string())
+
     print("classify: " + classify().to_string())
     return
 }
