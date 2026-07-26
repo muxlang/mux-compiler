@@ -37,6 +37,17 @@ impl EnumPayloadOp {
 }
 
 impl<'a> CodeGenerator<'a> {
+    /// Whether the builder's current block can still receive instructions, i.e.
+    /// it exists and has no terminator yet. Emitting into a terminated block
+    /// (e.g. an `unreachable` match-end block after every arm returned) produces
+    /// invalid IR, so cleanup that runs on the fall-through path must guard on
+    /// this.
+    pub(super) fn current_block_is_live(&self) -> bool {
+        self.builder
+            .get_insert_block()
+            .is_some_and(|bb| bb.get_terminator().is_none())
+    }
+
     /// Push a new RC scope onto the stack. Call this when entering a new scope
     /// (function, if/else block, loop body, match arm, etc.)
     pub(super) fn push_rc_scope(&mut self) {

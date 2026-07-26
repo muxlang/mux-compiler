@@ -619,8 +619,11 @@ impl<'a> CodeGenerator<'a> {
             // An owned inline enum subject (a constructor/call/ternary result, not
             // a borrowed variable) must be released after the arms - the arms only
             // borrow its payloads, so its constructor-retained payload would
-            // otherwise leak (issue #298 review).
-            if Self::rhs_produces_owned_enum(&expr.kind) {
+            // otherwise leak (issue #298 review). Skip when the match-end block is
+            // already terminated (every arm returned, so this block is
+            // `unreachable`): emitting into it would produce invalid IR, and the
+            // drop there is dead code anyway.
+            if Self::rhs_produces_owned_enum(&expr.kind) && self.current_block_is_live() {
                 self.release_owned_enum_temporary(expr_val, &match_expr_type)?;
             }
         } else {
