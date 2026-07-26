@@ -83,63 +83,83 @@ impl<'a> CodeGenerator<'a> {
             .collect();
         let enum_names: std::collections::HashSet<&str> = enum_indices
             .iter()
-            .filter_map(|&i| match &nodes[i] {
-                AstNode::Enum { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
+            .filter_map(|&i| Self::enum_node_name(&nodes[i]))
             .collect();
-
-        let embedded_enum_deps = |idx: usize| -> Vec<&str> {
-            let AstNode::Enum { name, variants, .. } = &nodes[idx] else {
-                return Vec::new();
-            };
-            let mut deps = Vec::new();
-            for variant in variants {
-                for (_, type_node) in variant.data.iter().flatten() {
-                    if let TypeKind::Named(dep, _) = &type_node.kind
-                        && dep != name
-                        && enum_names.contains(dep.as_str())
-                    {
-                        deps.push(dep.as_str());
-                    }
-                }
-            }
-            deps
-        };
 
         let mut generated: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut order = Vec::with_capacity(enum_indices.len());
+        // Repeatedly emit every enum whose embedded-enum dependencies are already
+        // emitted, until no more make progress.
         loop {
-            let mut progressed = false;
-            for &idx in &enum_indices {
-                let AstNode::Enum { name, .. } = &nodes[idx] else {
-                    continue;
-                };
-                if generated.contains(name.as_str()) {
-                    continue;
-                }
-                if embedded_enum_deps(idx)
-                    .iter()
-                    .all(|dep| generated.contains(dep))
-                {
-                    order.push(idx);
-                    generated.insert(name.as_str());
-                    progressed = true;
-                }
-            }
-            if !progressed {
+            let ready: Vec<usize> = enum_indices
+                .iter()
+                .copied()
+                .filter(|&idx| Self::enum_ready(&nodes[idx], &enum_names, &generated))
+                .collect();
+            if ready.is_empty() {
                 break;
+            }
+            for idx in ready {
+                order.push(idx);
+                if let Some(name) = Self::enum_node_name(&nodes[idx]) {
+                    generated.insert(name);
+                }
             }
         }
         // Any enum left over is part of a cycle; append it in source order.
         for &idx in &enum_indices {
-            if let AstNode::Enum { name, .. } = &nodes[idx]
-                && !generated.contains(name.as_str())
-            {
+            if Self::enum_node_name(&nodes[idx]).is_some_and(|name| !generated.contains(name)) {
                 order.push(idx);
             }
         }
         order
+    }
+
+    /// The declared name of an `AstNode::Enum`, or `None` for any other node.
+    fn enum_node_name(node: &AstNode) -> Option<&str> {
+        match node {
+            AstNode::Enum { name, .. } => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Whether the enum at `node` is not yet generated but all of its embedded
+    /// nested-enum dependencies are, so it can be generated now.
+    fn enum_ready(
+        node: &AstNode,
+        enum_names: &std::collections::HashSet<&str>,
+        generated: &std::collections::HashSet<&str>,
+    ) -> bool {
+        let Some(name) = Self::enum_node_name(node) else {
+            return false;
+        };
+        !generated.contains(name)
+            && Self::embedded_enum_deps(node, enum_names)
+                .iter()
+                .all(|dep| generated.contains(dep))
+    }
+
+    /// The user-enum names that `node`'s variants embed as inline payloads (a
+    /// self-reference is excluded; it is handled as a cycle).
+    fn embedded_enum_deps<'n>(
+        node: &'n AstNode,
+        enum_names: &std::collections::HashSet<&str>,
+    ) -> Vec<&'n str> {
+        let AstNode::Enum { name, variants, .. } = node else {
+            return Vec::new();
+        };
+        let mut deps = Vec::new();
+        for variant in variants {
+            for (_, type_node) in variant.data.iter().flatten() {
+                if let TypeKind::Named(dep, _) = &type_node.kind
+                    && dep != name
+                    && enum_names.contains(dep.as_str())
+                {
+                    deps.push(dep.as_str());
+                }
+            }
+        }
+        deps
     }
 
     pub(super) fn generate_class_type(

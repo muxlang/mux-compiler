@@ -62,129 +62,163 @@ impl<'a> CodeGenerator<'a> {
         variants: &[EnumVariant],
     ) -> Result<(), String> {
         for variant in variants {
-            let variant_name = &variant.name;
-            let full_name = format!("{}!{}", name, variant_name);
-
-            // params: variant.data (extract types, discard field names for codegen)
-            let field_count = variant.data.as_ref().map(|d| d.len()).unwrap_or(0);
-            let mut param_types = vec![];
-            if let Some(ref d) = variant.data {
-                for (_, t) in d {
-                    let llvm_type = self.llvm_type_from_mux_type(t)?;
-                    param_types.push(llvm_type.into());
-                }
-            }
-
-            // return type: enum struct
-            let enum_type_basic = self.type_map.get(name).ok_or("Enum type not found")?;
-            let struct_type = enum_type_basic.into_struct_type();
-            let fn_type = enum_type_basic.fn_type(&param_types, false);
-            let function = self.module.add_function(&full_name, fn_type, None);
-
-            // generate the body
-            let entry = self.context.append_basic_block(function, "entry");
-            self.builder.position_at_end(entry);
-
-            // build the struct by storing to temp and loading
-            let tag_index = self.get_variant_index(name, variant_name)?;
-            let tag_val = self.context.i32_type().const_int(tag_index as u64, false);
-            let temp_ptr = self
-                .builder
-                .build_alloca(struct_type, "temp_struct")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(temp_ptr, struct_type.const_zero())
-                .map_err(|e| e.to_string())?;
-            let tag_ptr = self
-                .builder
-                .build_struct_gep(struct_type, temp_ptr, 0, "tag_ptr")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(tag_ptr, tag_val)
-                .map_err(|e| e.to_string())?;
-            for i in 0..field_count {
-                let arg = function
-                    .get_nth_param(i as u32)
-                    .expect("function parameter should exist at expected index");
-                let data_ptr = self
-                    .builder
-                    .build_struct_gep(struct_type, temp_ptr, (i + 1) as u32, "data_ptr")
-                    .map_err(|e| e.to_string())?;
-                let nested_enum = variant
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get(i))
-                    .and_then(|field| self.nested_user_enum_name(&field.1));
-                if let Some(inner) = nested_enum {
-                    // A nested user enum is stored inline as its own struct. Its
-                    // layout must match the union slot; a pointer slot means the
-                    // enum could not be laid out inline - error cleanly rather than
-                    // storing a struct into a pointer slot and corrupting memory
-                    // (issue #306).
-                    let slot_is_struct = struct_type
-                        .get_field_type_at_index((i + 1) as u32)
-                        .map(|t| t.is_struct_type())
-                        .unwrap_or(false);
-                    if !slot_is_struct {
-                        return Err(self.nested_enum_layout_error(name, variant_name, &inner, i));
-                    }
-                    self.builder
-                        .build_store(data_ptr, arg)
-                        .map_err(|e| e.to_string())?;
-                    // Mirror rc_inc_if_pointer for a direct pointer payload: this
-                    // variant now owns an independent +1 on the nested enum's
-                    // payloads, so the caller can still release the temporary it
-                    // passed in.
-                    self.emit_enum_retain(&inner, data_ptr)?;
-                } else {
-                    // The variant takes ownership of a reference-counted payload
-                    // (string/list/object), so retain it: the caller frees the
-                    // value it passed in as a statement temporary, and the enum
-                    // must keep its own reference alive. No-op for unboxed scalar
-                    // payloads.
-                    self.rc_inc_if_pointer(arg)?;
-                    self.builder
-                        .build_store(data_ptr, arg)
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-            // enforce the variant's where clause with its named payload
-            // fields readable by name (bound like function parameters)
-            if let Some(clause) = &variant.where_clause {
-                // Binding payload fields for the where-check boxes scalar payloads
-                // (mux_int_value, ...); those boxes are owned temporaries that
-                // must be released once the check has run, or every constructed
-                // variant with a where clause leaks them.
-                let temp_mark = self.temp_mark();
-                let snapshot = self.variables.clone();
-                for (i, (field_name, type_node)) in variant.data.iter().flatten().enumerate() {
-                    let Some(field_name) = field_name else {
-                        continue;
-                    };
-                    let arg = function
-                        .get_nth_param(i as u32)
-                        .expect("function parameter should exist at expected index");
-                    let semantic_type = self.type_node_to_type(type_node);
-                    self.store_function_parameter_value(field_name, arg, semantic_type)?;
-                }
-                self.emit_where_checks(&clause.predicates, "where_variant")?;
-                self.variables = snapshot;
-                self.cleanup_temps_to(temp_mark)?;
-            }
-            let struct_val = self
-                .builder
-                .build_load(struct_type, temp_ptr, "struct")
-                .map_err(|e| e.to_string())?;
-            // return the struct
-            self.builder
-                .build_return(Some(&struct_val))
-                .map_err(|e| e.to_string())?;
-
-            // store in constructors
-            self.constructors
-                .insert(format!("{}.{}", name, variant_name), function);
+            self.generate_single_enum_constructor(name, variant)?;
         }
         Ok(())
+    }
+
+    /// Emit the `Enum!Variant` constructor: zero-initialize the enum struct, set
+    /// the discriminant, store each payload field, enforce the variant's where
+    /// clause, and return the struct by value.
+    fn generate_single_enum_constructor(
+        &mut self,
+        name: &str,
+        variant: &EnumVariant,
+    ) -> Result<(), String> {
+        let variant_name = &variant.name;
+        let full_name = format!("{}!{}", name, variant_name);
+
+        // params: variant.data (extract types, discard field names for codegen)
+        let field_count = variant.data.as_ref().map(|d| d.len()).unwrap_or(0);
+        let mut param_types = vec![];
+        if let Some(ref d) = variant.data {
+            for (_, t) in d {
+                let llvm_type = self.llvm_type_from_mux_type(t)?;
+                param_types.push(llvm_type.into());
+            }
+        }
+
+        // return type: enum struct
+        let enum_type_basic = *self.type_map.get(name).ok_or("Enum type not found")?;
+        let struct_type = enum_type_basic.into_struct_type();
+        let fn_type = enum_type_basic.fn_type(&param_types, false);
+        let function = self.module.add_function(&full_name, fn_type, None);
+
+        // generate the body
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+
+        // build the struct by storing to temp and loading
+        let tag_index = self.get_variant_index(name, variant_name)?;
+        let tag_val = self.context.i32_type().const_int(tag_index as u64, false);
+        let temp_ptr = self
+            .builder
+            .build_alloca(struct_type, "temp_struct")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(temp_ptr, struct_type.const_zero())
+            .map_err(|e| e.to_string())?;
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(struct_type, temp_ptr, 0, "tag_ptr")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(tag_ptr, tag_val)
+            .map_err(|e| e.to_string())?;
+        for i in 0..field_count {
+            self.store_constructor_field(name, variant, struct_type, temp_ptr, function, i)?;
+        }
+        // enforce the variant's where clause with its named payload fields
+        // readable by name (bound like function parameters)
+        if let Some(clause) = &variant.where_clause {
+            let predicates = clause.predicates.clone();
+            self.enforce_variant_where_clause(variant, function, &predicates)?;
+        }
+        let struct_val = self
+            .builder
+            .build_load(struct_type, temp_ptr, "struct")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_return(Some(&struct_val))
+            .map_err(|e| e.to_string())?;
+
+        self.constructors
+            .insert(format!("{}.{}", name, variant_name), function);
+        Ok(())
+    }
+
+    /// Store constructor parameter `i` into the enum struct at `temp_ptr`. A
+    /// nested user enum is stored inline and its payloads retained (mirroring
+    /// `rc_inc_if_pointer` for a direct pointer payload); any other payload is
+    /// retained if it is a pointer and stored directly.
+    fn store_constructor_field(
+        &mut self,
+        enum_name: &str,
+        variant: &EnumVariant,
+        struct_type: inkwell::types::StructType<'a>,
+        temp_ptr: PointerValue<'a>,
+        function: inkwell::values::FunctionValue<'a>,
+        i: usize,
+    ) -> Result<(), String> {
+        let arg = function
+            .get_nth_param(i as u32)
+            .expect("function parameter should exist at expected index");
+        let data_ptr = self
+            .builder
+            .build_struct_gep(struct_type, temp_ptr, (i + 1) as u32, "data_ptr")
+            .map_err(|e| e.to_string())?;
+        let nested_enum = variant
+            .data
+            .as_ref()
+            .and_then(|d| d.get(i))
+            .and_then(|field| self.nested_user_enum_name(&field.1));
+        let Some(inner) = nested_enum else {
+            // The variant takes ownership of a reference-counted payload
+            // (string/list/object), so retain it: the caller frees the value it
+            // passed in as a statement temporary, and the enum must keep its own
+            // reference alive. No-op for unboxed scalar payloads.
+            self.rc_inc_if_pointer(arg)?;
+            return self
+                .builder
+                .build_store(data_ptr, arg)
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        };
+        // A nested user enum is stored inline as its own struct. Its layout must
+        // match the union slot; a pointer slot means the enum could not be laid
+        // out inline - error cleanly rather than storing a struct into a pointer
+        // slot and corrupting memory (issue #306).
+        let slot_is_struct = struct_type
+            .get_field_type_at_index((i + 1) as u32)
+            .map(|t| t.is_struct_type())
+            .unwrap_or(false);
+        if !slot_is_struct {
+            return Err(self.nested_enum_layout_error(enum_name, &variant.name, &inner, i));
+        }
+        self.builder
+            .build_store(data_ptr, arg)
+            .map_err(|e| e.to_string())?;
+        // Mirror rc_inc_if_pointer for a direct pointer payload: this variant now
+        // owns an independent +1 on the nested enum's payloads, so the caller can
+        // still release the temporary it passed in.
+        self.emit_enum_retain(&inner, data_ptr)
+    }
+
+    /// Bind the variant's named payload fields as parameters and run its where
+    /// predicates. Binding boxes scalar payloads (mux_int_value, ...); those boxes
+    /// are owned temporaries released once the check has run, or every constructed
+    /// variant with a where clause leaks them.
+    fn enforce_variant_where_clause(
+        &mut self,
+        variant: &EnumVariant,
+        function: inkwell::values::FunctionValue<'a>,
+        predicates: &[ExpressionNode],
+    ) -> Result<(), String> {
+        let temp_mark = self.temp_mark();
+        let snapshot = self.variables.clone();
+        for (i, (field_name, type_node)) in variant.data.iter().flatten().enumerate() {
+            let Some(field_name) = field_name else {
+                continue;
+            };
+            let arg = function
+                .get_nth_param(i as u32)
+                .expect("function parameter should exist at expected index");
+            let semantic_type = self.type_node_to_type(type_node);
+            self.store_function_parameter_value(field_name, arg, semantic_type)?;
+        }
+        self.emit_where_checks(predicates, "where_variant")?;
+        self.variables = snapshot;
+        self.cleanup_temps_to(temp_mark)
     }
 
     /// Build the error for a nested enum payload that could not be laid out
