@@ -316,30 +316,6 @@ impl<'a> CodeGenerator<'a> {
         Ok(temp)
     }
 
-    /// Release an owned inline enum value that a statement produced but did not
-    /// bind (a discarded expression statement, or an owned match subject after
-    /// its arms). The constructor retained the payload (`rc_inc_if_pointer`), so
-    /// without this that reference is never balanced by a slot taking ownership
-    /// and leaks (issue #298 review). A no-op unless `value` is an inline enum
-    /// with a pointer payload; the caller decides ownership (only owned results
-    /// are released, never a borrowed identifier/field load).
-    pub(super) fn release_owned_enum_temporary(
-        &mut self,
-        value: BasicValueEnum<'a>,
-        enum_type: &Type,
-    ) -> Result<(), String> {
-        if !value.is_struct_value() {
-            return Ok(());
-        }
-        if let Some(enum_name) = self.user_enum_type_name(enum_type)
-            && self.enum_has_rc_payload(&enum_name)
-        {
-            let temp = self.spill_enum_to_temp(value, &enum_name, "discarded_enum")?;
-            self.emit_enum_drop(&enum_name, temp)?;
-        }
-        Ok(())
-    }
-
     /// Release an inline enum value held at `struct_alloca` by decrementing only
     /// the pointer payloads of its active variant (see `emit_enum_payload_op` for
     /// why the variant is selected at runtime). No-op for enums with no pointer
@@ -721,11 +697,45 @@ impl<'a> CodeGenerator<'a> {
         self.temp_values.push((ptr, slot));
     }
 
+    /// Register an owned inline-enum temporary that the current statement
+    /// produced but did not bind to a variable (a discarded `Enum.Variant(x)`
+    /// statement, or an owned enum match subject), so it is released at the
+    /// statement boundary and on any early-return path rather than leaking its
+    /// constructor-retained payload (issue #298 review). Spilled into a
+    /// zero-initialized entry-block struct alloca, mirroring `register_temp`, so
+    /// cleanup can drop it from any later block (null-safe on paths that never
+    /// produced it). No-op for a non-struct value or an enum with no pointer
+    /// payload; infallible by design (a spill failure just leaves it untracked).
+    pub(super) fn register_enum_temp(&mut self, value: BasicValueEnum<'a>, enum_name: &str) {
+        if !value.is_struct_value() || !self.enum_has_rc_payload(enum_name) {
+            return;
+        }
+        if self.enum_temp_values.iter().any(|(v, _, _)| *v == value) {
+            return;
+        }
+        let Some(BasicTypeEnum::StructType(struct_type)) = self.type_map.get(enum_name).copied()
+        else {
+            return;
+        };
+        let Ok(slot) = self.create_entry_alloca(struct_type.into(), "enum_temp_slot") else {
+            return;
+        };
+        if self.builder.build_store(slot, value).is_err() {
+            return;
+        }
+        self.enum_temp_values
+            .push((value, slot, enum_name.to_string()));
+    }
+
     /// Current number of registered temporaries. Capture this before evaluating
     /// a full expression, then pass it to `cleanup_temps_to` afterwards to
     /// decrement only the temporaries produced by that expression.
-    pub(super) fn temp_mark(&self) -> (usize, usize) {
-        (self.temp_values.len(), self.closure_temp_values.len())
+    pub(super) fn temp_mark(&self) -> (usize, usize, usize) {
+        (
+            self.temp_values.len(),
+            self.closure_temp_values.len(),
+            self.enum_temp_values.len(),
+        )
     }
 
     /// Remove a value from the pending-temporary list because its ownership has
@@ -752,42 +762,66 @@ impl<'a> CodeGenerator<'a> {
     /// its slot (null-safe), then truncate the list back to `mark`. Call at
     /// statement boundaries. Skips emission when the current block already has a
     /// terminator (dead code).
-    pub(super) fn cleanup_temps_to(&mut self, mark: (usize, usize)) -> Result<(), String> {
+    pub(super) fn cleanup_temps_to(&mut self, mark: (usize, usize, usize)) -> Result<(), String> {
         self.cleanup_closure_temps_to(mark.1)?;
-        let mark = mark.0;
-        if self.temp_values.len() <= mark {
+        if self.temp_values.len() > mark.0 {
+            let live = self.current_block_is_live();
+            if live {
+                let rc_dec = self
+                    .runtime_function("mux_rc_dec")
+                    .ok_or("mux_rc_dec not found")?;
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let null_ptr = ptr_type.const_null();
+                let slots: Vec<PointerValue<'a>> = self.temp_values[mark.0..]
+                    .iter()
+                    .map(|(_, slot)| *slot)
+                    .collect();
+                for slot in slots {
+                    let loaded = self
+                        .builder
+                        .build_load(ptr_type, slot, "temp_load")
+                        .map_err(|e| e.to_string())?;
+                    self.builder
+                        .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
+                        .map_err(|e| e.to_string())?;
+                    // Null the slot so a later blanket cleanup (or the next loop
+                    // iteration reusing this slot) does not decrement it again.
+                    self.builder
+                        .build_store(slot, null_ptr)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            self.temp_values.truncate(mark.0);
+        }
+        self.cleanup_enum_temps_to(mark.2)?;
+        Ok(())
+    }
+
+    /// Release the inline-enum temporaries registered since `mark`, dropping each
+    /// via `emit_enum_drop` and then zeroing its spill slot so a later blanket
+    /// cleanup or a loop iteration reusing the slot does not drop it again. Skips
+    /// emission in an already-terminated block, mirroring the pointer path.
+    fn cleanup_enum_temps_to(&mut self, mark: usize) -> Result<(), String> {
+        if self.enum_temp_values.len() <= mark {
             return Ok(());
         }
-        let live = self
-            .builder
-            .get_insert_block()
-            .is_some_and(|bb| bb.get_terminator().is_none());
-        if live {
-            let rc_dec = self
-                .runtime_function("mux_rc_dec")
-                .ok_or("mux_rc_dec not found")?;
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let null_ptr = ptr_type.const_null();
-            let slots: Vec<PointerValue<'a>> = self.temp_values[mark..]
+        if self.current_block_is_live() {
+            let entries: Vec<(PointerValue<'a>, String)> = self.enum_temp_values[mark..]
                 .iter()
-                .map(|(_, slot)| *slot)
+                .map(|(_, slot, name)| (*slot, name.clone()))
                 .collect();
-            for slot in slots {
-                let loaded = self
-                    .builder
-                    .build_load(ptr_type, slot, "temp_load")
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
-                    .map_err(|e| e.to_string())?;
-                // Null the slot so a later blanket cleanup (or the next loop
-                // iteration reusing this slot) does not decrement it again.
-                self.builder
-                    .build_store(slot, null_ptr)
-                    .map_err(|e| e.to_string())?;
+            for (slot, enum_name) in entries {
+                self.emit_enum_drop(&enum_name, slot)?;
+                if let Some(BasicTypeEnum::StructType(struct_type)) =
+                    self.type_map.get(&enum_name).copied()
+                {
+                    self.builder
+                        .build_store(slot, struct_type.const_zero())
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
-        self.temp_values.truncate(mark);
+        self.enum_temp_values.truncate(mark);
         Ok(())
     }
 
@@ -804,26 +838,36 @@ impl<'a> CodeGenerator<'a> {
     /// that never produced the value the load yields null and the null-safe
     /// `mux_rc_dec` is a no-op. Skips emission in an already-terminated block.
     pub(super) fn cleanup_all_temps(&mut self) -> Result<(), String> {
-        let live = self
-            .builder
-            .get_insert_block()
-            .is_some_and(|bb| bb.get_terminator().is_none());
-        if !live || self.temp_values.is_empty() {
+        if !self.current_block_is_live() {
             return Ok(());
         }
-        let rc_dec = self
-            .runtime_function("mux_rc_dec")
-            .ok_or("mux_rc_dec not found")?;
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let slots: Vec<PointerValue<'a>> = self.temp_values.iter().map(|(_, slot)| *slot).collect();
-        for slot in slots {
-            let loaded = self
-                .builder
-                .build_load(ptr_type, slot, "temp_load")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
-                .map_err(|e| e.to_string())?;
+        if !self.temp_values.is_empty() {
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let slots: Vec<PointerValue<'a>> =
+                self.temp_values.iter().map(|(_, slot)| *slot).collect();
+            for slot in slots {
+                let loaded = self
+                    .builder
+                    .build_load(ptr_type, slot, "temp_load")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        // Drop every inline-enum temporary too (no truncate: sibling return
+        // branches share the set; each slot is zero-initialized so a path that
+        // never produced the value drops a null payload, a no-op).
+        let enum_entries: Vec<(PointerValue<'a>, String)> = self
+            .enum_temp_values
+            .iter()
+            .map(|(_, slot, name)| (*slot, name.clone()))
+            .collect();
+        for (slot, enum_name) in enum_entries {
+            self.emit_enum_drop(&enum_name, slot)?;
         }
         Ok(())
     }
@@ -832,9 +876,10 @@ impl<'a> CodeGenerator<'a> {
     /// when their ownership has been transferred somewhere that will free them
     /// (e.g. stored into an object field, which the destructor decrements). They
     /// must not also be decremented at the statement boundary.
-    pub(super) fn discard_temps_to(&mut self, mark: (usize, usize)) {
+    pub(super) fn discard_temps_to(&mut self, mark: (usize, usize, usize)) {
         self.temp_values.truncate(mark.0);
         self.closure_temp_values.truncate(mark.1);
+        self.enum_temp_values.truncate(mark.2);
     }
 
     /// Deep-clone a reference-counted value, returning a fresh, uniquely-owned,

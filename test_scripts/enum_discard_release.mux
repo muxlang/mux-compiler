@@ -1,8 +1,18 @@
 // mux-compiler#298 review: an owned inline enum value that is produced but not
 // bound - a discarded expression statement, or an owned match subject - must be
-// released, or its constructor-retained payload leaks. rc-leak-check asserts
-// zero live blocks at exit.
+// released, or its constructor-retained payload leaks. Owned enum temporaries
+// are tracked and dropped on every exit path (fall-through and early return).
+// rc-leak-check asserts zero live blocks at exit.
 enum Status { Active(string), Inactive(int) }
+
+// An owned enum match subject whose arms all return: the subject must still be
+// released on the return paths, where the match-end block is unreachable.
+func classify() returns int {
+    match Status.Active("subject-return") {
+        Active(m) { return 1 }
+        Inactive(n) { return 2 }
+    }
+}
 
 func main() returns void {
     // Discarded owned enum expression statement.
@@ -20,5 +30,7 @@ func main() returns void {
         Active(m) { print("tern: " + m) }
         Inactive(n) { print("tern: inactive") }
     }
+
+    print("classify: " + classify().to_string())
     return
 }
