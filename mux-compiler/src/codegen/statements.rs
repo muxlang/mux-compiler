@@ -616,6 +616,13 @@ impl<'a> CodeGenerator<'a> {
 
         if is_enum {
             self.generate_enum_match(function, &match_expr, &match_expr_type, expr_val, arms)?;
+            // An owned inline enum subject (a constructor/call/ternary result, not
+            // a borrowed variable) must be released after the arms - the arms only
+            // borrow its payloads, so its constructor-retained payload would
+            // otherwise leak (issue #298 review).
+            if Self::rhs_produces_owned_enum(&expr.kind) {
+                self.release_owned_enum_temporary(expr_val, &match_expr_type)?;
+            }
         } else {
             self.generate_switch_match(function, &match_expr_type, expr_val, arms)?;
         }
@@ -1105,7 +1112,15 @@ impl<'a> CodeGenerator<'a> {
                 self.generate_match_statement_inner(function, expr, arms)?;
             }
             StatementKind::Expression(expr) => {
-                self.generate_expression(expr)?;
+                let value = self.generate_expression(expr)?;
+                // A discarded owned enum value (e.g. a bare `Enum.Variant(x)`
+                // statement) must be released, or its constructor-retained
+                // payload leaks. Borrowed forms own nothing and are skipped.
+                if Self::rhs_produces_owned_enum(&expr.kind)
+                    && let Ok(ty) = self.resolve_expression_type_with_fallback(expr)
+                {
+                    self.release_owned_enum_temporary(value, &ty)?;
+                }
             }
             StatementKind::Function(func) => {
                 self.generate_nested_function_statement(func, function)?;

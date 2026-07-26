@@ -270,16 +270,63 @@ impl<'a> CodeGenerator<'a> {
             }
             None => return Err(format!("Enum {} not found in type map", enum_name)),
         };
-        let temp = self.create_entry_alloca(struct_type.into(), "enum_copy_src")?;
-        self.builder
-            .build_store(temp, value)
-            .map_err(|e| e.to_string())?;
+        let temp = self.spill_enum_to_temp(value, enum_name, "enum_copy_src")?;
         self.emit_enum_deep_clone(enum_name, temp)?;
         let owned = self
             .builder
             .build_load(struct_type, temp, "enum_copy")
             .map_err(|e| e.to_string())?;
         Ok(owned)
+    }
+
+    /// Spill an inline enum struct `value` into a fresh entry-block alloca so its
+    /// payloads can be reached by GEP (for `emit_enum_drop` / `emit_enum_deep_clone`,
+    /// which operate on a slot pointer rather than an SSA struct value).
+    pub(super) fn spill_enum_to_temp(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        enum_name: &str,
+        label: &str,
+    ) -> Result<PointerValue<'a>, String> {
+        let struct_type = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(struct_type)) => *struct_type,
+            Some(_) => {
+                return Err(format!(
+                    "Enum {} type map entry is not a struct type",
+                    enum_name
+                ));
+            }
+            None => return Err(format!("Enum {} not found in type map", enum_name)),
+        };
+        let temp = self.create_entry_alloca(struct_type.into(), label)?;
+        self.builder
+            .build_store(temp, value)
+            .map_err(|e| e.to_string())?;
+        Ok(temp)
+    }
+
+    /// Release an owned inline enum value that a statement produced but did not
+    /// bind (a discarded expression statement, or an owned match subject after
+    /// its arms). The constructor retained the payload (`rc_inc_if_pointer`), so
+    /// without this that reference is never balanced by a slot taking ownership
+    /// and leaks (issue #298 review). A no-op unless `value` is an inline enum
+    /// with a pointer payload; the caller decides ownership (only owned results
+    /// are released, never a borrowed identifier/field load).
+    pub(super) fn release_owned_enum_temporary(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        enum_type: &Type,
+    ) -> Result<(), String> {
+        if !value.is_struct_value() {
+            return Ok(());
+        }
+        if let Some(enum_name) = self.user_enum_type_name(enum_type)
+            && self.enum_has_rc_payload(&enum_name)
+        {
+            let temp = self.spill_enum_to_temp(value, &enum_name, "discarded_enum")?;
+            self.emit_enum_drop(&enum_name, temp)?;
+        }
+        Ok(())
     }
 
     /// Release an inline enum value held at `struct_alloca` by decrementing only

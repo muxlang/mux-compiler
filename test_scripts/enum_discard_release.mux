@@ -1,0 +1,24 @@
+// mux-compiler#298 review: an owned inline enum value that is produced but not
+// bound - a discarded expression statement, or an owned match subject - must be
+// released, or its constructor-retained payload leaks. rc-leak-check asserts
+// zero live blocks at exit.
+enum Status { Active(string), Inactive(int) }
+
+func main() returns void {
+    // Discarded owned enum expression statement.
+    Status.Active("discarded")
+
+    // Owned enum as a direct match subject (constructor).
+    match Status.Active("subject") {
+        Active(m) { print("subject: " + m) }
+        Inactive(n) { print("subject: inactive") }
+    }
+
+    // Owned enum ternary as a match subject.
+    auto other = Status.Inactive(7)
+    match (if true { Status.Active("tern") } else { other }) {
+        Active(m) { print("tern: " + m) }
+        Inactive(n) { print("tern: inactive") }
+    }
+    return
+}
