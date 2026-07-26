@@ -403,9 +403,27 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<Vec<BasicMetadataValueEnum<'a>>, String> {
         let mut call_args = vec![];
         for arg in args {
-            call_args.push(self.generate_expression(arg)?.into());
+            let value = self.generate_expression(arg)?;
+            self.register_owned_enum_arg(value, arg);
+            call_args.push(value.into());
         }
         Ok(call_args)
+    }
+
+    /// If `value` is an owned inline enum passed by value (a constructor, call, or
+    /// ternary result), register it as a temporary so the caller releases it once
+    /// the statement completes. A callee borrows its enum parameters
+    /// (`store_enum_parameter` does not track them for release), so the caller
+    /// keeps ownership of the argument and must drop it (issue #298 review). A
+    /// borrowed argument (an identifier/field load) owns nothing and is skipped.
+    fn register_owned_enum_arg(&mut self, value: BasicValueEnum<'a>, arg: &ExpressionNode) {
+        if Self::rhs_produces_owned_enum(&arg.kind)
+            && value.is_struct_value()
+            && let Ok(ty) = self.resolve_expression_type_with_fallback(arg)
+            && let Some(enum_name) = self.user_enum_type_name(&ty)
+        {
+            self.register_enum_temp(value, &enum_name);
+        }
     }
 
     /// Normalize one arm of a ternary that yields an inline enum value so the
@@ -3306,7 +3324,11 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(copied.into());
                 copied.into()
             } else {
-                self.generate_expression(arg)?
+                let value = self.generate_expression(arg)?;
+                // An owned inline enum argument is borrowed by the callee, so the
+                // caller must release it after the call (issue #298 review).
+                self.register_owned_enum_arg(value, arg);
+                value
             };
 
             let coerced = if let Some(expected) = llvm_param_types.get(idx) {

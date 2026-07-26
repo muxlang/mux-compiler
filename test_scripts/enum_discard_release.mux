@@ -5,6 +5,12 @@
 // rc-leak-check asserts zero live blocks at exit.
 enum Status { Active(string), Inactive(int) }
 
+// A callee borrows its enum parameter, so an owned enum argument must be
+// released by the caller after the call.
+func consume(Status s) returns void {
+    return
+}
+
 // An owned enum match subject whose arms all return: the subject must still be
 // released on the return paths, where the match-end block is unreachable.
 func classify() returns int {
@@ -30,6 +36,9 @@ func main() returns void {
         Active(m) { print("tern: " + m) }
         Inactive(n) { print("tern: inactive") }
     }
+
+    // Owned enum passed as a function argument.
+    consume(Status.Active("arg"))
 
     print("classify: " + classify().to_string())
     return
