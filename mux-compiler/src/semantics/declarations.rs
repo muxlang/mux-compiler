@@ -123,19 +123,27 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    /// Compute the (name, trait-bound-names) list for a declaration's type
-    /// parameters and register each parameter name as a type symbol, so
-    /// annotations that reference it resolve to a type variable. Shared by class
-    /// and enum collection.
+    /// The (name, trait-bound-names) list for a declaration's type parameters,
+    /// recorded on the symbol so a generic use with the wrong number of type
+    /// arguments is caught by the arity check. Shared by class and enum
+    /// collection.
+    fn type_param_bounds(type_params: &[(String, Vec<TraitBound>)]) -> Vec<(String, Vec<String>)> {
+        type_params
+            .iter()
+            .map(|(p, b)| (p.clone(), b.iter().map(|tb| tb.name.clone()).collect()))
+            .collect()
+    }
+
+    /// Record `type_param_bounds` and register each parameter name as a type
+    /// symbol so annotations that reference it resolve to a type variable. Used
+    /// by class collection. Enums record their bounds without registering the
+    /// names, so a parameter does not leak into the global namespace where an
+    /// unrelated later annotation could resolve it.
     fn register_type_param_symbols(
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         span: &Span,
     ) -> Vec<(String, Vec<String>)> {
-        let bounds: Vec<(String, Vec<String>)> = type_params
-            .iter()
-            .map(|(p, b)| (p.clone(), b.iter().map(|tb| tb.name.clone()).collect()))
-            .collect();
         for (param_name, _) in type_params {
             let _ = self.symbol_table.add_symbol(
                 param_name,
@@ -146,7 +154,7 @@ impl SemanticAnalyzer {
                 ),
             );
         }
-        bounds
+        Self::type_param_bounds(type_params)
     }
 
     fn collect_class_symbol(
@@ -458,12 +466,14 @@ impl SemanticAnalyzer {
         variants: &[EnumVariant],
         span: &Span,
     ) {
-        // Record the enum's type parameters like classes do, so a generic enum
-        // used with the wrong number of type arguments is caught by the arity
-        // check (which reads the symbol's type_params) rather than silently
-        // accepted (issue #289 review), and register each parameter as a type
-        // symbol so variant payloads referencing it resolve to a type variable.
-        let type_param_bounds = self.register_type_param_symbols(type_params, span);
+        // Record the enum's type parameters so a generic enum used with the
+        // wrong number of type arguments is caught by the arity check, which
+        // reads the symbol's type_params (issue #289 review). Unlike classes the
+        // parameter names are NOT registered as global type symbols: a variant
+        // payload referencing one resolves leniently (as before), and this avoids
+        // leaking the name into the global namespace where an unrelated later
+        // annotation could pick it up.
+        let type_param_bounds = Self::type_param_bounds(type_params);
 
         let mut methods = std::collections::HashMap::new();
         let mut variant_names = Vec::new();
