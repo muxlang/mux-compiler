@@ -1,0 +1,9 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: internal compiler error
+  codegen error: Nested enum payload 'L' in L!Cons: enum 'L' embeds 'L' recursively; recursive or mutually-referential enums cannot be laid out inline
+  while compiling: test_scripts/error_cases/enum_nested_recursive.mux
+tip: please report this error, along with the file above and your system details
+     (the output of `mux --version`), to the Mux maintainers at https://github.com/muxlang/mux-compiler

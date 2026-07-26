@@ -212,6 +212,32 @@ impl<'a> CodeGenerator<'a> {
         self.enum_variants.contains_key(name).then(|| name.clone())
     }
 
+    /// Whether `from` embeds `target` as a nested user-enum payload, directly or
+    /// transitively. Used to tell a recursive enum (no finite inline layout) from
+    /// a merely heterogeneous union position when reporting a layout error.
+    pub(super) fn enum_embeds(&self, from: &str, target: &str) -> bool {
+        self.enum_embeds_rec(from, target, &mut std::collections::HashSet::new())
+    }
+
+    fn enum_embeds_rec(
+        &self,
+        from: &str,
+        target: &str,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        if !visited.insert(from.to_string()) {
+            return false;
+        }
+        let Some(variant_fields) = self.enum_variant_fields.get(from) else {
+            return false;
+        };
+        variant_fields.values().flatten().any(|(_, type_node)| {
+            self.nested_user_enum_name(type_node).is_some_and(|inner| {
+                inner == target || self.enum_embeds_rec(&inner, target, visited)
+            })
+        })
+    }
+
     /// Whether any variant of `enum_name` carries at least one pointer (RC)
     /// payload field - either directly, or nested inside an inline user-enum
     /// payload. Enums that only hold inline scalars (a plain C-style enum) own

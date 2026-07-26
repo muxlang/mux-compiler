@@ -1,0 +1,9 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: internal compiler error
+  codegen error: Nested enum payload 'Inner' in Mix!A shares payload position 0 with a differently-typed payload; a nested enum in a heterogeneous union position is not yet supported
+  while compiling: test_scripts/error_cases/enum_nested_heterogeneous.mux
+tip: please report this error, along with the file above and your system details
+     (the output of `mux --version`), to the Mux maintainers at https://github.com/muxlang/mux-compiler

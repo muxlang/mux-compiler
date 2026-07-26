@@ -118,21 +118,15 @@ impl<'a> CodeGenerator<'a> {
                 if let Some(inner) = nested_enum {
                     // A nested user enum is stored inline as its own struct. Its
                     // layout must match the union slot; a pointer slot means the
-                    // nesting is recursive (a self- or mutually-embedding enum) or
-                    // sits in a mixed union position, neither of which can be laid
-                    // out inline - error cleanly rather than storing a struct into
-                    // a pointer slot and corrupting memory (issue #306).
+                    // enum could not be laid out inline - error cleanly rather than
+                    // storing a struct into a pointer slot and corrupting memory
+                    // (issue #306).
                     let slot_is_struct = struct_type
                         .get_field_type_at_index((i + 1) as u32)
                         .map(|t| t.is_struct_type())
                         .unwrap_or(false);
                     if !slot_is_struct {
-                        return Err(format!(
-                            "Nested enum payload '{}' in variant {}!{} cannot be laid \
-                             out inline (recursive or mutually-referential enums are \
-                             not yet supported)",
-                            inner, name, variant_name
-                        ));
+                        return Err(self.nested_enum_layout_error(name, variant_name, &inner, i));
                     }
                     self.builder
                         .build_store(data_ptr, arg)
@@ -191,6 +185,37 @@ impl<'a> CodeGenerator<'a> {
                 .insert(format!("{}.{}", name, variant_name), function);
         }
         Ok(())
+    }
+
+    /// Build the error for a nested enum payload that could not be laid out
+    /// inline. The pointer slot has two causes, reported distinctly: a recursive
+    /// enum (a self- or mutually-embedding enum has no finite inline layout), or
+    /// a heterogeneous union position (another variant places a differently-typed
+    /// payload at the same position, so the slot is a generic pointer). Recursion
+    /// is checked first because a recursive enum is also heterogeneous, but
+    /// recursion is the fundamental blocker. Neither is supported yet.
+    fn nested_enum_layout_error(
+        &self,
+        enum_name: &str,
+        variant_name: &str,
+        inner: &str,
+        position: usize,
+    ) -> String {
+        let recursive = inner == enum_name || self.enum_embeds(inner, enum_name);
+        if recursive {
+            format!(
+                "Nested enum payload '{}' in {}!{}: enum '{}' embeds '{}' recursively; \
+                 recursive or mutually-referential enums cannot be laid out inline",
+                inner, enum_name, variant_name, enum_name, inner
+            )
+        } else {
+            format!(
+                "Nested enum payload '{}' in {}!{} shares payload position {} with a \
+                 differently-typed payload; a nested enum in a heterogeneous union \
+                 position is not yet supported",
+                inner, enum_name, variant_name, position
+            )
+        }
     }
 
     fn register_class_type(

@@ -1,0 +1,15 @@
+// A recursive enum (a variant embeds the enum itself) has no finite inline
+// layout, so nested-enum support rejects it with a clear error rather than
+// corrupting memory (issue #306). Boxed indirection for recursive enums is a
+// separate, future feature.
+
+enum L { Nil, Cons(L) }
+
+func main() returns void {
+    auto x = L.Nil()
+    match x {
+        Nil { print("nil") }
+        Cons(t) { print("cons") }
+    }
+    return
+}

@@ -1,0 +1,27 @@
+// Pure C-style enums (every variant is payload-less). A bare variant name in a
+// match pattern (`Red`, `Green`, ...) is a variant pattern, not a catch-all
+// binding, so each arm must compare the discriminant instead of the first arm
+// always winning (issue #307). Construction uses `Enum.Variant()`.
+
+enum Color { Red, Green, Blue }
+
+func show(Color c) returns void {
+    match c {
+        Red { print("red") }
+        Green { print("green") }
+        Blue { print("blue") }
+    }
+    return
+}
+
+func main() returns void {
+    show(Color.Red())
+    show(Color.Green())
+    show(Color.Blue())
+
+    // Bind through a variable and rematch to confirm the discriminant round-trips.
+    auto c = Color.Blue()
+    show(c)
+
+    return
+}

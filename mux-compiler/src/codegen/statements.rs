@@ -1491,10 +1491,20 @@ impl<'a> CodeGenerator<'a> {
                 let variant_index = self.get_variant_index(enum_name, name)?;
                 self.build_discriminant_comparison(discriminant, variant_index)
             }
-            PatternNode::Identifier(_)
-            | PatternNode::Literal(_)
-            | PatternNode::Wildcard
-            | PatternNode::List { .. } => Ok(self.context.bool_type().const_int(1, false)),
+            // A bare identifier that names a variant of the matched enum is a
+            // payload-less variant pattern, not a catch-all binding - a pure
+            // C-style enum is matched with `Red`, `Green`, ... and each must
+            // compare the discriminant rather than always match the first arm
+            // (issue #307). A non-variant identifier is a genuine catch-all.
+            PatternNode::Identifier(name) => match self.get_variant_index(enum_name, name) {
+                Ok(variant_index) => {
+                    self.build_discriminant_comparison(discriminant, variant_index)
+                }
+                Err(_) => Ok(self.context.bool_type().const_int(1, false)),
+            },
+            PatternNode::Literal(_) | PatternNode::Wildcard | PatternNode::List { .. } => {
+                Ok(self.context.bool_type().const_int(1, false))
+            }
         }
     }
 
