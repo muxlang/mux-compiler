@@ -50,8 +50,13 @@ impl SemanticAnalyzer {
                         node.span(),
                     )?;
                 }
-                AstNode::Enum { name, variants, .. } => {
-                    self.collect_enum_symbol(name, variants, node.span());
+                AstNode::Enum {
+                    name,
+                    type_params,
+                    variants,
+                    ..
+                } => {
+                    self.collect_enum_symbol(name, type_params, variants, node.span());
                 }
                 AstNode::Interface {
                     name,
@@ -434,7 +439,34 @@ impl SemanticAnalyzer {
         }
     }
 
-    fn collect_enum_symbol(&mut self, name: &str, variants: &[EnumVariant], span: &Span) {
+    fn collect_enum_symbol(
+        &mut self,
+        name: &str,
+        type_params: &[(String, Vec<TraitBound>)],
+        variants: &[EnumVariant],
+        span: &Span,
+    ) {
+        // Record the enum's type parameters like classes do, so a generic enum
+        // used with the wrong number of type arguments is caught by the arity
+        // check (which reads the symbol's type_params) rather than silently
+        // accepted (issue #289 review). Also register each parameter name as a
+        // type symbol so variant payloads that reference it resolve to a type
+        // variable, matching collect_class_symbol.
+        let type_param_bounds: Vec<(String, Vec<String>)> = type_params
+            .iter()
+            .map(|(p, b)| (p.clone(), b.iter().map(|tb| tb.name.clone()).collect()))
+            .collect();
+        for (param_name, _) in type_params {
+            let _ = self.symbol_table.add_symbol(
+                param_name,
+                Self::make_symbol(
+                    SymbolKind::Type,
+                    *span,
+                    Some(Type::Generic(param_name.clone())),
+                ),
+            );
+        }
+
         let mut methods = std::collections::HashMap::new();
         let mut variant_names = Vec::new();
         for variant in variants {
@@ -465,7 +497,7 @@ impl SemanticAnalyzer {
                 interfaces: std::collections::HashMap::new(),
                 methods,
                 fields: std::collections::HashMap::new(),
-                type_params: Vec::new(),
+                type_params: type_param_bounds,
                 original_name: None,
                 llvm_name: None,
                 default_param_count: 0,
