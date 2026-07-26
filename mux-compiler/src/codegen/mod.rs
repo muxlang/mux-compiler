@@ -19,7 +19,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use std::collections::HashMap;
 
 use crate::ast::{
@@ -118,6 +118,15 @@ pub struct CodeGenerator<'a> {
     /// `mux_closure_release` (which walks and releases their captures) rather
     /// than `mux_rc_dec`. Same `(value, slot)` spill-slot discipline.
     closure_temp_values: Vec<(PointerValue<'a>, PointerValue<'a>)>,
+    /// Owned inline-enum temporaries produced during the current statement that
+    /// were not bound to a variable (a discarded `Enum.Variant(x)` statement, or
+    /// an owned enum match subject). Enums are value-semantic structs, not boxed
+    /// pointers, so they are released with `emit_enum_drop` on their active
+    /// variant rather than `mux_rc_dec`. Each entry is `(value, slot, enum_name)`:
+    /// the SSA struct value and a zero-initialized entry-block spill alloca it was
+    /// stored into, so cleanup can drop it from any later block (null-safe on
+    /// paths that never produced it, exactly like `temp_values`).
+    enum_temp_values: Vec<(BasicValueEnum<'a>, PointerValue<'a>, String)>,
     /// Closure-typed variables tracked per scope, released with
     /// `mux_closure_release` when the scope ends. Pushed/popped in lock-step
     /// with `rc_scope_stack`.
@@ -693,6 +702,7 @@ impl<'a> CodeGenerator<'a> {
             rc_scope_stack: Vec::new(),
             temp_values: Vec::new(),
             closure_temp_values: Vec::new(),
+            enum_temp_values: Vec::new(),
             closure_scope_stack: Vec::new(),
             source_name: source_name.to_string(),
         }

@@ -1,0 +1,34 @@
+// Regression for mux-compiler#298: copying an enum value (auto t = s, or s = t)
+// must deep-clone the payload so the bindings are independent, not aliased, and
+// must not leak or double-free. The rc-leak-check CI leg asserts zero live
+// blocks at exit; the prints confirm the copy is independent of later changes to
+// the source.
+
+enum Status { Active(string), Inactive(int) }
+
+auto s = Status.Active("first")
+
+// Copy binding: t owns an independent deep copy of s's payload.
+auto t = s
+
+// Change s; t must still hold the original value.
+s = Status.Active("second")
+
+match s {
+    Active(m) { print("s: " + m) }
+    Inactive(n) { print("s: inactive") }
+}
+match t {
+    Active(m) { print("t: " + m) }
+    Inactive(n) { print("t: inactive") }
+}
+
+// Borrowed copy from another variable, then self-assignment.
+auto u = t
+u = u
+match u {
+    Active(m) { print("u: " + m) }
+    Inactive(n) { print("u: inactive") }
+}
+
+print("=== enum copy deep-clone done ===")

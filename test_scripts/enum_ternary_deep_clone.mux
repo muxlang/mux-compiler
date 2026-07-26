@@ -1,0 +1,22 @@
+// mux-compiler#298 review: a ternary that yields an enum must be uniformly
+// owned - each arm is normalized (borrowed arms deep-cloned) so a mixed
+// owned/borrowed ternary neither leaks the owned arm nor aliases the borrowed
+// one. The rc-leak-check CI leg asserts zero live blocks at exit.
+enum Status { Active(string), Inactive(int) }
+
+auto other = Status.Active("shared")
+
+// Borrowed arm selected: s must own an independent copy of `other`.
+auto s = if false { Status.Inactive(1) } else { other }
+other = Status.Active("changed")
+
+match s { Active(m) { print("s: " + m) } Inactive(n) { print("s: inactive") } }
+match other { Active(m) { print("other: " + m) } Inactive(n) { print("other: inactive") } }
+
+// Mixed owned/borrowed ternary reassigned in a loop: the owned arm must not leak.
+for int i in range(0, 3) {
+    s = if i < 2 { Status.Active("owned") } else { other }
+}
+match s { Active(m) { print("loop end: " + m) } Inactive(n) { print("loop end: inactive") } }
+
+print("=== enum ternary deep-clone done ===")

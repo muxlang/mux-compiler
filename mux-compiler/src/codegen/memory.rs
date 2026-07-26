@@ -8,7 +8,46 @@ use inkwell::AddressSpace;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, PointerValue};
 
+/// Which per-payload operation `emit_enum_payload_op` performs on each active
+/// variant pointer field of an inline enum value.
+#[derive(Clone, Copy)]
+enum EnumPayloadOp {
+    /// Decrement the payload's refcount, releasing the value.
+    Drop,
+    /// Replace the payload with an independent `mux_value_deep_clone` of itself.
+    DeepClone,
+}
+
+impl EnumPayloadOp {
+    /// The runtime function applied to each pointer payload.
+    fn runtime_fn_name(self) -> &'static str {
+        match self {
+            EnumPayloadOp::Drop => "mux_rc_dec",
+            EnumPayloadOp::DeepClone => "mux_value_deep_clone",
+        }
+    }
+
+    /// Short slug used in generated basic-block names.
+    fn label(self) -> &'static str {
+        match self {
+            EnumPayloadOp::Drop => "drop",
+            EnumPayloadOp::DeepClone => "clone",
+        }
+    }
+}
+
 impl<'a> CodeGenerator<'a> {
+    /// Whether the builder's current block can still receive instructions, i.e.
+    /// it exists and has no terminator yet. Emitting into a terminated block
+    /// (e.g. an `unreachable` match-end block after every arm returned) produces
+    /// invalid IR, so cleanup that runs on the fall-through path must guard on
+    /// this.
+    pub(super) fn current_block_is_live(&self) -> bool {
+        self.builder
+            .get_insert_block()
+            .is_some_and(|bb| bb.get_terminator().is_none())
+    }
+
     /// Push a new RC scope onto the stack. Call this when entering a new scope
     /// (function, if/else block, loop body, match arm, etc.)
     pub(super) fn push_rc_scope(&mut self) {
@@ -122,31 +161,23 @@ impl<'a> CodeGenerator<'a> {
 
     /// Whether an assignment/binding right-hand side produces a freshly-owned
     /// enum value - one whose pointer payloads have already been retained and
-    /// whose ownership transfers into the slot. Only such a value lets the slot
-    /// release its previous enum before storing (issue #290): a borrowed form
-    /// (an identifier or field load) still aliases its source, so dropping the
-    /// old value could free memory the source references or, on self-assignment
-    /// (`s = s`), the value being stored.
+    /// whose ownership transfers into the slot. An owned value is stored
+    /// directly; a borrowed one (an identifier or field load, which still points
+    /// at its source's payloads) is deep-cloned first so the binding owns an
+    /// independent value (`store_struct_value`, issue #298).
     ///
     /// A call (a variant constructor, or a function/method that returns an enum
-    /// by value) owns its result. A ternary owns its result when both arms do -
-    /// e.g. `cond ? Status.Active(x) : Status.Inactive(y)` is owned - so it must
-    /// not be misclassified as borrowed. Every other form (identifier, field or
-    /// index load) is treated as borrowed, keeping the store-without-release
-    /// behavior.
+    /// by value) owns its result. A ternary is also owned: `generate_if_expression`
+    /// normalizes each arm to an owned value (deep-cloning any borrowed arm) so
+    /// the result is uniformly owned, which avoids leaking the owned arm of a
+    /// mixed-ownership ternary (issue #298 review). Every other form (identifier,
+    /// field or index load) is treated as borrowed and deep-cloned, which is
+    /// always safe.
     pub(super) fn rhs_produces_owned_enum(kind: &crate::ast::ExpressionKind) -> bool {
-        match kind {
-            crate::ast::ExpressionKind::Call { .. } => true,
-            crate::ast::ExpressionKind::If {
-                then_expr,
-                else_expr,
-                ..
-            } => {
-                Self::rhs_produces_owned_enum(&then_expr.kind)
-                    && Self::rhs_produces_owned_enum(&else_expr.kind)
-            }
-            _ => false,
-        }
+        matches!(
+            kind,
+            crate::ast::ExpressionKind::Call { .. } | crate::ast::ExpressionKind::If { .. }
+        )
     }
 
     /// If `ty` is a user-declared enum (not the built-in `optional`/`result`,
@@ -183,42 +214,148 @@ impl<'a> CodeGenerator<'a> {
         })
     }
 
-    /// Release the enum value currently in `slot` before it is overwritten, so
-    /// reassigning an enum variable (or rebinding a loop-local each iteration)
-    /// does not leak the previous value's heap payloads (issue #290). A no-op
-    /// unless `resolved_type` is a user enum that owns a pointer payload and the
-    /// incoming value is freshly owned (`rhs_owned`); the slot must already hold
-    /// a valid enum or be zero-initialized, both of which `emit_enum_drop`
-    /// handles null-safely. Storing the new value is the caller's job.
-    pub(super) fn release_enum_slot_before_overwrite(
+    /// Store a struct `value` into `slot`, releasing the slot's previous
+    /// occupant when `release_old` is set. For a payload-bearing user enum this
+    /// applies value semantics: an owned right-hand side (a constructor or call
+    /// result, `rhs_owned`) transfers its payloads directly, while a borrowed
+    /// copy (an identifier or field load, e.g. `auto t = s`) is deep-cloned so
+    /// the binding owns an independent value (issue #298). The independent new
+    /// value is produced before the old one is released, so a self-assignment
+    /// (`t = t`) clones the payloads before they are freed (issue #290).
+    ///
+    /// Any other struct (a scalar-only enum, the built-in optional/result, a
+    /// tuple) owns nothing inline here and is stored directly. `release_old`
+    /// must be false only when the slot has no valid prior value to release (a
+    /// fresh, non-zero-initialized binding).
+    pub(super) fn store_struct_value(
         &mut self,
         slot: PointerValue<'a>,
+        value: BasicValueEnum<'a>,
         resolved_type: &Type,
         rhs_owned: bool,
+        release_old: bool,
     ) -> Result<(), String> {
-        if !rhs_owned {
-            return Ok(());
-        }
-        if let Some(enum_name) = self.user_enum_type_name(resolved_type)
-            && self.enum_has_rc_payload(&enum_name)
-        {
-            self.emit_enum_drop(&enum_name, slot)?;
-        }
+        let enum_name = self
+            .user_enum_type_name(resolved_type)
+            .filter(|name| self.enum_has_rc_payload(name));
+        let to_store = if let Some(enum_name) = &enum_name {
+            let owned = self.materialize_owned_enum(value, enum_name, rhs_owned)?;
+            // Ownership of an owned RHS transfers into this slot, so it must no
+            // longer be released as a statement temporary. (A borrowed RHS was
+            // never tracked, so this is a no-op there.)
+            self.untrack_enum_temp(value);
+            if release_old {
+                // The slot holds a valid enum or is zero-initialized; emit_enum_drop
+                // is null-safe on the zeroed case (the first loop pass / a skipped
+                // conditional).
+                self.emit_enum_drop(enum_name, slot)?;
+            }
+            owned
+        } else {
+            value
+        };
+        self.builder
+            .build_store(slot, to_store)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
+    /// Produce an owned enum value from `value`: an already-owned right-hand side
+    /// is returned unchanged, while a borrowed copy is deep-cloned so the caller
+    /// can store an independent value (issue #298). The clone spills the value to
+    /// a temporary, deep-clones the active variant's pointer payloads in place
+    /// (leaving the source untouched), and reloads it. A no-op for an owned value
+    /// or an enum with no pointer payloads.
+    pub(super) fn materialize_owned_enum(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        enum_name: &str,
+        rhs_owned: bool,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if rhs_owned || !self.enum_has_rc_payload(enum_name) {
+            return Ok(value);
+        }
+        let struct_type = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(struct_type)) => *struct_type,
+            Some(_) => {
+                return Err(format!(
+                    "Enum {} type map entry is not a struct type",
+                    enum_name
+                ));
+            }
+            None => return Err(format!("Enum {} not found in type map", enum_name)),
+        };
+        let temp = self.spill_enum_to_temp(value, enum_name, "enum_copy_src")?;
+        self.emit_enum_deep_clone(enum_name, temp)?;
+        let owned = self
+            .builder
+            .build_load(struct_type, temp, "enum_copy")
+            .map_err(|e| e.to_string())?;
+        Ok(owned)
+    }
+
+    /// Spill an inline enum struct `value` into a fresh entry-block alloca so its
+    /// payloads can be reached by GEP (for `emit_enum_drop` / `emit_enum_deep_clone`,
+    /// which operate on a slot pointer rather than an SSA struct value).
+    pub(super) fn spill_enum_to_temp(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        enum_name: &str,
+        label: &str,
+    ) -> Result<PointerValue<'a>, String> {
+        let struct_type = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(struct_type)) => *struct_type,
+            Some(_) => {
+                return Err(format!(
+                    "Enum {} type map entry is not a struct type",
+                    enum_name
+                ));
+            }
+            None => return Err(format!("Enum {} not found in type map", enum_name)),
+        };
+        let temp = self.create_entry_alloca(struct_type.into(), label)?;
+        self.builder
+            .build_store(temp, value)
+            .map_err(|e| e.to_string())?;
+        Ok(temp)
+    }
+
     /// Release an inline enum value held at `struct_alloca` by decrementing only
-    /// the pointer payloads of its active variant. The variant is selected at
-    /// runtime by switching on the discriminant, mirroring construction, which
-    /// retains a payload only when it is a pointer (`rc_inc_if_pointer`): a union
-    /// slot typed as a pointer can hold a raw scalar for another variant, so an
-    /// unconditional decrement would corrupt memory. Scalar-only variants fall
-    /// through to the merge block untouched. No-op for enums with no pointer
+    /// the pointer payloads of its active variant (see `emit_enum_payload_op` for
+    /// why the variant is selected at runtime). No-op for enums with no pointer
     /// payloads.
     pub(super) fn emit_enum_drop(
         &mut self,
         enum_name: &str,
         struct_alloca: PointerValue<'a>,
+    ) -> Result<(), String> {
+        self.emit_enum_payload_op(enum_name, struct_alloca, EnumPayloadOp::Drop)
+    }
+
+    /// Deep-clone the pointer payloads of the enum value at `struct_alloca` in
+    /// place, so a copy binding owns an independent value instead of aliasing the
+    /// source (issue #298). Each active-variant pointer payload is replaced with
+    /// a fresh `mux_value_deep_clone` of itself; the source is left untouched.
+    pub(super) fn emit_enum_deep_clone(
+        &mut self,
+        enum_name: &str,
+        struct_alloca: PointerValue<'a>,
+    ) -> Result<(), String> {
+        self.emit_enum_payload_op(enum_name, struct_alloca, EnumPayloadOp::DeepClone)
+    }
+
+    /// Apply `op` to every pointer payload of the active variant of the enum at
+    /// `struct_alloca`, selecting the variant at runtime by switching on the
+    /// discriminant. This mirrors construction, which retains a payload only when
+    /// it is a pointer (`rc_inc_if_pointer`): a union slot typed as a pointer can
+    /// hold a raw scalar for a different variant, so touching it unconditionally
+    /// would corrupt memory. Scalar-only variants fall through to the merge block
+    /// untouched. No-op for enums with no pointer payloads.
+    fn emit_enum_payload_op(
+        &mut self,
+        enum_name: &str,
+        struct_alloca: PointerValue<'a>,
+        op: EnumPayloadOp,
     ) -> Result<(), String> {
         if !self.enum_has_rc_payload(enum_name) {
             return Ok(());
@@ -237,31 +374,33 @@ impl<'a> CodeGenerator<'a> {
             }
             None => return Err(format!("Enum {} not found in type map", enum_name)),
         };
-        let rc_dec = self
-            .runtime_function("mux_rc_dec")
-            .ok_or("mux_rc_dec not found")?;
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let runtime_fn = self
+            .runtime_function(op.runtime_fn_name())
+            .ok_or_else(|| format!("{} not found", op.runtime_fn_name()))?;
+        let label = op.label();
 
         let current_block = self
             .builder
             .get_insert_block()
-            .ok_or("emit_enum_drop: builder has no insertion block")?;
+            .ok_or("emit_enum_payload_op: builder has no insertion block")?;
         let function = current_block
             .get_parent()
-            .ok_or("emit_enum_drop: insertion block has no parent function")?;
+            .ok_or("emit_enum_payload_op: insertion block has no parent function")?;
 
         // Load the discriminant (struct field 0).
         let tag_ptr = self
             .builder
-            .build_struct_gep(struct_type, struct_alloca, 0, "enum_drop_tag_ptr")
+            .build_struct_gep(struct_type, struct_alloca, 0, "enum_op_tag_ptr")
             .map_err(|e| e.to_string())?;
         let discriminant = self
             .builder
-            .build_load(self.context.i32_type(), tag_ptr, "enum_drop_tag")
+            .build_load(self.context.i32_type(), tag_ptr, "enum_op_tag")
             .map_err(|e| e.to_string())?
             .into_int_value();
 
-        let merge_block = self.context.append_basic_block(function, "enum_drop_merge");
+        let merge_block = self
+            .context
+            .append_basic_block(function, &format!("enum_{label}_merge"));
 
         // One switch case per variant that actually owns a pointer payload.
         let variants = self
@@ -285,25 +424,16 @@ impl<'a> CodeGenerator<'a> {
             let index = self.get_variant_index(enum_name, variant)?;
             let case_block = self
                 .context
-                .append_basic_block(function, &format!("enum_drop_{}_{}", enum_name, variant));
+                .append_basic_block(function, &format!("enum_{label}_{enum_name}_{variant}"));
             self.builder.position_at_end(case_block);
             for field_index in pointer_fields {
-                let data_ptr = self
-                    .builder
-                    .build_struct_gep(
-                        struct_type,
-                        struct_alloca,
-                        (field_index + 1) as u32,
-                        "enum_drop_field_ptr",
-                    )
-                    .map_err(|e| e.to_string())?;
-                let payload = self
-                    .builder
-                    .build_load(ptr_type, data_ptr, "enum_drop_payload")
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_call(rc_dec, &[payload.into()], "enum_drop_dec")
-                    .map_err(|e| e.to_string())?;
+                self.emit_enum_payload_field_op(
+                    struct_type,
+                    struct_alloca,
+                    field_index,
+                    runtime_fn,
+                    op,
+                )?;
             }
             self.builder
                 .build_unconditional_branch(merge_block)
@@ -320,6 +450,47 @@ impl<'a> CodeGenerator<'a> {
             .build_switch(discriminant, merge_block, &cases)
             .map_err(|e| e.to_string())?;
         self.builder.position_at_end(merge_block);
+        Ok(())
+    }
+
+    /// Apply `op` to one pointer payload field (`field_index`) of an enum value:
+    /// load the payload, call the op's runtime function, and for a deep clone
+    /// store the returned independent copy back into the field.
+    fn emit_enum_payload_field_op(
+        &mut self,
+        struct_type: inkwell::types::StructType<'a>,
+        struct_alloca: PointerValue<'a>,
+        field_index: usize,
+        runtime_fn: inkwell::values::FunctionValue<'a>,
+        op: EnumPayloadOp,
+    ) -> Result<(), String> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let data_ptr = self
+            .builder
+            .build_struct_gep(
+                struct_type,
+                struct_alloca,
+                (field_index + 1) as u32,
+                "enum_op_field_ptr",
+            )
+            .map_err(|e| e.to_string())?;
+        let payload = self
+            .builder
+            .build_load(ptr_type, data_ptr, "enum_op_payload")
+            .map_err(|e| e.to_string())?;
+        let call = self
+            .builder
+            .build_call(runtime_fn, &[payload.into()], "enum_op_call")
+            .map_err(|e| e.to_string())?;
+        if matches!(op, EnumPayloadOp::DeepClone) {
+            let cloned = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or("mux_value_deep_clone returned no value")?;
+            self.builder
+                .build_store(data_ptr, cloned)
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
@@ -530,11 +701,61 @@ impl<'a> CodeGenerator<'a> {
         self.temp_values.push((ptr, slot));
     }
 
+    /// Register an owned inline-enum temporary that the current statement
+    /// produced but did not bind to a variable (a discarded `Enum.Variant(x)`
+    /// statement, or an owned enum match subject), so it is released at the
+    /// statement boundary and on any early-return path rather than leaking its
+    /// constructor-retained payload (issue #298 review). Spilled into a
+    /// zero-initialized entry-block struct alloca, mirroring `register_temp`, so
+    /// cleanup can drop it from any later block (null-safe on paths that never
+    /// produced it). No-op for a non-struct value or an enum with no pointer
+    /// payload; infallible by design (a spill failure just leaves it untracked).
+    pub(super) fn register_enum_temp(&mut self, value: BasicValueEnum<'a>, enum_name: &str) {
+        if !value.is_struct_value() || !self.enum_has_rc_payload(enum_name) {
+            return;
+        }
+        if self.enum_temp_values.iter().any(|(v, _, _)| *v == value) {
+            return;
+        }
+        let Some(BasicTypeEnum::StructType(struct_type)) = self.type_map.get(enum_name).copied()
+        else {
+            return;
+        };
+        let Ok(slot) = self.create_entry_alloca(struct_type.into(), "enum_temp_slot") else {
+            return;
+        };
+        if self.builder.build_store(slot, value).is_err() {
+            return;
+        }
+        self.enum_temp_values
+            .push((value, slot, enum_name.to_string()));
+    }
+
+    /// Remove an inline-enum value from the pending-temporary set because its
+    /// ownership has been transferred (stored into a variable or field slot, or
+    /// merged into a ternary's phi result). After this it is not dropped at the
+    /// statement boundary. Returns whether it was tracked.
+    pub(super) fn untrack_enum_temp(&mut self, value: BasicValueEnum<'a>) -> bool {
+        if let Some(pos) = self
+            .enum_temp_values
+            .iter()
+            .rposition(|(v, _, _)| *v == value)
+        {
+            self.enum_temp_values.remove(pos);
+            return true;
+        }
+        false
+    }
+
     /// Current number of registered temporaries. Capture this before evaluating
     /// a full expression, then pass it to `cleanup_temps_to` afterwards to
     /// decrement only the temporaries produced by that expression.
-    pub(super) fn temp_mark(&self) -> (usize, usize) {
-        (self.temp_values.len(), self.closure_temp_values.len())
+    pub(super) fn temp_mark(&self) -> (usize, usize, usize) {
+        (
+            self.temp_values.len(),
+            self.closure_temp_values.len(),
+            self.enum_temp_values.len(),
+        )
     }
 
     /// Remove a value from the pending-temporary list because its ownership has
@@ -561,42 +782,66 @@ impl<'a> CodeGenerator<'a> {
     /// its slot (null-safe), then truncate the list back to `mark`. Call at
     /// statement boundaries. Skips emission when the current block already has a
     /// terminator (dead code).
-    pub(super) fn cleanup_temps_to(&mut self, mark: (usize, usize)) -> Result<(), String> {
+    pub(super) fn cleanup_temps_to(&mut self, mark: (usize, usize, usize)) -> Result<(), String> {
         self.cleanup_closure_temps_to(mark.1)?;
-        let mark = mark.0;
-        if self.temp_values.len() <= mark {
+        if self.temp_values.len() > mark.0 {
+            let live = self.current_block_is_live();
+            if live {
+                let rc_dec = self
+                    .runtime_function("mux_rc_dec")
+                    .ok_or("mux_rc_dec not found")?;
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let null_ptr = ptr_type.const_null();
+                let slots: Vec<PointerValue<'a>> = self.temp_values[mark.0..]
+                    .iter()
+                    .map(|(_, slot)| *slot)
+                    .collect();
+                for slot in slots {
+                    let loaded = self
+                        .builder
+                        .build_load(ptr_type, slot, "temp_load")
+                        .map_err(|e| e.to_string())?;
+                    self.builder
+                        .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
+                        .map_err(|e| e.to_string())?;
+                    // Null the slot so a later blanket cleanup (or the next loop
+                    // iteration reusing this slot) does not decrement it again.
+                    self.builder
+                        .build_store(slot, null_ptr)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            self.temp_values.truncate(mark.0);
+        }
+        self.cleanup_enum_temps_to(mark.2)?;
+        Ok(())
+    }
+
+    /// Release the inline-enum temporaries registered since `mark`, dropping each
+    /// via `emit_enum_drop` and then zeroing its spill slot so a later blanket
+    /// cleanup or a loop iteration reusing the slot does not drop it again. Skips
+    /// emission in an already-terminated block, mirroring the pointer path.
+    fn cleanup_enum_temps_to(&mut self, mark: usize) -> Result<(), String> {
+        if self.enum_temp_values.len() <= mark {
             return Ok(());
         }
-        let live = self
-            .builder
-            .get_insert_block()
-            .is_some_and(|bb| bb.get_terminator().is_none());
-        if live {
-            let rc_dec = self
-                .runtime_function("mux_rc_dec")
-                .ok_or("mux_rc_dec not found")?;
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let null_ptr = ptr_type.const_null();
-            let slots: Vec<PointerValue<'a>> = self.temp_values[mark..]
+        if self.current_block_is_live() {
+            let entries: Vec<(PointerValue<'a>, String)> = self.enum_temp_values[mark..]
                 .iter()
-                .map(|(_, slot)| *slot)
+                .map(|(_, slot, name)| (*slot, name.clone()))
                 .collect();
-            for slot in slots {
-                let loaded = self
-                    .builder
-                    .build_load(ptr_type, slot, "temp_load")
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
-                    .map_err(|e| e.to_string())?;
-                // Null the slot so a later blanket cleanup (or the next loop
-                // iteration reusing this slot) does not decrement it again.
-                self.builder
-                    .build_store(slot, null_ptr)
-                    .map_err(|e| e.to_string())?;
+            for (slot, enum_name) in entries {
+                self.emit_enum_drop(&enum_name, slot)?;
+                if let Some(BasicTypeEnum::StructType(struct_type)) =
+                    self.type_map.get(&enum_name).copied()
+                {
+                    self.builder
+                        .build_store(slot, struct_type.const_zero())
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
-        self.temp_values.truncate(mark);
+        self.enum_temp_values.truncate(mark);
         Ok(())
     }
 
@@ -613,26 +858,36 @@ impl<'a> CodeGenerator<'a> {
     /// that never produced the value the load yields null and the null-safe
     /// `mux_rc_dec` is a no-op. Skips emission in an already-terminated block.
     pub(super) fn cleanup_all_temps(&mut self) -> Result<(), String> {
-        let live = self
-            .builder
-            .get_insert_block()
-            .is_some_and(|bb| bb.get_terminator().is_none());
-        if !live || self.temp_values.is_empty() {
+        if !self.current_block_is_live() {
             return Ok(());
         }
-        let rc_dec = self
-            .runtime_function("mux_rc_dec")
-            .ok_or("mux_rc_dec not found")?;
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let slots: Vec<PointerValue<'a>> = self.temp_values.iter().map(|(_, slot)| *slot).collect();
-        for slot in slots {
-            let loaded = self
-                .builder
-                .build_load(ptr_type, slot, "temp_load")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
-                .map_err(|e| e.to_string())?;
+        if !self.temp_values.is_empty() {
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let slots: Vec<PointerValue<'a>> =
+                self.temp_values.iter().map(|(_, slot)| *slot).collect();
+            for slot in slots {
+                let loaded = self
+                    .builder
+                    .build_load(ptr_type, slot, "temp_load")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_call(rc_dec, &[loaded.into()], "rc_dec_temp")
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        // Drop every inline-enum temporary too (no truncate: sibling return
+        // branches share the set; each slot is zero-initialized so a path that
+        // never produced the value drops a null payload, a no-op).
+        let enum_entries: Vec<(PointerValue<'a>, String)> = self
+            .enum_temp_values
+            .iter()
+            .map(|(_, slot, name)| (*slot, name.clone()))
+            .collect();
+        for (slot, enum_name) in enum_entries {
+            self.emit_enum_drop(&enum_name, slot)?;
         }
         Ok(())
     }
@@ -641,9 +896,10 @@ impl<'a> CodeGenerator<'a> {
     /// when their ownership has been transferred somewhere that will free them
     /// (e.g. stored into an object field, which the destructor decrements). They
     /// must not also be decremented at the statement boundary.
-    pub(super) fn discard_temps_to(&mut self, mark: (usize, usize)) {
+    pub(super) fn discard_temps_to(&mut self, mark: (usize, usize, usize)) {
         self.temp_values.truncate(mark.0);
         self.closure_temp_values.truncate(mark.1);
+        self.enum_temp_values.truncate(mark.2);
     }
 
     /// Deep-clone a reference-counted value, returning a fresh, uniquely-owned,

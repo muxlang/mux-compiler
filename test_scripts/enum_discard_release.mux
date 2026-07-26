@@ -1,0 +1,50 @@
+// mux-compiler#298 review: an owned inline enum value that is produced but not
+// bound - a discarded expression statement, or an owned match subject - must be
+// released, or its constructor-retained payload leaks. Owned enum temporaries
+// are tracked and dropped on every exit path (fall-through and early return).
+// rc-leak-check asserts zero live blocks at exit.
+enum Status { Active(string), Inactive(int) }
+
+// A callee borrows its enum parameter, so an owned enum argument must be
+// released by the caller after the call.
+func consume(Status s) returns void {
+    return
+}
+
+// An owned enum match subject whose arms all return: the subject must still be
+// released on the return paths, where the match-end block is unreachable.
+func classify() returns int {
+    match Status.Active("subject-return") {
+        Active(m) { return 1 }
+        Inactive(n) { return 2 }
+    }
+}
+
+func main() returns void {
+    // Discarded owned enum expression statement.
+    Status.Active("discarded")
+
+    // Owned enum as a direct match subject (constructor).
+    match Status.Active("subject") {
+        Active(m) { print("subject: " + m) }
+        Inactive(n) { print("subject: inactive") }
+    }
+
+    // Owned enum ternary as a match subject.
+    auto other = Status.Inactive(7)
+    match (if true { Status.Active("tern") } else { other }) {
+        Active(m) { print("tern: " + m) }
+        Inactive(n) { print("tern: inactive") }
+    }
+
+    // Owned enum passed as a function argument.
+    consume(Status.Active("arg"))
+
+    // Owned enums as collection elements (the collection copies them, so the
+    // constructed originals must be released).
+    auto items = [Status.Active("i1"), Status.Inactive(2)]
+    print("items: " + items.len().to_string())
+
+    print("classify: " + classify().to_string())
+    return
+}
