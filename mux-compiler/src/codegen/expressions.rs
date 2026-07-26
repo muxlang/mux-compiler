@@ -408,6 +408,34 @@ impl<'a> CodeGenerator<'a> {
         Ok(call_args)
     }
 
+    /// Normalize one arm of a ternary that yields an inline enum value so the
+    /// whole expression is uniformly owned. A borrowed arm (an identifier or
+    /// field load) is deep-cloned; an owned arm (a constructor/call result)
+    /// already owns its payload and is left as-is. Without this a mixed-ownership
+    /// ternary - `cond ? Enum.Variant(x) : borrowed` - is classified borrowed
+    /// and deep-cloned by the store, orphaning the owned arm's payload and
+    /// leaking it (issue #298 review). Once both arms are owned the ternary is
+    /// treated as owned (see `rhs_produces_owned_enum`) and transferred.
+    fn normalize_enum_ternary_arm(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        arm: &ExpressionNode,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if !value.is_struct_value() || Self::rhs_produces_owned_enum(&arm.kind) {
+            return Ok(value);
+        }
+        let Ok(arm_type) = self.resolve_expression_type_with_fallback(arm) else {
+            return Ok(value);
+        };
+        match self.user_enum_type_name(&arm_type) {
+            Some(enum_name) if self.enum_has_rc_payload(&enum_name) => {
+                // rhs_owned = false -> deep-clone this borrowed arm.
+                self.materialize_owned_enum(value, &enum_name, false)
+            }
+            _ => Ok(value),
+        }
+    }
+
     fn generate_if_expression(
         &mut self,
         cond: &ExpressionNode,
@@ -438,6 +466,7 @@ impl<'a> CodeGenerator<'a> {
         // then block
         self.builder.position_at_end(then_bb);
         let then_val = self.generate_expression(then_expr)?;
+        let then_val = self.normalize_enum_ternary_arm(then_val, then_expr)?;
         self.builder
             .build_unconditional_branch(merge_bb)
             .map_err(|e| e.to_string())?;
@@ -449,6 +478,7 @@ impl<'a> CodeGenerator<'a> {
         // else block
         self.builder.position_at_end(else_bb);
         let else_val = self.generate_expression(else_expr)?;
+        let else_val = self.normalize_enum_ternary_arm(else_val, else_expr)?;
         self.builder
             .build_unconditional_branch(merge_bb)
             .map_err(|e| e.to_string())?;
