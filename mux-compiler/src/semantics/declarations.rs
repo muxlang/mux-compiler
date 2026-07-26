@@ -50,8 +50,13 @@ impl SemanticAnalyzer {
                         node.span(),
                     )?;
                 }
-                AstNode::Enum { name, variants, .. } => {
-                    self.collect_enum_symbol(name, variants, node.span());
+                AstNode::Enum {
+                    name,
+                    type_params,
+                    variants,
+                    ..
+                } => {
+                    self.collect_enum_symbol(name, type_params, variants, node.span());
                 }
                 AstNode::Interface {
                     name,
@@ -118,21 +123,27 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    fn collect_class_symbol(
-        &mut self,
-        name: &str,
-        traits: &[TraitRef],
-        fields: &[Field],
-        methods: &[FunctionNode],
-        type_params: &[(String, Vec<TraitBound>)],
-        span: &Span,
-    ) -> Result<(), SemanticError> {
-        let implemented_interfaces = self.resolve_implemented_interfaces(traits, span)?;
-        let type_param_bounds: Vec<(String, Vec<String>)> = type_params
+    /// The (name, trait-bound-names) list for a declaration's type parameters,
+    /// recorded on the symbol so a generic use with the wrong number of type
+    /// arguments is caught by the arity check. Shared by class and enum
+    /// collection.
+    fn type_param_bounds(type_params: &[(String, Vec<TraitBound>)]) -> Vec<(String, Vec<String>)> {
+        type_params
             .iter()
             .map(|(p, b)| (p.clone(), b.iter().map(|tb| tb.name.clone()).collect()))
-            .collect();
+            .collect()
+    }
 
+    /// Record `type_param_bounds` and register each parameter name as a type
+    /// symbol so annotations that reference it resolve to a type variable. Used
+    /// by class collection. Enums record their bounds without registering the
+    /// names, so a parameter does not leak into the global namespace where an
+    /// unrelated later annotation could resolve it.
+    fn register_type_param_symbols(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        span: &Span,
+    ) -> Vec<(String, Vec<String>)> {
         for (param_name, _) in type_params {
             let _ = self.symbol_table.add_symbol(
                 param_name,
@@ -143,6 +154,20 @@ impl SemanticAnalyzer {
                 ),
             );
         }
+        Self::type_param_bounds(type_params)
+    }
+
+    fn collect_class_symbol(
+        &mut self,
+        name: &str,
+        traits: &[TraitRef],
+        fields: &[Field],
+        methods: &[FunctionNode],
+        type_params: &[(String, Vec<TraitBound>)],
+        span: &Span,
+    ) -> Result<(), SemanticError> {
+        let implemented_interfaces = self.resolve_implemented_interfaces(traits, span)?;
+        let type_param_bounds = self.register_type_param_symbols(type_params, span);
 
         let (fields_map, _) = self.collect_class_fields(name, fields, span)?;
         let methods_map = self.collect_class_methods(methods, name, type_params)?;
@@ -434,7 +459,22 @@ impl SemanticAnalyzer {
         }
     }
 
-    fn collect_enum_symbol(&mut self, name: &str, variants: &[EnumVariant], span: &Span) {
+    fn collect_enum_symbol(
+        &mut self,
+        name: &str,
+        type_params: &[(String, Vec<TraitBound>)],
+        variants: &[EnumVariant],
+        span: &Span,
+    ) {
+        // Record the enum's type parameters so a generic enum used with the
+        // wrong number of type arguments is caught by the arity check, which
+        // reads the symbol's type_params (issue #289 review). Unlike classes the
+        // parameter names are NOT registered as global type symbols: a variant
+        // payload referencing one resolves leniently (as before), and this avoids
+        // leaking the name into the global namespace where an unrelated later
+        // annotation could pick it up.
+        let type_param_bounds = Self::type_param_bounds(type_params);
+
         let mut methods = std::collections::HashMap::new();
         let mut variant_names = Vec::new();
         for variant in variants {
@@ -465,7 +505,7 @@ impl SemanticAnalyzer {
                 interfaces: std::collections::HashMap::new(),
                 methods,
                 fields: std::collections::HashMap::new(),
-                type_params: Vec::new(),
+                type_params: type_param_bounds,
                 original_name: None,
                 llvm_name: None,
                 default_param_count: 0,
@@ -614,14 +654,83 @@ impl SemanticAnalyzer {
                     where_clause.as_ref(),
                 )
             }
-            AstNode::Enum { variants, .. } => self.analyze_enum_where_clauses(variants),
+            AstNode::Enum {
+                type_params,
+                variants,
+                ..
+            } => {
+                self.validate_enum_variant_type_arities(type_params, variants);
+                self.analyze_enum_where_clauses(variants)
+            }
             AstNode::Interface {
                 type_params,
+                fields,
                 methods,
                 ..
-            } => self.analyze_interface_where_clauses(type_params, methods),
+            } => {
+                self.validate_interface_member_type_arities(type_params, fields, methods);
+                self.analyze_interface_where_clauses(type_params, methods)
+            }
             AstNode::Statement(stmt) => self.analyze_statement(stmt, files),
         }
+    }
+
+    /// Arity-check every enum variant payload type in the second pass, where all
+    /// type symbols are registered. Collection resolves these with errors
+    /// swallowed (`unwrap_or`), so a bad generic arity in a payload - e.g.
+    /// `V(list)` or a user generic with the wrong argument count - would
+    /// otherwise be silently accepted (issue #289).
+    fn validate_enum_variant_type_arities(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        variants: &[EnumVariant],
+    ) {
+        let mut errors = Vec::new();
+        for variant in variants {
+            for (_, type_node) in variant.data.iter().flatten() {
+                if let Err(e) = self.validate_type_arity(type_node, type_params) {
+                    errors.push(e);
+                }
+            }
+        }
+        self.errors.extend(errors);
+    }
+
+    /// Arity-check interface field and method-signature types in the second
+    /// pass, for the same reason as enum payloads: collection swallows their
+    /// resolution errors (issue #289). `type_params` are the interface's own
+    /// type parameters, skipped so a signature referencing one is not mistaken
+    /// for a generic type.
+    fn validate_interface_member_type_arities(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        fields: &[Field],
+        methods: &[FunctionNode],
+    ) {
+        let mut errors = Vec::new();
+        for field in fields {
+            if let Err(e) = self.validate_type_arity(&field.type_, type_params) {
+                errors.push(e);
+            }
+        }
+        for method in methods {
+            // A method's own generic parameters are in scope for its signature
+            // in addition to the interface's.
+            let params: Vec<(String, Vec<TraitBound>)> = type_params
+                .iter()
+                .cloned()
+                .chain(method.type_params.iter().cloned())
+                .collect();
+            for param in &method.params {
+                if let Err(e) = self.validate_type_arity(&param.type_, &params) {
+                    errors.push(e);
+                }
+            }
+            if let Err(e) = self.validate_type_arity(&method.return_type, &params) {
+                errors.push(e);
+            }
+        }
+        self.errors.extend(errors);
     }
 
     pub(super) fn analyze_function(

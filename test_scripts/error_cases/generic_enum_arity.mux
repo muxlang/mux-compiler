@@ -1,0 +1,9 @@
+// mux-compiler#289 review: a generic enum used with the wrong number of type
+// arguments must be rejected (enum symbols now record their type parameters).
+enum MyBox<T> { Of(T), Empty }
+
+class Container {
+    MyBox<int, string> b
+}
+
+print("unreachable")

@@ -1,11 +1,11 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Cannot call non-function type
+error: 'Foo' is a type and cannot be called
 --> test_scripts/error_cases/semantic_class_without_new.mux:5:10
    |
  5 | auto f = Foo()
    |          ^^^
    |
-= help: Only functions can be called with '()'. Ensure the expression before '()' is a function.
+= help: 'Foo' is a class; construct an instance with Foo.new()

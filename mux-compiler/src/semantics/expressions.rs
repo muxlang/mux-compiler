@@ -49,7 +49,14 @@ impl SemanticAnalyzer {
             } => self.analyze_unary_expr(expr, op, *op_span),
             ExpressionKind::Call { func, args } => self.analyze_call_expr(expr, func, args),
             ExpressionKind::FieldAccess { expr, .. } => {
-                self.analyze_expression(expr)?;
+                // A bare type name as the base of a field access is a
+                // type-qualified access (Status.Active, Math.pi, Class.method),
+                // not a value use of the type, so skip the value-position
+                // rejection in analyze_identifier_expr (issue #286). The access
+                // itself is still validated via get_expression_type below.
+                if !self.is_type_name_identifier(expr) {
+                    self.analyze_expression(expr)?;
+                }
                 let _ = self.get_expression_type(expr)?;
                 Ok(())
             }
@@ -89,6 +96,31 @@ impl SemanticAnalyzer {
         if name == "self" {
             return self.analyze_self_identifier(expr);
         }
+        // A declared type name (class, enum, interface, or a generic type
+        // parameter) is not a value. Reject it in value position with a semantic
+        // diagnostic rather than letting it flow to codegen as an "Undefined
+        // variable" internal error (issue #286). Type-qualified accesses
+        // (Status.Active, Class.method) never reach here - their base is handled
+        // in the FieldAccess arm.
+        if let Some(kind) = self.type_name_kind(name) {
+            let help = if self.symbol_has_type_params(name) {
+                format!(
+                    "'{}' is a {} name and needs type arguments to be used, e.g. {}<int>; it is not a value.",
+                    name, kind, name
+                )
+            } else {
+                format!(
+                    "'{}' is a {} name and cannot be used as a value.",
+                    name, kind
+                )
+            };
+            return Err(SemanticError::with_help(
+                format!("'{}' is a type, not a value", name),
+                expr.span,
+                help,
+            ));
+        }
+
         let mut exists_like =
             self.symbol_table.exists(name) || self.get_builtin_sig(name).is_some();
         if !exists_like {
@@ -107,6 +139,34 @@ impl SemanticAnalyzer {
             return Err(self.undefined_symbol_error("variable", name, expr.span));
         }
         Ok(())
+    }
+
+    /// If `name` is a declared type (class, enum, or interface) - something that
+    /// can never be a value - return a human word for it, else `None`. Drives
+    /// the "type, not a value" rejection (issue #286).
+    fn type_name_kind(&self, name: &str) -> Option<&'static str> {
+        match self.symbol_table.lookup(name)?.kind {
+            SymbolKind::Class => Some("class"),
+            SymbolKind::Enum => Some("enum"),
+            SymbolKind::Interface => Some("interface"),
+            _ => None,
+        }
+    }
+
+    /// Whether the type named `name` declares type parameters (a generic type),
+    /// so the "type, not a value" hint can suggest supplying type arguments.
+    fn symbol_has_type_params(&self, name: &str) -> bool {
+        self.symbol_table
+            .lookup(name)
+            .map(|symbol| !symbol.type_params.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Whether `expr` is a bare identifier naming a declared type. Lets a
+    /// type-qualified field-access base (Status.Active, Class.method) bypass the
+    /// value-position rejection that applies to a standalone type name (#286).
+    fn is_type_name_identifier(&self, expr: &ExpressionNode) -> bool {
+        matches!(&expr.kind, ExpressionKind::Identifier(name) if self.type_name_kind(name).is_some())
     }
 
     fn analyze_self_identifier(&self, expr: &ExpressionNode) -> Result<(), SemanticError> {
@@ -270,6 +330,40 @@ impl SemanticAnalyzer {
             && self.get_builtin_sig(name).is_none()
         {
             return Err(self.undefined_symbol_error("function", name, func.span));
+        }
+
+        // A bare type name in call position (Foo(), List()) is not a callable
+        // value; types are constructed or built through their own syntax. Give a
+        // construction-specific hint here rather than the generic "type, not a
+        // value" from analyze_identifier_expr (issue #286).
+        if let ExpressionKind::Identifier(name) = &func.kind
+            && let Some(kind) = self.type_name_kind(name)
+        {
+            let help = match kind {
+                "enum" => format!(
+                    "'{}' is an enum; build a value with one of its variants, e.g. {}.Variant(...)",
+                    name, name
+                ),
+                "interface" => {
+                    format!(
+                        "'{}' is an interface and cannot be instantiated directly",
+                        name
+                    )
+                }
+                _ if self.symbol_has_type_params(name) => format!(
+                    "'{}' is a class; construct an instance with {}<...>.new()",
+                    name, name
+                ),
+                _ => format!(
+                    "'{}' is a class; construct an instance with {}.new()",
+                    name, name
+                ),
+            };
+            return Err(SemanticError::with_help(
+                format!("'{}' is a type and cannot be called", name),
+                func.span,
+                help,
+            ));
         }
 
         self.analyze_expression(func)?;
