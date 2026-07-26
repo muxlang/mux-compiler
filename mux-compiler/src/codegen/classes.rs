@@ -37,7 +37,17 @@ impl<'a> CodeGenerator<'a> {
     }
 
     pub(super) fn generate_user_defined_types(&mut self, nodes: &[AstNode]) -> Result<(), String> {
-        // generate LLVM types for classes, interfaces, enums
+        // A nested user-enum payload is laid out inline (issue #306), so an enum
+        // must be generated after any enum it embeds. Generate enum types in that
+        // dependency order first, independent of source order, so a nested enum
+        // works regardless of which enum is declared first. Class fields of enum
+        // type are likewise stored inline, so classes are generated afterwards
+        // once every enum type exists.
+        for &idx in &self.enum_generation_order(nodes) {
+            if let AstNode::Enum { name, variants, .. } = &nodes[idx] {
+                self.generate_enum_type(name, variants)?;
+            }
+        }
         for node in nodes {
             match node {
                 AstNode::Class { name, fields, .. } => {
@@ -53,13 +63,83 @@ impl<'a> CodeGenerator<'a> {
                 AstNode::Interface { name, .. } => {
                     self.generate_interface_type(name)?;
                 }
-                AstNode::Enum { name, variants, .. } => {
-                    self.generate_enum_type(name, variants)?;
-                }
                 _ => {}
             }
         }
         Ok(())
+    }
+
+    /// Indices of the `AstNode::Enum` nodes in `nodes`, ordered so that an enum
+    /// that embeds another user enum as an inline payload is generated after that
+    /// embedded enum. A cycle (a self- or mutually-embedding enum, which cannot be
+    /// laid out inline) is emitted last in source order; those fall back to a
+    /// pointer slot and are rejected with a clear error at construction.
+    fn enum_generation_order(&self, nodes: &[AstNode]) -> Vec<usize> {
+        let enum_indices: Vec<usize> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| matches!(n, AstNode::Enum { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let enum_names: std::collections::HashSet<&str> = enum_indices
+            .iter()
+            .filter_map(|&i| match &nodes[i] {
+                AstNode::Enum { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        let embedded_enum_deps = |idx: usize| -> Vec<&str> {
+            let AstNode::Enum { name, variants, .. } = &nodes[idx] else {
+                return Vec::new();
+            };
+            let mut deps = Vec::new();
+            for variant in variants {
+                for (_, type_node) in variant.data.iter().flatten() {
+                    if let TypeKind::Named(dep, _) = &type_node.kind
+                        && dep != name
+                        && enum_names.contains(dep.as_str())
+                    {
+                        deps.push(dep.as_str());
+                    }
+                }
+            }
+            deps
+        };
+
+        let mut generated: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut order = Vec::with_capacity(enum_indices.len());
+        loop {
+            let mut progressed = false;
+            for &idx in &enum_indices {
+                let AstNode::Enum { name, .. } = &nodes[idx] else {
+                    continue;
+                };
+                if generated.contains(name.as_str()) {
+                    continue;
+                }
+                if embedded_enum_deps(idx)
+                    .iter()
+                    .all(|dep| generated.contains(dep))
+                {
+                    order.push(idx);
+                    generated.insert(name.as_str());
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
+        // Any enum left over is part of a cycle; append it in source order.
+        for &idx in &enum_indices {
+            if let AstNode::Enum { name, .. } = &nodes[idx]
+                && !generated.contains(name.as_str())
+            {
+                order.push(idx);
+            }
+        }
+        order
     }
 
     pub(super) fn generate_class_type(
@@ -594,6 +674,23 @@ impl<'a> CodeGenerator<'a> {
                 TypeKind::Primitive(PrimitiveType::Bool) => self.context.bool_type().into(),
                 TypeKind::Primitive(PrimitiveType::Str) => {
                     self.context.ptr_type(AddressSpace::default()).into()
+                }
+                // A nested user enum is stored inline as its own struct so its
+                // layout matches the constructor parameter and match load, which
+                // both use the enum struct type (issue #306). Enum types are
+                // generated in dependency order, so the inner type is registered
+                // by now; only a recursive (self- or mutually-embedding) enum
+                // falls back to a pointer here and is rejected with a clear error
+                // at construction rather than corrupting memory.
+                TypeKind::Named(name, _)
+                    if name != "optional"
+                        && name != "result"
+                        && self.enum_variants.contains_key(name) =>
+                {
+                    self.type_map
+                        .get(name)
+                        .copied()
+                        .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into())
                 }
                 _ => self.context.ptr_type(AddressSpace::default()).into(), // default to pointer
             }

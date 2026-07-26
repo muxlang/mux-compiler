@@ -106,18 +106,53 @@ impl<'a> CodeGenerator<'a> {
                 let arg = function
                     .get_nth_param(i as u32)
                     .expect("function parameter should exist at expected index");
-                // The variant takes ownership of a reference-counted payload
-                // (string/list/object), so retain it: the caller frees the value
-                // it passed in as a statement temporary, and the enum must keep
-                // its own reference alive. No-op for unboxed scalar payloads.
-                self.rc_inc_if_pointer(arg)?;
                 let data_ptr = self
                     .builder
                     .build_struct_gep(struct_type, temp_ptr, (i + 1) as u32, "data_ptr")
                     .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_store(data_ptr, arg)
-                    .map_err(|e| e.to_string())?;
+                let nested_enum = variant
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get(i))
+                    .and_then(|field| self.nested_user_enum_name(&field.1));
+                if let Some(inner) = nested_enum {
+                    // A nested user enum is stored inline as its own struct. Its
+                    // layout must match the union slot; a pointer slot means the
+                    // nesting is recursive (a self- or mutually-embedding enum) or
+                    // sits in a mixed union position, neither of which can be laid
+                    // out inline - error cleanly rather than storing a struct into
+                    // a pointer slot and corrupting memory (issue #306).
+                    let slot_is_struct = struct_type
+                        .get_field_type_at_index((i + 1) as u32)
+                        .map(|t| t.is_struct_type())
+                        .unwrap_or(false);
+                    if !slot_is_struct {
+                        return Err(format!(
+                            "Nested enum payload '{}' in variant {}!{} cannot be laid \
+                             out inline (recursive or mutually-referential enums are \
+                             not yet supported)",
+                            inner, name, variant_name
+                        ));
+                    }
+                    self.builder
+                        .build_store(data_ptr, arg)
+                        .map_err(|e| e.to_string())?;
+                    // Mirror rc_inc_if_pointer for a direct pointer payload: this
+                    // variant now owns an independent +1 on the nested enum's
+                    // payloads, so the caller can still release the temporary it
+                    // passed in.
+                    self.emit_enum_retain(&inner, data_ptr)?;
+                } else {
+                    // The variant takes ownership of a reference-counted payload
+                    // (string/list/object), so retain it: the caller frees the
+                    // value it passed in as a statement temporary, and the enum
+                    // must keep its own reference alive. No-op for unboxed scalar
+                    // payloads.
+                    self.rc_inc_if_pointer(arg)?;
+                    self.builder
+                        .build_store(data_ptr, arg)
+                        .map_err(|e| e.to_string())?;
+                }
             }
             // enforce the variant's where clause with its named payload
             // fields readable by name (bound like function parameters)
