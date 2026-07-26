@@ -8,6 +8,34 @@ use inkwell::AddressSpace;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, PointerValue};
 
+/// Which per-payload operation `emit_enum_payload_op` performs on each active
+/// variant pointer field of an inline enum value.
+#[derive(Clone, Copy)]
+enum EnumPayloadOp {
+    /// Decrement the payload's refcount, releasing the value.
+    Drop,
+    /// Replace the payload with an independent `mux_value_deep_clone` of itself.
+    DeepClone,
+}
+
+impl EnumPayloadOp {
+    /// The runtime function applied to each pointer payload.
+    fn runtime_fn_name(self) -> &'static str {
+        match self {
+            EnumPayloadOp::Drop => "mux_rc_dec",
+            EnumPayloadOp::DeepClone => "mux_value_deep_clone",
+        }
+    }
+
+    /// Short slug used in generated basic-block names.
+    fn label(self) -> &'static str {
+        match self {
+            EnumPayloadOp::Drop => "drop",
+            EnumPayloadOp::DeepClone => "clone",
+        }
+    }
+}
+
 impl<'a> CodeGenerator<'a> {
     /// Push a new RC scope onto the stack. Call this when entering a new scope
     /// (function, if/else block, loop body, match arm, etc.)
@@ -122,18 +150,16 @@ impl<'a> CodeGenerator<'a> {
 
     /// Whether an assignment/binding right-hand side produces a freshly-owned
     /// enum value - one whose pointer payloads have already been retained and
-    /// whose ownership transfers into the slot. Only such a value lets the slot
-    /// release its previous enum before storing (issue #290): a borrowed form
-    /// (an identifier or field load) still aliases its source, so dropping the
-    /// old value could free memory the source references or, on self-assignment
-    /// (`s = s`), the value being stored.
+    /// whose ownership transfers into the slot. An owned value is stored
+    /// directly; a borrowed one (an identifier or field load, which still points
+    /// at its source's payloads) is deep-cloned first so the binding owns an
+    /// independent value (`store_struct_value`, issue #298).
     ///
     /// A call (a variant constructor, or a function/method that returns an enum
     /// by value) owns its result. A ternary owns its result when both arms do -
     /// e.g. `cond ? Status.Active(x) : Status.Inactive(y)` is owned - so it must
     /// not be misclassified as borrowed. Every other form (identifier, field or
-    /// index load) is treated as borrowed, keeping the store-without-release
-    /// behavior.
+    /// index load) is treated as borrowed and deep-cloned, which is always safe.
     pub(super) fn rhs_produces_owned_enum(kind: &crate::ast::ExpressionKind) -> bool {
         match kind {
             crate::ast::ExpressionKind::Call { .. } => true,
@@ -183,42 +209,121 @@ impl<'a> CodeGenerator<'a> {
         })
     }
 
-    /// Release the enum value currently in `slot` before it is overwritten, so
-    /// reassigning an enum variable (or rebinding a loop-local each iteration)
-    /// does not leak the previous value's heap payloads (issue #290). A no-op
-    /// unless `resolved_type` is a user enum that owns a pointer payload and the
-    /// incoming value is freshly owned (`rhs_owned`); the slot must already hold
-    /// a valid enum or be zero-initialized, both of which `emit_enum_drop`
-    /// handles null-safely. Storing the new value is the caller's job.
-    pub(super) fn release_enum_slot_before_overwrite(
+    /// Store a struct `value` into `slot`, releasing the slot's previous
+    /// occupant when `release_old` is set. For a payload-bearing user enum this
+    /// applies value semantics: an owned right-hand side (a constructor or call
+    /// result, `rhs_owned`) transfers its payloads directly, while a borrowed
+    /// copy (an identifier or field load, e.g. `auto t = s`) is deep-cloned so
+    /// the binding owns an independent value (issue #298). The independent new
+    /// value is produced before the old one is released, so a self-assignment
+    /// (`t = t`) clones the payloads before they are freed (issue #290).
+    ///
+    /// Any other struct (a scalar-only enum, the built-in optional/result, a
+    /// tuple) owns nothing inline here and is stored directly. `release_old`
+    /// must be false only when the slot has no valid prior value to release (a
+    /// fresh, non-zero-initialized binding).
+    pub(super) fn store_struct_value(
         &mut self,
         slot: PointerValue<'a>,
+        value: BasicValueEnum<'a>,
         resolved_type: &Type,
         rhs_owned: bool,
+        release_old: bool,
     ) -> Result<(), String> {
-        if !rhs_owned {
-            return Ok(());
-        }
-        if let Some(enum_name) = self.user_enum_type_name(resolved_type)
-            && self.enum_has_rc_payload(&enum_name)
-        {
-            self.emit_enum_drop(&enum_name, slot)?;
-        }
+        let enum_name = self
+            .user_enum_type_name(resolved_type)
+            .filter(|name| self.enum_has_rc_payload(name));
+        let to_store = if let Some(enum_name) = &enum_name {
+            let owned = self.materialize_owned_enum(value, enum_name, rhs_owned)?;
+            if release_old {
+                // The slot holds a valid enum or is zero-initialized; emit_enum_drop
+                // is null-safe on the zeroed case (the first loop pass / a skipped
+                // conditional).
+                self.emit_enum_drop(enum_name, slot)?;
+            }
+            owned
+        } else {
+            value
+        };
+        self.builder
+            .build_store(slot, to_store)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
+    /// Produce an owned enum value from `value`: an already-owned right-hand side
+    /// is returned unchanged, while a borrowed copy is deep-cloned so the caller
+    /// can store an independent value (issue #298). The clone spills the value to
+    /// a temporary, deep-clones the active variant's pointer payloads in place
+    /// (leaving the source untouched), and reloads it. A no-op for an owned value
+    /// or an enum with no pointer payloads.
+    fn materialize_owned_enum(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        enum_name: &str,
+        rhs_owned: bool,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if rhs_owned || !self.enum_has_rc_payload(enum_name) {
+            return Ok(value);
+        }
+        let struct_type = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(struct_type)) => *struct_type,
+            Some(_) => {
+                return Err(format!(
+                    "Enum {} type map entry is not a struct type",
+                    enum_name
+                ));
+            }
+            None => return Err(format!("Enum {} not found in type map", enum_name)),
+        };
+        let temp = self.create_entry_alloca(struct_type.into(), "enum_copy_src")?;
+        self.builder
+            .build_store(temp, value)
+            .map_err(|e| e.to_string())?;
+        self.emit_enum_deep_clone(enum_name, temp)?;
+        let owned = self
+            .builder
+            .build_load(struct_type, temp, "enum_copy")
+            .map_err(|e| e.to_string())?;
+        Ok(owned)
+    }
+
     /// Release an inline enum value held at `struct_alloca` by decrementing only
-    /// the pointer payloads of its active variant. The variant is selected at
-    /// runtime by switching on the discriminant, mirroring construction, which
-    /// retains a payload only when it is a pointer (`rc_inc_if_pointer`): a union
-    /// slot typed as a pointer can hold a raw scalar for another variant, so an
-    /// unconditional decrement would corrupt memory. Scalar-only variants fall
-    /// through to the merge block untouched. No-op for enums with no pointer
+    /// the pointer payloads of its active variant (see `emit_enum_payload_op` for
+    /// why the variant is selected at runtime). No-op for enums with no pointer
     /// payloads.
     pub(super) fn emit_enum_drop(
         &mut self,
         enum_name: &str,
         struct_alloca: PointerValue<'a>,
+    ) -> Result<(), String> {
+        self.emit_enum_payload_op(enum_name, struct_alloca, EnumPayloadOp::Drop)
+    }
+
+    /// Deep-clone the pointer payloads of the enum value at `struct_alloca` in
+    /// place, so a copy binding owns an independent value instead of aliasing the
+    /// source (issue #298). Each active-variant pointer payload is replaced with
+    /// a fresh `mux_value_deep_clone` of itself; the source is left untouched.
+    pub(super) fn emit_enum_deep_clone(
+        &mut self,
+        enum_name: &str,
+        struct_alloca: PointerValue<'a>,
+    ) -> Result<(), String> {
+        self.emit_enum_payload_op(enum_name, struct_alloca, EnumPayloadOp::DeepClone)
+    }
+
+    /// Apply `op` to every pointer payload of the active variant of the enum at
+    /// `struct_alloca`, selecting the variant at runtime by switching on the
+    /// discriminant. This mirrors construction, which retains a payload only when
+    /// it is a pointer (`rc_inc_if_pointer`): a union slot typed as a pointer can
+    /// hold a raw scalar for a different variant, so touching it unconditionally
+    /// would corrupt memory. Scalar-only variants fall through to the merge block
+    /// untouched. No-op for enums with no pointer payloads.
+    fn emit_enum_payload_op(
+        &mut self,
+        enum_name: &str,
+        struct_alloca: PointerValue<'a>,
+        op: EnumPayloadOp,
     ) -> Result<(), String> {
         if !self.enum_has_rc_payload(enum_name) {
             return Ok(());
@@ -237,31 +342,33 @@ impl<'a> CodeGenerator<'a> {
             }
             None => return Err(format!("Enum {} not found in type map", enum_name)),
         };
-        let rc_dec = self
-            .runtime_function("mux_rc_dec")
-            .ok_or("mux_rc_dec not found")?;
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let runtime_fn = self
+            .runtime_function(op.runtime_fn_name())
+            .ok_or_else(|| format!("{} not found", op.runtime_fn_name()))?;
+        let label = op.label();
 
         let current_block = self
             .builder
             .get_insert_block()
-            .ok_or("emit_enum_drop: builder has no insertion block")?;
+            .ok_or("emit_enum_payload_op: builder has no insertion block")?;
         let function = current_block
             .get_parent()
-            .ok_or("emit_enum_drop: insertion block has no parent function")?;
+            .ok_or("emit_enum_payload_op: insertion block has no parent function")?;
 
         // Load the discriminant (struct field 0).
         let tag_ptr = self
             .builder
-            .build_struct_gep(struct_type, struct_alloca, 0, "enum_drop_tag_ptr")
+            .build_struct_gep(struct_type, struct_alloca, 0, "enum_op_tag_ptr")
             .map_err(|e| e.to_string())?;
         let discriminant = self
             .builder
-            .build_load(self.context.i32_type(), tag_ptr, "enum_drop_tag")
+            .build_load(self.context.i32_type(), tag_ptr, "enum_op_tag")
             .map_err(|e| e.to_string())?
             .into_int_value();
 
-        let merge_block = self.context.append_basic_block(function, "enum_drop_merge");
+        let merge_block = self
+            .context
+            .append_basic_block(function, &format!("enum_{label}_merge"));
 
         // One switch case per variant that actually owns a pointer payload.
         let variants = self
@@ -285,25 +392,16 @@ impl<'a> CodeGenerator<'a> {
             let index = self.get_variant_index(enum_name, variant)?;
             let case_block = self
                 .context
-                .append_basic_block(function, &format!("enum_drop_{}_{}", enum_name, variant));
+                .append_basic_block(function, &format!("enum_{label}_{enum_name}_{variant}"));
             self.builder.position_at_end(case_block);
             for field_index in pointer_fields {
-                let data_ptr = self
-                    .builder
-                    .build_struct_gep(
-                        struct_type,
-                        struct_alloca,
-                        (field_index + 1) as u32,
-                        "enum_drop_field_ptr",
-                    )
-                    .map_err(|e| e.to_string())?;
-                let payload = self
-                    .builder
-                    .build_load(ptr_type, data_ptr, "enum_drop_payload")
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_call(rc_dec, &[payload.into()], "enum_drop_dec")
-                    .map_err(|e| e.to_string())?;
+                self.emit_enum_payload_field_op(
+                    struct_type,
+                    struct_alloca,
+                    field_index,
+                    runtime_fn,
+                    op,
+                )?;
             }
             self.builder
                 .build_unconditional_branch(merge_block)
@@ -320,6 +418,47 @@ impl<'a> CodeGenerator<'a> {
             .build_switch(discriminant, merge_block, &cases)
             .map_err(|e| e.to_string())?;
         self.builder.position_at_end(merge_block);
+        Ok(())
+    }
+
+    /// Apply `op` to one pointer payload field (`field_index`) of an enum value:
+    /// load the payload, call the op's runtime function, and for a deep clone
+    /// store the returned independent copy back into the field.
+    fn emit_enum_payload_field_op(
+        &mut self,
+        struct_type: inkwell::types::StructType<'a>,
+        struct_alloca: PointerValue<'a>,
+        field_index: usize,
+        runtime_fn: inkwell::values::FunctionValue<'a>,
+        op: EnumPayloadOp,
+    ) -> Result<(), String> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let data_ptr = self
+            .builder
+            .build_struct_gep(
+                struct_type,
+                struct_alloca,
+                (field_index + 1) as u32,
+                "enum_op_field_ptr",
+            )
+            .map_err(|e| e.to_string())?;
+        let payload = self
+            .builder
+            .build_load(ptr_type, data_ptr, "enum_op_payload")
+            .map_err(|e| e.to_string())?;
+        let call = self
+            .builder
+            .build_call(runtime_fn, &[payload.into()], "enum_op_call")
+            .map_err(|e| e.to_string())?;
+        if matches!(op, EnumPayloadOp::DeepClone) {
+            let cloned = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or("mux_value_deep_clone returned no value")?;
+            self.builder
+                .build_store(data_ptr, cloned)
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 

@@ -1289,7 +1289,8 @@ impl<'a> CodeGenerator<'a> {
                 .build_int_sub(current_val, one, "field_decr_result")
         }
         .map_err(|e| e.to_string())?;
-        self.assign_to_field_access(obj, field, new_val.into())?;
+        // The incremented value is a fresh computed result (owned).
+        self.assign_to_field_access(obj, field, new_val.into(), true)?;
         Ok(new_val.into())
     }
 
@@ -2083,7 +2084,7 @@ impl<'a> CodeGenerator<'a> {
                 ..
             } => self.assign_to_deref(deref_expr, right_val),
             ExpressionKind::FieldAccess { expr, field } => {
-                self.assign_to_field_access(expr, field, right_val)
+                self.assign_to_field_access(expr, field, right_val, rhs_owned)
             }
             ExpressionKind::ListAccess {
                 expr: target_expr,
@@ -2099,7 +2100,9 @@ impl<'a> CodeGenerator<'a> {
         right_val: BasicValueEnum<'a>,
         rhs_owned: bool,
     ) -> Result<BasicValueEnum<'a>, String> {
-        if let Some(result) = self.try_assign_identifier_to_method_field(name, right_val)? {
+        if let Some(result) =
+            self.try_assign_identifier_to_method_field(name, right_val, rhs_owned)?
+        {
             return Ok(result);
         }
 
@@ -2126,12 +2129,10 @@ impl<'a> CodeGenerator<'a> {
         if is_enum {
             // Enum values are stored inline (not as owned boxed pointers).
             // Release the slot's previous value's payloads before overwriting so
-            // reassignment does not leak them (issue #290); a no-op for the
-            // built-in optional/result (not user enums) and for a borrowed RHS.
-            self.release_enum_slot_before_overwrite(ptr_copy, &type_node_copy, rhs_owned)?;
-            self.builder
-                .build_store(ptr_copy, right_val)
-                .map_err(|e| e.to_string())?;
+            // reassignment does not leak them (issue #290), and deep-clone a
+            // borrowed copy so it owns an independent value (issue #298). A plain
+            // store for the built-in optional/result (not user enums).
+            self.store_struct_value(ptr_copy, right_val, &type_node_copy, rhs_owned, true)?;
         } else {
             // Value-semantic overwrite: copy a borrowed value type so `x = y`
             // does not alias, release the previous occupant, then store.
@@ -2140,10 +2141,69 @@ impl<'a> CodeGenerator<'a> {
         Ok(right_val)
     }
 
+    /// If `class_name.field` is a user enum that owns a pointer payload, return
+    /// its enum name. Used to route field assignment through the enum
+    /// deep-clone/release path rather than a raw inline store (issue #298).
+    fn field_user_enum_name(&self, class_name: &str, field: &str) -> Option<String> {
+        let fields = self.classes.get(class_name)?;
+        let field_decl = fields.iter().find(|f| f.name == field)?;
+        let TypeKind::Named(name, _) = &field_decl.type_.kind else {
+            return None;
+        };
+        (self.enum_variants.contains_key(name) && self.enum_has_rc_payload(name))
+            .then(|| name.clone())
+    }
+
+    /// Store `value` into a class field slot, releasing the field's previous
+    /// occupant. A boxed-pointer field retains the new value then releases the
+    /// old pointer; an inline enum field is deep-cloned when it is a borrowed
+    /// copy and its previous payload released, via `store_struct_value` (issues
+    /// #290/#298). Retain/clone happens before the release so `self.x = self.x`
+    /// stays safe. Other inline structs own nothing here and are stored directly.
+    fn store_class_field(
+        &mut self,
+        class_name: &str,
+        field: &str,
+        field_ptr: PointerValue<'a>,
+        value: BasicValueEnum<'a>,
+        rhs_owned: bool,
+    ) -> Result<(), String> {
+        if value.is_struct_value() {
+            if let Some(enum_name) = self.field_user_enum_name(class_name, field) {
+                let field_type = Type::Named(enum_name, Vec::new());
+                return self.store_struct_value(field_ptr, value, &field_type, rhs_owned, true);
+            }
+            return self
+                .builder
+                .build_store(field_ptr, value)
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
+        self.rc_inc_if_pointer(value)?;
+        if value.is_pointer_value() {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let old = self
+                .builder
+                .build_load(ptr_type, field_ptr, "old_field_val")
+                .map_err(|e| e.to_string())?;
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            self.builder
+                .build_call(rc_dec, &[old.into()], "rc_dec_old_field")
+                .map_err(|e| e.to_string())?;
+        }
+        self.builder
+            .build_store(field_ptr, value)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     fn try_assign_identifier_to_method_field(
         &mut self,
         name: &str,
         right_val: BasicValueEnum<'a>,
+        rhs_owned: bool,
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
         let Some(func_name) = self.current_function_name.as_ref() else {
             return Ok(None);
@@ -2188,27 +2248,7 @@ impl<'a> CodeGenerator<'a> {
                 &format!("{}_ptr", name),
             )
             .map_err(|e| e.to_string())?;
-        // Retain the new value, then release the field's previous occupant
-        // (boxed-pointer fields only) so `self.x = ...` inside a method does not
-        // leak the value it overwrites. Retain-before-release keeps self-assign
-        // safe.
-        self.rc_inc_if_pointer(right_val)?;
-        if right_val.is_pointer_value() {
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let old = self
-                .builder
-                .build_load(ptr_type, field_ptr, "old_field_val")
-                .map_err(|e| e.to_string())?;
-            let rc_dec = self
-                .runtime_function("mux_rc_dec")
-                .ok_or("mux_rc_dec not found")?;
-            self.builder
-                .build_call(rc_dec, &[old.into()], "rc_dec_old_field")
-                .map_err(|e| e.to_string())?;
-        }
-        self.builder
-            .build_store(field_ptr, right_val)
-            .map_err(|e| e.to_string())?;
+        self.store_class_field(&class_name, name, field_ptr, right_val, rhs_owned)?;
         self.emit_field_assignment_invariants(&class_name, name, data_ptr, "where_inv_self")?;
         Ok(Some(right_val))
     }
@@ -2242,6 +2282,7 @@ impl<'a> CodeGenerator<'a> {
         expr: &ExpressionNode,
         field: &str,
         right_val: BasicValueEnum<'a>,
+        rhs_owned: bool,
     ) -> Result<BasicValueEnum<'a>, String> {
         let struct_ptr = self.resolve_struct_pointer_for_field_access(expr, "data_ptr_assign")?;
         let class_name = self
@@ -2250,27 +2291,7 @@ impl<'a> CodeGenerator<'a> {
         let field_ptr = self.resolve_struct_field_pointer(&class_name, field, struct_ptr)?;
         let value_to_store = self.compute_field_store_value(&class_name, field, right_val)?;
 
-        // Retain the new value first, then release the field's previous occupant
-        // (boxed-pointer fields only; enum fields are stored inline). Retaining
-        // before releasing keeps `self.x = self.x` safe, and releasing the old
-        // value stops reassignment from leaking it.
-        self.rc_inc_if_pointer(value_to_store)?;
-        if value_to_store.is_pointer_value() {
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let old = self
-                .builder
-                .build_load(ptr_type, field_ptr, "old_field_val")
-                .map_err(|e| e.to_string())?;
-            let rc_dec = self
-                .runtime_function("mux_rc_dec")
-                .ok_or("mux_rc_dec not found")?;
-            self.builder
-                .build_call(rc_dec, &[old.into()], "rc_dec_old_field")
-                .map_err(|e| e.to_string())?;
-        }
-        self.builder
-            .build_store(field_ptr, value_to_store)
-            .map_err(|e| e.to_string())?;
+        self.store_class_field(&class_name, field, field_ptr, value_to_store, rhs_owned)?;
         self.emit_field_assignment_invariants(&class_name, field, struct_ptr, "where_inv")?;
         Ok(right_val)
     }
@@ -2601,7 +2622,8 @@ impl<'a> CodeGenerator<'a> {
                 Ok(result)
             }
             ExpressionKind::FieldAccess { expr, field } => {
-                self.assign_to_field_access(expr, field, result)?;
+                // A compound-assignment result is a fresh computed value (owned).
+                self.assign_to_field_access(expr, field, result, true)?;
                 Ok(result)
             }
             _ => Err("Assignment to non-identifier/deref/field not implemented".to_string()),
