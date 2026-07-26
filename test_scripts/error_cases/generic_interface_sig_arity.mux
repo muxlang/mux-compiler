@@ -1,0 +1,9 @@
+// mux-compiler#289 / #299 review: a generic type with the wrong arity in an
+// interface method signature must be rejected, including a forward reference.
+interface Producer {
+    func make() returns Pair<int>
+}
+
+class Pair<A, B> {}
+
+print("unreachable")

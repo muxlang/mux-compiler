@@ -41,6 +41,32 @@ type GenericBounds = Vec<GenericBound>;
 type ResolvedInterface = (Vec<Type>, HashMap<String, MethodSig>);
 type ClassFieldInfo = (Type, bool);
 
+/// The number of type arguments a built-in generic type requires, or `None` for
+/// a name that is not a built-in generic. Used to reject a built-in collection
+/// or wrapper written without its type arguments (issue #289).
+fn builtin_generic_arity(name: &str) -> Option<usize> {
+    match name {
+        "list" | "set" | "optional" => Some(1),
+        "map" | "result" | "tuple" => Some(2),
+        _ => None,
+    }
+}
+
+/// A `help` line showing a correctly parameterized form of a built-in generic,
+/// for the "requires type argument(s)" diagnostic (issue #289).
+fn missing_type_args_help(name: &str) -> String {
+    let example = match name {
+        "list" => "list<int>",
+        "set" => "set<int>",
+        "map" => "map<string, int>",
+        "tuple" => "tuple<int, string>",
+        "optional" => "optional<int>",
+        "result" => "result<int, Error>",
+        _ => "Type<...>",
+    };
+    format!("Add the type argument(s) in angle brackets, e.g. {example}")
+}
+
 pub struct SemanticAnalyzer {
     pub(super) symbol_table: SymbolTable,
     current_bounds: std::collections::HashMap<String, GenericBounds>,
@@ -607,7 +633,14 @@ impl SemanticAnalyzer {
         self.collect_interface_preconditions(ast);
         self.collect_where_preconditions(ast);
         self.analyze_nodes(ast, files);
-        std::mem::take(&mut self.errors)
+        // Two-pass analysis (hoist/collection, then body analysis) can resolve
+        // the same field or signature type twice, so a type error on it is
+        // recorded twice. Collapse exact duplicates - identical message and
+        // span - so each distinct problem is reported once.
+        let mut errors = std::mem::take(&mut self.errors);
+        let mut seen = HashSet::new();
+        errors.retain(|e| seen.insert((e.message.clone(), e.span)));
+        errors
     }
 
     fn add_builtin_functions(&mut self) {
@@ -664,40 +697,7 @@ impl SemanticAnalyzer {
                 )),
             },
             TypeKind::Named(name, type_args) => {
-                // Handle type parameters (generic type variables)
-                if type_args.is_empty()
-                    && let Some(symbol) = self.symbol_table.lookup(name)
-                    && matches!(symbol.kind, SymbolKind::Type)
-                {
-                    return Ok(Type::Variable(name.clone()));
-                }
-
-                // Handle built-in generic types
-                if name == "optional" && type_args.len() == 1 {
-                    let resolved_arg = self.resolve_type(&type_args[0])?;
-                    return Ok(Type::Optional(Box::new(resolved_arg)));
-                } else if name == "result" && type_args.len() == 2 {
-                    let resolved_ok = self.resolve_type(&type_args[0])?;
-                    let resolved_err = self.resolve_type(&type_args[1])?;
-                    if !self.type_implements_interface(&resolved_err, "Error") {
-                        return Err(SemanticError::with_help(
-                            format!(
-                                "Result error type must implement Error, but found {}",
-                                format_type(&resolved_err)
-                            ),
-                            type_node.span,
-                            "Use an error type that implements Error (requires message() -> string).",
-                        ));
-                    }
-                    return Ok(Type::Result(Box::new(resolved_ok), Box::new(resolved_err)));
-                }
-
-                // named types are assumed to be classes, enums, or interfaces
-                let resolved_args = type_args
-                    .iter()
-                    .map(|arg| self.resolve_type(arg))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(Type::Named(name.clone(), resolved_args))
+                self.resolve_named_type(name, type_args, type_node.span)
             }
             TypeKind::Function { params, returns } => {
                 let resolved_params = params
@@ -746,6 +746,150 @@ impl SemanticAnalyzer {
                 type_node.span,
                 "Use an explicit type annotation instead of 'auto'",
             )),
+        }
+    }
+
+    /// Resolve a `TypeKind::Named` annotation: a generic type parameter, a
+    /// built-in wrapper (`optional`/`result`), or a user class/enum/interface.
+    /// Split out of `resolve_type` to keep that dispatcher's cognitive
+    /// complexity within the gate (SonarQube rust:S3776).
+    fn resolve_named_type(
+        &self,
+        name: &str,
+        type_args: &[TypeNode],
+        span: Span,
+    ) -> Result<Type, SemanticError> {
+        // A generic type parameter (e.g. `T`) resolves to a type variable.
+        if type_args.is_empty()
+            && let Some(symbol) = self.symbol_table.lookup(name)
+            && matches!(symbol.kind, SymbolKind::Type)
+        {
+            return Ok(Type::Variable(name.to_string()));
+        }
+
+        // Correctly-parameterized built-in wrappers.
+        if name == "optional" && type_args.len() == 1 {
+            let resolved_arg = self.resolve_type(&type_args[0])?;
+            return Ok(Type::Optional(Box::new(resolved_arg)));
+        } else if name == "result" && type_args.len() == 2 {
+            let resolved_ok = self.resolve_type(&type_args[0])?;
+            let resolved_err = self.resolve_type(&type_args[1])?;
+            if !self.type_implements_interface(&resolved_err, "Error") {
+                return Err(SemanticError::with_help(
+                    format!(
+                        "Result error type must implement Error, but found {}",
+                        format_type(&resolved_err)
+                    ),
+                    span,
+                    "Use an error type that implements Error (requires message() -> string).",
+                ));
+            }
+            return Ok(Type::Result(Box::new(resolved_ok), Box::new(resolved_err)));
+        }
+
+        // Built-in generic types always require their type arguments. The
+        // correctly-arg'd forms are handled before reaching here (list/map/set/
+        // tuple become dedicated TypeKind variants in the parser; optional/result
+        // are matched just above), so any of these names arriving here is missing
+        // or has the wrong number of type arguments (issue #289).
+        if let Some(required) = builtin_generic_arity(name) {
+            return Err(SemanticError::with_help(
+                format!(
+                    "'{}' requires {} type argument{}, got {}",
+                    name,
+                    required,
+                    if required == 1 { "" } else { "s" },
+                    type_args.len()
+                ),
+                span,
+                missing_type_args_help(name),
+            ));
+        }
+
+        // A user-declared generic type used without (or with the wrong number
+        // of) type arguments; non-generic named types have no type parameters
+        // and are unaffected (issue #289).
+        if let Some(symbol) = self.symbol_table.lookup(name)
+            && !symbol.type_params.is_empty()
+        {
+            self.validate_type_argument_count(name, &symbol, type_args, span)?;
+        }
+
+        // Named types are otherwise assumed to be classes, enums, or interfaces.
+        let resolved_args = type_args
+            .iter()
+            .map(|arg| self.resolve_type(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Type::Named(name.to_string(), resolved_args))
+    }
+
+    /// Validate only the generic arity of every named type inside `type_node`,
+    /// recursing into type arguments and element types. Unlike `resolve_type`
+    /// this reports nothing but arity mismatches (issue #289): it does not
+    /// resolve names, so it never false-positives on a forward reference to a
+    /// not-yet-registered type, and it skips the Result-error-implements-Error
+    /// check. Used in the second analysis pass to arity-check enum variant
+    /// payloads and interface member signatures, whose types the collection pass
+    /// resolves with errors swallowed (unlike class fields, which are
+    /// re-resolved in `analyze_class`).
+    ///
+    /// `local_params` are the enclosing declaration's type parameters (e.g. `T`
+    /// in `enum E<T>`). They are type variables, not generic types, so a name
+    /// matching one is skipped - otherwise a payload like `V(T)` could be
+    /// mistaken for an unrelated global generic that happens to be named `T`.
+    pub(super) fn validate_type_arity(
+        &self,
+        type_node: &TypeNode,
+        local_params: &[(String, Vec<TraitBound>)],
+    ) -> Result<(), SemanticError> {
+        match &type_node.kind {
+            TypeKind::Named(name, args) => {
+                let is_local_param = local_params.iter().any(|(p, _)| p == name);
+                if !is_local_param {
+                    if let Some(required) = builtin_generic_arity(name) {
+                        if args.len() != required {
+                            return Err(SemanticError::with_help(
+                                format!(
+                                    "'{}' requires {} type argument{}, got {}",
+                                    name,
+                                    required,
+                                    if required == 1 { "" } else { "s" },
+                                    args.len()
+                                ),
+                                type_node.span,
+                                missing_type_args_help(name),
+                            ));
+                        }
+                    } else if let Some(symbol) = self.symbol_table.lookup(name)
+                        && !symbol.type_params.is_empty()
+                    {
+                        self.validate_type_argument_count(name, &symbol, args, type_node.span)?;
+                    }
+                }
+                for arg in args {
+                    self.validate_type_arity(arg, local_params)?;
+                }
+                Ok(())
+            }
+            TypeKind::List(inner) | TypeKind::Set(inner) | TypeKind::Reference(inner) => {
+                self.validate_type_arity(inner, local_params)
+            }
+            TypeKind::Map(key, value) => {
+                self.validate_type_arity(key, local_params)?;
+                self.validate_type_arity(value, local_params)
+            }
+            TypeKind::Tuple(left, right) => {
+                self.validate_type_arity(left, local_params)?;
+                self.validate_type_arity(right, local_params)
+            }
+            TypeKind::Function { params, returns } => {
+                for param in params {
+                    self.validate_type_arity(param, local_params)?;
+                }
+                self.validate_type_arity(returns, local_params)
+            }
+            TypeKind::TraitObject(inner) => self.validate_type_arity(inner, local_params),
+            TypeKind::Primitive(_) | TypeKind::Auto => Ok(()),
         }
     }
 
