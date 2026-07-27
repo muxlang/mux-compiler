@@ -1,0 +1,12 @@
+// Should fail: a field default must match the field's declared type. The default
+// is now an arbitrary expression (issue #287), so this is checked in semantic
+// analysis and reported at the field, not as a confusing error at a later use.
+
+class Bag {
+    int count = "not a number"
+}
+
+func main() returns void {
+    auto b = Bag.new()
+    return
+}

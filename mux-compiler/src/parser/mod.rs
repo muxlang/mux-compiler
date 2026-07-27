@@ -425,7 +425,20 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-            self.parse_class_member(type_params, start_span, &mut fields, &mut methods)?;
+            let member_start = self.current;
+            // Recover within the class body: a bad member (e.g. a malformed
+            // field default) records its error and resynchronizes to the next
+            // member or the closing brace, rather than aborting the whole class
+            // and misparsing '}' as a stray top-level token (issue #288).
+            if let Err(e) =
+                self.parse_class_member(type_params, start_span, &mut fields, &mut methods)
+            {
+                self.errors.push(e);
+                self.synchronize();
+                if self.current == member_start {
+                    self.advance();
+                }
+            }
         }
         Ok((fields, methods))
     }
@@ -3237,19 +3250,11 @@ impl<'a> Parser<'a> {
         let field_type = self.parse_type()?;
         let field_name = self.consume_identifier("Expected field name")?;
 
-        // Check for optional default value
+        // Check for optional default value. Any expression is allowed; it is
+        // evaluated per instance when the constructor (`.new()`) runs, and its
+        // type is checked against the field in semantic analysis.
         let default_value = if self.matches(&[TokenType::Eq]) {
-            let expr = self.parse_primary()?;
-
-            // Validate it's a literal expression
-            if !Self::is_literal_expression(&expr) {
-                return Err(ParserError::with_help(
-                    "Field default values must be literals",
-                    expr.span,
-                    "Only literal values (int, float, string, bool, char) are allowed as field defaults. Example: int count = 0",
-                ));
-            }
-            Some(expr)
+            Some(self.parse_expression()?)
         } else {
             None
         };
