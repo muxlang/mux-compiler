@@ -4707,44 +4707,7 @@ impl<'a> CodeGenerator<'a> {
         }
 
         if indices.len() == 1 {
-            // BASE CASE: Simple assignment base[index] = value
-            // Determine if base is a List or Map and call appropriate function
-            let base_type = self.get_resolved_expression_type(base_expr)?;
-
-            let base_val = self.generate_expression(base_expr)?;
-            let index_val = self.generate_expression(indices[0])?;
-
-            match base_type {
-                crate::semantics::Type::List(_) => {
-                    self.builder
-                        .build_call(
-                            self.runtime_function("mux_list_set_value")
-                                .expect("mux_list_set_value must be declared in runtime"),
-                            &[base_val.into(), index_val.into(), value.into()],
-                            "nested_list_set_direct",
-                        )
-                        .map_err(|e| e.to_string())?;
-                }
-                crate::semantics::Type::Map(_, _) => {
-                    let boxed_key = self.box_value(index_val);
-                    self.builder
-                        .build_call(
-                            self.runtime_function("mux_map_put_value")
-                                .expect("mux_map_put_value must be declared in runtime"),
-                            &[base_val.into(), boxed_key.into(), value.into()],
-                            "nested_map_set_direct",
-                        )
-                        .map_err(|e| e.to_string())?;
-                }
-                _ => {
-                    return Err(format!(
-                        "Cannot assign to index on non-list/map type: {:?}",
-                        base_type
-                    ));
-                }
-            }
-
-            Ok(())
+            self.assign_single_collection_index(base_expr, indices[0], value)
         } else {
             // RECURSIVE CASE: base[i1][i2]...[iN] = value where N > 1
             // Strategy:
@@ -4879,6 +4842,49 @@ impl<'a> CodeGenerator<'a> {
             }
 
             Ok(())
+        }
+    }
+
+    /// Base case of a nested collection assignment: a single-index write into a
+    /// list or map. An enum map key is boxed as a managed value so it matches the
+    /// map's stored keys (issue #309).
+    fn assign_single_collection_index(
+        &mut self,
+        base_expr: &ExpressionNode,
+        index: &ExpressionNode,
+        value: BasicValueEnum<'a>,
+    ) -> Result<(), String> {
+        let base_type = self.get_resolved_expression_type(base_expr)?;
+        let base_val = self.generate_expression(base_expr)?;
+        let index_val = self.generate_expression(index)?;
+        match base_type {
+            crate::semantics::Type::List(_) => {
+                self.builder
+                    .build_call(
+                        self.runtime_function("mux_list_set_value")
+                            .expect("mux_list_set_value must be declared in runtime"),
+                        &[base_val.into(), index_val.into(), value.into()],
+                        "nested_list_set_direct",
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            crate::semantics::Type::Map(key_type, _) => {
+                let boxed_key = self.box_enum_or_value(index_val, &key_type)?;
+                self.builder
+                    .build_call(
+                        self.runtime_function("mux_map_put_value")
+                            .expect("mux_map_put_value must be declared in runtime"),
+                        &[base_val.into(), boxed_key.into(), value.into()],
+                        "nested_map_set_direct",
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            other => Err(format!(
+                "Cannot assign to index on non-list/map type: {:?}",
+                other
+            )),
         }
     }
 
