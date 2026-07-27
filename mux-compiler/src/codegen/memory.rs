@@ -723,16 +723,14 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         value: BasicValueEnum<'a>,
         elem_type: &Type,
-    ) -> PointerValue<'a> {
+    ) -> Result<PointerValue<'a>, String> {
         if value.is_struct_value()
             && let Some(enum_name) = self.user_enum_type_name(elem_type)
             && self.enum_has_rc_payload(&enum_name)
         {
-            return self
-                .box_enum_managed(value.into_struct_value(), &enum_name)
-                .expect("boxing an RC-payload enum should succeed");
+            return self.box_enum_managed(value.into_struct_value(), &enum_name);
         }
-        self.box_value(value)
+        Ok(self.box_value(value))
     }
 
     /// Box an RC-payload enum value into a managed `BoxedEnum` (issue #309) so

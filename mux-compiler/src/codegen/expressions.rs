@@ -1044,7 +1044,7 @@ impl<'a> CodeGenerator<'a> {
         for element in elements {
             let elem_val = self.generate_expression(element)?;
             let elem_type = self.resolve_expression_type_with_fallback(element)?;
-            let elem_ptr = self.box_enum_or_value(elem_val, &elem_type);
+            let elem_ptr = self.box_enum_or_value(elem_val, &elem_type)?;
             self.generate_runtime_call("mux_list_push_back", &[list_ptr.into(), elem_ptr.into()]);
         }
         let list_value = self
@@ -1064,10 +1064,10 @@ impl<'a> CodeGenerator<'a> {
         for (key, value) in entries {
             let key_val = self.generate_expression(key)?;
             let key_type = self.resolve_expression_type_with_fallback(key)?;
-            let key_ptr = self.box_enum_or_value(key_val, &key_type);
+            let key_ptr = self.box_enum_or_value(key_val, &key_type)?;
             let value_val = self.generate_expression(value)?;
             let value_type = self.resolve_expression_type_with_fallback(value)?;
-            let value_ptr = self.box_enum_or_value(value_val, &value_type);
+            let value_ptr = self.box_enum_or_value(value_val, &value_type)?;
             self.generate_runtime_call(
                 "mux_map_put",
                 &[map_ptr.into(), key_ptr.into(), value_ptr.into()],
@@ -1116,7 +1116,7 @@ impl<'a> CodeGenerator<'a> {
         for element in elements {
             let elem_val = self.generate_expression(element)?;
             let elem_type = self.resolve_expression_type_with_fallback(element)?;
-            let elem_ptr = self.box_enum_or_value(elem_val, &elem_type);
+            let elem_ptr = self.box_enum_or_value(elem_val, &elem_type)?;
             self.generate_runtime_call("mux_set_add", &[set_ptr.into(), elem_ptr.into()]);
         }
         let set_value = self
