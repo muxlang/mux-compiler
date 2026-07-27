@@ -132,6 +132,12 @@ pub struct CodeGenerator<'a> {
     /// with `rc_scope_stack`.
     closure_scope_stack: Vec<Vec<(String, PointerValue<'a>)>>,
     source_name: String,
+    /// ABI type sizing used to pick a union slot large enough for every variant
+    /// at a heterogeneous enum payload position (issue #309). Built from LLVM's
+    /// default data layout; only relative size/alignment comparisons are used, so
+    /// the exact target layout is irrelevant (clang lays out the real struct from
+    /// the field types the slot ultimately holds).
+    target_data: inkwell::targets::TargetData,
 }
 
 impl<'a> CodeGenerator<'a> {
@@ -705,7 +711,13 @@ impl<'a> CodeGenerator<'a> {
             enum_temp_values: Vec::new(),
             closure_scope_stack: Vec::new(),
             source_name: source_name.to_string(),
+            target_data: inkwell::targets::TargetData::create(""),
         }
+    }
+
+    /// ABI store size (in bytes) of an LLVM type, used to size enum union slots.
+    pub(super) fn abi_store_size(&self, ty: &BasicTypeEnum<'a>) -> u64 {
+        self.target_data.get_store_size(ty)
     }
 
     /// Render a `file:line:col` location for runtime panic messages, matching

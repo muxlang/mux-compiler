@@ -816,11 +816,38 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    /// Return a user enum by value. The function's LLVM return type is the enum
+    /// struct itself (`{ i32, ... }`), so the inline struct is returned directly
+    /// rather than boxed - boxing produced a `ret ptr` that failed module
+    /// verification against the struct return type (issue #304). An owned result
+    /// (a constructor/call) transfers ownership to the caller and is untracked so
+    /// scope cleanup does not release its payloads; a borrowed value (`return s`)
+    /// is deep-cloned first so the caller owns an independent value while cleanup
+    /// still releases the local it came from.
+    fn return_enum_value(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        enum_name: &str,
+        rhs_owned: bool,
+    ) -> Result<(), String> {
+        let owned = self.materialize_owned_enum(value, enum_name, rhs_owned)?;
+        self.untrack_enum_temp(value);
+        self.generate_all_scopes_cleanup()?;
+        self.builder
+            .build_return(Some(&owned))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     fn generate_typed_return(
         &mut self,
         return_type: ResolvedType,
         value: BasicValueEnum<'a>,
+        rhs_owned: bool,
     ) -> Result<(), String> {
+        if let Some(enum_name) = self.user_enum_type_name(&return_type) {
+            return self.return_enum_value(value, &enum_name, rhs_owned);
+        }
         match return_type {
             ResolvedType::Primitive(PrimitiveType::Int) => {
                 let raw = self.get_raw_int_value(value)?;
@@ -862,7 +889,8 @@ impl<'a> CodeGenerator<'a> {
 
         let value = self.generate_expression(expr)?;
         if let Some(return_type) = self.current_function_return_type.clone() {
-            return self.generate_typed_return(return_type, value);
+            let rhs_owned = Self::rhs_produces_owned_enum(&expr.kind);
+            return self.generate_typed_return(return_type, value, rhs_owned);
         }
 
         let boxed = self.box_value(value);
@@ -1463,10 +1491,20 @@ impl<'a> CodeGenerator<'a> {
                 let variant_index = self.get_variant_index(enum_name, name)?;
                 self.build_discriminant_comparison(discriminant, variant_index)
             }
-            PatternNode::Identifier(_)
-            | PatternNode::Literal(_)
-            | PatternNode::Wildcard
-            | PatternNode::List { .. } => Ok(self.context.bool_type().const_int(1, false)),
+            // A bare identifier that names a variant of the matched enum is a
+            // payload-less variant pattern, not a catch-all binding - a pure
+            // C-style enum is matched with `Red`, `Green`, ... and each must
+            // compare the discriminant rather than always match the first arm
+            // (issue #307). A non-variant identifier is a genuine catch-all.
+            PatternNode::Identifier(name) => match self.get_variant_index(enum_name, name) {
+                Ok(variant_index) => {
+                    self.build_discriminant_comparison(discriminant, variant_index)
+                }
+                Err(_) => Ok(self.context.bool_type().const_int(1, false)),
+            },
+            PatternNode::Literal(_) | PatternNode::Wildcard | PatternNode::List { .. } => {
+                Ok(self.context.bool_type().const_int(1, false))
+            }
         }
     }
 
@@ -1617,21 +1655,6 @@ impl<'a> CodeGenerator<'a> {
                     .builder
                     .build_load(field_type, data_ptr, "data")
                     .map_err(|e| e.to_string())?;
-                let boxed = self.box_value(data_val);
-                let ptr_type = self.context.ptr_type(AddressSpace::default());
-                let alloca = self
-                    .builder
-                    .build_alloca(ptr_type, var)
-                    .map_err(|e| e.to_string())?;
-                self.builder
-                    .build_store(alloca, boxed)
-                    .map_err(|e| e.to_string())?;
-
-                // Note: for custom enums the payload is loaded directly from the
-                // enum struct (a borrow), so it is intentionally NOT registered
-                // as an owned temporary here - the enum owns it. Only scalar
-                // payloads, which `box_value` freshly boxes and self-registers,
-                // are released as temporaries.
                 let resolved_type = self.variant_field_resolved_type(
                     enum_name,
                     variant_name,
@@ -1639,8 +1662,42 @@ impl<'a> CodeGenerator<'a> {
                     i,
                 )?;
 
+                // A nested user-enum payload is kept as its inline struct value so
+                // downstream uses see a real enum (loadable, re-matchable), not a
+                // boxed Opaque (issue #306). Any other payload is boxed to a
+                // *mut Value the way enum locals expect.
+                let (alloca, stored_type) = if self
+                    .nested_user_enum_name(&field_types_clone[i].1)
+                    .is_some()
+                {
+                    let alloca = self
+                        .builder
+                        .build_alloca(field_type, var)
+                        .map_err(|e| e.to_string())?;
+                    self.builder
+                        .build_store(alloca, data_val)
+                        .map_err(|e| e.to_string())?;
+                    (alloca, field_type)
+                } else {
+                    let boxed = self.box_value(data_val);
+                    let ptr_type = self.context.ptr_type(AddressSpace::default());
+                    let alloca = self
+                        .builder
+                        .build_alloca(ptr_type, var)
+                        .map_err(|e| e.to_string())?;
+                    self.builder
+                        .build_store(alloca, boxed)
+                        .map_err(|e| e.to_string())?;
+                    (alloca, ptr_type.into())
+                };
+
+                // Note: for custom enums the payload is loaded directly from the
+                // enum struct (a borrow), so it is intentionally NOT registered
+                // as an owned temporary here - the enum owns it. Only scalar
+                // payloads, which `box_value` freshly boxes and self-registers,
+                // are released as temporaries.
                 self.variables
-                    .insert(var.clone(), (alloca, ptr_type.into(), resolved_type));
+                    .insert(var.clone(), (alloca, stored_type, resolved_type));
             }
         }
 

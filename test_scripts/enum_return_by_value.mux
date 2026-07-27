@@ -1,0 +1,33 @@
+// Returning a user enum by value (issue #304). The function's return type is the
+// enum struct itself, so the inline value is returned directly rather than boxed.
+// Covers an owned result (a constructor) and a borrowed one (returning a bound
+// parameter), both of which must hand the caller an independent, leak-free value.
+
+enum Status { Active(string), Inactive(int) }
+
+func make(string label) returns Status {
+    return Status.Active(label)
+}
+
+func passthrough(Status s) returns Status {
+    return s
+}
+
+func report(Status s) returns void {
+    match s {
+        Active(m) { print(m) }
+        Inactive(n) { print("inactive") }
+    }
+    return
+}
+
+func main() returns void {
+    auto a = make("owned")
+    report(a)
+
+    auto b = passthrough(a)
+    report(b)
+    report(a)
+
+    return
+}

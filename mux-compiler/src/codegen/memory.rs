@@ -12,6 +12,8 @@ use inkwell::values::{BasicValueEnum, PointerValue};
 /// variant pointer field of an inline enum value.
 #[derive(Clone, Copy)]
 enum EnumPayloadOp {
+    /// Increment the payload's refcount, so a new owner shares it.
+    Retain,
     /// Decrement the payload's refcount, releasing the value.
     Drop,
     /// Replace the payload with an independent `mux_value_deep_clone` of itself.
@@ -22,6 +24,7 @@ impl EnumPayloadOp {
     /// The runtime function applied to each pointer payload.
     fn runtime_fn_name(self) -> &'static str {
         match self {
+            EnumPayloadOp::Retain => "mux_rc_inc",
             EnumPayloadOp::Drop => "mux_rc_dec",
             EnumPayloadOp::DeepClone => "mux_value_deep_clone",
         }
@@ -30,6 +33,7 @@ impl EnumPayloadOp {
     /// Short slug used in generated basic-block names.
     fn label(self) -> &'static str {
         match self {
+            EnumPayloadOp::Retain => "retain",
             EnumPayloadOp::Drop => "drop",
             EnumPayloadOp::DeepClone => "clone",
         }
@@ -193,21 +197,81 @@ impl<'a> CodeGenerator<'a> {
         self.enum_variants.contains_key(name).then(|| name.clone())
     }
 
+    /// If the enum-variant field `type_node` denotes a user-declared enum stored
+    /// inline (not the built-in `optional`/`result`, which are boxed `*mut Value`),
+    /// return that enum's name. A nested user enum is laid out inline in the
+    /// containing enum's union slot, so its own payloads need recursive
+    /// drop/clone/retain glue.
+    pub(super) fn nested_user_enum_name(&self, type_node: &crate::ast::TypeNode) -> Option<String> {
+        let crate::ast::TypeKind::Named(name, _) = &type_node.kind else {
+            return None;
+        };
+        if name == "optional" || name == "result" {
+            return None;
+        }
+        self.enum_variants.contains_key(name).then(|| name.clone())
+    }
+
+    /// Whether `from` embeds `target` as a nested user-enum payload, directly or
+    /// transitively. Used to tell a recursive enum (no finite inline layout) from
+    /// a merely heterogeneous union position when reporting a layout error.
+    pub(super) fn enum_embeds(&self, from: &str, target: &str) -> bool {
+        self.enum_embeds_rec(from, target, &mut std::collections::HashSet::new())
+    }
+
+    fn enum_embeds_rec(
+        &self,
+        from: &str,
+        target: &str,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        if !visited.insert(from.to_string()) {
+            return false;
+        }
+        let Some(variant_fields) = self.enum_variant_fields.get(from) else {
+            return false;
+        };
+        variant_fields.values().flatten().any(|(_, type_node)| {
+            self.nested_user_enum_name(type_node).is_some_and(|inner| {
+                inner == target || self.enum_embeds_rec(&inner, target, visited)
+            })
+        })
+    }
+
     /// Whether any variant of `enum_name` carries at least one pointer (RC)
-    /// payload field. Enums that only hold inline scalars (a plain C-style enum)
-    /// own nothing and need no drop-glue, so tracking and `emit_enum_drop` skip
-    /// them entirely.
+    /// payload field - either directly, or nested inside an inline user-enum
+    /// payload. Enums that only hold inline scalars (a plain C-style enum) own
+    /// nothing and need no drop-glue, so tracking and `emit_enum_drop` skip them
+    /// entirely.
     pub(super) fn enum_has_rc_payload(&self, enum_name: &str) -> bool {
+        self.enum_has_rc_payload_rec(enum_name, &mut std::collections::HashSet::new())
+    }
+
+    /// `enum_has_rc_payload` with cycle protection: `visited` breaks the
+    /// recursion on a self-referential enum (which cannot be laid out inline and
+    /// is rejected at construction) instead of looping forever.
+    fn enum_has_rc_payload_rec(
+        &self,
+        enum_name: &str,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        if !visited.insert(enum_name.to_string()) {
+            return false;
+        }
         let Some(variants) = self.enum_variants.get(enum_name).cloned() else {
             return false;
         };
         variants.iter().any(|variant| {
             self.variant_field_types(enum_name, variant)
                 .map(|fields| {
-                    (0..fields.len()).any(|i| {
-                        self.variant_field_llvm_type(enum_name, variant, &fields, i)
-                            .map(|t| t.is_pointer_type())
-                            .unwrap_or(false)
+                    fields.iter().enumerate().any(|(i, field)| {
+                        if let Some(inner) = self.nested_user_enum_name(&field.1) {
+                            self.enum_has_rc_payload_rec(&inner, visited)
+                        } else {
+                            self.variant_field_llvm_type(enum_name, variant, &fields, i)
+                                .map(|t| t.is_pointer_type())
+                                .unwrap_or(false)
+                        }
                     })
                 })
                 .unwrap_or(false)
@@ -344,6 +408,48 @@ impl<'a> CodeGenerator<'a> {
         self.emit_enum_payload_op(enum_name, struct_alloca, EnumPayloadOp::DeepClone)
     }
 
+    /// Retain (bump the refcount of) the pointer payloads of the enum value at
+    /// `struct_alloca`. Used when a constructor stores an inline user-enum payload
+    /// into a containing enum: the containing enum needs its own +1 on the nested
+    /// value's payloads, mirroring `rc_inc_if_pointer` for a direct pointer
+    /// payload (issue #306).
+    pub(super) fn emit_enum_retain(
+        &mut self,
+        enum_name: &str,
+        struct_alloca: PointerValue<'a>,
+    ) -> Result<(), String> {
+        self.emit_enum_payload_op(enum_name, struct_alloca, EnumPayloadOp::Retain)
+    }
+
+    /// Classify the payload fields of `variant` that need RC glue: `None` marks a
+    /// direct pointer payload (handled by a runtime call), `Some(inner)` marks an
+    /// inline nested user enum whose own payloads are handled by recursing into
+    /// `inner`. Fields that carry only inline scalars produce nothing.
+    fn variant_glue_fields(
+        &self,
+        enum_name: &str,
+        variant: &str,
+    ) -> Result<Vec<(usize, Option<String>)>, String> {
+        let fields = self.variant_field_types(enum_name, variant)?;
+        let mut glue = Vec::new();
+        for (i, field) in fields.iter().enumerate() {
+            if let Some(inner) = self.nested_user_enum_name(&field.1) {
+                if self.enum_has_rc_payload(&inner) {
+                    glue.push((i, Some(inner)));
+                }
+                continue;
+            }
+            let is_pointer = self
+                .variant_field_llvm_type(enum_name, variant, &fields, i)
+                .map(|t| t.is_pointer_type())
+                .unwrap_or(false);
+            if is_pointer {
+                glue.push((i, None));
+            }
+        }
+        Ok(glue)
+    }
+
     /// Apply `op` to every pointer payload of the active variant of the enum at
     /// `struct_alloca`, selecting the variant at runtime by switching on the
     /// discriminant. This mirrors construction, which retains a payload only when
@@ -402,7 +508,8 @@ impl<'a> CodeGenerator<'a> {
             .context
             .append_basic_block(function, &format!("enum_{label}_merge"));
 
-        // One switch case per variant that actually owns a pointer payload.
+        // One switch case per variant that actually owns an RC payload (a direct
+        // pointer, or one nested inside an inline user-enum payload).
         let variants = self
             .enum_variants
             .get(enum_name)
@@ -410,15 +517,8 @@ impl<'a> CodeGenerator<'a> {
             .ok_or_else(|| format!("Enum {} has no variant list", enum_name))?;
         let mut cases = Vec::new();
         for variant in &variants {
-            let fields = self.variant_field_types(enum_name, variant)?;
-            let pointer_fields: Vec<usize> = (0..fields.len())
-                .filter(|&i| {
-                    self.variant_field_llvm_type(enum_name, variant, &fields, i)
-                        .map(|t| t.is_pointer_type())
-                        .unwrap_or(false)
-                })
-                .collect();
-            if pointer_fields.is_empty() {
+            let glue_fields = self.variant_glue_fields(enum_name, variant)?;
+            if glue_fields.is_empty() {
                 continue;
             }
             let index = self.get_variant_index(enum_name, variant)?;
@@ -426,14 +526,32 @@ impl<'a> CodeGenerator<'a> {
                 .context
                 .append_basic_block(function, &format!("enum_{label}_{enum_name}_{variant}"));
             self.builder.position_at_end(case_block);
-            for field_index in pointer_fields {
-                self.emit_enum_payload_field_op(
-                    struct_type,
-                    struct_alloca,
-                    field_index,
-                    runtime_fn,
-                    op,
-                )?;
+            for (field_index, nested_enum) in glue_fields {
+                match nested_enum {
+                    // A nested inline user enum: recurse so its own active
+                    // variant's payloads get the same operation.
+                    Some(inner) => {
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                struct_type,
+                                struct_alloca,
+                                (field_index + 1) as u32,
+                                "enum_nested_ptr",
+                            )
+                            .map_err(|e| e.to_string())?;
+                        self.emit_enum_payload_op(&inner, field_ptr, op)?;
+                    }
+                    None => {
+                        self.emit_enum_payload_field_op(
+                            struct_type,
+                            struct_alloca,
+                            field_index,
+                            runtime_fn,
+                            op,
+                        )?;
+                    }
+                }
             }
             self.builder
                 .build_unconditional_branch(merge_block)

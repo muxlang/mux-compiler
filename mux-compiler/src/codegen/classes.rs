@@ -37,7 +37,17 @@ impl<'a> CodeGenerator<'a> {
     }
 
     pub(super) fn generate_user_defined_types(&mut self, nodes: &[AstNode]) -> Result<(), String> {
-        // generate LLVM types for classes, interfaces, enums
+        // A nested user-enum payload is laid out inline (issue #306), so an enum
+        // must be generated after any enum it embeds. Generate enum types in that
+        // dependency order first, independent of source order, so a nested enum
+        // works regardless of which enum is declared first. Class fields of enum
+        // type are likewise stored inline, so classes are generated afterwards
+        // once every enum type exists.
+        for &idx in &self.enum_generation_order(nodes) {
+            if let AstNode::Enum { name, variants, .. } = &nodes[idx] {
+                self.generate_enum_type(name, variants)?;
+            }
+        }
         for node in nodes {
             match node {
                 AstNode::Class { name, fields, .. } => {
@@ -53,13 +63,103 @@ impl<'a> CodeGenerator<'a> {
                 AstNode::Interface { name, .. } => {
                     self.generate_interface_type(name)?;
                 }
-                AstNode::Enum { name, variants, .. } => {
-                    self.generate_enum_type(name, variants)?;
-                }
                 _ => {}
             }
         }
         Ok(())
+    }
+
+    /// Indices of the `AstNode::Enum` nodes in `nodes`, ordered so that an enum
+    /// that embeds another user enum as an inline payload is generated after that
+    /// embedded enum. A cycle (a self- or mutually-embedding enum, which cannot be
+    /// laid out inline) is emitted last in source order; those fall back to a
+    /// pointer slot and are rejected with a clear error at construction.
+    fn enum_generation_order(&self, nodes: &[AstNode]) -> Vec<usize> {
+        let enum_indices: Vec<usize> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| matches!(n, AstNode::Enum { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let enum_names: std::collections::HashSet<&str> = enum_indices
+            .iter()
+            .filter_map(|&i| Self::enum_node_name(&nodes[i]))
+            .collect();
+
+        let mut generated: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut order = Vec::with_capacity(enum_indices.len());
+        // Repeatedly emit every enum whose embedded-enum dependencies are already
+        // emitted, until no more make progress.
+        loop {
+            let ready: Vec<usize> = enum_indices
+                .iter()
+                .copied()
+                .filter(|&idx| Self::enum_ready(&nodes[idx], &enum_names, &generated))
+                .collect();
+            if ready.is_empty() {
+                break;
+            }
+            for idx in ready {
+                order.push(idx);
+                if let Some(name) = Self::enum_node_name(&nodes[idx]) {
+                    generated.insert(name);
+                }
+            }
+        }
+        // Any enum left over is part of a cycle; append it in source order.
+        for &idx in &enum_indices {
+            if Self::enum_node_name(&nodes[idx]).is_some_and(|name| !generated.contains(name)) {
+                order.push(idx);
+            }
+        }
+        order
+    }
+
+    /// The declared name of an `AstNode::Enum`, or `None` for any other node.
+    fn enum_node_name(node: &AstNode) -> Option<&str> {
+        match node {
+            AstNode::Enum { name, .. } => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Whether the enum at `node` is not yet generated but all of its embedded
+    /// nested-enum dependencies are, so it can be generated now.
+    fn enum_ready(
+        node: &AstNode,
+        enum_names: &std::collections::HashSet<&str>,
+        generated: &std::collections::HashSet<&str>,
+    ) -> bool {
+        let Some(name) = Self::enum_node_name(node) else {
+            return false;
+        };
+        !generated.contains(name)
+            && Self::embedded_enum_deps(node, enum_names)
+                .iter()
+                .all(|dep| generated.contains(dep))
+    }
+
+    /// The user-enum names that `node`'s variants embed as inline payloads (a
+    /// self-reference is excluded; it is handled as a cycle).
+    fn embedded_enum_deps<'n>(
+        node: &'n AstNode,
+        enum_names: &std::collections::HashSet<&str>,
+    ) -> Vec<&'n str> {
+        let AstNode::Enum { name, variants, .. } = node else {
+            return Vec::new();
+        };
+        let mut deps = Vec::new();
+        for variant in variants {
+            for (_, type_node) in variant.data.iter().flatten() {
+                if let TypeKind::Named(dep, _) = &type_node.kind
+                    && dep != name
+                    && enum_names.contains(dep.as_str())
+                {
+                    deps.push(dep.as_str());
+                }
+            }
+        }
+        deps
     }
 
     pub(super) fn generate_class_type(
@@ -570,36 +670,70 @@ impl<'a> CodeGenerator<'a> {
         union_types
     }
 
-    /// determine the appropriate LLVM type for a union field position
-    /// for now, use the largest common type or pointer for complex types
+    /// Determine the LLVM type for a union field position (one payload slot shared
+    /// across variants).
+    ///
+    /// A position that includes a nested user enum is stored inline (issue #306),
+    /// but different variants may put differently-sized payloads there (a nested
+    /// enum in one variant, a scalar or another enum in another - issue #309). The
+    /// slot must fit them all, so it takes the widest candidate type; each variant
+    /// addresses the slot with its own type, so the slot's identity does not matter
+    /// beyond its size and alignment. A recursive enum cannot be sized inline and
+    /// falls back to a pointer, which construction rejects with a clear error.
+    ///
+    /// Positions with no nested enum keep the historical single-type-or-pointer
+    /// behavior, so ordinary scalar/pointer enums are laid out exactly as before.
     pub(super) fn determine_union_field_type(
         &self,
         field_types: &[&TypeNode],
     ) -> BasicTypeEnum<'a> {
-        if field_types.is_empty() {
+        let ptr_slot = || self.context.ptr_type(AddressSpace::default()).into();
+        let Some(first_type) = field_types.first() else {
             // no fields in this position, use i32 as default
             return self.context.i32_type().into();
+        };
+
+        if field_types
+            .iter()
+            .any(|t| self.nested_user_enum_name(t).is_some())
+        {
+            return self
+                .widest_payload_type(field_types)
+                .unwrap_or_else(ptr_slot);
         }
 
-        // for simplicity, check if all types are the same
-        let first_type = field_types[0];
+        // No nested enum: keep the original single-type-or-pointer layout.
         let all_same = field_types.iter().all(|t| t.kind == first_type.kind);
-
         if all_same {
-            // all variants use the same type for this field
-            // use the same types as llvm_type_from_mux_type for consistency
             match &first_type.kind {
                 TypeKind::Primitive(PrimitiveType::Int) => self.context.i64_type().into(),
                 TypeKind::Primitive(PrimitiveType::Float) => self.context.f64_type().into(),
                 TypeKind::Primitive(PrimitiveType::Bool) => self.context.bool_type().into(),
-                TypeKind::Primitive(PrimitiveType::Str) => {
-                    self.context.ptr_type(AddressSpace::default()).into()
-                }
-                _ => self.context.ptr_type(AddressSpace::default()).into(), // default to pointer
+                _ => ptr_slot(),
             }
         } else {
-            // mixed types - use pointer for now (could be improved with proper union types)
-            self.context.ptr_type(AddressSpace::default()).into()
+            ptr_slot()
         }
+    }
+
+    /// A union slot wide enough for every variant's payload at a position, or
+    /// `None` if any candidate cannot be laid out (a recursive enum whose struct
+    /// is not yet registered).
+    ///
+    /// The slot is an `i64` array sized to the widest candidate, not the widest
+    /// candidate type itself: a struct-typed slot has interior padding, and a
+    /// variant whose (differently-typed) payload straddles that padding would be
+    /// corrupted when the enum is copied field-by-field, because LLVM's aggregate
+    /// load/store does not preserve padding bytes. An `i64` array has no padding
+    /// and is 8-byte aligned, so any variant's payload survives a copy verbatim;
+    /// each variant still reads and writes the slot through its own type.
+    fn widest_payload_type(&self, field_types: &[&TypeNode]) -> Option<BasicTypeEnum<'a>> {
+        let mut max_size = 0u64;
+        for type_node in field_types {
+            let candidate = self.type_kind_to_llvm_type(&type_node.kind).ok()?;
+            max_size = max_size.max(self.abi_store_size(&candidate));
+        }
+        let words = max_size.div_ceil(8).max(1);
+        Some(self.context.i64_type().array_type(words as u32).into())
     }
 }

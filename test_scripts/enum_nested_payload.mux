@@ -1,0 +1,43 @@
+// Nested enums: an enum variant whose payload is another user enum (issue #306).
+// The inner enum is laid out inline in the outer enum's union slot; construction,
+// matching, inner-payload extraction, copy bindings, and reassignment must all
+// work and leave no reference-counted payload leaked.
+
+enum Inner { Word(string), Number(int) }
+enum Outer { Wrap(Inner), Empty(Inner) }
+
+func describe(Outer o) returns void {
+    match o {
+        Wrap(i) {
+            match i {
+                Word(s) { print(s) }
+                Number(n) { print("wrap-number") }
+            }
+        }
+        Empty(i) {
+            match i {
+                Word(s) { print("empty-word") }
+                Number(n) { print("empty-number") }
+            }
+        }
+    }
+    return
+}
+
+func main() returns void {
+    // Construct + match, extracting the inner string payload.
+    auto a = Outer.Wrap(Inner.Word("hello"))
+    describe(a)
+
+    // Copy binding: the copy owns an independent value, both usable.
+    auto b = a
+    describe(b)
+    describe(a)
+
+    // Reassign through both variants, exercising drop of the old inline payload.
+    auto c = Outer.Wrap(Inner.Word("first"))
+    c = Outer.Empty(Inner.Number(7))
+    describe(c)
+
+    return
+}
