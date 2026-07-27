@@ -38,17 +38,29 @@ if [[ ! -f "$runtime_src/Cargo.toml" ]]; then
 fi
 runtime_src="$(cd "$runtime_src" && pwd)"
 
+# Pin explicit target directories so the archive/binary paths are deterministic
+# and immune to an ambient CARGO_TARGET_DIR (which would otherwise redirect the
+# build and leave us forcing MUX_RUNTIME_LIB at a stale, feature-less archive).
+# A command-line --target-dir overrides the CARGO_TARGET_DIR env var.
+runtime_target="$runtime_src/target"
+compiler_target="$repo_root/target"
+
 echo ">>> building rc-leak-check runtime ($leak_features)"
-( cd "$runtime_src" && cargo build --no-default-features --features "$leak_features" )
-runtime_lib="$runtime_src/target/debug/libmux_runtime.a"
+( cd "$runtime_src" &&
+  cargo build --no-default-features --features "$leak_features" --target-dir "$runtime_target" )
+runtime_lib="$runtime_target/debug/libmux_runtime.a"
 if [[ ! -f "$runtime_lib" ]]; then
   echo "Expected runtime archive not found at $runtime_lib" >&2
   exit 1
 fi
 
 echo ">>> building compiler"
-( cd "$repo_root" && cargo build -p mux-lang )
-mux_bin="$repo_root/target/debug/mux"
+( cd "$repo_root" && cargo build -p mux-lang --target-dir "$compiler_target" )
+mux_bin="$compiler_target/debug/mux"
+if [[ ! -x "$mux_bin" ]]; then
+  echo "Expected compiler binary not found at $mux_bin" >&2
+  exit 1
+fi
 
 # Force the leak-check runtime; without this the check can link the wrong lib.
 export MUX_RUNTIME_LIB="$runtime_lib"
@@ -70,7 +82,11 @@ fi
 failures=0
 for script in "${programs[@]}"; do
   if [[ ! -f "$script" ]]; then
-    echo "  SKIP  $script (not found)"
+    # A requested program that does not exist is a failure, not a silent skip:
+    # otherwise a misspelled path or renamed sample lets the run report all
+    # clean without actually checking anything.
+    echo "  MISSING  $script"
+    failures=$((failures + 1))
     continue
   fi
   out="$(timeout "$program_timeout" "$mux_bin" run "$script" 2>&1)" && rc=0 || rc=$?
