@@ -1,0 +1,28 @@
+// Mutually-referential enums: A embeds B and B embeds A (issue #309). Neither
+// can be laid out inline, so the embedding cycle is broken by heap-boxing at
+// least one side; the out-of-line recursive glue follows the box chain across
+// both enums when dropping and cloning.
+
+enum Expr { Lit(int), Neg(Term) }
+enum Term { Value(Expr), Zero }
+
+func eval_expr(Expr e) returns int {
+    match e {
+        Lit(n) { return n }
+        Neg(t) { return 0 - eval_term(t) }
+    }
+}
+
+func eval_term(Term t) returns int {
+    match t {
+        Value(e) { return eval_expr(e) }
+        Zero { return 0 }
+    }
+}
+
+func main() returns void {
+    // -(-(7))  ==  7
+    auto e = Expr.Neg(Term.Value(Expr.Neg(Term.Value(Expr.Lit(7)))))
+    print("eval: " + eval_expr(e).to_string())
+    return
+}

@@ -1,0 +1,28 @@
+// A recursive enum (a variant embeds the enum itself) has no finite inline
+// layout, so its self-referential payload is heap-boxed into a Value::Opaque
+// and threaded through box/unbox glue (issue #309). Construction, matching, and
+// deep-cloning all recurse through the box; boxes stay unshared (refcount 1) so
+// the recursive drop frees every node exactly once.
+
+enum IntList { Nil, Cons(int, IntList) }
+
+func sum(IntList l) returns int {
+    match l {
+        Nil { return 0 }
+        Cons(head, tail) { return head + sum(tail) }
+    }
+}
+
+func main() returns void {
+    auto xs = IntList.Cons(1, IntList.Cons(2, IntList.Cons(3, IntList.Nil())))
+    print("sum: " + sum(xs).to_string())
+
+    // Copy-binding deep-clones the whole chain, so the copy is independent.
+    auto ys = xs
+    print("copy: " + sum(ys).to_string())
+
+    // Rebinding drops the old chain before taking the new one.
+    xs = IntList.Cons(10, IntList.Nil())
+    print("rebound: " + sum(xs).to_string())
+    return
+}

@@ -984,11 +984,16 @@ impl<'a> CodeGenerator<'a> {
         let right_type = self
             .resolve_expression_type_with_fallback(right_expr)
             .map_err(|e| format!("Failed to get right operand type for 'in': {}", e))?;
+        let left_type = self
+            .resolve_expression_type_with_fallback(left_expr)
+            .map_err(|e| format!("Failed to get left operand type for 'in': {}", e))?;
 
         match right_type {
             Type::List(_) | Type::EmptyList => {
                 let raw_list = self.extract_list_from_value(right.into_pointer_value())?;
-                let item_ptr = self.ensure_pointer(left);
+                // Box an enum element as a managed value so its structural
+                // comparison matches the list's stored elements (issue #309).
+                let item_ptr = self.box_enum_or_value(left, &left_type)?;
                 let result = self
                     .generate_runtime_call("mux_list_contains", &[raw_list.into(), item_ptr.into()])
                     .ok_or("mux_list_contains returned no value")?;
@@ -1002,7 +1007,7 @@ impl<'a> CodeGenerator<'a> {
             }
             Type::Set(_) | Type::EmptySet => {
                 let raw_set = self.extract_set_from_value(right.into_pointer_value())?;
-                let item_ptr = self.ensure_pointer(left);
+                let item_ptr = self.box_enum_or_value(left, &left_type)?;
                 let result = self
                     .generate_runtime_call("mux_set_contains", &[raw_set.into(), item_ptr.into()])
                     .ok_or("mux_set_contains returned no value")?;
@@ -1011,6 +1016,21 @@ impl<'a> CodeGenerator<'a> {
                     .ok_or("mux_free_set not found")?;
                 self.builder
                     .build_call(free_fn, &[raw_set.into()], "free_set")
+                    .map_err(|e| e.to_string())?;
+                Ok(result)
+            }
+            // `key in map` tests key membership.
+            Type::Map(_, _) | Type::EmptyMap => {
+                let raw_map = self.extract_map_from_value(right.into_pointer_value())?;
+                let key_ptr = self.box_enum_or_value(left, &left_type)?;
+                let result = self
+                    .generate_runtime_call("mux_map_contains", &[raw_map.into(), key_ptr.into()])
+                    .ok_or("mux_map_contains returned no value")?;
+                let free_fn = self
+                    .runtime_function("mux_free_map")
+                    .ok_or("mux_free_map not found")?;
+                self.builder
+                    .build_call(free_fn, &[raw_map.into()], "free_map")
                     .map_err(|e| e.to_string())?;
                 Ok(result)
             }

@@ -1043,7 +1043,8 @@ impl<'a> CodeGenerator<'a> {
             .into_pointer_value();
         for element in elements {
             let elem_val = self.generate_expression(element)?;
-            let elem_ptr = self.box_value(elem_val);
+            let elem_type = self.resolve_expression_type_with_fallback(element)?;
+            let elem_ptr = self.box_enum_or_value(elem_val, &elem_type)?;
             self.generate_runtime_call("mux_list_push_back", &[list_ptr.into(), elem_ptr.into()]);
         }
         let list_value = self
@@ -1062,9 +1063,11 @@ impl<'a> CodeGenerator<'a> {
             .into_pointer_value();
         for (key, value) in entries {
             let key_val = self.generate_expression(key)?;
-            let key_ptr = self.box_value(key_val);
+            let key_type = self.resolve_expression_type_with_fallback(key)?;
+            let key_ptr = self.box_enum_or_value(key_val, &key_type)?;
             let value_val = self.generate_expression(value)?;
-            let value_ptr = self.box_value(value_val);
+            let value_type = self.resolve_expression_type_with_fallback(value)?;
+            let value_ptr = self.box_enum_or_value(value_val, &value_type)?;
             self.generate_runtime_call(
                 "mux_map_put",
                 &[map_ptr.into(), key_ptr.into(), value_ptr.into()],
@@ -1112,7 +1115,8 @@ impl<'a> CodeGenerator<'a> {
             .into_pointer_value();
         for element in elements {
             let elem_val = self.generate_expression(element)?;
-            let elem_ptr = self.box_value(elem_val);
+            let elem_type = self.resolve_expression_type_with_fallback(element)?;
+            let elem_ptr = self.box_enum_or_value(elem_val, &elem_type)?;
             self.generate_runtime_call("mux_set_add", &[set_ptr.into(), elem_ptr.into()]);
         }
         let set_value = self
@@ -2565,12 +2569,14 @@ impl<'a> CodeGenerator<'a> {
                     .map_err(|e| e.to_string())?;
                 Ok(right_val)
             }
-            crate::semantics::Type::Map(_, _) => {
+            crate::semantics::Type::Map(key_type, value_type) => {
                 let target_val = self.generate_expression(target_expr)?;
                 let key_val = self.generate_expression(index)?;
                 let right_val = self.generate_expression(right)?;
-                let boxed_key = self.box_value(key_val);
-                let boxed_value = self.box_value(right_val);
+                // An enum key must be a managed value so its structural
+                // comparison matches the map's stored keys (issue #309).
+                let boxed_key = self.box_enum_or_value(key_val, &key_type)?;
+                let boxed_value = self.box_enum_or_value(right_val, &value_type)?;
                 self.builder
                     .build_call(
                         self.runtime_function("mux_map_put_value")
@@ -2681,13 +2687,27 @@ impl<'a> CodeGenerator<'a> {
         func: &ExpressionNode,
         args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
-        match &func.kind {
+        let result = match &func.kind {
             ExpressionKind::FieldAccess { expr, field } => {
                 self.generate_method_style_call(call_expr, expr, field, args)
             }
             ExpressionKind::Identifier(name) => self.generate_identifier_function_call(name, args),
             _ => self.generate_callable_expression_call(func, args),
+        }?;
+        // A function that returns a user enum by value hands back an owned value
+        // whose payloads it retained or deep-cloned. Track it as a temporary so
+        // an unbound result (e.g. used directly as a call argument) is released
+        // at the statement boundary instead of leaking, exactly like a freshly
+        // constructed enum. `register_enum_temp` dedups and no-ops on values
+        // without an RC payload, so a constructor result (already tracked) or a
+        // payload-less enum is unaffected.
+        if result.is_struct_value()
+            && let Ok(result_type) = self.resolve_expression_type_with_fallback(call_expr)
+            && let Some(enum_name) = self.user_enum_type_name(&result_type)
+        {
+            self.register_enum_temp(result, &enum_name);
         }
+        Ok(result)
     }
 
     fn generate_method_style_call(
@@ -3437,12 +3457,18 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(extracted_val);
                 Ok(extracted_val)
             }
-            crate::semantics::Type::Map(_, value_type) => {
+            crate::semantics::Type::Map(key_type, value_type) => {
                 // Look up the key directly in the map Value. This avoids the old
                 // `mux_value_get_map` path, which cloned the entire map on every
                 // access (O(n) per read, O(n^2) reading a map by key in a loop).
                 let value_ptr = self
-                    .map_value_get_or_panic(target_val, index_val, Some(index.span()), "map")?
+                    .map_value_get_or_panic(
+                        target_val,
+                        index_val,
+                        key_type,
+                        Some(index.span()),
+                        "map",
+                    )?
                     .into_pointer_value();
 
                 // Use extract_value_from_ptr to properly extract based on type
@@ -4140,10 +4166,13 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         map: PointerValue<'a>,
         key: BasicValueEnum<'a>,
+        key_type: &Type,
         span: Option<&Span>,
         block_prefix: &str,
     ) -> Result<BasicValueEnum<'a>, String> {
-        let boxed_key = self.box_value(key);
+        // Box an enum key as a managed value so its structural comparison matches
+        // the map's stored keys (issue #309); other keys box normally.
+        let boxed_key = self.box_enum_or_value(key, key_type)?;
 
         let optional_ptr = self
             .builder
@@ -4170,10 +4199,13 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         map_value: BasicValueEnum<'a>,
         key: BasicValueEnum<'a>,
+        key_type: &Type,
         span: Option<&Span>,
         block_prefix: &str,
     ) -> Result<BasicValueEnum<'a>, String> {
-        let boxed_key = self.box_value(key);
+        // Box an enum key as a managed value so its structural comparison matches
+        // the map's stored keys (issue #309); other keys box normally.
+        let boxed_key = self.box_enum_or_value(key, key_type)?;
 
         let optional_ptr = self
             .builder
@@ -4675,44 +4707,7 @@ impl<'a> CodeGenerator<'a> {
         }
 
         if indices.len() == 1 {
-            // BASE CASE: Simple assignment base[index] = value
-            // Determine if base is a List or Map and call appropriate function
-            let base_type = self.get_resolved_expression_type(base_expr)?;
-
-            let base_val = self.generate_expression(base_expr)?;
-            let index_val = self.generate_expression(indices[0])?;
-
-            match base_type {
-                crate::semantics::Type::List(_) => {
-                    self.builder
-                        .build_call(
-                            self.runtime_function("mux_list_set_value")
-                                .expect("mux_list_set_value must be declared in runtime"),
-                            &[base_val.into(), index_val.into(), value.into()],
-                            "nested_list_set_direct",
-                        )
-                        .map_err(|e| e.to_string())?;
-                }
-                crate::semantics::Type::Map(_, _) => {
-                    let boxed_key = self.box_value(index_val);
-                    self.builder
-                        .build_call(
-                            self.runtime_function("mux_map_put_value")
-                                .expect("mux_map_put_value must be declared in runtime"),
-                            &[base_val.into(), boxed_key.into(), value.into()],
-                            "nested_map_set_direct",
-                        )
-                        .map_err(|e| e.to_string())?;
-                }
-                _ => {
-                    return Err(format!(
-                        "Cannot assign to index on non-list/map type: {:?}",
-                        base_type
-                    ));
-                }
-            }
-
-            Ok(())
+            self.assign_single_collection_index(base_expr, indices[0], value)
         } else {
             // RECURSIVE CASE: base[i1][i2]...[iN] = value where N > 1
             // Strategy:
@@ -4752,6 +4747,10 @@ impl<'a> CodeGenerator<'a> {
                     )?
                 }
                 crate::semantics::Type::Map(_, _) => {
+                    let key_type = match &base_type {
+                        crate::semantics::Type::Map(k, _) => k.as_ref().clone(),
+                        _ => unreachable!(),
+                    };
                     // Extract raw Map from base
                     let raw_base_map = self
                         .builder
@@ -4770,6 +4769,7 @@ impl<'a> CodeGenerator<'a> {
                     self.map_get_or_panic(
                         raw_base_map,
                         first_index_val,
+                        &key_type,
                         Some(indices[0].span()),
                         "nested_assign_map",
                     )?
@@ -4842,6 +4842,49 @@ impl<'a> CodeGenerator<'a> {
             }
 
             Ok(())
+        }
+    }
+
+    /// Base case of a nested collection assignment: a single-index write into a
+    /// list or map. An enum map key is boxed as a managed value so it matches the
+    /// map's stored keys (issue #309).
+    fn assign_single_collection_index(
+        &mut self,
+        base_expr: &ExpressionNode,
+        index: &ExpressionNode,
+        value: BasicValueEnum<'a>,
+    ) -> Result<(), String> {
+        let base_type = self.get_resolved_expression_type(base_expr)?;
+        let base_val = self.generate_expression(base_expr)?;
+        let index_val = self.generate_expression(index)?;
+        match base_type {
+            crate::semantics::Type::List(_) => {
+                self.builder
+                    .build_call(
+                        self.runtime_function("mux_list_set_value")
+                            .expect("mux_list_set_value must be declared in runtime"),
+                        &[base_val.into(), index_val.into(), value.into()],
+                        "nested_list_set_direct",
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            crate::semantics::Type::Map(key_type, _) => {
+                let boxed_key = self.box_enum_or_value(index_val, &key_type)?;
+                self.builder
+                    .build_call(
+                        self.runtime_function("mux_map_put_value")
+                            .expect("mux_map_put_value must be declared in runtime"),
+                        &[base_val.into(), boxed_key.into(), value.into()],
+                        "nested_map_set_direct",
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            other => Err(format!(
+                "Cannot assign to index on non-list/map type: {:?}",
+                other
+            )),
         }
     }
 
@@ -4925,6 +4968,10 @@ impl<'a> CodeGenerator<'a> {
                     )?
                 }
                 crate::semantics::Type::Map(_, _) => {
+                    let key_type = match &current_type {
+                        crate::semantics::Type::Map(k, _) => k.as_ref().clone(),
+                        _ => unreachable!(),
+                    };
                     // Extract raw Map
                     let raw_map = self
                         .builder
@@ -4943,6 +4990,7 @@ impl<'a> CodeGenerator<'a> {
                     self.map_get_or_panic(
                         raw_map,
                         first_index_val,
+                        &key_type,
                         Some(indices[0].span()),
                         "apply_map",
                     )?

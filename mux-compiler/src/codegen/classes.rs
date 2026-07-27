@@ -310,9 +310,19 @@ impl<'a> CodeGenerator<'a> {
                 .and_then(|m| m.get(&field.name))
                 .copied()
                 .ok_or_else(|| format!("Field {} not in field_map for {}", field.name, name))?;
-            // Inline fields (e.g. an enum struct) were already duplicated by the
-            // bulk memcpy above and hold no boxed pointer to deep-clone.
+            // Inline fields were bulk-copied above. A plain scalar is fully
+            // duplicated by that memcpy, but an inline enum field's copy still
+            // aliases the source's RC payloads (a string, a nested or boxed
+            // recursive enum), so deep-clone them in place to make the copy
+            // independent; the memcpy alone would double-free.
             if !Self::class_field_is_boxed_pointer(class_type, field_index) {
+                if let Some(enum_name) = self.nested_user_enum_name(&field.type_) {
+                    let field_ptr = self
+                        .builder
+                        .build_struct_gep(class_type, dst_typed, field_index as u32, &field.name)
+                        .map_err(|e| e.to_string())?;
+                    self.emit_enum_deep_clone(&enum_name, field_ptr)?;
+                }
                 continue;
             }
             let field_ptr = self
@@ -363,9 +373,18 @@ impl<'a> CodeGenerator<'a> {
                 .ok_or_else(|| format!("Field {} not in field_map for {}", field.name, name))?;
             // Fields stored inline (e.g. an enum held as a struct) are not boxed
             // `*mut Value` pointers; loading their first word and decrementing it
-            // as a refcount would corrupt memory. They own no heap reference to
-            // release, so skip them.
+            // as a refcount would corrupt memory. An inline enum field still owns
+            // its active variant's RC payloads (a string, a nested or boxed
+            // recursive enum), so release those with the enum drop glue; other
+            // inline scalars own nothing and are skipped.
             if !Self::class_field_is_boxed_pointer(class_type, field_index) {
+                if let Some(enum_name) = self.nested_user_enum_name(&field.type_) {
+                    let field_ptr = self
+                        .builder
+                        .build_struct_gep(class_type, obj_typed, field_index as u32, &field.name)
+                        .map_err(|e| e.to_string())?;
+                    self.emit_enum_drop(&enum_name, field_ptr)?;
+                }
                 continue;
             }
             let field_ptr = self

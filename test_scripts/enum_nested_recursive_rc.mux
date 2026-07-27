@@ -1,0 +1,26 @@
+// A recursive enum whose nodes also carry a reference-counted payload (a
+// string) alongside the boxed self-reference (issue #309). Exercises that the
+// recursive drop/clone glue releases both the string and the box at every node,
+// and that a deep-cloned copy owns independent strings and boxes.
+
+enum Chain { Empty, Node(string, Chain) }
+
+func describe(Chain c) returns void {
+    match c {
+        Empty { print("end") }
+        Node(val, rest) {
+            print(val)
+            describe(rest)
+        }
+    }
+    return
+}
+
+func main() returns void {
+    auto a = Chain.Node("one", Chain.Node("two", Chain.Node("three", Chain.Empty())))
+    auto b = a
+    describe(a)
+    print("---")
+    describe(b)
+    return
+}
