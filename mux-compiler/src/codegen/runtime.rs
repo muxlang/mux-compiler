@@ -298,6 +298,16 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        // mux_box_enum_managed(bytes, size, clone_glue, drop_glue) -> *mut Value
+        module.add_function(
+            "mux_box_enum_managed",
+            i8_ptr.fn_type(
+                &[i8_ptr.into(), i64_type.into(), i8_ptr.into(), i8_ptr.into()],
+                false,
+            ),
+            None,
+        );
+
         module.add_function(
             "mux_value_unbox_enum",
             i8_ptr.fn_type(&[i8_ptr.into()], false),
@@ -1139,7 +1149,12 @@ impl<'a> CodeGenerator<'a> {
             // Already-owned pointers were registered by whatever produced them.
             val.into_pointer_value()
         } else if val.is_struct_value() {
-            // user-defined enum values (structs): box into Value::Opaque
+            // user-defined enum values (structs): box into Value::Opaque. An enum
+            // that carries reference-counted payloads and is being stored into a
+            // collection is instead boxed as a managed BoxedEnum via
+            // `box_enum_or_value`, whose caller knows the element's enum type; a
+            // bare struct value here is not enough to identify the enum, since
+            // literal LLVM struct types are shared across enums (issue #309).
             let struct_val = val.into_struct_value();
             let struct_type = struct_val.get_type();
             let temp_ptr = self

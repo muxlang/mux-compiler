@@ -1625,6 +1625,48 @@ impl<'a> CodeGenerator<'a> {
         ))
     }
 
+    /// Bind a boxed recursive nested-enum payload in a match arm (issue #309):
+    /// the slot at `data_ptr` holds a `Value::Opaque` box, so load it, unbox to
+    /// the inner enum struct, and copy that into a fresh local of type
+    /// `inner_struct`. The binding is a borrow - the matched enum still owns the
+    /// box - so it is not tracked for cleanup, exactly like an inline nested-enum
+    /// payload.
+    fn bind_boxed_recursive_payload(
+        &mut self,
+        inner_struct: BasicTypeEnum<'a>,
+        data_ptr: inkwell::values::PointerValue<'a>,
+        var: &str,
+    ) -> Result<(inkwell::values::PointerValue<'a>, BasicTypeEnum<'a>), String> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let box_ptr = self
+            .builder
+            .build_load(ptr_type, data_ptr, "boxed_ptr")
+            .map_err(|e| e.to_string())?;
+        let unbox_fn = self
+            .runtime_function("mux_value_unbox_enum")
+            .ok_or("mux_value_unbox_enum not found")?;
+        let inner_data = self
+            .builder
+            .build_call(unbox_fn, &[box_ptr.into()], "unbox_match")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_value_unbox_enum returned no value")?
+            .into_pointer_value();
+        let loaded = self
+            .builder
+            .build_load(inner_struct, inner_data, "unboxed")
+            .map_err(|e| e.to_string())?;
+        let alloca = self
+            .builder
+            .build_alloca(inner_struct, var)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(alloca, loaded)
+            .map_err(|e| e.to_string())?;
+        Ok((alloca, inner_struct))
+    }
+
     fn bind_custom_enum_variant_args(
         &mut self,
         enum_name: &str,
@@ -1651,10 +1693,6 @@ impl<'a> CodeGenerator<'a> {
                 let field_type: BasicTypeEnum<'_> =
                     self.variant_field_llvm_type(enum_name, variant_name, &field_types_clone, i)?;
 
-                let data_val = self
-                    .builder
-                    .build_load(field_type, data_ptr, "data")
-                    .map_err(|e| e.to_string())?;
                 let resolved_type = self.variant_field_resolved_type(
                     enum_name,
                     variant_name,
@@ -1664,12 +1702,23 @@ impl<'a> CodeGenerator<'a> {
 
                 // A nested user-enum payload is kept as its inline struct value so
                 // downstream uses see a real enum (loadable, re-matchable), not a
-                // boxed Opaque (issue #306). Any other payload is boxed to a
-                // *mut Value the way enum locals expect.
+                // boxed Opaque (issue #306). A recursive nested enum lives behind a
+                // heap box, so it is unboxed to its inner struct first (issue #309).
+                // Any other payload is boxed to a *mut Value the way enum locals
+                // expect.
                 let (alloca, stored_type) = if self
+                    .boxed_recursive_field(enum_name, variant_name, i)
+                    .is_some()
+                {
+                    self.bind_boxed_recursive_payload(field_type, data_ptr, var)?
+                } else if self
                     .nested_user_enum_name(&field_types_clone[i].1)
                     .is_some()
                 {
+                    let data_val = self
+                        .builder
+                        .build_load(field_type, data_ptr, "data")
+                        .map_err(|e| e.to_string())?;
                     let alloca = self
                         .builder
                         .build_alloca(field_type, var)
@@ -1679,6 +1728,10 @@ impl<'a> CodeGenerator<'a> {
                         .map_err(|e| e.to_string())?;
                     (alloca, field_type)
                 } else {
+                    let data_val = self
+                        .builder
+                        .build_load(field_type, data_ptr, "data")
+                        .map_err(|e| e.to_string())?;
                     let boxed = self.box_value(data_val);
                     let ptr_type = self.context.ptr_type(AddressSpace::default());
                     let alloca = self
@@ -1785,6 +1838,36 @@ impl<'a> CodeGenerator<'a> {
         self.bind_custom_enum_variant_args(enum_name, name, args, temp_ptr)
     }
 
+    /// Unbox a boxed user-enum match subject (a `*mut Value`) into its inline
+    /// struct value, so the discriminant load and payload binding operate on a
+    /// real enum rather than a heap pointer (issue #309). Handles both a managed
+    /// BoxedEnum and a raw Opaque via `mux_value_unbox_enum`.
+    fn unbox_enum_subject_value(
+        &mut self,
+        enum_name: &str,
+        boxed: inkwell::values::PointerValue<'a>,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let struct_type = self
+            .type_map
+            .get(enum_name)
+            .ok_or_else(|| format!("Enum {} not found in type map", enum_name))?
+            .into_struct_type();
+        let unbox_fn = self
+            .runtime_function("mux_value_unbox_enum")
+            .ok_or("mux_value_unbox_enum not found")?;
+        let buf = self
+            .builder
+            .build_call(unbox_fn, &[boxed.into()], "unbox_subject")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_value_unbox_enum returned no value")?
+            .into_pointer_value();
+        self.builder
+            .build_load(struct_type, buf, "unboxed_subject")
+            .map_err(|e| e.to_string())
+    }
+
     /// Generate match code for enum types using discriminant-based comparison.
     fn generate_enum_match(
         &mut self,
@@ -1797,6 +1880,19 @@ impl<'a> CodeGenerator<'a> {
         let enum_name = self.resolve_enum_match_name(match_expr).or_else(|_| {
             self.enum_name_from_type(match_expr_type, "Match expression must be an enum type")
         })?;
+        // A user-enum subject is normally an inline struct value. When it arrives
+        // as a pointer it is a boxed enum (a managed BoxedEnum or Opaque from a
+        // collection element, e.g. `match items[i] { ... }`), so unbox it to the
+        // inline struct the discriminant load and payload binding expect (issue
+        // #309). Builtin optional/result stay boxed - they use their own
+        // discriminant/payload runtime calls on the pointer.
+        let expr_val = if !matches!(enum_name.as_str(), "optional" | "result")
+            && expr_val.is_pointer_value()
+        {
+            self.unbox_enum_subject_value(&enum_name, expr_val.into_pointer_value())?
+        } else {
+            expr_val
+        };
         let expr_ptr_opt = self.enum_expr_ptr_for_payload_access(&enum_name, expr_val)?;
 
         let discriminant = self.load_enum_discriminant(&enum_name, expr_val)?;

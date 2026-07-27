@@ -120,7 +120,7 @@ impl<'a> CodeGenerator<'a> {
             .build_store(tag_ptr, tag_val)
             .map_err(|e| e.to_string())?;
         for i in 0..field_count {
-            self.store_constructor_field(name, variant, struct_type, temp_ptr, function, i)?;
+            self.store_constructor_field(variant, struct_type, temp_ptr, function, i)?;
         }
         // enforce the variant's where clause with its named payload fields
         // readable by name (bound like function parameters)
@@ -147,7 +147,6 @@ impl<'a> CodeGenerator<'a> {
     /// retained if it is a pointer and stored directly.
     fn store_constructor_field(
         &mut self,
-        enum_name: &str,
         variant: &EnumVariant,
         struct_type: inkwell::types::StructType<'a>,
         temp_ptr: PointerValue<'a>,
@@ -178,12 +177,12 @@ impl<'a> CodeGenerator<'a> {
                 .map(|_| ())
                 .map_err(|e| e.to_string());
         };
-        // A nested user enum is stored inline. The union slot is sized to the
-        // widest payload at this position (issue #309), so it must be at least as
-        // large as this enum's struct. A slot that is too small means the enum
-        // could not be laid out inline (a recursive enum falls back to a pointer);
-        // error cleanly rather than storing a struct into an undersized slot and
-        // corrupting memory (issue #306).
+        // A nested user enum is normally stored inline. The union slot is sized
+        // to the widest payload at this position (issue #309), so it is at least
+        // as large as this enum's struct - unless the enum is recursive or
+        // mutually-referential, which has no finite inline layout and falls back
+        // to a pointer slot. Such a payload is heap-boxed into a Value::Opaque
+        // instead of stored inline (issue #309).
         let slot_fits = match (
             struct_type.get_field_type_at_index((i + 1) as u32),
             self.type_map.get(&inner).copied(),
@@ -194,7 +193,7 @@ impl<'a> CodeGenerator<'a> {
             _ => false,
         };
         if !slot_fits {
-            return Err(self.nested_enum_layout_error(enum_name, &variant.name, &inner, i));
+            return self.store_boxed_recursive_field(&inner, arg, data_ptr);
         }
         self.builder
             .build_store(data_ptr, arg)
@@ -230,37 +229,6 @@ impl<'a> CodeGenerator<'a> {
         self.emit_where_checks(predicates, "where_variant")?;
         self.variables = snapshot;
         self.cleanup_temps_to(temp_mark)
-    }
-
-    /// Build the error for a nested enum payload that could not be laid out
-    /// inline. The pointer slot has two causes, reported distinctly: a recursive
-    /// enum (a self- or mutually-embedding enum has no finite inline layout), or
-    /// a heterogeneous union position (another variant places a differently-typed
-    /// payload at the same position, so the slot is a generic pointer). Recursion
-    /// is checked first because a recursive enum is also heterogeneous, but
-    /// recursion is the fundamental blocker. Neither is supported yet.
-    fn nested_enum_layout_error(
-        &self,
-        enum_name: &str,
-        variant_name: &str,
-        inner: &str,
-        position: usize,
-    ) -> String {
-        let recursive = inner == enum_name || self.enum_embeds(inner, enum_name);
-        if recursive {
-            format!(
-                "Nested enum payload '{}' in {}!{}: enum '{}' embeds '{}' recursively; \
-                 recursive or mutually-referential enums cannot be laid out inline",
-                inner, enum_name, variant_name, enum_name, inner
-            )
-        } else {
-            format!(
-                "Nested enum payload '{}' in {}!{} shares payload position {} with a \
-                 differently-typed payload; a nested enum in a heterogeneous union \
-                 position is not yet supported",
-                inner, enum_name, variant_name, position
-            )
-        }
     }
 
     fn register_class_type(

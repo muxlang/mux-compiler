@@ -303,6 +303,7 @@ impl<'a> CodeGenerator<'a> {
         // and are NOT tracked here, so they survive for a later user `main()`.
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
         let saved_temp_values = std::mem::take(&mut self.temp_values);
+        let saved_enum_temp_values = std::mem::take(&mut self.enum_temp_values);
         let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
         let saved_closure_temp_values = std::mem::take(&mut self.closure_temp_values);
         self.push_rc_scope();
@@ -325,6 +326,7 @@ impl<'a> CodeGenerator<'a> {
 
         self.rc_scope_stack = saved_rc_scope_stack;
         self.temp_values = saved_temp_values;
+        self.enum_temp_values = saved_enum_temp_values;
         self.closure_scope_stack = saved_closure_scope_stack;
         self.closure_temp_values = saved_closure_temp_values;
 
@@ -506,6 +508,9 @@ impl<'a> CodeGenerator<'a> {
         // while generating this body must never be cleaned up in another
         // function (which would emit a cross-function instruction reference).
         let saved_temp_values = std::mem::take(&mut self.temp_values);
+        // Inline-enum temporaries are per-function for the same reason (a value
+        // returned by an enum-returning call is tracked here, issue #309).
+        let saved_enum_temp_values = std::mem::take(&mut self.enum_temp_values);
         // Closure temporaries/scopes are per-function for the same reason.
         let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
         let saved_closure_temp_values = std::mem::take(&mut self.closure_temp_values);
@@ -584,6 +589,7 @@ impl<'a> CodeGenerator<'a> {
         // been decremented on its return paths.
         self.rc_scope_stack = saved_rc_scope_stack;
         self.temp_values = saved_temp_values;
+        self.enum_temp_values = saved_enum_temp_values;
         self.closure_scope_stack = saved_closure_scope_stack;
         self.closure_temp_values = saved_closure_temp_values;
 

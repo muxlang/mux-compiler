@@ -72,6 +72,13 @@ pub struct CodeGenerator<'a> {
     field_types_map: HashMap<String, Vec<BasicTypeEnum<'a>>>,
     classes: HashMap<String, Vec<Field>>,
     constructors: HashMap<String, FunctionValue<'a>>,
+    /// Memoized out-of-line RC-glue functions for recursive nested enums (issue
+    /// #309). A self- or mutually-referential enum cannot have its drop/clone
+    /// glue inline-expanded (it would recurse forever at compile time), so each
+    /// `(enum name, op label)` gets one function that recurses at runtime,
+    /// terminating on a variant with no boxed payload. Declared before its body
+    /// is built so a variant that re-embeds the enum resolves the self-call.
+    enum_glue_fns: HashMap<(String, &'static str), FunctionValue<'a>>,
     lambda_counter: usize,
     string_counter: usize,
     label_counter: usize,
@@ -242,6 +249,24 @@ impl<'a> CodeGenerator<'a> {
     fn declare_class_methods(&mut self, nodes: &[AstNode]) -> Result<(), String> {
         for method in self.collect_class_methods_to_declare(nodes) {
             self.declare_function(&method)?;
+        }
+        Ok(())
+    }
+
+    /// Emit, before any function or constructor body, the out-of-line support
+    /// every RC-payload enum needs (issue #309): its drop/clone glue functions,
+    /// an object copy callback, and the global that will hold its runtime object
+    /// type id. Doing it here, with no active function, keeps each generated
+    /// function self-contained; a lazy build mid-body would splice its blocks
+    /// into the caller. `main` later registers the object types and fills in the
+    /// globals (see `register_enum_object_types`).
+    fn generate_all_enum_object_support(&mut self, nodes: &[AstNode]) -> Result<(), String> {
+        for node in nodes {
+            if let AstNode::Enum { name, .. } = node
+                && self.enum_has_rc_payload(name)
+            {
+                self.generate_enum_object_support(name)?;
+            }
         }
         Ok(())
     }
@@ -691,6 +716,7 @@ impl<'a> CodeGenerator<'a> {
             field_types_map: HashMap::new(),
             classes: HashMap::new(),
             constructors: HashMap::new(),
+            enum_glue_fns: HashMap::new(),
             lambda_counter: 0,
             string_counter: 0,
             label_counter: 0,
@@ -812,6 +838,7 @@ impl<'a> CodeGenerator<'a> {
         let nodes = &all_nodes;
 
         self.generate_user_defined_types(nodes)?;
+        self.generate_all_enum_object_support(nodes)?;
 
         let imported_functions = self.collect_imported_functions();
 
@@ -885,12 +912,15 @@ impl<'a> CodeGenerator<'a> {
     }
 
     pub fn emit_ir_to_file(&self, filename: &str) -> Result<(), String> {
-        self.module
-            .verify()
-            .map_err(|e| format!("LLVM module verification failed: {}", e.to_string()))?;
+        // Write the IR before verifying: when codegen produces an invalid module
+        // the verification error is exactly what the emitted `.ll` is needed to
+        // debug, so `-i` must still leave the file behind rather than bail first.
         self.module
             .print_to_file(filename)
-            .map_err(|e| format!("Failed to write IR: {}", e))
+            .map_err(|e| format!("Failed to write IR: {}", e))?;
+        self.module
+            .verify()
+            .map_err(|e| format!("LLVM module verification failed: {}", e.to_string()))
     }
 }
 

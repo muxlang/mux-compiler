@@ -1,0 +1,40 @@
+// A recursive enum stored in a class field (issue #309). Exercises the class
+// destructor and copy glue for an inline enum field whose active variant owns a
+// heap-boxed recursive payload: the field must be dropped (not leaked) when the
+// object dies, and a by-value class copy must deep-clone the whole chain so the
+// two objects share no boxes.
+
+enum IntList { Nil, Cons(int, IntList) }
+
+class Holder {
+    IntList items
+
+    func set(IntList l) returns void {
+        self.items = l
+        return
+    }
+
+    func total() returns int {
+        return self.sum_of(self.items)
+    }
+
+    func sum_of(IntList l) returns int {
+        match l {
+            Nil { return 0 }
+            Cons(h, t) { return h + self.sum_of(t) }
+        }
+    }
+}
+
+func main() returns void {
+    auto a = Holder.new()
+    a.set(IntList.Cons(5, IntList.Cons(7, IntList.Nil())))
+
+    // By-value copy must be independent: mutating a must not affect b.
+    auto b = a
+    a.set(IntList.Cons(100, IntList.Nil()))
+
+    print("a: " + a.total().to_string())
+    print("b: " + b.total().to_string())
+    return
+}

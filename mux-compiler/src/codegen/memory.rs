@@ -20,6 +20,19 @@ enum EnumPayloadOp {
     DeepClone,
 }
 
+/// How a variant payload field participates in reference-counting glue.
+enum FieldGlue {
+    /// A direct pointer payload (string/list/object/closure): apply the op to
+    /// the loaded pointer with a single runtime call.
+    Pointer,
+    /// An inline nested user enum: recurse into the inner enum so its own active
+    /// variant's payloads get the same operation.
+    InlineEnum(String),
+    /// A heap-boxed recursive nested enum (issue #309): unbox and recurse
+    /// through the box, then release (drop) or duplicate (clone) the box itself.
+    BoxedEnum(String),
+}
+
 impl EnumPayloadOp {
     /// The runtime function applied to each pointer payload.
     fn runtime_fn_name(self) -> &'static str {
@@ -238,6 +251,40 @@ impl<'a> CodeGenerator<'a> {
         })
     }
 
+    /// If the `field_index`-th payload of `enum_name`'s `variant` is a nested
+    /// user enum whose struct is too large for the union slot it was assigned,
+    /// return the inner enum's name. That happens only for a recursive or
+    /// mutually-referential enum, whose slot falls back to a bare pointer: the
+    /// payload is stored as a heap-boxed `Value::Opaque` (issue #309) rather than
+    /// inline, so it needs box/unbox glue. Returns `None` for an inline nested
+    /// enum, a scalar, or a plain pointer payload.
+    pub(super) fn boxed_recursive_field(
+        &self,
+        enum_name: &str,
+        variant: &str,
+        field_index: usize,
+    ) -> Option<String> {
+        let fields = self.variant_field_types(enum_name, variant).ok()?;
+        let inner = self.nested_user_enum_name(&fields.get(field_index)?.1)?;
+        let slot = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(st)) => {
+                st.get_field_type_at_index((field_index + 1) as u32)?
+            }
+            _ => return None,
+        };
+        let inner_ty = self.type_map.get(&inner).copied()?;
+        (self.abi_store_size(&slot) < self.abi_store_size(&inner_ty)).then_some(inner)
+    }
+
+    /// Whether `enum_name` is part of an embedding cycle (embeds itself directly
+    /// or transitively). Such an enum cannot have its drop/clone glue
+    /// inline-expanded without looping forever at compile time, so it gets an
+    /// out-of-line, memoized glue function that recurses at runtime instead
+    /// (issue #309).
+    pub(super) fn enum_is_recursive(&self, enum_name: &str) -> bool {
+        self.enum_embeds(enum_name, enum_name)
+    }
+
     /// Whether any variant of `enum_name` carries at least one pointer (RC)
     /// payload field - either directly, or nested inside an inline user-enum
     /// payload. Enums that only hold inline scalars (a plain C-style enum) own
@@ -266,7 +313,11 @@ impl<'a> CodeGenerator<'a> {
                 .map(|fields| {
                     fields.iter().enumerate().any(|(i, field)| {
                         if let Some(inner) = self.nested_user_enum_name(&field.1) {
-                            self.enum_has_rc_payload_rec(&inner, visited)
+                            // A boxed recursive field owns a heap `Value::Opaque`
+                            // box that must be released, so it is itself an RC
+                            // payload regardless of what the inner enum carries.
+                            self.boxed_recursive_field(enum_name, variant, i).is_some()
+                                || self.enum_has_rc_payload_rec(&inner, visited)
                         } else {
                             self.variant_field_llvm_type(enum_name, variant, &fields, i)
                                 .map(|t| t.is_pointer_type())
@@ -421,21 +472,21 @@ impl<'a> CodeGenerator<'a> {
         self.emit_enum_payload_op(enum_name, struct_alloca, EnumPayloadOp::Retain)
     }
 
-    /// Classify the payload fields of `variant` that need RC glue: `None` marks a
-    /// direct pointer payload (handled by a runtime call), `Some(inner)` marks an
-    /// inline nested user enum whose own payloads are handled by recursing into
-    /// `inner`. Fields that carry only inline scalars produce nothing.
+    /// Classify the payload fields of `variant` that need RC glue. Fields that
+    /// carry only inline scalars produce nothing.
     fn variant_glue_fields(
         &self,
         enum_name: &str,
         variant: &str,
-    ) -> Result<Vec<(usize, Option<String>)>, String> {
+    ) -> Result<Vec<(usize, FieldGlue)>, String> {
         let fields = self.variant_field_types(enum_name, variant)?;
         let mut glue = Vec::new();
         for (i, field) in fields.iter().enumerate() {
             if let Some(inner) = self.nested_user_enum_name(&field.1) {
-                if self.enum_has_rc_payload(&inner) {
-                    glue.push((i, Some(inner)));
+                if self.boxed_recursive_field(enum_name, variant, i).is_some() {
+                    glue.push((i, FieldGlue::BoxedEnum(inner)));
+                } else if self.enum_has_rc_payload(&inner) {
+                    glue.push((i, FieldGlue::InlineEnum(inner)));
                 }
                 continue;
             }
@@ -444,7 +495,7 @@ impl<'a> CodeGenerator<'a> {
                 .map(|t| t.is_pointer_type())
                 .unwrap_or(false);
             if is_pointer {
-                glue.push((i, None));
+                glue.push((i, FieldGlue::Pointer));
             }
         }
         Ok(glue)
@@ -466,7 +517,30 @@ impl<'a> CodeGenerator<'a> {
         if !self.enum_has_rc_payload(enum_name) {
             return Ok(());
         }
+        // A recursive enum cannot be inline-expanded - its glue would nest
+        // forever at compile time - so route it through an out-of-line function
+        // that recurses at runtime, following the box chain to a base variant
+        // that carries no boxed payload (issue #309).
+        if self.enum_is_recursive(enum_name) {
+            let glue_fn = self.get_or_create_enum_glue_fn(enum_name, op)?;
+            self.builder
+                .build_call(glue_fn, &[struct_alloca.into()], "enum_glue_call")
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        self.emit_enum_payload_op_inline(enum_name, struct_alloca, op)
+    }
 
+    /// Inline body of `emit_enum_payload_op` for a non-recursive enum: switch on
+    /// the discriminant and apply `op` to each glue field of the active variant.
+    /// Terminates because the inline nested-enum graph is acyclic; boxed
+    /// recursive fields route back through out-of-line glue functions.
+    fn emit_enum_payload_op_inline(
+        &mut self,
+        enum_name: &str,
+        struct_alloca: PointerValue<'a>,
+        op: EnumPayloadOp,
+    ) -> Result<(), String> {
         // generate_enum_type always stores a StructType here; match rather than
         // `into_struct_type()` so a violated invariant surfaces as a diagnostic
         // instead of panicking the compiler.
@@ -526,11 +600,11 @@ impl<'a> CodeGenerator<'a> {
                 .context
                 .append_basic_block(function, &format!("enum_{label}_{enum_name}_{variant}"));
             self.builder.position_at_end(case_block);
-            for (field_index, nested_enum) in glue_fields {
-                match nested_enum {
+            for (field_index, glue) in glue_fields {
+                match glue {
                     // A nested inline user enum: recurse so its own active
                     // variant's payloads get the same operation.
-                    Some(inner) => {
+                    FieldGlue::InlineEnum(inner) => {
                         let field_ptr = self
                             .builder
                             .build_struct_gep(
@@ -542,7 +616,18 @@ impl<'a> CodeGenerator<'a> {
                             .map_err(|e| e.to_string())?;
                         self.emit_enum_payload_op(&inner, field_ptr, op)?;
                     }
-                    None => {
+                    // A heap-boxed recursive nested enum: unbox and recurse
+                    // through the box, then release or duplicate the box itself.
+                    FieldGlue::BoxedEnum(inner) => {
+                        self.emit_boxed_enum_field_op(
+                            struct_type,
+                            struct_alloca,
+                            field_index,
+                            &inner,
+                            op,
+                        )?;
+                    }
+                    FieldGlue::Pointer => {
                         self.emit_enum_payload_field_op(
                             struct_type,
                             struct_alloca,
@@ -609,6 +694,291 @@ impl<'a> CodeGenerator<'a> {
                 .build_store(data_ptr, cloned)
                 .map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+
+    /// Emit, up front and in a clean builder state, the out-of-line glue an
+    /// RC-payload enum needs to be boxed as a self-managing value (issue #309):
+    /// drop and deep-clone (used as the managed box's drop/clone glue) plus
+    /// retain for a recursive enum's internal inline-field retain. Generating
+    /// this lazily from inside a function body would interleave the generated
+    /// blocks with the caller's and corrupt the insertion point.
+    pub(super) fn generate_enum_object_support(&mut self, enum_name: &str) -> Result<(), String> {
+        self.get_or_create_enum_glue_fn(enum_name, EnumPayloadOp::Drop)?;
+        self.get_or_create_enum_glue_fn(enum_name, EnumPayloadOp::DeepClone)?;
+        if self.enum_is_recursive(enum_name) {
+            self.get_or_create_enum_glue_fn(enum_name, EnumPayloadOp::Retain)?;
+        }
+        Ok(())
+    }
+
+    /// Box `value` for storage into a collection, using its known semantic
+    /// `elem_type` to decide the representation (issue #309): an enum that owns
+    /// reference-counted payloads becomes a managed `BoxedEnum` so the runtime
+    /// clones and drops it with value semantics as the collection copies and
+    /// releases elements; everything else (including a payload-less enum) goes
+    /// through `box_value`. The semantic type is required because a bare LLVM
+    /// struct value cannot identify its enum - literal struct types are shared.
+    pub(super) fn box_enum_or_value(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        elem_type: &Type,
+    ) -> PointerValue<'a> {
+        if value.is_struct_value()
+            && let Some(enum_name) = self.user_enum_type_name(elem_type)
+            && self.enum_has_rc_payload(&enum_name)
+        {
+            return self
+                .box_enum_managed(value.into_struct_value(), &enum_name)
+                .expect("boxing an RC-payload enum should succeed");
+        }
+        self.box_value(value)
+    }
+
+    /// Box an RC-payload enum value into a managed `BoxedEnum` (issue #309) so
+    /// its deep-clone and drop glue run wherever the runtime later copies or
+    /// releases it - notably inside collections, whose insert/read helpers
+    /// `clone()` their elements. The box owns an independent deep copy of the
+    /// enum, so the source temporary the caller still holds is released as usual.
+    pub(super) fn box_enum_managed(
+        &mut self,
+        struct_val: inkwell::values::StructValue<'a>,
+        enum_name: &str,
+    ) -> Result<PointerValue<'a>, String> {
+        let clone_glue = *self
+            .enum_glue_fns
+            .get(&(enum_name.to_string(), EnumPayloadOp::DeepClone.label()))
+            .ok_or_else(|| format!("Enum {} deep-clone glue missing", enum_name))?;
+        let drop_glue = *self
+            .enum_glue_fns
+            .get(&(enum_name.to_string(), EnumPayloadOp::Drop.label()))
+            .ok_or_else(|| format!("Enum {} drop glue missing", enum_name))?;
+        let struct_type = struct_val.get_type();
+        let temp = self
+            .builder
+            .build_alloca(struct_type, "enum_box_src")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(temp, struct_val)
+            .map_err(|e| e.to_string())?;
+        let size = struct_type
+            .size_of()
+            .ok_or("enum struct has no size for boxing")?;
+        let box_fn = self
+            .runtime_function("mux_box_enum_managed")
+            .ok_or("mux_box_enum_managed not found")?;
+        let boxed = self
+            .builder
+            .build_call(
+                box_fn,
+                &[
+                    temp.into(),
+                    size.into(),
+                    clone_glue.as_global_value().as_pointer_value().into(),
+                    drop_glue.as_global_value().as_pointer_value().into(),
+                ],
+                "managed_enum_box",
+            )
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_box_enum_managed returned no value")?
+            .into_pointer_value();
+        self.register_temp(boxed.into());
+        Ok(boxed)
+    }
+
+    /// Return (building it on first use) the out-of-line RC-glue function for a
+    /// recursive enum: `void @mux_enum_glue_<op>_<Enum>(ptr)`. Its body switches
+    /// on the active variant and applies `op` to the variant's payloads, and it
+    /// recurses into itself at runtime through boxed fields - so unlike inline
+    /// expansion it terminates, following the box chain to a base variant.
+    /// Memoized and inserted before its body is built so a variant that
+    /// re-embeds the enum resolves the self-call (issue #309).
+    fn get_or_create_enum_glue_fn(
+        &mut self,
+        enum_name: &str,
+        op: EnumPayloadOp,
+    ) -> Result<inkwell::values::FunctionValue<'a>, String> {
+        let key = (enum_name.to_string(), op.label());
+        if let Some(existing) = self.enum_glue_fns.get(&key) {
+            return Ok(*existing);
+        }
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let fn_type = self.context.void_type().fn_type(&[ptr_type.into()], false);
+        let function = self.module.add_function(
+            &format!("mux_enum_glue_{}_{}", op.label(), enum_name),
+            fn_type,
+            None,
+        );
+        self.enum_glue_fns.insert(key, function);
+
+        let saved_block = self.builder.get_insert_block();
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let param = function
+            .get_nth_param(0)
+            .ok_or("enum glue function is missing its parameter")?
+            .into_pointer_value();
+        self.emit_enum_payload_op_inline(enum_name, param, op)?;
+        self.builder.build_return(None).map_err(|e| e.to_string())?;
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+        Ok(function)
+    }
+
+    /// Apply `op` to a heap-boxed recursive nested-enum payload (issue #309). The
+    /// field slot holds a `Value::Opaque` box that exclusively owns one inner
+    /// enum value - boxes are never shared, so each stays at refcount 1:
+    /// - Drop: unbox, recurse the drop into the inner enum's own payloads, then
+    ///   release the box (freeing it, since it was the sole owner).
+    /// - Retain/DeepClone: box a fresh independent copy and deep-clone its
+    ///   payloads so it shares nothing with the source, then store it back. Both
+    ///   ops behave identically: a shared retain would break the unshared-box
+    ///   invariant the unconditional recursive drop relies on.
+    fn emit_boxed_enum_field_op(
+        &mut self,
+        struct_type: inkwell::types::StructType<'a>,
+        struct_alloca: PointerValue<'a>,
+        field_index: usize,
+        inner: &str,
+        op: EnumPayloadOp,
+    ) -> Result<(), String> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let inner_struct = match self.type_map.get(inner) {
+            Some(BasicTypeEnum::StructType(st)) => *st,
+            _ => return Err(format!("Boxed nested enum {} is not a struct type", inner)),
+        };
+        let field_ptr = self
+            .builder
+            .build_struct_gep(
+                struct_type,
+                struct_alloca,
+                (field_index + 1) as u32,
+                "boxed_field_ptr",
+            )
+            .map_err(|e| e.to_string())?;
+        let box_ptr = self
+            .builder
+            .build_load(ptr_type, field_ptr, "boxed_ptr")
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+        let unbox_fn = self
+            .runtime_function("mux_value_unbox_enum")
+            .ok_or("mux_value_unbox_enum not found")?;
+        if matches!(op, EnumPayloadOp::Drop) {
+            let inner_data = self
+                .builder
+                .build_call(unbox_fn, &[box_ptr.into()], "unbox_drop")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value()
+                .basic()
+                .ok_or("mux_value_unbox_enum returned no value")?
+                .into_pointer_value();
+            self.emit_enum_payload_op(inner, inner_data, EnumPayloadOp::Drop)?;
+            let rc_dec = self
+                .runtime_function("mux_rc_dec")
+                .ok_or("mux_rc_dec not found")?;
+            self.builder
+                .build_call(rc_dec, &[box_ptr.into()], "box_release")
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        // Retain or DeepClone: produce a fresh, fully independent box.
+        let src_data = self
+            .builder
+            .build_call(unbox_fn, &[box_ptr.into()], "unbox_src")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_value_unbox_enum returned no value")?
+            .into_pointer_value();
+        let box_fn = self
+            .runtime_function("mux_box_enum")
+            .ok_or("mux_box_enum not found")?;
+        let size = inner_struct
+            .size_of()
+            .ok_or("boxed nested enum struct has no size")?;
+        let new_box = self
+            .builder
+            .build_call(box_fn, &[src_data.into(), size.into()], "rebox")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_box_enum returned no value")?
+            .into_pointer_value();
+        let new_data = self
+            .builder
+            .build_call(unbox_fn, &[new_box.into()], "unbox_new")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_value_unbox_enum returned no value")?
+            .into_pointer_value();
+        // Always a deep clone (never a shared retain) so the fresh box owns
+        // independent copies of the inner enum's own boxed children.
+        self.emit_enum_payload_op(inner, new_data, EnumPayloadOp::DeepClone)?;
+        self.builder
+            .build_store(field_ptr, new_box)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Store constructor argument `arg` (an inline nested-enum value) into a
+    /// boxed recursive field slot at `data_ptr` (issue #309): heap-box it into a
+    /// `Value::Opaque` and deep-clone the box's payloads so it owns an
+    /// independent copy. The caller still drops the temporary it passed in, and
+    /// the box stays the sole (refcount-1) owner of its contents. `inner` names
+    /// the boxed enum.
+    pub(super) fn store_boxed_recursive_field(
+        &mut self,
+        inner: &str,
+        arg: BasicValueEnum<'a>,
+        data_ptr: PointerValue<'a>,
+    ) -> Result<(), String> {
+        let inner_struct = match self.type_map.get(inner) {
+            Some(BasicTypeEnum::StructType(st)) => *st,
+            _ => return Err(format!("Boxed nested enum {} is not a struct type", inner)),
+        };
+        let temp_ptr = self
+            .builder
+            .build_alloca(inner_struct, "box_src")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(temp_ptr, arg)
+            .map_err(|e| e.to_string())?;
+        let box_fn = self
+            .runtime_function("mux_box_enum")
+            .ok_or("mux_box_enum not found")?;
+        let size = inner_struct
+            .size_of()
+            .ok_or("boxed nested enum struct has no size")?;
+        let new_box = self
+            .builder
+            .build_call(box_fn, &[temp_ptr.into(), size.into()], "box_recursive")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_box_enum returned no value")?
+            .into_pointer_value();
+        let unbox_fn = self
+            .runtime_function("mux_value_unbox_enum")
+            .ok_or("mux_value_unbox_enum not found")?;
+        let new_data = self
+            .builder
+            .build_call(unbox_fn, &[new_box.into()], "unbox_box_src")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_value_unbox_enum returned no value")?
+            .into_pointer_value();
+        // Deep-clone so the box shares nothing with `arg`, which the caller still
+        // drops as a statement temporary.
+        self.emit_enum_payload_op(inner, new_data, EnumPayloadOp::DeepClone)?;
+        self.builder
+            .build_store(data_ptr, new_box)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 

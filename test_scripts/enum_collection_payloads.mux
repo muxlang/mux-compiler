@@ -1,0 +1,34 @@
+// An enum that carries reference-counted payloads must survive being stored in
+// a collection, read back, and matched (issue #309). Collections copy and
+// release their elements independently, so a payload-carrying enum is boxed as
+// a managed value whose clone/drop glue keeps the payloads correct - otherwise
+// reading an element back dangles a freed payload.
+
+enum Item { Named(string), Count(int) }
+
+func label(Item it) returns string {
+    match it {
+        Named(n) { return n }
+        Count(c) { return "count=" + c.to_string() }
+    }
+}
+
+func main() returns void {
+    // A list of enums with a string payload: iterate and match each element.
+    auto items = [Item.Named("first"), Item.Count(2), Item.Named("third")]
+    for Item it in items {
+        print(label(it))
+    }
+
+    // A map whose values are enums: index one out and match it directly.
+    auto m = {"x": Item.Named("ex"), "y": Item.Count(9)}
+    match m["x"] {
+        Named(n) { print("map: " + n) }
+        Count(c) { print("map: count") }
+    }
+
+    // A set of enums constructs and reports its size.
+    auto s = {Item.Named("a"), Item.Named("b")}
+    print("set size: " + s.size().to_string())
+    return
+}

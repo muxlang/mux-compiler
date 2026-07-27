@@ -1043,7 +1043,8 @@ impl<'a> CodeGenerator<'a> {
             .into_pointer_value();
         for element in elements {
             let elem_val = self.generate_expression(element)?;
-            let elem_ptr = self.box_value(elem_val);
+            let elem_type = self.resolve_expression_type_with_fallback(element)?;
+            let elem_ptr = self.box_enum_or_value(elem_val, &elem_type);
             self.generate_runtime_call("mux_list_push_back", &[list_ptr.into(), elem_ptr.into()]);
         }
         let list_value = self
@@ -1062,9 +1063,11 @@ impl<'a> CodeGenerator<'a> {
             .into_pointer_value();
         for (key, value) in entries {
             let key_val = self.generate_expression(key)?;
-            let key_ptr = self.box_value(key_val);
+            let key_type = self.resolve_expression_type_with_fallback(key)?;
+            let key_ptr = self.box_enum_or_value(key_val, &key_type);
             let value_val = self.generate_expression(value)?;
-            let value_ptr = self.box_value(value_val);
+            let value_type = self.resolve_expression_type_with_fallback(value)?;
+            let value_ptr = self.box_enum_or_value(value_val, &value_type);
             self.generate_runtime_call(
                 "mux_map_put",
                 &[map_ptr.into(), key_ptr.into(), value_ptr.into()],
@@ -1112,7 +1115,8 @@ impl<'a> CodeGenerator<'a> {
             .into_pointer_value();
         for element in elements {
             let elem_val = self.generate_expression(element)?;
-            let elem_ptr = self.box_value(elem_val);
+            let elem_type = self.resolve_expression_type_with_fallback(element)?;
+            let elem_ptr = self.box_enum_or_value(elem_val, &elem_type);
             self.generate_runtime_call("mux_set_add", &[set_ptr.into(), elem_ptr.into()]);
         }
         let set_value = self
@@ -2681,13 +2685,27 @@ impl<'a> CodeGenerator<'a> {
         func: &ExpressionNode,
         args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
-        match &func.kind {
+        let result = match &func.kind {
             ExpressionKind::FieldAccess { expr, field } => {
                 self.generate_method_style_call(call_expr, expr, field, args)
             }
             ExpressionKind::Identifier(name) => self.generate_identifier_function_call(name, args),
             _ => self.generate_callable_expression_call(func, args),
+        }?;
+        // A function that returns a user enum by value hands back an owned value
+        // whose payloads it retained or deep-cloned. Track it as a temporary so
+        // an unbound result (e.g. used directly as a call argument) is released
+        // at the statement boundary instead of leaking, exactly like a freshly
+        // constructed enum. `register_enum_temp` dedups and no-ops on values
+        // without an RC payload, so a constructor result (already tracked) or a
+        // payload-less enum is unaffected.
+        if result.is_struct_value()
+            && let Ok(result_type) = self.resolve_expression_type_with_fallback(call_expr)
+            && let Some(enum_name) = self.user_enum_type_name(&result_type)
+        {
+            self.register_enum_temp(result, &enum_name);
         }
+        Ok(result)
     }
 
     fn generate_method_style_call(
