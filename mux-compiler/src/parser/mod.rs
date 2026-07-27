@@ -425,22 +425,27 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-            let member_start = self.current;
-            // Recover within the class body: a bad member (e.g. a malformed
-            // field default) records its error and resynchronizes to the next
-            // member or the closing brace, rather than aborting the whole class
-            // and misparsing '}' as a stray top-level token (issue #288).
-            if let Err(e) =
-                self.parse_class_member(type_params, start_span, &mut fields, &mut methods)
-            {
-                self.errors.push(e);
-                self.synchronize();
-                if self.current == member_start {
-                    self.advance();
-                }
-            }
+            self.parse_class_member(type_params, start_span, &mut fields, &mut methods)?;
         }
         Ok((fields, methods))
+    }
+
+    /// Skip the rest of a malformed field declaration up to and including its
+    /// terminating newline, so the class body resumes at the next member. A
+    /// field is a single logical line, so this consumes any braces in a bad
+    /// collection default without mistaking them for the class terminator - and,
+    /// unlike aborting the whole class, it does not leave '}' to be misparsed as
+    /// a stray top-level token (issue #288).
+    fn recover_field_declaration(&mut self) {
+        while !self.is_at_end()
+            && !self.check(TokenType::NewLine)
+            && !self.check(TokenType::CloseBrace)
+        {
+            self.advance();
+        }
+        if self.check(TokenType::NewLine) {
+            self.advance();
+        }
     }
 
     fn parse_class_member(
@@ -485,8 +490,17 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenType::Id(_) | TokenType::Const => {
-                let field = self.parse_field_declaration(type_params)?;
-                fields.push(field);
+                // Recover from a malformed field locally so the rest of the class
+                // still parses and '}' is not misparsed as a stray token (#288).
+                // Methods keep propagating their own errors, so a nested method
+                // brace is never mistaken for the class terminator.
+                match self.parse_field_declaration(type_params) {
+                    Ok(field) => fields.push(field),
+                    Err(e) => {
+                        self.errors.push(e);
+                        self.recover_field_declaration();
+                    }
+                }
             }
             TokenType::NewLine => {
                 self.consume_token(TokenType::NewLine, "Expected newline")?;
