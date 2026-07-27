@@ -95,8 +95,8 @@ for script in "${programs[@]}"; do
     grep "still live at exit" <<<"$out" | sed 's/^/        /'
     failures=$((failures + 1))
   elif [[ "$rc" -ne 0 ]]; then
-    echo "  ERROR $script (exit $rc)"
-    echo "$out" | tail -3 | sed 's/^/        /'
+    echo "  ERROR $script (exit $rc)" >&2
+    echo "$out" | tail -3 | sed 's/^/        /' >&2
     failures=$((failures + 1))
   else
     echo "  ok    $script"
