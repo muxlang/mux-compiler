@@ -32,27 +32,31 @@ impl<'a> CodeGenerator<'a> {
         field_ptr: PointerValue<'a>,
         field: &Field,
     ) -> Result<(), String> {
-        // The initial value stored here is owned by the field (released by the
-        // object's destructor), so any temporary registered while producing it
-        // must be dropped from the pending set rather than freed at the
-        // constructor's statement boundary - otherwise the field is left
-        // dangling.
+        // The final value stored here is owned by the field (released by the
+        // object's destructor), so it is transferred out of the pending temporary
+        // set rather than freed at the constructor's statement boundary -
+        // otherwise the field is left dangling. Any *intermediate* temporaries a
+        // compound default expression produced (e.g. the operands of `"a" + "b"`,
+        // or arguments to a call) are still owned and must be released, or they
+        // leak - so only the stored value is untracked; the rest are cleaned up.
         let temp_mark = self.temp_mark();
         if let Some(default_expr) = &field.default_value {
-            let literal_val = self.generate_expression(default_expr)?;
+            let value = self.generate_expression(default_expr)?;
             let stored_val = if matches!(field.type_.kind, TypeKind::Primitive(_)) {
-                self.box_value(literal_val).into()
+                self.box_value(value).into()
             } else {
-                literal_val
+                value
             };
             self.builder
                 .build_store(field_ptr, stored_val)
                 .map_err(|e| e.to_string())?;
+            self.untrack_temp(stored_val);
+            self.cleanup_temps_to(temp_mark)?;
         } else {
             let field_type = self.type_node_to_type(&field.type_);
             self.initialize_field_by_type(field_ptr, &field_type, field.is_generic_param)?;
+            self.discard_temps_to(temp_mark);
         }
-        self.discard_temps_to(temp_mark);
         Ok(())
     }
 
