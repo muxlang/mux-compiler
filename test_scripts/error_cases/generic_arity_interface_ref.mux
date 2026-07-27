@@ -1,0 +1,12 @@
+// Should fail: an implemented-interface reference with the wrong generic arity is
+// caught by the comprehensive arity pass (#303) - a position not covered by the
+// earlier per-path checks.
+interface Wrapper<T> {
+    func get() returns T
+}
+class C is Wrapper<int, string> {
+    func get() returns int { return 0 }
+}
+func main() returns void {
+    return
+}

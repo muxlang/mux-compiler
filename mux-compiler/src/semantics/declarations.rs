@@ -4,7 +4,7 @@ use super::{
 };
 use crate::ast::{
     AstNode, EnumVariant, ExpressionKind, ExpressionNode, Field, FunctionNode, LiteralNode,
-    Spanned, StatementKind, StatementNode, TraitBound, TraitRef, TypeKind, TypeNode,
+    Spanned, StatementKind, StatementNode, TraitBound, TraitRef, TypeKind, TypeNode, WhereClause,
 };
 use crate::diagnostic::Files;
 use crate::lexer::Span;
@@ -680,15 +680,24 @@ impl SemanticAnalyzer {
     /// produce the same message and span, which `analyze` deduplicates.
     pub(super) fn validate_all_type_arities(&mut self, nodes: &[AstNode]) {
         for node in nodes {
+            // A fallback span for trait bounds / interface references, which carry
+            // no span of their own; a bound's own type argument spans are used
+            // when present.
+            let span = *node.span();
             match node {
                 AstNode::Class {
                     type_params,
+                    traits,
                     fields,
                     methods,
+                    where_clause,
                     ..
                 } => {
+                    self.arity_check_type_param_bounds(type_params, type_params, span);
+                    self.arity_check_trait_refs(traits, type_params, span);
+                    self.arity_check_where(where_clause.as_ref(), type_params);
                     for field in fields {
-                        self.arity_check_type(&field.type_, type_params);
+                        self.arity_check_field(field, type_params);
                     }
                     for method in methods {
                         self.arity_check_function(method, type_params);
@@ -699,10 +708,12 @@ impl SemanticAnalyzer {
                     variants,
                     ..
                 } => {
+                    self.arity_check_type_param_bounds(type_params, type_params, span);
                     for variant in variants {
                         for (_, type_node) in variant.data.iter().flatten() {
                             self.arity_check_type(type_node, type_params);
                         }
+                        self.arity_check_where(variant.where_clause.as_ref(), type_params);
                     }
                 }
                 AstNode::Interface {
@@ -711,11 +722,13 @@ impl SemanticAnalyzer {
                     methods,
                     ..
                 } => {
+                    self.arity_check_type_param_bounds(type_params, type_params, span);
                     for field in fields {
-                        self.arity_check_type(&field.type_, type_params);
+                        self.arity_check_field(field, type_params);
                     }
                     for method in methods {
-                        // Interface methods declare a signature but no body.
+                        // Interface methods declare a signature (and where clause)
+                        // but no body.
                         self.arity_check_signature(method, type_params);
                     }
                 }
@@ -733,22 +746,103 @@ impl SemanticAnalyzer {
         }
     }
 
-    /// Arity-check a function/method signature (parameter and return types) in
-    /// scope of the outer type parameters plus the function's own.
+    /// Arity-check each type parameter's trait bounds - both the bound trait's
+    /// own arity (a generic interface `T is Wrapper<int>`) and its type
+    /// arguments. `params` are the type parameters in scope, which include these
+    /// same parameters, so a bound referencing a sibling parameter is not
+    /// mistaken for a generic.
+    fn arity_check_type_param_bounds(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        params: &[(String, Vec<TraitBound>)],
+        fallback_span: Span,
+    ) {
+        for (_, bounds) in type_params {
+            for bound in bounds {
+                self.arity_check_named_ref(&bound.name, &bound.type_params, fallback_span, params);
+            }
+        }
+    }
+
+    /// Arity-check implemented-interface references (`class C is Foo<int>`),
+    /// including the interface's own arity.
+    fn arity_check_trait_refs(
+        &mut self,
+        traits: &[TraitRef],
+        params: &[(String, Vec<TraitBound>)],
+        fallback_span: Span,
+    ) {
+        for trait_ref in traits {
+            self.arity_check_named_ref(
+                &trait_ref.name,
+                &trait_ref.type_args,
+                fallback_span,
+                params,
+            );
+        }
+    }
+
+    /// Arity-check a named type reference (`name<args...>`) that carries no span
+    /// of its own - a trait bound or implemented-interface reference - by
+    /// validating it as the named type it denotes. Uses the first argument's span
+    /// when present, else the enclosing declaration's.
+    fn arity_check_named_ref(
+        &mut self,
+        name: &str,
+        args: &[TypeNode],
+        fallback_span: Span,
+        params: &[(String, Vec<TraitBound>)],
+    ) {
+        let span = args.first().map(|arg| arg.span).unwrap_or(fallback_span);
+        let type_node = TypeNode {
+            kind: TypeKind::Named(name.to_string(), args.to_vec()),
+            span,
+        };
+        self.arity_check_type(&type_node, params);
+    }
+
+    /// Arity-check the type annotations inside a where clause's predicate
+    /// expressions (e.g. a cast or generic instantiation in a constraint).
+    fn arity_check_where(
+        &mut self,
+        where_clause: Option<&WhereClause>,
+        params: &[(String, Vec<TraitBound>)],
+    ) {
+        if let Some(where_clause) = where_clause {
+            for predicate in &where_clause.predicates {
+                self.arity_check_expr(predicate, params);
+            }
+        }
+    }
+
+    /// Arity-check a class or interface field: its declared type, its
+    /// default-value expression (arbitrary since #287), and its where clause.
+    fn arity_check_field(&mut self, field: &Field, params: &[(String, Vec<TraitBound>)]) {
+        self.arity_check_type(&field.type_, params);
+        if let Some(default) = &field.default_value {
+            self.arity_check_expr(default, params);
+        }
+        self.arity_check_where(field.where_clause.as_ref(), params);
+    }
+
+    /// Arity-check a function/method signature: its own type-parameter bounds,
+    /// parameter types and default-value expressions, return type, and where
+    /// clause, in scope of the outer type parameters plus its own.
     fn arity_check_signature(
         &mut self,
         func: &FunctionNode,
         outer_params: &[(String, Vec<TraitBound>)],
     ) {
-        let params: Vec<(String, Vec<TraitBound>)> = outer_params
-            .iter()
-            .cloned()
-            .chain(func.type_params.iter().cloned())
-            .collect();
+        let params = Self::extend_params(outer_params, &func.type_params);
+        self.arity_check_type_param_bounds(&func.type_params, &params, func.span);
         for param in &func.params {
             self.arity_check_type(&param.type_, &params);
+            if let Some(default) = &param.default_value {
+                self.arity_check_expr(default, &params);
+            }
         }
         self.arity_check_type(&func.return_type, &params);
+        self.arity_check_where(func.where_clause.as_ref(), &params);
     }
 
     /// Arity-check a function/method's signature and its body.
@@ -758,14 +852,19 @@ impl SemanticAnalyzer {
         outer_params: &[(String, Vec<TraitBound>)],
     ) {
         self.arity_check_signature(func, outer_params);
-        let params: Vec<(String, Vec<TraitBound>)> = outer_params
-            .iter()
-            .cloned()
-            .chain(func.type_params.iter().cloned())
-            .collect();
+        let params = Self::extend_params(outer_params, &func.type_params);
         for stmt in &func.body {
             self.arity_check_statement(stmt, &params);
         }
+    }
+
+    /// The type parameters in scope inside a function/method: the enclosing
+    /// declaration's plus the function's own.
+    fn extend_params(
+        outer: &[(String, Vec<TraitBound>)],
+        own: &[(String, Vec<TraitBound>)],
+    ) -> Vec<(String, Vec<TraitBound>)> {
+        outer.iter().cloned().chain(own.iter().cloned()).collect()
     }
 
     fn arity_check_statement(
@@ -860,12 +959,16 @@ impl SemanticAnalyzer {
                 params: lambda_params,
                 return_type,
                 body,
-                ..
+                where_clause,
             } => {
                 for param in lambda_params {
                     self.arity_check_type(&param.type_, params);
+                    if let Some(default) = &param.default_value {
+                        self.arity_check_expr(default, params);
+                    }
                 }
                 self.arity_check_type(return_type, params);
+                self.arity_check_where(where_clause.as_ref(), params);
                 self.arity_check_statements(body, params);
             }
             ExpressionKind::Binary { left, right, .. } => {
