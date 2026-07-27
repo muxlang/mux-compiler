@@ -692,49 +692,80 @@ impl SemanticAnalyzer {
                     methods,
                     where_clause,
                     ..
-                } => {
-                    self.arity_check_type_param_bounds(type_params, type_params, span);
-                    self.arity_check_trait_refs(traits, type_params, span);
-                    self.arity_check_where(where_clause.as_ref(), type_params);
-                    for field in fields {
-                        self.arity_check_field(field, type_params);
-                    }
-                    for method in methods {
-                        self.arity_check_function(method, type_params);
-                    }
-                }
+                } => self.arity_check_class(
+                    type_params,
+                    traits,
+                    fields,
+                    methods,
+                    where_clause.as_ref(),
+                    span,
+                ),
                 AstNode::Enum {
                     type_params,
                     variants,
                     ..
-                } => {
-                    self.arity_check_type_param_bounds(type_params, type_params, span);
-                    for variant in variants {
-                        for (_, type_node) in variant.data.iter().flatten() {
-                            self.arity_check_type(type_node, type_params);
-                        }
-                        self.arity_check_where(variant.where_clause.as_ref(), type_params);
-                    }
-                }
+                } => self.arity_check_enum_decl(type_params, variants, span),
                 AstNode::Interface {
                     type_params,
                     fields,
                     methods,
                     ..
-                } => {
-                    self.arity_check_type_param_bounds(type_params, type_params, span);
-                    for field in fields {
-                        self.arity_check_field(field, type_params);
-                    }
-                    for method in methods {
-                        // Interface methods declare a signature (and where clause)
-                        // but no body.
-                        self.arity_check_signature(method, type_params);
-                    }
-                }
+                } => self.arity_check_interface(type_params, fields, methods, span),
                 AstNode::Function(func) => self.arity_check_function(func, &[]),
                 AstNode::Statement(stmt) => self.arity_check_statement(stmt, &[]),
             }
+        }
+    }
+
+    fn arity_check_class(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        traits: &[TraitRef],
+        fields: &[Field],
+        methods: &[FunctionNode],
+        where_clause: Option<&WhereClause>,
+        span: Span,
+    ) {
+        self.arity_check_type_param_bounds(type_params, type_params, span);
+        self.arity_check_trait_refs(traits, type_params, span);
+        self.arity_check_where(where_clause, type_params);
+        for field in fields {
+            self.arity_check_field(field, type_params);
+        }
+        for method in methods {
+            self.arity_check_function(method, type_params);
+        }
+    }
+
+    fn arity_check_enum_decl(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        variants: &[EnumVariant],
+        span: Span,
+    ) {
+        self.arity_check_type_param_bounds(type_params, type_params, span);
+        for variant in variants {
+            for (_, type_node) in variant.data.iter().flatten() {
+                self.arity_check_type(type_node, type_params);
+            }
+            self.arity_check_where(variant.where_clause.as_ref(), type_params);
+        }
+    }
+
+    fn arity_check_interface(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        fields: &[Field],
+        methods: &[FunctionNode],
+        span: Span,
+    ) {
+        self.arity_check_type_param_bounds(type_params, type_params, span);
+        for field in fields {
+            self.arity_check_field(field, type_params);
+        }
+        for method in methods {
+            // Interface methods declare a signature (and where clause) but no body.
+            self.arity_check_signature(method, type_params);
         }
     }
 
