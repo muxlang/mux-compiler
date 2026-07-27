@@ -167,7 +167,13 @@ impl<'a> Parser<'a> {
 
         if let Err(ref e) = result {
             self.errors.push(e.clone());
-            if !self.is_at_end() {
+            // Retry the next declaration to recover, but stop at a closing brace:
+            // that terminates the enclosing block or class body, and retrying
+            // there would parse '}' as a stray declaration and cascade a spurious
+            // "Expected expression, found '}'" plus a lost terminator (issue #288,
+            // in method bodies). Returning None lets the block/class loop see the
+            // '}' and finish cleanly.
+            if !self.is_at_end() && !self.check(TokenType::CloseBrace) {
                 return self.declaration();
             }
             return Ok(None);
@@ -425,26 +431,55 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-            self.parse_class_member(type_params, start_span, &mut fields, &mut methods)?;
+            let member_start = self.current;
+            // Recover within the class body so a malformed member does not abort
+            // the whole class and leave '}' to be misparsed as a stray top-level
+            // token (issue #288). Skipping from the member start treats the member
+            // as a balanced unit, so inner braces - a collection default or a
+            // method body - are consumed with their matching open and never
+            // mistaken for the class terminator.
+            if let Err(e) =
+                self.parse_class_member(type_params, start_span, &mut fields, &mut methods)
+            {
+                self.errors.push(e);
+                self.current = member_start;
+                self.recover_class_member();
+                if self.current == member_start {
+                    self.advance();
+                }
+            }
         }
         Ok((fields, methods))
     }
 
-    /// Skip the rest of a malformed field declaration up to and including its
-    /// terminating newline, so the class body resumes at the next member. A
-    /// field is a single logical line, so this consumes any braces in a bad
-    /// collection default without mistaking them for the class terminator - and,
-    /// unlike aborting the whole class, it does not leave '}' to be misparsed as
-    /// a stray top-level token (issue #288).
-    fn recover_field_declaration(&mut self) {
-        while !self.is_at_end()
-            && !self.check(TokenType::NewLine)
-            && !self.check(TokenType::CloseBrace)
-        {
-            self.advance();
-        }
-        if self.check(TokenType::NewLine) {
-            self.advance();
+    /// Skip a malformed class member as a balanced unit, starting from the token
+    /// the member began at. Matched brace pairs (a collection default, a method
+    /// body) are consumed together; recovery ends at the member's terminating
+    /// newline, or at a closing brace that balances no open seen here - the
+    /// class's own terminator - which is left for the caller.
+    fn recover_class_member(&mut self) {
+        let mut depth: i32 = 0;
+        while !self.is_at_end() {
+            match self.peek().token_type {
+                TokenType::OpenBrace => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenType::CloseBrace => {
+                    if depth == 0 {
+                        return;
+                    }
+                    depth -= 1;
+                    self.advance();
+                }
+                TokenType::NewLine if depth == 0 => {
+                    self.advance();
+                    return;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
         }
     }
 
@@ -490,17 +525,8 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenType::Id(_) | TokenType::Const => {
-                // Recover from a malformed field locally so the rest of the class
-                // still parses and '}' is not misparsed as a stray token (#288).
-                // Methods keep propagating their own errors, so a nested method
-                // brace is never mistaken for the class terminator.
-                match self.parse_field_declaration(type_params) {
-                    Ok(field) => fields.push(field),
-                    Err(e) => {
-                        self.errors.push(e);
-                        self.recover_field_declaration();
-                    }
-                }
+                let field = self.parse_field_declaration(type_params)?;
+                fields.push(field);
             }
             TokenType::NewLine => {
                 self.consume_token(TokenType::NewLine, "Expected newline")?;
@@ -1661,8 +1687,11 @@ impl<'a> Parser<'a> {
                 self.skip_newlines();
             }
             Ok(None) => {
-                let current_pos = self.current;
-                if current_pos == self.current {
+                // `declaration` parsed nothing (e.g. it recovered from an error and
+                // stopped at the block's closing brace). Advance only when there is
+                // a real token to skip, so the block loop can see '}' and finish
+                // rather than consuming it and running past the block (issue #288).
+                if !self.check(TokenType::CloseBrace) && !self.is_at_end() {
                     self.advance();
                 }
             }

@@ -1,0 +1,15 @@
+// Should fail with a single, real error: a malformed statement inside a method
+// body must not cascade into spurious "Expected expression, found '}'" errors on
+// the method's or the class's closing brace. Recovery resumes at the next member
+// (issue #288, generalized to method bodies), so the trailing field still parses.
+
+class C {
+    func bad() returns int {
+        int y =
+    }
+    int x = 5
+}
+
+func main() returns void {
+    return
+}
