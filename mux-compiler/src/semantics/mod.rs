@@ -632,6 +632,9 @@ impl SemanticAnalyzer {
         // module are visible for classes to inherit during analysis.
         self.collect_interface_preconditions(ast);
         self.collect_where_preconditions(ast);
+        // One comprehensive generic-arity pass over every type annotation, now
+        // that all type symbols and their type parameters are registered (#303).
+        self.validate_all_type_arities(ast);
         self.analyze_nodes(ast, files);
         // Two-pass analysis (hoist/collection, then body analysis) can resolve
         // the same field or signature type twice, so a type error on it is
