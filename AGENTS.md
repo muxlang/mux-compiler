@@ -81,6 +81,16 @@ The user will run `cargo test` and insta snapshot tests separately. Do not manua
   library the compiler links. Required whenever compiler work depends on unmerged
   mux-runtime changes. The pre-commit hook runs the full `cargo test`, so export it
   before committing or the executable tests link a stale runtime and fail.
+- **Local rc-leak-check: use `scripts/leak-check.sh`, not `MUX_RUNTIME_FEATURES`
+  alone.** After any reference-counting / codegen change, reproduce the CI "RC Leak
+  Check" job locally with `scripts/leak-check.sh [file.mux ...]`. It builds the
+  runtime with the `rc-leak-check` feature and FORCES it via `MUX_RUNTIME_LIB`, so a
+  leaking program exits 101 ("N reference-counted block(s) still live at exit").
+  Setting only `MUX_RUNTIME_FEATURES=...,rc-leak-check` is NOT enough: a plain
+  `target/debug/libmux_runtime.a` (cargo builds it as a workspace member without the
+  feature) shadows the feature-specific build, the assertion never runs, and a leaky
+  program falsely exits 0. rc-leak-check itself is not broken - the trap is linking
+  the wrong runtime. (Valgrind is the other leak gate; `scripts/valgrind-checks.sh`.)
 - **Test-script auto-discovery**: every `test_scripts/*.mux` file is picked up by the
   lexer, parser, and executable integration suites (insta snapshots); files under
   `test_scripts/error_cases/` only by the executable suite. Adding a script requires
