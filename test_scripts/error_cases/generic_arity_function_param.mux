@@ -1,0 +1,17 @@
+// Should fail: a free function's parameter type with the wrong generic arity is
+// caught by the comprehensive arity pass (issue #303). Free-function signatures
+// were not covered by the earlier per-position checks (class fields, enum
+// payloads, interface signatures).
+
+class Pair<K, V> {
+    K key = 0
+    V value = 0
+}
+
+func first(Pair<int> p) returns int {
+    return 0
+}
+
+func main() returns void {
+    return
+}

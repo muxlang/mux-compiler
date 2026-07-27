@@ -4,7 +4,7 @@ use super::{
 };
 use crate::ast::{
     AstNode, EnumVariant, ExpressionKind, ExpressionNode, Field, FunctionNode, LiteralNode,
-    Spanned, StatementKind, StatementNode, TraitBound, TraitRef,
+    Spanned, StatementKind, StatementNode, TraitBound, TraitRef, TypeKind, TypeNode, WhereClause,
 };
 use crate::diagnostic::Files;
 use crate::lexer::Span;
@@ -654,83 +654,377 @@ impl SemanticAnalyzer {
                     where_clause.as_ref(),
                 )
             }
-            AstNode::Enum {
-                type_params,
-                variants,
-                ..
-            } => {
-                self.validate_enum_variant_type_arities(type_params, variants);
-                self.analyze_enum_where_clauses(variants)
-            }
+            AstNode::Enum { variants, .. } => self.analyze_enum_where_clauses(variants),
             AstNode::Interface {
                 type_params,
-                fields,
                 methods,
                 ..
-            } => {
-                self.validate_interface_member_type_arities(type_params, fields, methods);
-                self.analyze_interface_where_clauses(type_params, methods)
-            }
+            } => self.analyze_interface_where_clauses(type_params, methods),
             AstNode::Statement(stmt) => self.analyze_statement(stmt, files),
         }
     }
 
-    /// Arity-check every enum variant payload type in the second pass, where all
-    /// type symbols are registered. Collection resolves these with errors
-    /// swallowed (`unwrap_or`), so a bad generic arity in a payload - e.g.
-    /// `V(list)` or a user generic with the wrong argument count - would
-    /// otherwise be silently accepted (issue #289).
-    fn validate_enum_variant_type_arities(
+    /// Single comprehensive generic-arity pass (issue #303). Runs after
+    /// declaration collection - so every class/enum/interface symbol and its
+    /// `type_params` are registered - and walks EVERY `TypeNode` in the program:
+    /// class fields, enum variant payloads, interface fields and method
+    /// signatures, function/method parameter and return types, and the type
+    /// annotations inside bodies (local declarations, `for` variable types, map
+    /// literals, lambdas, and generic type instantiations). Each is checked by
+    /// `validate_type_arity`, which reports only arity (never resolving a name),
+    /// so it is order-independent and never false-positives on a forward
+    /// reference or a type parameter. Replaces the per-position checks that
+    /// #289's review kept having to extend one hole at a time.
+    ///
+    /// Overlap with the arity check in `resolve_named_type` is harmless: the two
+    /// produce the same message and span, which `analyze` deduplicates.
+    pub(super) fn validate_all_type_arities(&mut self, nodes: &[AstNode]) {
+        for node in nodes {
+            match node {
+                AstNode::Class {
+                    type_params,
+                    traits,
+                    fields,
+                    methods,
+                    where_clause,
+                    ..
+                } => self.arity_check_class(
+                    type_params,
+                    traits,
+                    fields,
+                    methods,
+                    where_clause.as_ref(),
+                ),
+                AstNode::Enum {
+                    type_params,
+                    variants,
+                    ..
+                } => self.arity_check_enum_decl(type_params, variants),
+                AstNode::Interface {
+                    type_params,
+                    fields,
+                    methods,
+                    ..
+                } => self.arity_check_interface(type_params, fields, methods),
+                AstNode::Function(func) => self.arity_check_function(func, &[]),
+                AstNode::Statement(stmt) => self.arity_check_statement(stmt, &[]),
+            }
+        }
+    }
+
+    fn arity_check_class(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        traits: &[TraitRef],
+        fields: &[Field],
+        methods: &[FunctionNode],
+        where_clause: Option<&WhereClause>,
+    ) {
+        self.arity_check_type_param_bounds(type_params, type_params);
+        self.arity_check_trait_refs(traits, type_params);
+        self.arity_check_where(where_clause, type_params);
+        for field in fields {
+            self.arity_check_field(field, type_params);
+        }
+        for method in methods {
+            self.arity_check_function(method, type_params);
+        }
+    }
+
+    fn arity_check_enum_decl(
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         variants: &[EnumVariant],
     ) {
-        let mut errors = Vec::new();
+        self.arity_check_type_param_bounds(type_params, type_params);
         for variant in variants {
             for (_, type_node) in variant.data.iter().flatten() {
-                if let Err(e) = self.validate_type_arity(type_node, type_params) {
-                    errors.push(e);
-                }
+                self.arity_check_type(type_node, type_params);
             }
+            self.arity_check_where(variant.where_clause.as_ref(), type_params);
         }
-        self.errors.extend(errors);
     }
 
-    /// Arity-check interface field and method-signature types in the second
-    /// pass, for the same reason as enum payloads: collection swallows their
-    /// resolution errors (issue #289). `type_params` are the interface's own
-    /// type parameters, skipped so a signature referencing one is not mistaken
-    /// for a generic type.
-    fn validate_interface_member_type_arities(
+    fn arity_check_interface(
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         fields: &[Field],
         methods: &[FunctionNode],
     ) {
-        let mut errors = Vec::new();
+        self.arity_check_type_param_bounds(type_params, type_params);
         for field in fields {
-            if let Err(e) = self.validate_type_arity(&field.type_, type_params) {
-                errors.push(e);
-            }
+            self.arity_check_field(field, type_params);
         }
         for method in methods {
-            // A method's own generic parameters are in scope for its signature
-            // in addition to the interface's.
-            let params: Vec<(String, Vec<TraitBound>)> = type_params
-                .iter()
-                .cloned()
-                .chain(method.type_params.iter().cloned())
-                .collect();
-            for param in &method.params {
-                if let Err(e) = self.validate_type_arity(&param.type_, &params) {
-                    errors.push(e);
-                }
-            }
-            if let Err(e) = self.validate_type_arity(&method.return_type, &params) {
-                errors.push(e);
+            // Interface methods declare a signature (and where clause) but no body.
+            self.arity_check_signature(method, type_params);
+        }
+    }
+
+    /// Arity-check `type_node` against the enclosing declaration's type
+    /// parameters, recording any mismatch.
+    fn arity_check_type(&mut self, type_node: &TypeNode, params: &[(String, Vec<TraitBound>)]) {
+        if let Err(e) = self.validate_type_arity(type_node, params) {
+            self.errors.push(e);
+        }
+    }
+
+    /// Arity-check each type parameter's trait bounds - both the bound trait's
+    /// own arity (a generic interface `T is Wrapper<int>`) and its type
+    /// arguments. `params` are the type parameters in scope, which include these
+    /// same parameters, so a bound referencing a sibling parameter is not
+    /// mistaken for a generic.
+    fn arity_check_type_param_bounds(
+        &mut self,
+        type_params: &[(String, Vec<TraitBound>)],
+        params: &[(String, Vec<TraitBound>)],
+    ) {
+        for (_, bounds) in type_params {
+            for bound in bounds {
+                self.arity_check_named_ref(&bound.name, &bound.type_params, bound.span, params);
             }
         }
-        self.errors.extend(errors);
+    }
+
+    /// Arity-check implemented-interface references (`class C is Foo<int>`),
+    /// including the interface's own arity.
+    fn arity_check_trait_refs(
+        &mut self,
+        traits: &[TraitRef],
+        params: &[(String, Vec<TraitBound>)],
+    ) {
+        for trait_ref in traits {
+            self.arity_check_named_ref(
+                &trait_ref.name,
+                &trait_ref.type_args,
+                trait_ref.span,
+                params,
+            );
+        }
+    }
+
+    /// Arity-check a named type reference (`name<args...>`) - a trait bound or
+    /// implemented-interface reference - by validating it as the named type it
+    /// denotes. `span` is the reference's name span, so the diagnostic underlines
+    /// the offending name rather than an argument or the whole declaration.
+    fn arity_check_named_ref(
+        &mut self,
+        name: &str,
+        args: &[TypeNode],
+        span: Span,
+        params: &[(String, Vec<TraitBound>)],
+    ) {
+        let type_node = TypeNode {
+            kind: TypeKind::Named(name.to_string(), args.to_vec()),
+            span,
+        };
+        self.arity_check_type(&type_node, params);
+    }
+
+    /// Arity-check the type annotations inside a where clause's predicate
+    /// expressions (e.g. a cast or generic instantiation in a constraint).
+    fn arity_check_where(
+        &mut self,
+        where_clause: Option<&WhereClause>,
+        params: &[(String, Vec<TraitBound>)],
+    ) {
+        if let Some(where_clause) = where_clause {
+            for predicate in &where_clause.predicates {
+                self.arity_check_expr(predicate, params);
+            }
+        }
+    }
+
+    /// Arity-check a class or interface field: its declared type, its
+    /// default-value expression (arbitrary since #287), and its where clause.
+    fn arity_check_field(&mut self, field: &Field, params: &[(String, Vec<TraitBound>)]) {
+        self.arity_check_type(&field.type_, params);
+        if let Some(default) = &field.default_value {
+            self.arity_check_expr(default, params);
+        }
+        self.arity_check_where(field.where_clause.as_ref(), params);
+    }
+
+    /// Arity-check a function/method signature: its own type-parameter bounds,
+    /// parameter types and default-value expressions, return type, and where
+    /// clause, in scope of the outer type parameters plus its own.
+    fn arity_check_signature(
+        &mut self,
+        func: &FunctionNode,
+        outer_params: &[(String, Vec<TraitBound>)],
+    ) {
+        let params = Self::extend_params(outer_params, &func.type_params);
+        self.arity_check_type_param_bounds(&func.type_params, &params);
+        for param in &func.params {
+            self.arity_check_type(&param.type_, &params);
+            if let Some(default) = &param.default_value {
+                self.arity_check_expr(default, &params);
+            }
+        }
+        self.arity_check_type(&func.return_type, &params);
+        self.arity_check_where(func.where_clause.as_ref(), &params);
+    }
+
+    /// Arity-check a function/method's signature and its body.
+    fn arity_check_function(
+        &mut self,
+        func: &FunctionNode,
+        outer_params: &[(String, Vec<TraitBound>)],
+    ) {
+        self.arity_check_signature(func, outer_params);
+        let params = Self::extend_params(outer_params, &func.type_params);
+        for stmt in &func.body {
+            self.arity_check_statement(stmt, &params);
+        }
+    }
+
+    /// The type parameters in scope inside a function/method: the enclosing
+    /// declaration's plus the function's own.
+    fn extend_params(
+        outer: &[(String, Vec<TraitBound>)],
+        own: &[(String, Vec<TraitBound>)],
+    ) -> Vec<(String, Vec<TraitBound>)> {
+        outer.iter().cloned().chain(own.iter().cloned()).collect()
+    }
+
+    fn arity_check_statement(
+        &mut self,
+        stmt: &StatementNode,
+        params: &[(String, Vec<TraitBound>)],
+    ) {
+        match &stmt.kind {
+            StatementKind::AutoDecl(_, type_node, expr)
+            | StatementKind::TypedDecl(_, type_node, expr)
+            | StatementKind::ConstDecl(_, type_node, expr) => {
+                self.arity_check_type(type_node, params);
+                self.arity_check_expr(expr, params);
+            }
+            StatementKind::Function(func) => self.arity_check_function(func, params),
+            StatementKind::For {
+                var_type,
+                iter,
+                body,
+                ..
+            } => {
+                self.arity_check_type(var_type, params);
+                self.arity_check_expr(iter, params);
+                self.arity_check_statements(body, params);
+            }
+            StatementKind::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                self.arity_check_expr(cond, params);
+                self.arity_check_statements(then_block, params);
+                if let Some(else_block) = else_block {
+                    self.arity_check_statements(else_block, params);
+                }
+            }
+            StatementKind::While { cond, body } => {
+                self.arity_check_expr(cond, params);
+                self.arity_check_statements(body, params);
+            }
+            StatementKind::Match { expr, arms } => {
+                self.arity_check_expr(expr, params);
+                for arm in arms {
+                    self.arity_check_statements(&arm.body, params);
+                }
+            }
+            StatementKind::Return(Some(expr)) | StatementKind::Expression(expr) => {
+                self.arity_check_expr(expr, params);
+            }
+            StatementKind::Block(body) => self.arity_check_statements(body, params),
+            StatementKind::Return(None)
+            | StatementKind::Import { .. }
+            | StatementKind::Break
+            | StatementKind::Continue => {}
+        }
+    }
+
+    fn arity_check_statements(
+        &mut self,
+        stmts: &[StatementNode],
+        params: &[(String, Vec<TraitBound>)],
+    ) {
+        for stmt in stmts {
+            self.arity_check_statement(stmt, params);
+        }
+    }
+
+    fn arity_check_expr(&mut self, expr: &ExpressionNode, params: &[(String, Vec<TraitBound>)]) {
+        match &expr.kind {
+            ExpressionKind::GenericType(name, args) => {
+                // A generic type instantiation in value position (e.g.
+                // `Box<int>.new()`); validate it as the named type it denotes.
+                let type_node = TypeNode {
+                    kind: TypeKind::Named(name.clone(), args.clone()),
+                    span: expr.span,
+                };
+                self.arity_check_type(&type_node, params);
+            }
+            ExpressionKind::MapLiteral {
+                key_type,
+                value_type,
+                entries,
+            } => {
+                self.arity_check_type(key_type, params);
+                self.arity_check_type(value_type, params);
+                for (key, value) in entries {
+                    self.arity_check_expr(key, params);
+                    self.arity_check_expr(value, params);
+                }
+            }
+            ExpressionKind::Lambda {
+                params: lambda_params,
+                return_type,
+                body,
+                where_clause,
+            } => {
+                for param in lambda_params {
+                    self.arity_check_type(&param.type_, params);
+                    if let Some(default) = &param.default_value {
+                        self.arity_check_expr(default, params);
+                    }
+                }
+                self.arity_check_type(return_type, params);
+                self.arity_check_where(where_clause.as_ref(), params);
+                self.arity_check_statements(body, params);
+            }
+            ExpressionKind::Binary { left, right, .. } => {
+                self.arity_check_expr(left, params);
+                self.arity_check_expr(right, params);
+            }
+            ExpressionKind::Unary { expr, .. } => self.arity_check_expr(expr, params),
+            ExpressionKind::Call { func, args } => {
+                self.arity_check_expr(func, params);
+                for arg in args {
+                    self.arity_check_expr(arg, params);
+                }
+            }
+            ExpressionKind::FieldAccess { expr, .. } => self.arity_check_expr(expr, params),
+            ExpressionKind::ListAccess { expr, index } => {
+                self.arity_check_expr(expr, params);
+                self.arity_check_expr(index, params);
+            }
+            ExpressionKind::ListLiteral(items)
+            | ExpressionKind::SetLiteral(items)
+            | ExpressionKind::TupleLiteral(items) => {
+                for item in items {
+                    self.arity_check_expr(item, params);
+                }
+            }
+            ExpressionKind::If {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                self.arity_check_expr(cond, params);
+                self.arity_check_expr(then_expr, params);
+                self.arity_check_expr(else_expr, params);
+            }
+            ExpressionKind::Literal(_) | ExpressionKind::None | ExpressionKind::Identifier(_) => {}
+        }
     }
 
     pub(super) fn analyze_function(

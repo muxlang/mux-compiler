@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Generic type 'Pair' requires 2 type argument(s), got 1
+--> test_scripts/error_cases/generic_arity_function_param.mux:11:12
+   |
+11 | func first(Pair<int> p) returns int {
+   |            ^^^^
+   |
+= help: Provide exactly 2 type arguments in angle brackets, e.g. Pair<K, V>

@@ -382,10 +382,12 @@ impl<'a> Parser<'a> {
         let mut bounds = Vec::new();
         loop {
             let bound_name = self.consume_identifier("Expected trait name in bound")?;
+            let bound_span = self.previous().span;
             let type_args = self.parse_optional_type_args()?;
             bounds.push(TraitBound {
                 name: bound_name,
                 type_params: type_args,
+                span: bound_span,
             });
             if !self.matches(&[TokenType::Ref]) {
                 break;
@@ -401,10 +403,12 @@ impl<'a> Parser<'a> {
         let mut traits_list = Vec::new();
         loop {
             let trait_name = self.consume_identifier("Expected trait name")?;
+            let trait_span = self.previous().span;
             let type_args = self.parse_optional_type_args()?;
             traits_list.push(TraitRef {
                 name: trait_name,
                 type_args,
+                span: trait_span,
             });
             if !self.matches(&[TokenType::Comma]) {
                 break;
@@ -591,10 +595,12 @@ impl<'a> Parser<'a> {
         let mut bounds = Vec::new();
         loop {
             let bound_name = self.consume_identifier("Expected trait name in bound")?;
+            let bound_span = self.previous().span;
             let type_args = self.parse_optional_type_args()?;
             bounds.push(TraitBound {
                 name: bound_name,
                 type_params: type_args,
+                span: bound_span,
             });
             if !self.matches(&[TokenType::Plus]) {
                 break;
@@ -1017,10 +1023,12 @@ impl<'a> Parser<'a> {
         let mut bounds = Vec::new();
         loop {
             let bound_name = self.consume_identifier("Expected trait name in bound")?;
+            let bound_span = self.previous().span;
             let type_args = self.parse_optional_type_args()?;
             bounds.push(TraitBound {
                 name: bound_name,
                 type_params: type_args,
+                span: bound_span,
             });
             if !self.matches(&[TokenType::Ref]) {
                 break;

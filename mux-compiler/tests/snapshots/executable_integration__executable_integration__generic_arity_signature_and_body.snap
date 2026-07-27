@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Generic type 'Box' requires 1 type argument(s), got 2
+--> test_scripts/error_cases/generic_arity_signature_and_body.mux:7:14
+   |
+ 7 |     auto b = Box<int, string>.new()
+   |              ^^^^^^^^^^^^^^^^
+   |
+= help: Provide exactly 1 type argument in angle brackets, e.g. Box<T>

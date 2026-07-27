@@ -1,0 +1,13 @@
+// Should fail: the comprehensive arity pass (issue #303) catches a wrong generic
+// arity from ANY position - here a bad user-generic instantiation used inside a
+// function body BEFORE the generic type is declared. Order-independent, and a
+// position the earlier per-path checks did not cover.
+
+func main() returns void {
+    auto b = Box<int, string>.new()
+    return
+}
+
+class Box<T> {
+    T value = 0
+}
