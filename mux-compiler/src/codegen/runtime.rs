@@ -298,13 +298,26 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
-        // mux_box_enum_managed(bytes, size, clone_glue, drop_glue) -> *mut Value
+        // mux_box_enum_managed(bytes, size, clone_glue, drop_glue, cmp_glue) -> *mut Value
         module.add_function(
             "mux_box_enum_managed",
             i8_ptr.fn_type(
-                &[i8_ptr.into(), i64_type.into(), i8_ptr.into(), i8_ptr.into()],
+                &[
+                    i8_ptr.into(),
+                    i64_type.into(),
+                    i8_ptr.into(),
+                    i8_ptr.into(),
+                    i8_ptr.into(),
+                ],
                 false,
             ),
+            None,
+        );
+
+        // mux_value_compare(a, b) -> i32 (three-way, for enum compare glue)
+        module.add_function(
+            "mux_value_compare",
+            i32_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
             None,
         );
 

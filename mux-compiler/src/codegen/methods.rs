@@ -830,8 +830,12 @@ impl<'a> CodeGenerator<'a> {
                 self.generate_primitive_method_call(obj_value, prim, method_name)
             }
             Type::List(_) => self.generate_list_method_call(obj_value, method_name, args),
-            Type::Map(_, _) => self.generate_map_method_call(obj_value, method_name, args),
-            Type::Set(_) => self.generate_set_method_call(obj_value, method_name, args),
+            Type::Map(key_type, value_type) => {
+                self.generate_map_method_call(obj_value, key_type, value_type, method_name, args)
+            }
+            Type::Set(elem_type) => {
+                self.generate_set_method_call(obj_value, elem_type, method_name, args)
+            }
             Type::Tuple(_, _) => self.generate_tuple_method_call(obj_value, method_name, args),
             Type::Named(name, _type_args) if name == "Csv" => {
                 self.generate_csv_method_call(obj_value, method_name, args)
@@ -1139,6 +1143,8 @@ impl<'a> CodeGenerator<'a> {
     fn generate_map_method_call(
         &mut self,
         obj_value: BasicValueEnum<'a>,
+        key_type: &Type,
+        value_type: &Type,
         method_name: &str,
         args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
@@ -1153,9 +1159,11 @@ impl<'a> CodeGenerator<'a> {
                 }
                 let key_val = self.generate_expression(&args[0])?;
                 let value_val = self.generate_expression(&args[1])?;
-                // Use mux_map_put_value which modifies the boxed Value directly
-                let boxed_key = self.box_value(key_val);
-                let boxed_value = self.box_value(value_val);
+                // Use mux_map_put_value which modifies the boxed Value directly.
+                // Enum keys/values are boxed as managed so they compare and copy
+                // correctly (issue #309).
+                let boxed_key = self.box_enum_or_value(key_val, key_type)?;
+                let boxed_value = self.box_enum_or_value(value_val, value_type)?;
                 self.builder
                     .build_call(
                         self.runtime_function("mux_map_put_value")
@@ -1172,13 +1180,14 @@ impl<'a> CodeGenerator<'a> {
                     return Err("get() method takes exactly 1 argument".to_string());
                 }
                 let key_val = self.generate_expression(&args[0])?;
+                let key_ptr = self.box_enum_or_value(key_val, key_type)?;
                 self.with_extracted_map(obj_value, |me, extract_map| {
                     let result = me
                         .builder
                         .build_call(
                             me.runtime_function("mux_map_get")
                                 .expect("mux_map_get must be declared in runtime"),
-                            &[extract_map.into(), key_val.into()],
+                            &[extract_map.into(), key_ptr.into()],
                             "map_get",
                         )
                         .map_err(|e| e.to_string())?
@@ -1212,13 +1221,14 @@ impl<'a> CodeGenerator<'a> {
                     return Err("contains() method takes exactly 1 argument".to_string());
                 }
                 let key_val = self.generate_expression(&args[0])?;
+                let key_ptr = self.box_enum_or_value(key_val, key_type)?;
                 self.with_extracted_map(obj_value, |me, extract_map| {
                     let call = me
                         .builder
                         .build_call(
                             me.runtime_function("mux_map_contains")
                                 .expect("mux_map_contains must be declared in runtime"),
-                            &[extract_map.into(), key_val.into()],
+                            &[extract_map.into(), key_ptr.into()],
                             "map_contains",
                         )
                         .map_err(|e| e.to_string())?;
@@ -1243,7 +1253,7 @@ impl<'a> CodeGenerator<'a> {
             "remove" => {
                 self.ensure_arg_count("remove", args, 1)?;
                 let key_val = self.generate_expression(&args[0])?;
-                let key_ptr = self.box_value(key_val);
+                let key_ptr = self.box_enum_or_value(key_val, key_type)?;
 
                 let optional_ptr = self
                     .generate_runtime_call(
@@ -1261,6 +1271,7 @@ impl<'a> CodeGenerator<'a> {
     fn generate_set_method_call(
         &mut self,
         obj_value: BasicValueEnum<'a>,
+        elem_type: &Type,
         method_name: &str,
         args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
@@ -1272,7 +1283,7 @@ impl<'a> CodeGenerator<'a> {
             "add" => {
                 self.ensure_arg_count("add", args, 1)?;
                 let elem_val = self.generate_expression(&args[0])?;
-                let elem_ptr = self.box_value(elem_val);
+                let elem_ptr = self.box_enum_or_value(elem_val, elem_type)?;
 
                 // Use mux_set_add_value which modifies the boxed Value directly
                 self.generate_runtime_call(
@@ -1284,13 +1295,13 @@ impl<'a> CodeGenerator<'a> {
             "remove" => {
                 self.ensure_arg_count("remove", args, 1)?;
                 let elem_val = self.generate_expression(&args[0])?;
-                let elem_ptr = self.box_value(elem_val);
+                let elem_ptr = self.box_enum_or_value(elem_val, elem_type)?;
                 self.call_runtime_function("mux_set_remove_value", &[obj_value, elem_ptr.into()])
             }
             "contains" => {
                 self.ensure_arg_count("contains", args, 1)?;
                 let elem_val = self.generate_expression(&args[0])?;
-                let elem_ptr = self.box_value(elem_val);
+                let elem_ptr = self.box_enum_or_value(elem_val, elem_type)?;
                 self.with_extracted_set(obj_value, |me, extract_set| {
                     me.call_runtime_function("mux_set_contains", &[extract_set, elem_ptr.into()])
                 })

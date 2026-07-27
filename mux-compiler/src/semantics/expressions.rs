@@ -518,7 +518,10 @@ impl SemanticAnalyzer {
         key_expr: &ExpressionNode,
         key_type: &Type,
     ) -> Result<(), SemanticError> {
-        let is_hashable = matches!(key_type, Type::Primitive(_));
+        // A primitive, or a user enum (which orders structurally via its compare
+        // glue, issue #309), can key a map.
+        let is_hashable =
+            matches!(key_type, Type::Primitive(_)) || self.is_user_enum_type(key_type);
         if !is_hashable {
             return Err(SemanticError::with_help(
                 format!(
@@ -526,10 +529,22 @@ impl SemanticAnalyzer {
                     format_type(key_type)
                 ),
                 key_expr.span,
-                "Only primitive types (int, float, string, bool, char) can be used as map keys",
+                "Only primitive types (int, float, string, bool, char) or enum types can be used as map keys",
             ));
         }
         Ok(())
+    }
+
+    /// Whether `ty` is a user-declared enum (a `Named` type resolving to an enum
+    /// symbol). Enums compare structurally, so they may be map keys / set members.
+    fn is_user_enum_type(&self, ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Named(name, _) if self
+                .symbol_table
+                .lookup(name)
+                .is_some_and(|s| matches!(s.kind, SymbolKind::Enum))
+        )
     }
 
     fn check_map_entry_type_consistency(

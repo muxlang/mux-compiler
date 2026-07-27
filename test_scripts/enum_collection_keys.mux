@@ -1,0 +1,29 @@
+// A payload-carrying enum can be a set member and a map key, compared by value
+// via its structural compare glue (issue #309). Equal-but-distinct enum values
+// de-duplicate in a set, look up the same map entry, and answer membership -
+// including recursive enums, whose comparison recurses through the box chain.
+
+enum Item { Named(string), Count(int) }
+enum IntList { Nil, Cons(int, IntList) }
+
+func main() returns void {
+    // Set de-duplicates equal enums; membership is by value.
+    auto s = {Item.Named("a"), Item.Named("a"), Item.Count(1)}
+    print("set size: " + s.size().to_string())
+    print("has a: " + (Item.Named("a") in s).to_string())
+    print("has z: " + (Item.Named("z") in s).to_string())
+
+    // Map keyed by an enum; look up and update with equal-but-distinct keys.
+    auto m = {Item.Named("x"): 1}
+    m[Item.Count(2)] = 20
+    m[Item.Named("x")] = 99
+    print("x: " + m[Item.Named("x")].to_string())
+    print("c2: " + m[Item.Count(2)].to_string())
+    print("map size: " + m.size().to_string())
+    print("key present: " + (Item.Count(2) in m).to_string())
+
+    // Recursive enum as a key: structural comparison recurses through the box.
+    auto rm = {IntList.Cons(1, IntList.Nil()): 10}
+    print("rec key: " + rm[IntList.Cons(1, IntList.Nil())].to_string())
+    return
+}

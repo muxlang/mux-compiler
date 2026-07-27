@@ -2569,12 +2569,14 @@ impl<'a> CodeGenerator<'a> {
                     .map_err(|e| e.to_string())?;
                 Ok(right_val)
             }
-            crate::semantics::Type::Map(_, _) => {
+            crate::semantics::Type::Map(key_type, value_type) => {
                 let target_val = self.generate_expression(target_expr)?;
                 let key_val = self.generate_expression(index)?;
                 let right_val = self.generate_expression(right)?;
-                let boxed_key = self.box_value(key_val);
-                let boxed_value = self.box_value(right_val);
+                // An enum key must be a managed value so its structural
+                // comparison matches the map's stored keys (issue #309).
+                let boxed_key = self.box_enum_or_value(key_val, &key_type)?;
+                let boxed_value = self.box_enum_or_value(right_val, &value_type)?;
                 self.builder
                     .build_call(
                         self.runtime_function("mux_map_put_value")
@@ -3455,12 +3457,18 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(extracted_val);
                 Ok(extracted_val)
             }
-            crate::semantics::Type::Map(_, value_type) => {
+            crate::semantics::Type::Map(key_type, value_type) => {
                 // Look up the key directly in the map Value. This avoids the old
                 // `mux_value_get_map` path, which cloned the entire map on every
                 // access (O(n) per read, O(n^2) reading a map by key in a loop).
                 let value_ptr = self
-                    .map_value_get_or_panic(target_val, index_val, Some(index.span()), "map")?
+                    .map_value_get_or_panic(
+                        target_val,
+                        index_val,
+                        key_type,
+                        Some(index.span()),
+                        "map",
+                    )?
                     .into_pointer_value();
 
                 // Use extract_value_from_ptr to properly extract based on type
@@ -4158,10 +4166,13 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         map: PointerValue<'a>,
         key: BasicValueEnum<'a>,
+        key_type: &Type,
         span: Option<&Span>,
         block_prefix: &str,
     ) -> Result<BasicValueEnum<'a>, String> {
-        let boxed_key = self.box_value(key);
+        // Box an enum key as a managed value so its structural comparison matches
+        // the map's stored keys (issue #309); other keys box normally.
+        let boxed_key = self.box_enum_or_value(key, key_type)?;
 
         let optional_ptr = self
             .builder
@@ -4188,10 +4199,13 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         map_value: BasicValueEnum<'a>,
         key: BasicValueEnum<'a>,
+        key_type: &Type,
         span: Option<&Span>,
         block_prefix: &str,
     ) -> Result<BasicValueEnum<'a>, String> {
-        let boxed_key = self.box_value(key);
+        // Box an enum key as a managed value so its structural comparison matches
+        // the map's stored keys (issue #309); other keys box normally.
+        let boxed_key = self.box_enum_or_value(key, key_type)?;
 
         let optional_ptr = self
             .builder
@@ -4770,6 +4784,10 @@ impl<'a> CodeGenerator<'a> {
                     )?
                 }
                 crate::semantics::Type::Map(_, _) => {
+                    let key_type = match &base_type {
+                        crate::semantics::Type::Map(k, _) => k.as_ref().clone(),
+                        _ => unreachable!(),
+                    };
                     // Extract raw Map from base
                     let raw_base_map = self
                         .builder
@@ -4788,6 +4806,7 @@ impl<'a> CodeGenerator<'a> {
                     self.map_get_or_panic(
                         raw_base_map,
                         first_index_val,
+                        &key_type,
                         Some(indices[0].span()),
                         "nested_assign_map",
                     )?
@@ -4943,6 +4962,10 @@ impl<'a> CodeGenerator<'a> {
                     )?
                 }
                 crate::semantics::Type::Map(_, _) => {
+                    let key_type = match &current_type {
+                        crate::semantics::Type::Map(k, _) => k.as_ref().clone(),
+                        _ => unreachable!(),
+                    };
                     // Extract raw Map
                     let raw_map = self
                         .builder
@@ -4961,6 +4984,7 @@ impl<'a> CodeGenerator<'a> {
                     self.map_get_or_panic(
                         raw_map,
                         first_index_val,
+                        &key_type,
                         Some(indices[0].span()),
                         "apply_map",
                     )?

@@ -33,6 +33,19 @@ enum FieldGlue {
     BoxedEnum(String),
 }
 
+/// How a variant payload field is compared for structural ordering (issue
+/// #309). Unlike `FieldGlue` this covers every field, including inline scalars.
+enum CompareKind<'a> {
+    /// An inline scalar (int/bool/char/float): compared directly on its bits.
+    Scalar(BasicTypeEnum<'a>),
+    /// A pointer payload (string/list/object/...): compared with `mux_value_compare`.
+    Pointer,
+    /// An inline nested user enum: recurse into the inner enum's compare glue.
+    InlineEnum(String),
+    /// A heap-boxed recursive nested enum: unbox both sides, then recurse.
+    BoxedEnum(String),
+}
+
 impl EnumPayloadOp {
     /// The runtime function applied to each pointer payload.
     fn runtime_fn_name(self) -> &'static str {
@@ -709,6 +722,10 @@ impl<'a> CodeGenerator<'a> {
         if self.enum_is_recursive(enum_name) {
             self.get_or_create_enum_glue_fn(enum_name, EnumPayloadOp::Retain)?;
         }
+        // Structural comparison glue, so a payload-carrying enum orders correctly
+        // as a map key or set member. Built up front for the same reason as the
+        // RC glue: a lazy build mid-body would corrupt the insertion point.
+        self.get_or_create_enum_cmp_fn(enum_name)?;
         Ok(())
     }
 
@@ -751,6 +768,7 @@ impl<'a> CodeGenerator<'a> {
             .enum_glue_fns
             .get(&(enum_name.to_string(), EnumPayloadOp::Drop.label()))
             .ok_or_else(|| format!("Enum {} drop glue missing", enum_name))?;
+        let cmp_glue = self.get_or_create_enum_cmp_fn(enum_name)?;
         let struct_type = struct_val.get_type();
         let temp = self
             .builder
@@ -774,6 +792,7 @@ impl<'a> CodeGenerator<'a> {
                     size.into(),
                     clone_glue.as_global_value().as_pointer_value().into(),
                     drop_glue.as_global_value().as_pointer_value().into(),
+                    cmp_glue.as_global_value().as_pointer_value().into(),
                 ],
                 "managed_enum_box",
             )
@@ -824,6 +843,372 @@ impl<'a> CodeGenerator<'a> {
             self.builder.position_at_end(block);
         }
         Ok(function)
+    }
+
+    /// Classify every payload field of `variant` for structural comparison
+    /// (issue #309): unlike `variant_glue_fields`, this includes inline scalars,
+    /// since they are compared even though they own no reference-counted memory.
+    fn variant_compare_fields(
+        &self,
+        enum_name: &str,
+        variant: &str,
+    ) -> Result<Vec<(usize, CompareKind<'a>)>, String> {
+        let fields = self.variant_field_types(enum_name, variant)?;
+        let mut out = Vec::new();
+        for (i, field) in fields.iter().enumerate() {
+            if let Some(inner) = self.nested_user_enum_name(&field.1) {
+                if self.boxed_recursive_field(enum_name, variant, i).is_some() {
+                    out.push((i, CompareKind::BoxedEnum(inner)));
+                } else {
+                    out.push((i, CompareKind::InlineEnum(inner)));
+                }
+                continue;
+            }
+            let ty = self.variant_field_llvm_type(enum_name, variant, &fields, i)?;
+            if ty.is_pointer_type() {
+                out.push((i, CompareKind::Pointer));
+            } else {
+                out.push((i, CompareKind::Scalar(ty)));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Return (building it on first use) the structural comparison function for
+    /// an RC-payload enum: `i32 @mux_enum_cmp_<Enum>(ptr a, ptr b)`. It compares
+    /// discriminants, then each payload field of the matching variant in order,
+    /// yielding the first non-zero three-way result (like `Ord::cmp`). Pointer
+    /// payloads defer to `mux_value_compare` and nested enums recurse into their
+    /// own compare function (following box chains at runtime, so it terminates).
+    /// Memoized and declared before its body so a self-embedding enum resolves
+    /// the recursive call (issue #309).
+    fn get_or_create_enum_cmp_fn(
+        &mut self,
+        enum_name: &str,
+    ) -> Result<inkwell::values::FunctionValue<'a>, String> {
+        let key = (enum_name.to_string(), "cmp");
+        if let Some(existing) = self.enum_glue_fns.get(&key) {
+            return Ok(*existing);
+        }
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+        let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+        let function =
+            self.module
+                .add_function(&format!("mux_enum_cmp_{}", enum_name), fn_type, None);
+        self.enum_glue_fns.insert(key, function);
+
+        let struct_type = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(st)) => *st,
+            _ => return Err(format!("Enum {} is not a struct type", enum_name)),
+        };
+        let saved_block = self.builder.get_insert_block();
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let a = function
+            .get_nth_param(0)
+            .ok_or("enum compare function missing parameter a")?
+            .into_pointer_value();
+        let b = function
+            .get_nth_param(1)
+            .ok_or("enum compare function missing parameter b")?
+            .into_pointer_value();
+
+        let result = self
+            .builder
+            .build_alloca(i32_type, "cmp_result")
+            .map_err(|e| e.to_string())?;
+        // Discriminants first: a difference is the whole answer, and every field
+        // comparison below is guarded on `result == 0` so it is then skipped.
+        let da = self.load_enum_discriminant_i32(struct_type, a)?;
+        let db = self.load_enum_discriminant_i32(struct_type, b)?;
+        let disc_cmp = self.build_three_way_int(da, db, false)?;
+        self.builder
+            .build_store(result, disc_cmp)
+            .map_err(|e| e.to_string())?;
+
+        let merge = self.context.append_basic_block(function, "cmp_merge");
+        let variants = self
+            .enum_variants
+            .get(enum_name)
+            .cloned()
+            .ok_or_else(|| format!("Enum {} has no variant list", enum_name))?;
+        let mut cases = Vec::new();
+        for variant in &variants {
+            let fields = self.variant_compare_fields(enum_name, variant)?;
+            if fields.is_empty() {
+                continue;
+            }
+            let index = self.get_variant_index(enum_name, variant)?;
+            let case_block = self
+                .context
+                .append_basic_block(function, &format!("cmp_{enum_name}_{variant}"));
+            self.builder.position_at_end(case_block);
+            self.emit_variant_field_compares(struct_type, a, b, result, &fields)?;
+            self.builder
+                .build_unconditional_branch(merge)
+                .map_err(|e| e.to_string())?;
+            cases.push((i32_type.const_int(index as u64, false), case_block));
+        }
+        self.builder.position_at_end(entry);
+        self.builder
+            .build_switch(da, merge, &cases)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(merge);
+        let final_result = self
+            .builder
+            .build_load(i32_type, result, "cmp_final")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_return(Some(&final_result))
+            .map_err(|e| e.to_string())?;
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+        Ok(function)
+    }
+
+    /// Load an enum's i32 discriminant (struct field 0) through `ptr`.
+    fn load_enum_discriminant_i32(
+        &self,
+        struct_type: inkwell::types::StructType<'a>,
+        ptr: PointerValue<'a>,
+    ) -> Result<inkwell::values::IntValue<'a>, String> {
+        let disc_ptr = self
+            .builder
+            .build_struct_gep(struct_type, ptr, 0, "cmp_disc_ptr")
+            .map_err(|e| e.to_string())?;
+        Ok(self
+            .builder
+            .build_load(self.context.i32_type(), disc_ptr, "cmp_disc")
+            .map_err(|e| e.to_string())?
+            .into_int_value())
+    }
+
+    /// Emit the guarded, in-order field comparisons for one variant's case
+    /// block: each field's three-way result overwrites `result` only while
+    /// `result` is still zero, so the first difference wins (lexicographic).
+    fn emit_variant_field_compares(
+        &mut self,
+        struct_type: inkwell::types::StructType<'a>,
+        a: PointerValue<'a>,
+        b: PointerValue<'a>,
+        result: PointerValue<'a>,
+        fields: &[(usize, CompareKind<'a>)],
+    ) -> Result<(), String> {
+        let i32_type = self.context.i32_type();
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .ok_or("enum compare: no current function")?;
+        for (idx, kind) in fields {
+            let r = self
+                .builder
+                .build_load(i32_type, result, "cmp_r")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let is_zero = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    r,
+                    i32_type.const_zero(),
+                    "cmp_r0",
+                )
+                .map_err(|e| e.to_string())?;
+            let do_bb = self.context.append_basic_block(function, "cmp_do");
+            let cont_bb = self.context.append_basic_block(function, "cmp_cont");
+            self.builder
+                .build_conditional_branch(is_zero, do_bb, cont_bb)
+                .map_err(|e| e.to_string())?;
+            self.builder.position_at_end(do_bb);
+            let c = self.emit_compare_field(struct_type, a, b, *idx, kind)?;
+            self.builder
+                .build_store(result, c)
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_unconditional_branch(cont_bb)
+                .map_err(|e| e.to_string())?;
+            self.builder.position_at_end(cont_bb);
+        }
+        Ok(())
+    }
+
+    /// Emit the three-way comparison (`i32`) of field `idx` between `a` and `b`.
+    fn emit_compare_field(
+        &mut self,
+        struct_type: inkwell::types::StructType<'a>,
+        a: PointerValue<'a>,
+        b: PointerValue<'a>,
+        idx: usize,
+        kind: &CompareKind<'a>,
+    ) -> Result<inkwell::values::IntValue<'a>, String> {
+        let gep_a = self
+            .builder
+            .build_struct_gep(struct_type, a, (idx + 1) as u32, "cmp_fa")
+            .map_err(|e| e.to_string())?;
+        let gep_b = self
+            .builder
+            .build_struct_gep(struct_type, b, (idx + 1) as u32, "cmp_fb")
+            .map_err(|e| e.to_string())?;
+        match kind {
+            CompareKind::Scalar(ty) => {
+                let la = self
+                    .builder
+                    .build_load(*ty, gep_a, "cmp_la")
+                    .map_err(|e| e.to_string())?;
+                let lb = self
+                    .builder
+                    .build_load(*ty, gep_b, "cmp_lb")
+                    .map_err(|e| e.to_string())?;
+                self.build_scalar_three_way(la, lb)
+            }
+            CompareKind::Pointer => {
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let pa = self
+                    .builder
+                    .build_load(ptr_type, gep_a, "cmp_pa")
+                    .map_err(|e| e.to_string())?;
+                let pb = self
+                    .builder
+                    .build_load(ptr_type, gep_b, "cmp_pb")
+                    .map_err(|e| e.to_string())?;
+                let cmp_fn = self
+                    .runtime_function("mux_value_compare")
+                    .ok_or("mux_value_compare not found")?;
+                Ok(self
+                    .builder
+                    .build_call(cmp_fn, &[pa.into(), pb.into()], "cmp_val")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("mux_value_compare returned no value")?
+                    .into_int_value())
+            }
+            CompareKind::InlineEnum(inner) => {
+                let inner_cmp = self.get_or_create_enum_cmp_fn(inner)?;
+                Ok(self
+                    .builder
+                    .build_call(inner_cmp, &[gep_a.into(), gep_b.into()], "cmp_inner")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("inner enum compare returned no value")?
+                    .into_int_value())
+            }
+            CompareKind::BoxedEnum(inner) => {
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let unbox = self
+                    .runtime_function("mux_value_unbox_enum")
+                    .ok_or("mux_value_unbox_enum not found")?;
+                let ba = self
+                    .builder
+                    .build_load(ptr_type, gep_a, "cmp_ba")
+                    .map_err(|e| e.to_string())?;
+                let bb = self
+                    .builder
+                    .build_load(ptr_type, gep_b, "cmp_bb")
+                    .map_err(|e| e.to_string())?;
+                let ua = self
+                    .builder
+                    .build_call(unbox, &[ba.into()], "cmp_ua")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("unbox returned no value")?;
+                let ub = self
+                    .builder
+                    .build_call(unbox, &[bb.into()], "cmp_ub")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("unbox returned no value")?;
+                let inner_cmp = self.get_or_create_enum_cmp_fn(inner)?;
+                Ok(self
+                    .builder
+                    .build_call(inner_cmp, &[ua.into(), ub.into()], "cmp_boxed")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("boxed enum compare returned no value")?
+                    .into_int_value())
+            }
+        }
+    }
+
+    /// Three-way compare two scalars (int/bool/char or float) to `i32`
+    /// (-1/0/1). 64-bit ints are signed (Mux `int`); narrower ints (bool, char)
+    /// are unsigned.
+    fn build_scalar_three_way(
+        &self,
+        la: BasicValueEnum<'a>,
+        lb: BasicValueEnum<'a>,
+    ) -> Result<inkwell::values::IntValue<'a>, String> {
+        if la.is_int_value() {
+            let signed = la.into_int_value().get_type().get_bit_width() == 64;
+            self.build_three_way_int(la.into_int_value(), lb.into_int_value(), signed)
+        } else if la.is_float_value() {
+            let (lt, gt) = (inkwell::FloatPredicate::OLT, inkwell::FloatPredicate::OGT);
+            let a = la.into_float_value();
+            let b = lb.into_float_value();
+            let is_lt = self
+                .builder
+                .build_float_compare(lt, a, b, "cmp_flt")
+                .map_err(|e| e.to_string())?;
+            let is_gt = self
+                .builder
+                .build_float_compare(gt, a, b, "cmp_fgt")
+                .map_err(|e| e.to_string())?;
+            self.select_three_way(is_lt, is_gt)
+        } else {
+            Err("unsupported scalar type in enum comparison".to_string())
+        }
+    }
+
+    /// Three-way compare two same-width integers to `i32` (-1/0/1).
+    fn build_three_way_int(
+        &self,
+        a: inkwell::values::IntValue<'a>,
+        b: inkwell::values::IntValue<'a>,
+        signed: bool,
+    ) -> Result<inkwell::values::IntValue<'a>, String> {
+        let (lt_pred, gt_pred) = if signed {
+            (inkwell::IntPredicate::SLT, inkwell::IntPredicate::SGT)
+        } else {
+            (inkwell::IntPredicate::ULT, inkwell::IntPredicate::UGT)
+        };
+        let is_lt = self
+            .builder
+            .build_int_compare(lt_pred, a, b, "cmp_ilt")
+            .map_err(|e| e.to_string())?;
+        let is_gt = self
+            .builder
+            .build_int_compare(gt_pred, a, b, "cmp_igt")
+            .map_err(|e| e.to_string())?;
+        self.select_three_way(is_lt, is_gt)
+    }
+
+    /// Fold `is_lt`/`is_gt` booleans into an `i32` of -1/1/0.
+    fn select_three_way(
+        &self,
+        is_lt: inkwell::values::IntValue<'a>,
+        is_gt: inkwell::values::IntValue<'a>,
+    ) -> Result<inkwell::values::IntValue<'a>, String> {
+        let i32_type = self.context.i32_type();
+        let neg_one = i32_type.const_int((-1i64) as u64, true);
+        let one = i32_type.const_int(1, false);
+        let zero = i32_type.const_zero();
+        let gt_or_zero = self
+            .builder
+            .build_select(is_gt, one, zero, "cmp_gt0")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        Ok(self
+            .builder
+            .build_select(is_lt, neg_one, gt_or_zero, "cmp_sel")
+            .map_err(|e| e.to_string())?
+            .into_int_value())
     }
 
     /// Apply `op` to a heap-boxed recursive nested-enum payload (issue #309). The
