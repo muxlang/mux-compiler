@@ -1,0 +1,39 @@
+// Heterogeneous nested-enum positions (issue #309): variants share one payload
+// slot but put different types in it - a nested enum in one variant, a scalar or
+// string in another. The slot is widened to a padding-free blob that fits the
+// largest payload, and each variant reads/writes it through its own type, so all
+// variants construct, match, extract, reassign, and free correctly.
+
+enum Inner { W(string), Z(int) }
+enum Mix { Nested(Inner), Number(int), Text(string) }
+
+func show(Mix m) returns void {
+    match m {
+        Nested(i) {
+            match i {
+                W(s) { print(s) }
+                Z(n) { print("nested-z") }
+            }
+        }
+        Number(n) { print("number") }
+        Text(t) { print(t) }
+    }
+    return
+}
+
+func main() returns void {
+    show(Mix.Nested(Inner.W("nested-string")))
+    show(Mix.Number(7))
+    show(Mix.Text("plain-text"))
+
+    // Copy binding, then reassign across differently-typed variants.
+    auto m = Mix.Nested(Inner.W("first"))
+    auto copy = m
+    show(copy)
+    m = Mix.Text("second")
+    show(m)
+    m = Mix.Nested(Inner.Z(3))
+    show(m)
+
+    return
+}

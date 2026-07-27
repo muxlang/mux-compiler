@@ -670,53 +670,70 @@ impl<'a> CodeGenerator<'a> {
         union_types
     }
 
-    /// determine the appropriate LLVM type for a union field position
-    /// for now, use the largest common type or pointer for complex types
+    /// Determine the LLVM type for a union field position (one payload slot shared
+    /// across variants).
+    ///
+    /// A position that includes a nested user enum is stored inline (issue #306),
+    /// but different variants may put differently-sized payloads there (a nested
+    /// enum in one variant, a scalar or another enum in another - issue #309). The
+    /// slot must fit them all, so it takes the widest candidate type; each variant
+    /// addresses the slot with its own type, so the slot's identity does not matter
+    /// beyond its size and alignment. A recursive enum cannot be sized inline and
+    /// falls back to a pointer, which construction rejects with a clear error.
+    ///
+    /// Positions with no nested enum keep the historical single-type-or-pointer
+    /// behavior, so ordinary scalar/pointer enums are laid out exactly as before.
     pub(super) fn determine_union_field_type(
         &self,
         field_types: &[&TypeNode],
     ) -> BasicTypeEnum<'a> {
-        if field_types.is_empty() {
+        let ptr_slot = || self.context.ptr_type(AddressSpace::default()).into();
+        let Some(first_type) = field_types.first() else {
             // no fields in this position, use i32 as default
             return self.context.i32_type().into();
+        };
+
+        if field_types
+            .iter()
+            .any(|t| self.nested_user_enum_name(t).is_some())
+        {
+            return self
+                .widest_payload_type(field_types)
+                .unwrap_or_else(ptr_slot);
         }
 
-        // for simplicity, check if all types are the same
-        let first_type = field_types[0];
+        // No nested enum: keep the original single-type-or-pointer layout.
         let all_same = field_types.iter().all(|t| t.kind == first_type.kind);
-
         if all_same {
-            // all variants use the same type for this field
-            // use the same types as llvm_type_from_mux_type for consistency
             match &first_type.kind {
                 TypeKind::Primitive(PrimitiveType::Int) => self.context.i64_type().into(),
                 TypeKind::Primitive(PrimitiveType::Float) => self.context.f64_type().into(),
                 TypeKind::Primitive(PrimitiveType::Bool) => self.context.bool_type().into(),
-                TypeKind::Primitive(PrimitiveType::Str) => {
-                    self.context.ptr_type(AddressSpace::default()).into()
-                }
-                // A nested user enum is stored inline as its own struct so its
-                // layout matches the constructor parameter and match load, which
-                // both use the enum struct type (issue #306). Enum types are
-                // generated in dependency order, so the inner type is registered
-                // by now; only a recursive (self- or mutually-embedding) enum
-                // falls back to a pointer here and is rejected with a clear error
-                // at construction rather than corrupting memory.
-                TypeKind::Named(name, _)
-                    if name != "optional"
-                        && name != "result"
-                        && self.enum_variants.contains_key(name) =>
-                {
-                    self.type_map
-                        .get(name)
-                        .copied()
-                        .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into())
-                }
-                _ => self.context.ptr_type(AddressSpace::default()).into(), // default to pointer
+                _ => ptr_slot(),
             }
         } else {
-            // mixed types - use pointer for now (could be improved with proper union types)
-            self.context.ptr_type(AddressSpace::default()).into()
+            ptr_slot()
         }
+    }
+
+    /// A union slot wide enough for every variant's payload at a position, or
+    /// `None` if any candidate cannot be laid out (a recursive enum whose struct
+    /// is not yet registered).
+    ///
+    /// The slot is an `i64` array sized to the widest candidate, not the widest
+    /// candidate type itself: a struct-typed slot has interior padding, and a
+    /// variant whose (differently-typed) payload straddles that padding would be
+    /// corrupted when the enum is copied field-by-field, because LLVM's aggregate
+    /// load/store does not preserve padding bytes. An `i64` array has no padding
+    /// and is 8-byte aligned, so any variant's payload survives a copy verbatim;
+    /// each variant still reads and writes the slot through its own type.
+    fn widest_payload_type(&self, field_types: &[&TypeNode]) -> Option<BasicTypeEnum<'a>> {
+        let mut max_size = 0u64;
+        for type_node in field_types {
+            let candidate = self.type_kind_to_llvm_type(&type_node.kind).ok()?;
+            max_size = max_size.max(self.abi_store_size(&candidate));
+        }
+        let words = max_size.div_ceil(8).max(1);
+        Some(self.context.i64_type().array_type(words as u32).into())
     }
 }

@@ -174,15 +174,22 @@ impl<'a> CodeGenerator<'a> {
                 .map(|_| ())
                 .map_err(|e| e.to_string());
         };
-        // A nested user enum is stored inline as its own struct. Its layout must
-        // match the union slot; a pointer slot means the enum could not be laid
-        // out inline - error cleanly rather than storing a struct into a pointer
-        // slot and corrupting memory (issue #306).
-        let slot_is_struct = struct_type
-            .get_field_type_at_index((i + 1) as u32)
-            .map(|t| t.is_struct_type())
-            .unwrap_or(false);
-        if !slot_is_struct {
+        // A nested user enum is stored inline. The union slot is sized to the
+        // widest payload at this position (issue #309), so it must be at least as
+        // large as this enum's struct. A slot that is too small means the enum
+        // could not be laid out inline (a recursive enum falls back to a pointer);
+        // error cleanly rather than storing a struct into an undersized slot and
+        // corrupting memory (issue #306).
+        let slot_fits = match (
+            struct_type.get_field_type_at_index((i + 1) as u32),
+            self.type_map.get(&inner).copied(),
+        ) {
+            (Some(slot), Some(inner_ty)) => {
+                self.abi_store_size(&slot) >= self.abi_store_size(&inner_ty)
+            }
+            _ => false,
+        };
+        if !slot_fits {
             return Err(self.nested_enum_layout_error(enum_name, &variant.name, &inner, i));
         }
         self.builder
