@@ -2,8 +2,6 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 3 errors found
-
 error: Increment/Decrement operator can only be used as a standalone statement
 --> test_scripts/error_cases/lambda_nested_increment.mux:7:20
    |
@@ -11,15 +9,3 @@ error: Increment/Decrement operator can only be used as a standalone statement
    |                    ^^^
    |
 = help: Expressions like 'x + y++' are not supported. Use 'y++' as a separate statement before the expression.
-
-error: Expected expression, found '}'
---> test_scripts/error_cases/lambda_nested_increment.mux:8:5
-   |
- 8 |     }
-   |     ^
-
-error: Expected '}' after block
---> test_scripts/error_cases/lambda_nested_increment.mux:11:2
-   |
-11 | }
-   |  ^

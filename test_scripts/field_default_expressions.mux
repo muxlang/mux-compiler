@@ -1,0 +1,37 @@
+// Class field defaults may be arbitrary expressions (issue #287), evaluated per
+// instance when `.new()` runs: empty collections, arithmetic, string
+// concatenation, and function calls. Each instance gets its own independent
+// value, so a mutable collection default is not shared between instances.
+
+func base() returns int {
+    return 40
+}
+
+class Widget {
+    list<int> items = []
+    map<string, int> counts = {:}
+    int id = base() + 2
+    string name = "wid" + "get"
+}
+
+func main() returns void {
+    auto a = Widget.new()
+    auto b = Widget.new()
+
+    // Expression defaults are computed.
+    print(a.name)
+    print(a.id.to_string())
+
+    // Each instance owns its own default collection.
+    a.items.push(1)
+    a.items.push(2)
+    b.items.push(9)
+    print(a.items.len().to_string())
+    print(b.items.len().to_string())
+
+    a.counts["x"] = 5
+    print(a.counts.len().to_string())
+    print(b.counts.len().to_string())
+
+    return
+}

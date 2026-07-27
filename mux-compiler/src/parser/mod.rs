@@ -167,7 +167,13 @@ impl<'a> Parser<'a> {
 
         if let Err(ref e) = result {
             self.errors.push(e.clone());
-            if !self.is_at_end() {
+            // Retry the next declaration to recover, but stop at a closing brace:
+            // that terminates the enclosing block or class body, and retrying
+            // there would parse '}' as a stray declaration and cascade a spurious
+            // "Expected expression, found '}'" plus a lost terminator (issue #288,
+            // in method bodies). Returning None lets the block/class loop see the
+            // '}' and finish cleanly.
+            if !self.is_at_end() && !self.check(TokenType::CloseBrace) {
                 return self.declaration();
             }
             return Ok(None);
@@ -425,9 +431,56 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-            self.parse_class_member(type_params, start_span, &mut fields, &mut methods)?;
+            let member_start = self.current;
+            // Recover within the class body so a malformed member does not abort
+            // the whole class and leave '}' to be misparsed as a stray top-level
+            // token (issue #288). Skipping from the member start treats the member
+            // as a balanced unit, so inner braces - a collection default or a
+            // method body - are consumed with their matching open and never
+            // mistaken for the class terminator.
+            if let Err(e) =
+                self.parse_class_member(type_params, start_span, &mut fields, &mut methods)
+            {
+                self.errors.push(e);
+                self.current = member_start;
+                self.recover_class_member();
+                if self.current == member_start {
+                    self.advance();
+                }
+            }
         }
         Ok((fields, methods))
+    }
+
+    /// Skip a malformed class member as a balanced unit, starting from the token
+    /// the member began at. Matched brace pairs (a collection default, a method
+    /// body) are consumed together; recovery ends at the member's terminating
+    /// newline, or at a closing brace that balances no open seen here - the
+    /// class's own terminator - which is left for the caller.
+    fn recover_class_member(&mut self) {
+        let mut depth: i32 = 0;
+        while !self.is_at_end() {
+            match self.peek().token_type {
+                TokenType::OpenBrace => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenType::CloseBrace => {
+                    if depth == 0 {
+                        return;
+                    }
+                    depth -= 1;
+                    self.advance();
+                }
+                TokenType::NewLine if depth == 0 => {
+                    self.advance();
+                    return;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
     }
 
     fn parse_class_member(
@@ -1634,8 +1687,11 @@ impl<'a> Parser<'a> {
                 self.skip_newlines();
             }
             Ok(None) => {
-                let current_pos = self.current;
-                if current_pos == self.current {
+                // `declaration` parsed nothing (e.g. it recovered from an error and
+                // stopped at the block's closing brace). Advance only when there is
+                // a real token to skip, so the block loop can see '}' and finish
+                // rather than consuming it and running past the block (issue #288).
+                if !self.check(TokenType::CloseBrace) && !self.is_at_end() {
                     self.advance();
                 }
             }
@@ -3237,19 +3293,11 @@ impl<'a> Parser<'a> {
         let field_type = self.parse_type()?;
         let field_name = self.consume_identifier("Expected field name")?;
 
-        // Check for optional default value
+        // Check for optional default value. Any expression is allowed; it is
+        // evaluated per instance when the constructor (`.new()`) runs, and its
+        // type is checked against the field in semantic analysis.
         let default_value = if self.matches(&[TokenType::Eq]) {
-            let expr = self.parse_primary()?;
-
-            // Validate it's a literal expression
-            if !Self::is_literal_expression(&expr) {
-                return Err(ParserError::with_help(
-                    "Field default values must be literals",
-                    expr.span,
-                    "Only literal values (int, float, string, bool, char) are allowed as field defaults. Example: int count = 0",
-                ));
-            }
-            Some(expr)
+            Some(self.parse_expression()?)
         } else {
             None
         };

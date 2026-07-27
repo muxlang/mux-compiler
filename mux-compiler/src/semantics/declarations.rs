@@ -1,6 +1,6 @@
 use super::{
     ClassFieldInfo, GenericBounds, MethodSig, ResolvedInterface, SemanticAnalyzer, SemanticError,
-    Symbol, SymbolKind, Type, format_type,
+    Symbol, SymbolKind, Type, Unifier, format_type,
 };
 use crate::ast::{
     AstNode, EnumVariant, ExpressionKind, ExpressionNode, Field, FunctionNode, LiteralNode,
@@ -892,6 +892,48 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// Type-check each field's default value against the field's declared type.
+    /// Defaults are arbitrary expressions evaluated per instance at construction
+    /// (issue #287), typed here in the class's type-parameter scope. There is no
+    /// `self` or sibling field in scope, so a default cannot reference instance
+    /// state; such a reference surfaces as the usual unresolved-name error.
+    fn check_field_default_types(&mut self, fields: &[Field]) {
+        for field in fields {
+            let Some(default_expr) = &field.default_value else {
+                continue;
+            };
+            let Ok(field_type) = self.resolve_type(&field.type_) else {
+                continue;
+            };
+            let default_type = match self.get_expression_type(default_expr) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.errors.push(e);
+                    continue;
+                }
+            };
+            let mut unifier = Unifier::new();
+            if unifier
+                .unify(&field_type, &default_type, default_expr.span)
+                .is_err()
+            {
+                self.errors.push(SemanticError::with_help(
+                    format!(
+                        "Default value type mismatch for field '{}': expected {}, got {}",
+                        field.name,
+                        format_type(&field_type),
+                        format_type(&default_type)
+                    ),
+                    default_expr.span,
+                    format!(
+                        "The default value must match the field's declared type of {}",
+                        format_type(&field_type)
+                    ),
+                ));
+            }
+        }
+    }
+
     fn analyze_class(
         &mut self,
         name: &str,
@@ -920,6 +962,9 @@ impl SemanticAnalyzer {
 
         // Set current class type params for method analysis
         self.set_class_type_params(type_params.to_vec());
+
+        // Type-check field default expressions against their declared types.
+        self.check_field_default_types(fields);
 
         // Typecheck field-level and class-level where clauses with the fields
         // in scope, and record the invariants and inherited interface
