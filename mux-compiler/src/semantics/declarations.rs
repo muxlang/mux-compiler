@@ -680,10 +680,6 @@ impl SemanticAnalyzer {
     /// produce the same message and span, which `analyze` deduplicates.
     pub(super) fn validate_all_type_arities(&mut self, nodes: &[AstNode]) {
         for node in nodes {
-            // A fallback span for trait bounds / interface references, which carry
-            // no span of their own; a bound's own type argument spans are used
-            // when present.
-            let span = *node.span();
             match node {
                 AstNode::Class {
                     type_params,
@@ -698,19 +694,18 @@ impl SemanticAnalyzer {
                     fields,
                     methods,
                     where_clause.as_ref(),
-                    span,
                 ),
                 AstNode::Enum {
                     type_params,
                     variants,
                     ..
-                } => self.arity_check_enum_decl(type_params, variants, span),
+                } => self.arity_check_enum_decl(type_params, variants),
                 AstNode::Interface {
                     type_params,
                     fields,
                     methods,
                     ..
-                } => self.arity_check_interface(type_params, fields, methods, span),
+                } => self.arity_check_interface(type_params, fields, methods),
                 AstNode::Function(func) => self.arity_check_function(func, &[]),
                 AstNode::Statement(stmt) => self.arity_check_statement(stmt, &[]),
             }
@@ -724,10 +719,9 @@ impl SemanticAnalyzer {
         fields: &[Field],
         methods: &[FunctionNode],
         where_clause: Option<&WhereClause>,
-        span: Span,
     ) {
-        self.arity_check_type_param_bounds(type_params, type_params, span);
-        self.arity_check_trait_refs(traits, type_params, span);
+        self.arity_check_type_param_bounds(type_params, type_params);
+        self.arity_check_trait_refs(traits, type_params);
         self.arity_check_where(where_clause, type_params);
         for field in fields {
             self.arity_check_field(field, type_params);
@@ -741,9 +735,8 @@ impl SemanticAnalyzer {
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         variants: &[EnumVariant],
-        span: Span,
     ) {
-        self.arity_check_type_param_bounds(type_params, type_params, span);
+        self.arity_check_type_param_bounds(type_params, type_params);
         for variant in variants {
             for (_, type_node) in variant.data.iter().flatten() {
                 self.arity_check_type(type_node, type_params);
@@ -757,9 +750,8 @@ impl SemanticAnalyzer {
         type_params: &[(String, Vec<TraitBound>)],
         fields: &[Field],
         methods: &[FunctionNode],
-        span: Span,
     ) {
-        self.arity_check_type_param_bounds(type_params, type_params, span);
+        self.arity_check_type_param_bounds(type_params, type_params);
         for field in fields {
             self.arity_check_field(field, type_params);
         }
@@ -786,11 +778,10 @@ impl SemanticAnalyzer {
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         params: &[(String, Vec<TraitBound>)],
-        fallback_span: Span,
     ) {
         for (_, bounds) in type_params {
             for bound in bounds {
-                self.arity_check_named_ref(&bound.name, &bound.type_params, fallback_span, params);
+                self.arity_check_named_ref(&bound.name, &bound.type_params, bound.span, params);
             }
         }
     }
@@ -801,30 +792,28 @@ impl SemanticAnalyzer {
         &mut self,
         traits: &[TraitRef],
         params: &[(String, Vec<TraitBound>)],
-        fallback_span: Span,
     ) {
         for trait_ref in traits {
             self.arity_check_named_ref(
                 &trait_ref.name,
                 &trait_ref.type_args,
-                fallback_span,
+                trait_ref.span,
                 params,
             );
         }
     }
 
-    /// Arity-check a named type reference (`name<args...>`) that carries no span
-    /// of its own - a trait bound or implemented-interface reference - by
-    /// validating it as the named type it denotes. Uses the first argument's span
-    /// when present, else the enclosing declaration's.
+    /// Arity-check a named type reference (`name<args...>`) - a trait bound or
+    /// implemented-interface reference - by validating it as the named type it
+    /// denotes. `span` is the reference's name span, so the diagnostic underlines
+    /// the offending name rather than an argument or the whole declaration.
     fn arity_check_named_ref(
         &mut self,
         name: &str,
         args: &[TypeNode],
-        fallback_span: Span,
+        span: Span,
         params: &[(String, Vec<TraitBound>)],
     ) {
-        let span = args.first().map(|arg| arg.span).unwrap_or(fallback_span);
         let type_node = TypeNode {
             kind: TypeKind::Named(name.to_string(), args.to_vec()),
             span,
@@ -865,7 +854,7 @@ impl SemanticAnalyzer {
         outer_params: &[(String, Vec<TraitBound>)],
     ) {
         let params = Self::extend_params(outer_params, &func.type_params);
-        self.arity_check_type_param_bounds(&func.type_params, &params, func.span);
+        self.arity_check_type_param_bounds(&func.type_params, &params);
         for param in &func.params {
             self.arity_check_type(&param.type_, &params);
             if let Some(default) = &param.default_value {

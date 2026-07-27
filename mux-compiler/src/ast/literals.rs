@@ -83,12 +83,16 @@ impl super::Spanned for WhereClause {
 pub struct TraitBound {
     pub name: String,
     pub type_params: Vec<TypeNode>,
+    /// Span of the bound's trait name, for diagnostics.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitRef {
     pub name: String,
     pub type_args: Vec<TypeNode>,
+    /// Span of the referenced interface name, for diagnostics.
+    pub span: Span,
 }
 
 pub type EnumVariantField = (Option<String>, TypeNode);

@@ -3,9 +3,9 @@ source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
 error: Generic type 'Wrapper' requires 1 type argument(s), got 2
---> test_scripts/error_cases/generic_arity_interface_ref.mux:7:20
+--> test_scripts/error_cases/generic_arity_interface_ref.mux:7:12
    |
  7 | class C is Wrapper<int, string> {
-   |                    ^^^
+   |            ^^^^^^^
    |
 = help: Provide exactly 1 type argument in angle brackets, e.g. Wrapper<T>
