@@ -268,47 +268,40 @@ fn runtime_lib_from_env() -> Option<PathBuf> {
     None
 }
 
+/// The runtime library cargo built into `target/`, at the path `build.rs`
+/// recorded. Both recorded paths live in the same profile directory, so this
+/// asks `find_runtime_lib_in_dir` about that directory rather than repeating
+/// the static-then-dynamic decision - which also keeps the platform library
+/// names in one place.
 fn runtime_lib_from_build_config() -> Option<PathBuf> {
-    use crate::build_config::{MUX_RUNTIME_DYNAMIC, MUX_RUNTIME_STATIC};
+    use crate::build_config::MUX_RUNTIME_STATIC;
 
-    let static_path = PathBuf::from(MUX_RUNTIME_STATIC);
-    if static_path.exists() {
-        return static_path.parent().map(|p| p.to_path_buf());
-    }
-
-    let dynamic_path = PathBuf::from(MUX_RUNTIME_DYNAMIC);
-    if dynamic_path.exists() {
-        return dynamic_path.parent().map(|p| p.to_path_buf());
-    }
-
-    None
+    let profile_dir = PathBuf::from(MUX_RUNTIME_STATIC).parent()?.to_path_buf();
+    dir_holding_runtime_lib(&profile_dir)
 }
 
+/// `dir` itself, when it holds a runtime library. `find_runtime_lib_in_dir`
+/// builds the candidate paths from `dir`, so the containing directory is `dir`
+/// by construction - no need to walk back up from the file it found.
+fn dir_holding_runtime_lib(dir: &Path) -> Option<PathBuf> {
+    find_runtime_lib_in_dir(dir).map(|_| dir.to_path_buf())
+}
+
+/// Search a release install layout: the library beside the binary, or under a
+/// sibling `lib/` (optionally `lib/mux/`) as `scripts/install.sh` lays it out.
 fn runtime_lib_near_executable() -> Option<PathBuf> {
     let exe = env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
-    if let Some(parent) =
-        find_runtime_lib_in_dir(exe_dir).and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    {
-        return Some(parent);
+
+    let mut candidates = vec![exe_dir.to_path_buf()];
+    if let Some(prefix) = exe_dir.parent() {
+        candidates.push(prefix.join("lib"));
+        candidates.push(prefix.join("lib").join("mux"));
     }
 
-    if let Some(parent_dir) = exe_dir.parent() {
-        let bundled_dirs = [parent_dir.join("lib"), parent_dir.join("lib").join("mux")];
-        for lib_dir in bundled_dirs {
-            if !lib_dir.exists() {
-                continue;
-            }
-
-            if let Some(parent) =
-                find_runtime_lib_in_dir(&lib_dir).and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            {
-                return Some(parent);
-            }
-        }
-    }
-
-    None
+    candidates
+        .iter()
+        .find_map(|dir| dir_holding_runtime_lib(dir))
 }
 
 /// Directory holding the runtime library to link.

@@ -36,18 +36,13 @@ fn main() {
     let release_path = target_dir.join("release");
     let profile_path = target_dir.join(profile);
 
-    let (static_lib, dynamic_lib) =
+    let static_lib =
         detect_runtime_library(workspace_root, &debug_path, &release_path, &profile_path);
 
     println!(
         "cargo:rustc-env=MUX_RUNTIME_STATIC={}",
         static_lib.display()
     );
-    println!(
-        "cargo:rustc-env=MUX_RUNTIME_DYNAMIC={}",
-        dynamic_lib.display()
-    );
-    println!("cargo:rustc-env=MUX_RUNTIME_DIR={}", profile_path.display());
 
     ensure_llvm_prefix(workspace_root);
 
@@ -389,28 +384,29 @@ fn emit_missing_runtime_warning(
 ) {
 }
 
+/// Locate the profile directory cargo builds the runtime into, and return the
+/// static archive path within it. Either library identifies the directory - the
+/// compiler only uses the directory, and picks the library itself at runtime -
+/// so a directory holding just the shared object still counts as a hit.
 #[cfg(target_family = "unix")]
 fn detect_runtime_library(
     workspace_root: &Path,
     debug_path: &Path,
     release_path: &Path,
     profile_path: &Path,
-) -> (PathBuf, PathBuf) {
+) -> PathBuf {
     let candidates =
         runtime_search_candidates(workspace_root, debug_path, release_path, profile_path);
 
     for (path, _) in &candidates {
-        let static_lib = path.join("libmux_runtime.a");
-        let dynamic_lib = path.join("libmux_runtime.so");
-        if static_lib.exists() || dynamic_lib.exists() {
-            return (static_lib, dynamic_lib);
+        if path.join("libmux_runtime.a").exists() || path.join("libmux_runtime.so").exists() {
+            return path.join("libmux_runtime.a");
         }
     }
 
-    let static_lib = profile_path.join("libmux_runtime.a");
-    let dynamic_lib = profile_path.join("libmux_runtime.so");
-
-    if !static_lib.exists() && !dynamic_lib.exists() {
+    if !profile_path.join("libmux_runtime.a").exists()
+        && !profile_path.join("libmux_runtime.so").exists()
+    {
         emit_missing_runtime_warning(
             "libmux_runtime",
             profile_path,
@@ -420,36 +416,30 @@ fn detect_runtime_library(
         );
     }
 
-    (static_lib, dynamic_lib)
+    profile_path.join("libmux_runtime.a")
 }
 
+/// Windows counterpart of the unix `detect_runtime_library` above.
 #[cfg(target_family = "windows")]
 fn detect_runtime_library(
     workspace_root: &Path,
     debug_path: &Path,
     release_path: &Path,
     profile_path: &Path,
-) -> (PathBuf, PathBuf) {
-    let check_path = |p: &Path| -> (PathBuf, PathBuf) {
-        let static_lib = p.join("mux_runtime.lib");
-        let dynamic_lib = p.join("mux_runtime.dll");
-        (static_lib, dynamic_lib)
-    };
+) -> PathBuf {
+    let has_runtime =
+        |p: &Path| p.join("mux_runtime.lib").exists() || p.join("mux_runtime.dll").exists();
 
     let candidates =
         runtime_search_candidates(workspace_root, debug_path, release_path, profile_path);
 
     for (path, _description) in &candidates {
-        let (static_lib, dynamic_lib) = check_path(path);
-        if static_lib.exists() || dynamic_lib.exists() {
-            return (static_lib, dynamic_lib);
+        if has_runtime(path) {
+            return path.join("mux_runtime.lib");
         }
     }
 
-    let static_lib = profile_path.join("mux_runtime.lib");
-    let dynamic_lib = profile_path.join("mux_runtime.dll");
-
-    if !static_lib.exists() && !dynamic_lib.exists() {
+    if !has_runtime(profile_path) {
         emit_missing_runtime_warning(
             "mux_runtime",
             profile_path,
@@ -459,5 +449,5 @@ fn detect_runtime_library(
         );
     }
 
-    (static_lib, dynamic_lib)
+    profile_path.join("mux_runtime.lib")
 }
