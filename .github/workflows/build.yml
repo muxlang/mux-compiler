@@ -127,6 +127,52 @@ jobs:
           name: coverage-lcov
           path: lcov.info
           if-no-files-found: error
+  installer_scripts:
+    # Nothing else runs the installers, so a syntax error in either one ships
+    # silently and only surfaces when a user pipes it into their shell. Parsing
+    # is cheap and catches that class of break; PSScriptAnalyzer adds the
+    # PowerShell-specific ones.
+    name: Installer Scripts
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse and analyze install.ps1
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/install.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) {
+            $errors | ForEach-Object { Write-Host $_ }
+            throw "install.ps1 failed to parse"
+          }
+
+          # Import explicitly and stop on failure. Without this a module that
+          # cannot load leaves $findings null, and the step passes green having
+          # analyzed nothing.
+          # Pinned: newer PSScriptAnalyzer requires pwsh 7.4.6+, which not every
+          # runner image has. 1.22.0 loads on 7.4.2 and on current pwsh alike.
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.22.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module PSScriptAnalyzer -ErrorAction Stop
+          $findings = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Error -ErrorAction Stop
+          if ($findings) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer reported errors"
+          }
+          Write-Host "install.ps1 parses cleanly and is analyzer clean"
+
+      - name: Check install.sh
+        run: |
+          set -euo pipefail
+          bash -n scripts/install.sh
+          # Info level only reports SC2016 on the awk program, where the single
+          # quotes are deliberate; warnings and above are real.
+          shellcheck --severity=warning scripts/install.sh
+          echo "install.sh parses cleanly and is shellcheck clean"
+
   packaged_artifact:
     # Reproduces a binary install: the compiler and the bundled runtime library
     # in bin/ and lib/, with NO runtime source and NO cargo registry to build one
