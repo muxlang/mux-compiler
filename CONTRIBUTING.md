@@ -117,22 +117,27 @@ without waiting for the pin to advance.
 
 ### Where the runtime library comes from
 
-The compiler resolves the runtime library in this order, and **the first hit
-wins**:
+The compiler never builds a runtime while compiling your program. It links a
+prebuilt library, found in this order:
 
 1. `MUX_RUNTIME_LIB` - a path to a built library (a `.a` file, not a directory).
-2. A sibling `../mux-runtime` checkout, if one exists.
-3. `MUX_RUNTIME_SRC` - a path to a runtime source tree.
-4. The git checkout cargo made for the locked commit.
-5. A prebuilt library beside the compiler binary, or the one cargo built into
-   `target/`.
+2. A library beside the compiler binary, or in `../lib` next to it. This is what
+   a release install ships.
+3. The library cargo built into `target/` from the commit `Cargo.lock` pins.
+   This is the one you get while developing.
 
-This order is worth knowing because the top entries silently shadow the
-bottom ones. A stale sibling checkout, or a leftover `MUX_RUNTIME_LIB` in
-`.cargo/config.toml`, will be used in preference to the commit your
-`Cargo.lock` names - and the resulting mismatch usually shows up as a confusing
-link error or a test failure in unrelated code. If runtime behavior does not
-match the source you are reading, check those two first.
+That library always carries mux-runtime's `full` feature set. Linking the full
+runtime costs nothing: static linking pulls in only the archive members a
+program actually references, so a program that never touches `sql` does not
+carry SQLite.
+
+The one thing to watch is rule 1. A leftover `MUX_RUNTIME_LIB` - in your
+environment or in a gitignored `.cargo/config.toml` - wins over the library
+cargo just built, so runtime behavior stops matching the source you are reading.
+Check it first when something inexplicable happens.
+
+To test a compiler change against uncommitted runtime changes, build the runtime
+in your checkout and point `MUX_RUNTIME_LIB` at the resulting `.a`.
 
 `mux version` prints the runtime it resolved, including the locked commit
 (`runtime v0.5.0+g1a2b3c4`). Include that line in bug reports.

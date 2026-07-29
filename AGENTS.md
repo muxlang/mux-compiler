@@ -81,16 +81,23 @@ The user will run `cargo test` and insta snapshot tests separately. Do not manua
   library the compiler links. Required whenever compiler work depends on unmerged
   mux-runtime changes. The pre-commit hook runs the full `cargo test`, so export it
   before committing or the executable tests link a stale runtime and fail.
-- **Local rc-leak-check: use `scripts/leak-check.sh`, not `MUX_RUNTIME_FEATURES`
-  alone.** After any reference-counting / codegen change, reproduce the CI "RC Leak
+- **Runtime resolution is prebuilt-only**: `MUX_RUNTIME_LIB`, then a library beside
+  the compiler binary (or in `../lib`), then the one cargo built into `target/`.
+  The compiler never builds a runtime while compiling a program, and always links
+  the `full` feature set - static linking discards what a program does not
+  reference, so trimming saved nothing and cost a source tree, a build cache, and
+  a resolution order deep enough to hide a broken install.
+- **Local rc-leak-check: use `scripts/leak-check.sh`.** After any
+  reference-counting / codegen change, reproduce the CI "RC Leak
   Check" job locally with `scripts/leak-check.sh [file.mux ...]`. It builds the
   runtime with the `rc-leak-check` feature and FORCES it via `MUX_RUNTIME_LIB`, so a
   leaking program exits 101 ("N reference-counted block(s) still live at exit").
-  Setting only `MUX_RUNTIME_FEATURES=...,rc-leak-check` is NOT enough: a plain
-  `target/debug/libmux_runtime.a` (cargo builds it as a dependency, without the
-  feature) shadows the feature-specific build, the assertion never runs, and a leaky
-  program falsely exits 0. rc-leak-check itself is not broken - the trap is linking
-  the wrong runtime. (Valgrind is the other leak gate; `scripts/valgrind-checks.sh`.)
+  `rc-leak-check` sits outside mux-runtime's `full` feature on purpose, so the
+  library the compiler links by default never carries the assertion. Forcing the
+  feature-built archive via `MUX_RUNTIME_LIB` is the only way to run it; without
+  that, a leaky program links a plain runtime and falsely exits 0. rc-leak-check
+  itself is not broken - the trap is linking the wrong runtime. (Valgrind is the
+  other leak gate; `scripts/valgrind-checks.sh`.)
 - **Test-script auto-discovery**: every `test_scripts/*.mux` file is picked up by the
   lexer, parser, and executable integration suites (insta snapshots); files under
   `test_scripts/error_cases/` only by the executable suite. Adding a script requires
