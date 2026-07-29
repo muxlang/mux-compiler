@@ -87,7 +87,7 @@ The user will run `cargo test` and insta snapshot tests separately. Do not manua
   runtime with the `rc-leak-check` feature and FORCES it via `MUX_RUNTIME_LIB`, so a
   leaking program exits 101 ("N reference-counted block(s) still live at exit").
   Setting only `MUX_RUNTIME_FEATURES=...,rc-leak-check` is NOT enough: a plain
-  `target/debug/libmux_runtime.a` (cargo builds it as a workspace member without the
+  `target/debug/libmux_runtime.a` (cargo builds it as a dependency, without the
   feature) shadows the feature-specific build, the assertion never runs, and a leaky
   program falsely exits 0. rc-leak-check itself is not broken - the trap is linking
   the wrong runtime. (Valgrind is the other leak gate; `scripts/valgrind-checks.sh`.)
@@ -180,9 +180,12 @@ The compiler generates calls to runtime functions; understanding this interface 
 ## Project Structure
 Key directories:
 - `mux-compiler/src/` – compiler implementation.
-- `mux-runtime/src/` – runtime library.
-- `mux-website/docs/` – documentation.
 - `test_scripts/` – sample Mux programs.
+
+The runtime library and the documentation live in separate repositories
+(`muxlang/mux-runtime`, `muxlang/mux-website`), not in this tree. The runtime is
+a git dependency pinned by `Cargo.lock`; see the mux-runtime section of
+[CONTRIBUTING.md](CONTRIBUTING.md) for how it resolves and how to move the pin.
 
 ## Key Constraints
 - No dynamic typing.

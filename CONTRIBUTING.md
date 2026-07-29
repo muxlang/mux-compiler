@@ -87,6 +87,53 @@ Thanks for your interest! This guide explains how to contribute to Mux.
 
 ---
 
+## Working with mux-runtime
+
+Compiled Mux programs link against
+[mux-runtime](https://github.com/muxlang/mux-runtime), which lives in its own
+repository. **You do not need to clone it.** It is a git dependency on that
+repo's `main` branch, so `cargo build` fetches it, and `Cargo.lock` pins one
+exact commit - which is why `--locked` builds are reproducible.
+
+### Landing a coupled change
+
+When a compiler change needs a runtime change (a new FFI symbol, say), the
+runtime side merges first. After it does, move the pin:
+
+```bash
+cargo update -p mux-runtime
+```
+
+Commit the resulting `Cargo.lock` alongside your compiler change. Without it,
+CI builds `--locked` against the old commit and your change looks broken for no
+visible reason. A scheduled workflow advances the pin on its own
+(`.github/workflows/runtime-bump.yml`), so you only need this when you cannot
+wait for it.
+
+### Where the runtime library comes from
+
+The compiler resolves the runtime library in this order, and **the first hit
+wins**:
+
+1. `MUX_RUNTIME_LIB` - a path to a built library (a `.a` file, not a directory).
+2. A sibling `../mux-runtime` checkout, if one exists.
+3. `MUX_RUNTIME_SRC` - a path to a runtime source tree.
+4. The git checkout cargo made for the locked commit.
+5. A prebuilt library beside the compiler binary, or the one cargo built into
+   `target/`.
+
+This order is worth knowing because the top entries silently shadow the
+bottom ones. A stale sibling checkout, or a leftover `MUX_RUNTIME_LIB` in
+`.cargo/config.toml`, will be used in preference to the commit your
+`Cargo.lock` names - and the resulting mismatch usually shows up as a confusing
+link error or a test failure in unrelated code. If runtime behavior does not
+match the source you are reading, check those two first.
+
+`mux version` prints the runtime it resolved, including the locked commit
+(`runtime v0.5.0+g1a2b3c4`). Include that line in bug reports.
+
+---
+
 ## What Contributions Are Welcome
 
 - Bug fixes
