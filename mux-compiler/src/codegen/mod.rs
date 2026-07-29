@@ -14,10 +14,16 @@
 //! - statements: Statement code generation
 //! - types: Type conversion functions
 
+use std::path::Path;
+
 use inkwell::AddressSpace;
+use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
+use inkwell::targets::{
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
+};
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use std::collections::HashMap;
@@ -909,6 +915,51 @@ impl<'a> CodeGenerator<'a> {
         self.generate_class_methods_for_all_nodes(main_module_nodes)?;
 
         Ok(())
+    }
+
+    /// Compile the module straight to a native object file.
+    ///
+    /// The alternative is writing `.ll` and having clang parse it back, which
+    /// couples every install to a clang whose major version matches the LLVM
+    /// this compiler links - textual IR is not stable across versions. Emitting
+    /// the object here removes that coupling entirely: whatever links the
+    /// result only has to understand object files.
+    pub fn emit_object_to_file(&self, filename: &str) -> Result<(), String> {
+        self.module
+            .verify()
+            .map_err(|e| format!("LLVM module verification failed: {}", e.to_string()))?;
+
+        Target::initialize_native(&InitializationConfig::default())
+            .map_err(|e| format!("failed to initialize the native target: {}", e))?;
+
+        let triple = TargetMachine::get_default_triple();
+        let target = Target::from_triple(&triple)
+            .map_err(|e| format!("no LLVM target for {}: {}", triple, e.to_string()))?;
+
+        // PIC because distributions default to position-independent executables;
+        // a non-PIC object fails to link against them.
+        let machine = target
+            .create_target_machine(
+                &triple,
+                &TargetMachine::get_host_cpu_name().to_string(),
+                &TargetMachine::get_host_cpu_features().to_string(),
+                OptimizationLevel::None,
+                RelocMode::PIC,
+                CodeModel::Default,
+            )
+            .ok_or_else(|| format!("failed to create a target machine for {}", triple))?;
+
+        // Stamp the module with the machine's own triple and layout. Nothing set
+        // them before, which is why clang reported "overriding the module target
+        // triple"; emitting directly, a mismatch would mean wrong ABI decisions
+        // rather than a warning.
+        self.module.set_triple(&triple);
+        self.module
+            .set_data_layout(&machine.get_target_data().get_data_layout());
+
+        machine
+            .write_to_file(&self.module, FileType::Object, Path::new(filename))
+            .map_err(|e| format!("failed to write object file: {}", e.to_string()))
     }
 
     pub fn emit_ir_to_file(&self, filename: &str) -> Result<(), String> {

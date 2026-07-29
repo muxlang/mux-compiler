@@ -101,9 +101,13 @@ fn find_clang_command() -> Option<String> {
         }
     }
 
+    // Any C driver can link an object file. The version used to matter because
+    // the compiler handed clang textual IR to parse; it emits an object now, so
+    // `cc` and `gcc` are just as valid and the search no longer needs a
+    // version-matched clang to exist.
     let linked_major = env!("MUX_LLVM_MAJOR");
     let versioned = format!("clang-{}", linked_major);
-    let candidates: &[&str] = &[versioned.as_str(), "clang"];
+    let candidates: &[&str] = &[versioned.as_str(), "clang", "cc", "gcc"];
     for candidate in candidates {
         let output = match Command::new(candidate).arg("--version").output() {
             Ok(output) => output,
@@ -170,6 +174,25 @@ fn pick_llvm_for_dev(versions: &[(String, String, u32)]) -> Option<(String, Stri
         .iter()
         .find(|(_, _, major)| *major == REQUIRED_LLVM_MAJOR)
         .map(|(tool, version, major)| (tool.clone(), version.clone(), *major))
+}
+
+/// Install help for the C driver used to link programs. Distinct from
+/// `print_llvm_install_help`, which is about the LLVM *development* libraries a
+/// source build of the compiler needs - linking a compiled program only needs a
+/// C toolchain, of any version.
+fn print_linker_install_help() {
+    if cfg!(target_os = "linux") {
+        println!("Install a C toolchain:");
+        println!("  Debian/Ubuntu: sudo apt-get install clang");
+        println!("  Arch Linux:    sudo pacman -S clang");
+        println!("Any recent clang or gcc works; the version does not need to match.");
+    } else if cfg!(target_os = "macos") {
+        println!("Install the Xcode command line tools:");
+        println!("  xcode-select --install");
+    } else if cfg!(target_family = "windows") {
+        println!("Install LLVM (which provides clang), for example via Chocolatey:");
+        println!("  choco install llvm");
+    }
 }
 
 fn print_llvm_install_help() {
@@ -391,46 +414,31 @@ fn validate_llvm_for_doctor(
     true
 }
 
-fn report_clang_for_doctor(clang: Option<&str>) -> bool {
-    if let Some(clang_cmd) = clang {
-        let linked_major: u32 = env!("MUX_LLVM_MAJOR")
-            .parse()
-            .unwrap_or(REQUIRED_LLVM_MAJOR);
-        let clang_ok = match extract_clang_major(clang_cmd) {
-            Some(clang_major) if clang_major == linked_major => {
-                println!(
-                    "{} Clang is installed: {} (matches linked LLVM {}).",
-                    status_marker(true),
-                    clang_cmd,
-                    linked_major
-                );
-                true
-            }
-            Some(clang_major) => {
-                println!(
-                    "{} {} (clang {}) does not match linked LLVM {}.",
-                    status_marker(false),
-                    clang_cmd,
-                    clang_major,
-                    linked_major
-                );
-                println!(
-                    "  This will cause IR parse errors. Install clang-{} or set CC=clang-{}.",
-                    linked_major, linked_major
-                );
-                false
-            }
-            None => {
-                println!("{} Clang is installed: {}.", status_marker(true), clang_cmd);
-                true
-            }
-        };
-        return clang_ok;
-    }
+/// Report the C driver used to link compiled programs.
+///
+/// Its version is informational. The compiler emits an object file, so any
+/// driver that can link one works - a mismatch against the linked LLVM used to
+/// mean IR parse errors and no longer means anything.
+fn report_clang_for_doctor(linker: Option<&str>) -> bool {
+    let Some(linker_cmd) = linker else {
+        println!(
+            "{} No C compiler found to link programs with.",
+            status_marker(false)
+        );
+        print_linker_install_help();
+        return false;
+    };
 
-    println!("{} Clang is not installed.", status_marker(false));
-    print_llvm_install_help();
-    false
+    match extract_clang_major(linker_cmd) {
+        Some(major) => println!(
+            "{} Linker driver: {} (version {}).",
+            status_marker(true),
+            linker_cmd,
+            major
+        ),
+        None => println!("{} Linker driver: {}.", status_marker(true), linker_cmd),
+    }
+    true
 }
 
 // Running a clang binary that was just written and chmod'd can transiently fail
@@ -809,10 +817,16 @@ fn analyze_semantics_or_exit(
     }
 }
 
-fn generate_ir_or_exit(
+/// Run codegen, then write the object file the linker consumes - and, when
+/// `-i` asked for it, the readable `.ll` alongside it.
+///
+/// Only the object is on the critical path. The textual IR used to be, which is
+/// what tied an install to a clang matching this compiler's LLVM major.
+fn generate_object_or_exit(
     codegen: &mut codegen::CodeGenerator,
     nodes: &[ast::AstNode],
-    ir_file: &str,
+    object_file: &str,
+    ir_file: Option<&str>,
 ) {
     if let Err(e) = codegen.generate(nodes) {
         spinner::stop();
@@ -822,9 +836,18 @@ fn generate_ir_or_exit(
         report_internal_compiler_error(&format!("codegen error: {}", e));
         process::exit(1);
     }
-    if let Err(e) = codegen.emit_ir_to_file(ir_file) {
+    // IR first: when the module is invalid, the emitted `.ll` is exactly what is
+    // needed to debug it, and object emission verifies and would bail first.
+    if let Some(ir_file) = ir_file
+        && let Err(e) = codegen.emit_ir_to_file(ir_file)
+    {
         spinner::stop();
         report_internal_compiler_error(&format!("failed to emit IR: {}", e));
+        process::exit(1);
+    }
+    if let Err(e) = codegen.emit_object_to_file(object_file) {
+        spinner::stop();
+        report_internal_compiler_error(&format!("failed to emit object file: {}", e));
         process::exit(1);
     }
 }
@@ -918,15 +941,14 @@ fn report_clang_output_or_exit(
     }
 }
 
-fn remove_ir_if_requested(intermediate: bool, ir_file: &str) {
-    if intermediate {
-        return;
-    }
-
-    Command::new("rm")
-        .arg(ir_file)
-        .status()
-        .expect("Failed to remove intermediate IR file");
+/// Delete the object file once it has been linked. It is a build artifact the
+/// user did not ask for, unlike the `.ll`, which is now only written when `-i`
+/// requested it and so is never cleaned up here.
+///
+/// Best-effort: a failure to remove a temporary file should not fail a
+/// successful compile.
+fn remove_object_file(object_file: &str) {
+    let _ = fs::remove_file(object_file);
 }
 
 fn run_executable_or_exit(exe_file: &Path) {
@@ -1118,11 +1140,18 @@ fn main() {
         .unwrap_or_else(|| file_path.to_string_lossy().into_owned());
     let mut codegen = codegen::CodeGenerator::new(&context, &mut analyzer, &source_name);
 
-    let ir_file = format!(
-        "{}.ll",
-        file_path.to_string_lossy().trim_end_matches(".mux")
+    let stem = file_path
+        .to_string_lossy()
+        .trim_end_matches(".mux")
+        .to_string();
+    let ir_file = format!("{}.ll", stem);
+    let object_file = format!("{}.o", stem);
+    generate_object_or_exit(
+        &mut codegen,
+        &nodes,
+        &object_file,
+        intermediate.then_some(ir_file.as_str()),
     );
-    generate_ir_or_exit(&mut codegen, &nodes, &ir_file);
 
     // build executable
     // Use ./ prefix to ensure we run the local executable, not a system command
@@ -1151,7 +1180,7 @@ fn main() {
 
     let clang_cmd = find_clang_or_exit();
     let mut clang_args = vec![
-        ir_file.clone(),
+        object_file.clone(),
         "-L".to_string(),
         lib_path_str.to_string(),
         format!("-Wl,-rpath,{}", lib_path_str),
@@ -1199,7 +1228,7 @@ fn main() {
     spinner::stop();
     report_clang_output_or_exit(clang_output, do_run, &file_path, &ir_file);
 
-    remove_ir_if_requested(intermediate, &ir_file);
+    remove_object_file(&object_file);
 
     if do_run {
         run_executable_or_exit(&exe_file);
@@ -1518,7 +1547,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn clang_doctor_reports_matching_and_mismatching_majors() {
+    fn linker_doctor_accepts_any_driver_version() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = unique_tmp("fake_clang");
@@ -1545,10 +1574,16 @@ mod tests {
         assert_eq!(extract_clang_major(matching), Some(linked_major));
         assert!(report_clang_for_doctor(Some(matching)));
 
+        // A driver whose version differs from the linked LLVM is fine now: the
+        // compiler emits an object file, so nothing parses textual IR and the
+        // versions need not agree. This used to be a hard failure.
         let mismatching = write_fake_clang("clang-mismatch", linked_major + 1);
-        assert!(!report_clang_for_doctor(Some(
-            mismatching.to_str().unwrap()
-        )));
+        let mismatching = mismatching.to_str().unwrap();
+        assert_eq!(extract_clang_major(mismatching), Some(linked_major + 1));
+        assert!(report_clang_for_doctor(Some(mismatching)));
+
+        // No driver at all is still a failure - something has to link.
+        assert!(!report_clang_for_doctor(None));
 
         std::fs::remove_dir_all(&dir).ok();
     }
