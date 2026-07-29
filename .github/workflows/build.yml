@@ -16,7 +16,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590
         id: filter
         with:
@@ -46,7 +46,7 @@ jobs:
       CC: clang-22
       CXX: clang++-22
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # No mux-runtime checkout: cargo builds it from the commit Cargo.lock
       # pins, into target/, which is the library every program here links. That
       # is what a release ships, so testing anything else would test a
@@ -67,7 +67,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
       - name: Cache Cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -109,7 +109,7 @@ jobs:
         # executed in the spawned compiler is captured.
         run: cargo llvm-cov -p mux-lang --all-features --lcov --output-path lcov.info
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-lcov
           path: lcov.info
@@ -124,7 +124,7 @@ jobs:
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Parse and analyze install.ps1
         shell: pwsh
@@ -176,7 +176,7 @@ jobs:
       CC: clang-22
       CXX: clang++-22
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -219,7 +219,7 @@ jobs:
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Docker info
         run: docker compose version
       - name: Service-backed checks
@@ -239,7 +239,7 @@ jobs:
       CC: clang-22
       CXX: clang++-22
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Programs link the runtime cargo builds into target/ from the commit
       # Cargo.lock pins - the same library a release ships.
       - name: Install Rust toolchain
@@ -258,7 +258,7 @@ jobs:
       - name: Install Valgrind
         run: sudo apt-get install -y valgrind
       - name: Cache Cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -275,7 +275,7 @@ jobs:
       - name: Upload valgrind log for PR comment
         # Raw log only; the trusted pr-comment workflow escapes and renders it.
         if: ${{ always() && github.event_name == 'pull_request' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pr-comment-valgrind
           path: valgrind.log
@@ -305,8 +305,8 @@ jobs:
       # so it is the one runtime the compiler cannot produce on its own.
       MUX_RUNTIME_LEAK_FEATURES: core,json,csv,net,sql,sync,rc-leak-check
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: muxlang/mux-runtime
           ref: main
@@ -325,7 +325,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
       - name: Cache Cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -338,7 +338,10 @@ jobs:
         run: |
           set -euo pipefail
           cd "$MUX_RUNTIME_SRC"
-          cargo build --no-default-features \
+          # --locked: this is a clean checkout of mux-runtime with its committed
+          # lock, so resolving fresh here would build something the repo never
+          # pinned (flagged by sonar githubactions:S8549).
+          cargo build --locked --no-default-features \
             --features "$MUX_RUNTIME_LEAK_FEATURES" \
             --target-dir "$MUX_RUNTIME_SRC/target"
           test -f "$MUX_RUNTIME_SRC/target/debug/libmux_runtime.a"
@@ -369,7 +372,7 @@ jobs:
       CC: clang-22
       CXX: clang++-22
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # The execution benchmarks compile+link+run real programs, so they need
       # the runtime staticlib. cargo builds only a dependency's rlib, so it is
       # built explicitly below.
@@ -387,7 +390,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
       - name: Cache Cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -406,7 +409,7 @@ jobs:
       - name: Build per-phase distribution report
         run: python3 scripts/bench-report.py --summary-json bench-summary.json
       - name: Upload benchmark report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: benchmark-report
           path: |
@@ -418,7 +421,7 @@ jobs:
         # compact per-phase summary it turns into charts. Both are fork-controlled
         # and re-validated there; nothing here is trusted.
         if: ${{ always() && github.event_name == 'pull_request' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pr-comment-benchmarks
           path: |
@@ -435,11 +438,11 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Download coverage report
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         continue-on-error: true
         with:
           name: coverage-lcov

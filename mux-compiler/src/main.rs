@@ -1210,7 +1210,7 @@ fn main() {
 mod tests {
     use super::{
         REQUIRED_LLVM_MAJOR, clang_failure_detail, clang_version_output, compiling_file,
-        extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
+        dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
         internal_compiler_error_report, llvm_config_candidates, pick_llvm_for_dev,
         print_doctor_verdict, print_version_banner, relativize_to_cwd, report_clang_for_doctor,
         report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
@@ -1418,6 +1418,58 @@ mod tests {
         std::fs::write(&dyn_path, b"x").unwrap();
         assert_eq!(find_runtime_lib_in_dir(&dyn_dir), Some(dyn_path));
         std::fs::remove_dir_all(&dyn_dir).ok();
+    }
+
+    /// The compiler links whatever directory this reports, so it must name the
+    /// directory it was asked about - not the parent of the file found inside
+    /// it. Returning the file's parent happens to be the same path, which is
+    /// why the two are easy to conflate.
+    #[test]
+    fn dir_holding_runtime_lib_reports_the_directory_itself() {
+        let empty_dir = unique_tmp("rtdir_empty");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        assert!(dir_holding_runtime_lib(&empty_dir).is_none());
+        std::fs::remove_dir_all(&empty_dir).ok();
+
+        for name in [static_lib_name(), dynamic_lib_name()] {
+            let dir = unique_tmp("rtdir_present");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), b"x").unwrap();
+            assert_eq!(
+                dir_holding_runtime_lib(&dir),
+                Some(dir.clone()),
+                "expected the directory itself for {}",
+                name
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// A release install puts the library in `../lib` relative to the binary,
+    /// and `scripts/install.sh` is what creates that layout. The bundled
+    /// library was present but unreachable in v0.6.0, so this pins the shape
+    /// the search accepts.
+    #[test]
+    fn runtime_lib_search_accepts_the_release_install_layout() {
+        let prefix = unique_tmp("rtlayout");
+        let bin_dir = prefix.join("bin");
+        let lib_dir = prefix.join("lib");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(&lib_dir).unwrap();
+
+        // Nothing anywhere yet.
+        assert!(dir_holding_runtime_lib(&bin_dir).is_none());
+        assert!(dir_holding_runtime_lib(&lib_dir).is_none());
+
+        // The archive lands beside the binary, as a bare tarball extract has it.
+        std::fs::write(bin_dir.join(static_lib_name()), b"x").unwrap();
+        assert_eq!(dir_holding_runtime_lib(&bin_dir), Some(bin_dir.clone()));
+
+        // ...and in the sibling lib/, as the installer lays it out.
+        std::fs::write(lib_dir.join(static_lib_name()), b"x").unwrap();
+        assert_eq!(dir_holding_runtime_lib(&lib_dir), Some(lib_dir.clone()));
+
+        std::fs::remove_dir_all(&prefix).ok();
     }
 
     #[test]
