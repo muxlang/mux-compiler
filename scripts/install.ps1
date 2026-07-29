@@ -67,6 +67,31 @@ try {
     }
 
     & (Join-Path $InstallDir "mux.exe") version
+
+    # Downloading the archive is not the same as being able to compile: the
+    # compiler shells out to a matching clang to link every program. `mux
+    # doctor` checks that and prints the install command for whatever is
+    # missing, so a gap surfaces here instead of as a linker error on the
+    # user's first program.
+    Write-Host ""
+    # A failing doctor is reported, not fatal - the install itself succeeded.
+    # PowerShell 7.4+ turns a nonzero native exit code into a terminating error
+    # under `$ErrorActionPreference = "Stop"`, so opt out for this one call.
+    # Assigning the variable is harmless on Windows PowerShell, where it does
+    # not exist.
+    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    try {
+        $PSNativeCommandUseErrorActionPreference = $false
+        & (Join-Path $InstallDir "mux.exe") doctor
+    }
+    finally {
+        $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "mux is installed at $(Join-Path $InstallDir "mux.exe"), but the checks above did not pass."
+        Write-Host "Install the missing dependencies, then re-run: mux doctor"
+    }
 }
 finally {
     if (Test-Path $tmpDir) {

@@ -120,4 +120,15 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
 fi
 
+# Downloading the archive is not the same as being able to compile: the
+# compiler shells out to a matching clang to link every program. `mux doctor`
+# checks that and prints the install command for whatever is missing, so a gap
+# surfaces here instead of as a linker error on the user's first program.
+echo
+if ! "$INSTALL_DIR/mux" doctor; then
+  echo
+  echo "mux is installed at $INSTALL_DIR/mux, but the checks above did not pass."
+  echo "Install the missing dependencies, then re-run: $INSTALL_DIR/mux doctor"
+fi
+
 "$INSTALL_DIR/mux" version
