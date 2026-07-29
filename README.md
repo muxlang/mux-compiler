@@ -8,7 +8,6 @@
 
 [![Version](https://img.shields.io/badge/version-0.6.0-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
-[![crates.io](https://img.shields.io/crates/v/mux-lang.svg?style=flat-square)](https://crates.io/crates/mux-lang)
 [![Documentation](https://img.shields.io/badge/docs-online-blue.svg?style=flat-square)](https://mux-lang.dev)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg?style=flat-square)]()
 [![Sonar Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=muxlang_mux-compiler&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=muxlang_mux-compiler)
@@ -82,7 +81,10 @@ Choose the method that works best for you:
 
 ### Option 1: Prebuilt Binaries (Recommended)
 
-The fastest way to get started. No Rust or LLVM required.
+The fastest way to get started. No Rust and no LLVM development libraries
+required - but you do need **clang** matching the linked LLVM major (22), since
+Mux calls it to link every program it compiles. The installer runs `mux doctor`
+when it finishes and names anything missing.
 
 **Linux & macOS:**
 ```bash
@@ -99,15 +101,13 @@ iwr -useb https://raw.githubusercontent.com/muxlang/mux-compiler/main/scripts/in
 MUX_INSTALL_DIR=/usr/local/bin MUX_LIB_DIR=/usr/local/lib sh install.sh
 ```
 
-### Option 2: From crates.io
+### Option 2: crates.io (frozen)
 
-For Rust developers who already have cargo installed:
-
-```bash
-cargo install mux-lang
-```
-
-Note: LLVM 22 and clang must be installed first for source builds.
+`mux-lang` was published to crates.io through 0.6.0. That channel is no longer
+updated: `cargo install mux-lang` needs a Rust toolchain and the exact LLVM 22
+development libraries, then compiles the LLVM bindings from scratch, making it
+the slowest route to a working compiler. Use Option 1, or build from source
+below.
 
 ### Option 3: Build from Source
 
