@@ -123,7 +123,7 @@ cd mux-compiler
 ### Verify Installation
 
 ```bash
-mux --version          # Check version
+mux version            # Check compiler and runtime versions
 mux doctor             # Validate runtime dependencies
 mux doctor --dev       # Validate LLVM 22 and clang for development
 ```
@@ -204,7 +204,7 @@ the canonical "Mux version" - there is no separate version file.
 
 - When releasing, bump `version` in `mux-compiler/Cargo.toml`, update the badge and
   the `- **Current Version:**` line above, then run `cargo build` to refresh `Cargo.lock`.
-- The runtime versions independently (see [muxlang/mux-runtime](https://github.com/muxlang/mux-runtime)); `mux --version` reports both compiler and runtime.
+- The runtime is a git dependency on [muxlang/mux-runtime](https://github.com/muxlang/mux-runtime) `main`, pinned to one commit by `Cargo.lock`; `mux version` reports both, with the locked commit as build metadata.
 - Full release steps: [muxlang/mux-context](https://github.com/muxlang/mux-context/blob/main/docs/release-process.md#mux-compiler).
 - **License:** MIT
 - **Maintainer:** [Derek Corniello](https://github.com/DerekCorniello)
