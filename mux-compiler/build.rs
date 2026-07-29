@@ -5,9 +5,9 @@ use std::process::Command;
 
 const REQUIRED_LLVM_MAJOR: u32 = 22;
 
-/// Length of the abbreviated commit appended to `MUX_RUNTIME_VERSION`. Matches
-/// cargo's own git checkout directory names, so the stamp can be used to locate
-/// the checked-out source.
+/// Length of the abbreviated commit appended to `MUX_RUNTIME_VERSION`. Seven
+/// matches git's default short-hash length, so the stamp can be pasted straight
+/// into `git log` in the runtime repo.
 const SHORT_COMMIT_LEN: usize = 7;
 
 fn main() {
@@ -88,10 +88,9 @@ fn emit_runtime_version(manifest_dir: &Path) {
 /// (`0.5.0+g1a2b3c4`) when the entry resolves to a git source.
 ///
 /// The commit matters because a git-sourced runtime keeps the same `version`
-/// across every commit. `MUX_RUNTIME_VERSION` keys the runtime build cache, and
-/// a cached library built from an immutable source is reused without a
-/// freshness check - so without the commit in the key, two different runtimes
-/// share one cache entry and a program can silently link a stale one.
+/// across every commit, so the version alone cannot say which runtime a binary
+/// was built against. `mux version` prints this string; a bug report that does
+/// not name the commit is not actionable.
 fn read_locked_runtime_version(lock_path: &Path) -> Option<String> {
     let contents = fs::read_to_string(lock_path).ok()?;
     let mut in_runtime_pkg = false;

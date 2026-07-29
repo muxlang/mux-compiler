@@ -123,8 +123,17 @@ prebuilt library, found in this order:
 1. `MUX_RUNTIME_LIB` - a path to a built library (a `.a` file, not a directory).
 2. A library beside the compiler binary, or in `../lib` next to it. This is what
    a release install ships.
-3. The library cargo built into `target/` from the commit `Cargo.lock` pins.
-   This is the one you get while developing.
+3. The library in `target/`, built from the commit `Cargo.lock` pins. This is
+   the one you get while developing - but **`cargo build` alone does not produce
+   it**. Cargo emits a dependency's rlib and never its staticlib, so you need:
+
+   ```bash
+   cargo build -p mux-runtime
+   ```
+
+   `scripts/run-checks.sh` and `scripts/valgrind-checks.sh` already do this. If
+   compiled programs suddenly fail to link with undefined references to
+   `mux_*` symbols, this is why.
 
 That library always carries mux-runtime's `full` feature set. Linking the full
 runtime costs nothing: static linking pulls in only the archive members a

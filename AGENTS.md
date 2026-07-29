@@ -82,7 +82,11 @@ The user will run `cargo test` and insta snapshot tests separately. Do not manua
   mux-runtime changes. The pre-commit hook runs the full `cargo test`, so export it
   before committing or the executable tests link a stale runtime and fail.
 - **Runtime resolution is prebuilt-only**: `MUX_RUNTIME_LIB`, then a library beside
-  the compiler binary (or in `../lib`), then the one cargo built into `target/`.
+  the compiler binary (or in `../lib`), then the one in `target/`. That last one
+  needs `cargo build -p mux-runtime`: cargo emits a dependency's rlib and never
+  its staticlib, so a plain `cargo build` leaves no `libmux_runtime.a` and every
+  compiled program fails to link. `run-checks.sh` and `valgrind-checks.sh` build
+  both packages for this reason.
   The compiler never builds a runtime while compiling a program, and always links
   the `full` feature set - static linking discards what a program does not
   reference, so trimming saved nothing and cost a source tree, a build cache, and
