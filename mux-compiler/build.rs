@@ -5,6 +5,11 @@ use std::process::Command;
 
 const REQUIRED_LLVM_MAJOR: u32 = 22;
 
+/// Length of the abbreviated commit appended to `MUX_RUNTIME_VERSION`. Matches
+/// cargo's own git checkout directory names, so the stamp can be used to locate
+/// the checked-out source.
+const SHORT_COMMIT_LEN: usize = 7;
+
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
@@ -79,13 +84,27 @@ fn emit_runtime_version(manifest_dir: &Path) {
 }
 
 /// Parse `Cargo.lock` for the `[[package]] name = "mux-runtime"` entry and
-/// return its `version`.
+/// return its version, with the locked commit appended as semver build metadata
+/// (`0.5.0+g1a2b3c4`) when the entry resolves to a git source.
+///
+/// The commit matters because a git-sourced runtime keeps the same `version`
+/// across every commit. `MUX_RUNTIME_VERSION` keys the runtime build cache, and
+/// a cached library built from an immutable source is reused without a
+/// freshness check - so without the commit in the key, two different runtimes
+/// share one cache entry and a program can silently link a stale one.
 fn read_locked_runtime_version(lock_path: &Path) -> Option<String> {
     let contents = fs::read_to_string(lock_path).ok()?;
     let mut in_runtime_pkg = false;
+    let mut version: Option<String> = None;
+
     for line in contents.lines() {
         let trimmed = line.trim();
         if trimmed == "[[package]]" {
+            // The entry ended without a git source: a registry dependency,
+            // whose version alone identifies its contents.
+            if version.is_some() {
+                break;
+            }
             in_runtime_pkg = false;
             continue;
         }
@@ -93,11 +112,37 @@ fn read_locked_runtime_version(lock_path: &Path) -> Option<String> {
             in_runtime_pkg = true;
             continue;
         }
-        if in_runtime_pkg && let Some(rest) = trimmed.strip_prefix("version = \"") {
-            return Some(rest.trim_end_matches('"').to_string());
+        if !in_runtime_pkg {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("version = \"") {
+            version = Some(rest.trim_end_matches('"').to_string());
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("source = \"")
+            && let Some(commit) = locked_git_commit(rest.trim_end_matches('"'))
+        {
+            return version.map(|locked| format!("{}+g{}", locked, commit));
         }
     }
-    None
+
+    version
+}
+
+/// Short commit from a `Cargo.lock` `source` value of the form
+/// `git+https://host/repo?branch=main#<40 hex chars>`. Returns `None` for a
+/// registry source, which carries no commit.
+fn locked_git_commit(source: &str) -> Option<String> {
+    if !source.starts_with("git+") {
+        return None;
+    }
+
+    let commit = source.rsplit_once('#')?.1;
+    if commit.len() < SHORT_COMMIT_LEN || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    Some(commit[..SHORT_COMMIT_LEN].to_string())
 }
 
 /// Ensure `LLVM_SYS_221_PREFIX` is configured so `llvm-sys` links against

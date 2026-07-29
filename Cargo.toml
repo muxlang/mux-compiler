@@ -8,16 +8,6 @@ default-members = ["mux-compiler"]
 exclude = ["mux-runtime"]
 resolver = "2"
 
-# Resolve mux-runtime from the muxlang/mux-runtime `main` source rather than the
-# crates.io release, so a coupled change that adds a new runtime FFI symbol builds
-# (and reviews) against the source that defines it - before that runtime version
-# is published. CI still builds the linked runtime library from its own checkout
-# via MUX_RUNTIME_SRC; this only steers Cargo's dependency resolution. A git patch
-# (not a path patch) so it also resolves where the sibling is not checked out
-# (Greptile, fresh clones).
-[patch.crates-io]
-mux-runtime = { git = "https://github.com/muxlang/mux-runtime", branch = "main" }
-
 [profile.release]
 strip = true
 lto = "thin"

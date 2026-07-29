@@ -431,17 +431,43 @@ enum RuntimeSource {
     /// named by `MUX_RUNTIME_SRC`. Its contents can change without a version
     /// bump, so a cached build must be validated against a source fingerprint.
     Local(PathBuf),
-    /// An immutable crates.io registry checkout. The pinned `MUX_RUNTIME_VERSION`
-    /// already determines the contents, so a cached build is never stale.
-    Registry(PathBuf),
+    /// An immutable checkout cargo owns: a crates.io registry unpack, or a git
+    /// checkout at the locked commit. `MUX_RUNTIME_VERSION` carries the version
+    /// and, for a git source, the commit - so it already determines the
+    /// contents and a cached build is never stale.
+    Immutable(PathBuf),
 }
 
 impl RuntimeSource {
     fn path(&self) -> &Path {
         match self {
-            RuntimeSource::Local(p) | RuntimeSource::Registry(p) => p,
+            RuntimeSource::Local(p) | RuntimeSource::Immutable(p) => p,
         }
     }
+}
+
+/// Locate the git checkout cargo unpacked for the locked runtime commit. Cargo
+/// lays these out as `CARGO_HOME/git/checkouts/<repo>-<hash>/<short commit>/`,
+/// and `MUX_RUNTIME_VERSION` carries that same short commit as build metadata.
+fn find_runtime_git_checkout(cargo_home: &Path, commit: &str) -> Option<PathBuf> {
+    let checkouts = cargo_home.join("git").join("checkouts");
+
+    for entry in fs::read_dir(checkouts).ok()?.flatten() {
+        let repo_dir = entry.path();
+        let is_runtime_repo = repo_dir
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("mux-runtime-"));
+        if !is_runtime_repo {
+            continue;
+        }
+
+        let candidate = repo_dir.join(commit);
+        if candidate.join("Cargo.toml").exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
 }
 
 fn find_runtime_source() -> Option<RuntimeSource> {
@@ -464,15 +490,23 @@ fn find_runtime_source() -> Option<RuntimeSource> {
     }
 
     let cargo_home = cargo_home_dir()?;
-    let registry_src = cargo_home.join("registry").join("src");
     let version = env!("MUX_RUNTIME_VERSION");
+
+    // `<version>+g<commit>` means the runtime was resolved from git, so the
+    // source is a git checkout rather than a registry unpack.
+    if let Some((_, commit)) = version.split_once("+g")
+        && let Some(path) = find_runtime_git_checkout(&cargo_home, commit)
+    {
+        return Some(RuntimeSource::Immutable(path));
+    }
+
+    let registry_src = cargo_home.join("registry").join("src");
     let dir_name = format!("mux-runtime-{}", version);
 
-    for entry in fs::read_dir(registry_src).ok()? {
-        let entry = entry.ok()?;
+    for entry in fs::read_dir(registry_src).ok()?.flatten() {
         let candidate = entry.path().join(&dir_name);
         if candidate.join("Cargo.toml").exists() {
-            return Some(RuntimeSource::Registry(candidate));
+            return Some(RuntimeSource::Immutable(candidate));
         }
     }
 
@@ -587,7 +621,7 @@ fn build_runtime_in_cache(profile: &str, features: &[String]) -> Option<PathBuf>
     let runtime_src = match &source {
         Some(source) => source.path().to_path_buf(),
         None => {
-            eprintln!("Could not locate mux-runtime source in cargo registry.");
+            eprintln!("Could not locate mux-runtime source to build from.");
             return None;
         }
     };
