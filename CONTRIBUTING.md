@@ -106,9 +106,14 @@ cargo update -p mux-runtime
 
 Commit the resulting `Cargo.lock` alongside your compiler change. Without it,
 CI builds `--locked` against the old commit and your change looks broken for no
-visible reason. A scheduled workflow advances the pin on its own
-(`.github/workflows/runtime-bump.yml`), so you only need this when you cannot
-wait for it.
+visible reason.
+
+Nothing advances the pin on a schedule, and nothing needs to: it moves when a
+change needs it to move, and a release can move it deliberately. Meanwhile CI
+already tests against runtime `main` on both sides - this repo's `build.yml`
+checks out the runtime's `main` source, and mux-runtime's CI builds this repo's
+`main` against it - so a runtime change that breaks the compiler surfaces
+without waiting for the pin to advance.
 
 ### Where the runtime library comes from
 
