@@ -5,12 +5,11 @@
 # job: it builds the runtime with the `rc-leak-check` feature and FORCES it via
 # MUX_RUNTIME_LIB, so the check cannot silently link a feature-less runtime.
 #
-# Why the force matters: setting only MUX_RUNTIME_FEATURES=...,rc-leak-check is
-# NOT enough. If a plain `target/debug/libmux_runtime.a` exists (cargo builds it
-# as a workspace member without the feature), it shadows the feature-specific
-# build, the exit-time assertion never runs, and a leaking program falsely exits
-# 0 - a false "leak-free". Pointing MUX_RUNTIME_LIB at the feature-built archive
-# removes that footgun.
+# Why the force matters: `rc-leak-check` is deliberately outside mux-runtime's
+# `full` feature, so the runtime the compiler links by default never carries the
+# exit-time assertion. Without MUX_RUNTIME_LIB pointing at the archive built
+# below, a leaking program links a plain runtime, the assertion never runs, and
+# it falsely exits 0 - a false "leak-free".
 #
 # A leaking program exits 101 with "N reference-counted block(s) still live at
 # exit" (mux-runtime's rc-leak-check atexit assertion).
@@ -63,8 +62,9 @@ if [[ ! -x "$mux_bin" ]]; then
 fi
 
 # Force the leak-check runtime; without this the check can link the wrong lib.
+# MUX_RUNTIME_LIB is the first thing runtime resolution consults, so this alone
+# decides which archive every program links.
 export MUX_RUNTIME_LIB="$runtime_lib"
-export MUX_RUNTIME_FEATURES="$leak_features"
 
 if [[ $# -gt 0 ]]; then
   programs=("$@")
