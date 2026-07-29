@@ -24,6 +24,31 @@ fn integration_target_dir() -> PathBuf {
     PathBuf::from("target/service-integration")
 }
 
+/// Build the runtime staticlib into this suite's own target directory.
+///
+/// These tests compile through `cargo run` with a separate `CARGO_TARGET_DIR`,
+/// so the compiler they build looks for `libmux_runtime.a` beside itself in
+/// that directory. Cargo emits only a dependency's rlib, so without this the
+/// archive is never produced there and every program fails to link with
+/// undefined references to core runtime symbols.
+fn ensure_runtime_built(repo_root: &Path) {
+    static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    BUILT.get_or_init(|| {
+        let output = Command::new("cargo")
+            .args(["build", "--quiet", "-p", "mux-runtime"])
+            .current_dir(repo_root)
+            .env("CARGO_TARGET_DIR", integration_target_dir())
+            .output()
+            .unwrap_or_else(|e| panic!("failed to build mux-runtime: {}", e));
+
+        assert!(
+            output.status.success(),
+            "failed to build mux-runtime for the service suite:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    });
+}
+
 fn compile_and_execute_file(
     repo_root: &Path,
     test_file: &Path,
@@ -54,6 +79,8 @@ fn compile_and_execute_file(
             )
         });
     }
+
+    ensure_runtime_built(repo_root);
 
     let mut compile_cmd = Command::new("cargo");
     compile_cmd

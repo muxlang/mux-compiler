@@ -844,7 +844,9 @@ fn resolve_runtime_lib_dir_or_exit() -> PathBuf {
             eprintln!();
             eprintln!("Could not locate the mux-runtime library.");
             eprintln!("A release install ships it beside the compiler, in ../lib.");
-            eprintln!("A source build produces it under target/ via `cargo build`.");
+            eprintln!("In a source checkout, build it with:");
+            eprintln!("  cargo build -p mux-runtime");
+            eprintln!("(cargo builds only a dependency's rlib, not this staticlib.)");
             eprintln!("Otherwise point MUX_RUNTIME_LIB at a built library:");
             eprintln!("  MUX_RUNTIME_LIB=/path/to/libmux_runtime.a mux run file.mux");
             process::exit(1);

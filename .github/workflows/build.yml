@@ -370,8 +370,9 @@ jobs:
       CXX: clang++-22
     steps:
       - uses: actions/checkout@v4
-      # The execution benchmarks compile+link+run real programs; they link the
-      # runtime cargo builds into target/ from the commit Cargo.lock pins.
+      # The execution benchmarks compile+link+run real programs, so they need
+      # the runtime staticlib. cargo builds only a dependency's rlib, so it is
+      # built explicitly below.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -395,6 +396,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+      - name: Build the runtime staticlib
+        run: cargo build -p mux-runtime --locked
       - name: Run benchmarks
         id: run
         run: |

@@ -120,7 +120,9 @@ resolve_mux_bin() {
 build_compiler() {
   echo
   echo ">>> building compiler"
-  ( cd "$repo_root" && "${cargo_cmd[@]}" build -p mux-lang )
+  # mux-runtime too: cargo builds only a dependency's rlib, not the
+  # staticlib compiled programs link against.
+  ( cd "$repo_root" && "${cargo_cmd[@]}" build -p mux-runtime -p mux-lang )
   resolve_mux_bin
   if [[ ! -x "$mux_bin" ]]; then
     echo "Could not find the built compiler at $mux_bin" >&2
