@@ -27,7 +27,6 @@ ENV LLVM_SYS_221_PREFIX=/usr/lib/llvm-22 \
     LLVM_CONFIG_PATH=/usr/bin/llvm-config-22 \
     LLVM_SYS_221_STRICT_VERSIONING=1 \
     CC=clang-22 \
-    CXX=clang++-22 \
-    MUX_RUNTIME_SRC=/workspace/mux-runtime
+    CXX=clang++-22
 
 WORKDIR /workspace

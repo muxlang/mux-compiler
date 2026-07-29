@@ -25,7 +25,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 
 # Keep in sync with mux-runtime's `full` feature plus rc-leak-check (matches the
-# CI RC Leak Check job's MUX_RUNTIME_FEATURES).
+# CI RC Leak Check job's MUX_RUNTIME_LEAK_FEATURES).
 leak_features="core,json,csv,net,sql,sync,rc-leak-check"
 program_timeout=120
 
