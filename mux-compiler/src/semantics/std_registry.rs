@@ -17,24 +17,22 @@ pub struct StdModuleDef {
     pub name: &'static str,
     /// How the module is implemented
     pub kind: StdModuleKind,
-    /// Runtime features required to use this module (empty if none)
-    pub runtime_features: &'static [&'static str],
 }
 
-const RUNTIME_STD_MODULES: &[(&str, &[&str])] = &[
-    ("std.assert", &[]),
-    ("std.datetime", &[]),
-    ("std.io", &[]),
-    ("std.math", &[]),
-    ("std.random", &[]),
-    ("std.env", &[]),
-    ("std.net", &["net"]),
-    ("std.net.http", &["net"]),
-    ("std.sync", &["sync"]),
-    ("std.sql", &["sql"]),
-    ("std.data", &["json", "csv"]),
-    ("std.data.json", &["json"]),
-    ("std.data.csv", &["csv"]),
+const RUNTIME_STD_MODULES: &[&str] = &[
+    "std.assert",
+    "std.datetime",
+    "std.io",
+    "std.math",
+    "std.random",
+    "std.env",
+    "std.net",
+    "std.net.http",
+    "std.sync",
+    "std.sql",
+    "std.data",
+    "std.data.json",
+    "std.data.csv",
 ];
 
 const EMBEDDED_STD_MODULES: &[&str] = &[
@@ -52,16 +50,8 @@ fn insert_std_module(
     registry: &mut HashMap<&'static str, StdModuleDef>,
     name: &'static str,
     kind: StdModuleKind,
-    runtime_features: &'static [&'static str],
 ) {
-    registry.insert(
-        name,
-        StdModuleDef {
-            name,
-            kind,
-            runtime_features,
-        },
-    );
+    registry.insert(name, StdModuleDef { name, kind });
 }
 
 /// Registry of all standard library modules.
@@ -69,17 +59,12 @@ fn insert_std_module(
 fn build_std_module_registry() -> HashMap<&'static str, StdModuleDef> {
     let mut registry = HashMap::new();
 
-    for (name, runtime_features) in RUNTIME_STD_MODULES {
-        insert_std_module(
-            &mut registry,
-            name,
-            StdModuleKind::RuntimeBacked,
-            runtime_features,
-        );
+    for name in RUNTIME_STD_MODULES {
+        insert_std_module(&mut registry, name, StdModuleKind::RuntimeBacked);
     }
 
     for name in EMBEDDED_STD_MODULES {
-        insert_std_module(&mut registry, name, StdModuleKind::Embedded, &[]);
+        insert_std_module(&mut registry, name, StdModuleKind::Embedded);
     }
 
     registry
@@ -88,22 +73,4 @@ fn build_std_module_registry() -> HashMap<&'static str, StdModuleDef> {
 pub fn std_module_registry() -> &'static HashMap<&'static str, StdModuleDef> {
     static REGISTRY: OnceLock<HashMap<&'static str, StdModuleDef>> = OnceLock::new();
     REGISTRY.get_or_init(build_std_module_registry)
-}
-
-/// Extract all unique runtime features required across all stdlib modules.
-/// This is the single source of truth for runtime features and must match
-/// the `full` feature in mux-runtime/Cargo.toml.
-pub fn all_runtime_features() -> Vec<&'static str> {
-    let registry = std_module_registry();
-    let mut features = std::collections::HashSet::new();
-
-    for def in registry.values() {
-        for feature in def.runtime_features {
-            features.insert(*feature);
-        }
-    }
-
-    let mut result: Vec<_> = features.into_iter().collect();
-    result.sort();
-    result
 }

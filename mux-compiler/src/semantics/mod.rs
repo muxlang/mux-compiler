@@ -78,7 +78,6 @@ pub struct SemanticAnalyzer {
         std::collections::HashMap<String, std::collections::HashMap<String, Symbol>>,
     pub all_module_asts: std::collections::HashMap<String, Vec<AstNode>>,
     pub module_dependencies: Vec<String>,
-    pub(super) required_runtime_features: HashSet<String>,
     pub(super) current_file: Option<std::path::PathBuf>, // Track current file for relative imports
     pub lambda_captures: std::collections::HashMap<Span, Vec<(String, Type)>>, // Track captured variables for each lambda
     pub current_return_type: Option<Type>, // Track current function/lambda return type
@@ -134,7 +133,6 @@ impl SemanticAnalyzer {
             imported_symbols: std::collections::HashMap::new(),
             all_module_asts: std::collections::HashMap::new(),
             module_dependencies: Vec::new(),
-            required_runtime_features: HashSet::new(),
             current_file: None,
             lambda_captures: std::collections::HashMap::new(),
             current_return_type: None,
@@ -282,7 +280,6 @@ impl SemanticAnalyzer {
             imported_symbols: std::collections::HashMap::new(),
             all_module_asts: std::collections::HashMap::new(),
             module_dependencies: Vec::new(),
-            required_runtime_features: HashSet::new(),
             current_file: None,
             lambda_captures: std::collections::HashMap::new(),
             current_return_type: None,
@@ -336,28 +333,6 @@ impl SemanticAnalyzer {
 
     pub fn all_module_asts(&self) -> &std::collections::HashMap<String, Vec<AstNode>> {
         &self.all_module_asts
-    }
-
-    pub fn required_runtime_features(&self) -> Vec<String> {
-        let mut features: Vec<String> = self.required_runtime_features.iter().cloned().collect();
-        features.sort();
-        features
-    }
-
-    pub(super) fn track_runtime_features_for_std_module_name(&mut self, module_name: &str) {
-        let registry = std_module_registry();
-        let full_name = if module_name.starts_with("std.") {
-            module_name.to_string()
-        } else {
-            format!("std.{}", module_name)
-        };
-
-        if let Some(def) = registry.get(full_name.as_str()) {
-            for feature in def.runtime_features {
-                self.required_runtime_features
-                    .insert((*feature).to_string());
-            }
-        }
     }
 
     /// Generate helpful context for binary operator type mismatches.

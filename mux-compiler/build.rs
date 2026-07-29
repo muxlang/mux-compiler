@@ -5,6 +5,11 @@ use std::process::Command;
 
 const REQUIRED_LLVM_MAJOR: u32 = 22;
 
+/// Length of the abbreviated commit appended to `MUX_RUNTIME_VERSION`. Seven
+/// matches git's default short-hash length, so the stamp can be pasted straight
+/// into `git log` in the runtime repo.
+const SHORT_COMMIT_LEN: usize = 7;
+
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
@@ -31,18 +36,13 @@ fn main() {
     let release_path = target_dir.join("release");
     let profile_path = target_dir.join(profile);
 
-    let (static_lib, dynamic_lib) =
+    let static_lib =
         detect_runtime_library(workspace_root, &debug_path, &release_path, &profile_path);
 
     println!(
         "cargo:rustc-env=MUX_RUNTIME_STATIC={}",
         static_lib.display()
     );
-    println!(
-        "cargo:rustc-env=MUX_RUNTIME_DYNAMIC={}",
-        dynamic_lib.display()
-    );
-    println!("cargo:rustc-env=MUX_RUNTIME_DIR={}", profile_path.display());
 
     ensure_llvm_prefix(workspace_root);
 
@@ -79,13 +79,26 @@ fn emit_runtime_version(manifest_dir: &Path) {
 }
 
 /// Parse `Cargo.lock` for the `[[package]] name = "mux-runtime"` entry and
-/// return its `version`.
+/// return its version, with the locked commit appended as semver build metadata
+/// (`0.5.0+g1a2b3c4`) when the entry resolves to a git source.
+///
+/// The commit matters because a git-sourced runtime keeps the same `version`
+/// across every commit, so the version alone cannot say which runtime a binary
+/// was built against. `mux version` prints this string; a bug report that does
+/// not name the commit is not actionable.
 fn read_locked_runtime_version(lock_path: &Path) -> Option<String> {
     let contents = fs::read_to_string(lock_path).ok()?;
     let mut in_runtime_pkg = false;
+    let mut version: Option<String> = None;
+
     for line in contents.lines() {
         let trimmed = line.trim();
         if trimmed == "[[package]]" {
+            // The entry ended without a git source: a registry dependency,
+            // whose version alone identifies its contents.
+            if version.is_some() {
+                break;
+            }
             in_runtime_pkg = false;
             continue;
         }
@@ -93,11 +106,37 @@ fn read_locked_runtime_version(lock_path: &Path) -> Option<String> {
             in_runtime_pkg = true;
             continue;
         }
-        if in_runtime_pkg && let Some(rest) = trimmed.strip_prefix("version = \"") {
-            return Some(rest.trim_end_matches('"').to_string());
+        if !in_runtime_pkg {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("version = \"") {
+            version = Some(rest.trim_end_matches('"').to_string());
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("source = \"")
+            && let Some(commit) = locked_git_commit(rest.trim_end_matches('"'))
+        {
+            return version.map(|locked| format!("{}+g{}", locked, commit));
         }
     }
-    None
+
+    version
+}
+
+/// Short commit from a `Cargo.lock` `source` value of the form
+/// `git+https://host/repo?branch=main#<40 hex chars>`. Returns `None` for a
+/// registry source, which carries no commit.
+fn locked_git_commit(source: &str) -> Option<String> {
+    if !source.starts_with("git+") {
+        return None;
+    }
+
+    let commit = source.rsplit_once('#')?.1;
+    if commit.len() < SHORT_COMMIT_LEN || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    Some(commit[..SHORT_COMMIT_LEN].to_string())
 }
 
 /// Ensure `LLVM_SYS_221_PREFIX` is configured so `llvm-sys` links against
@@ -345,28 +384,29 @@ fn emit_missing_runtime_warning(
 ) {
 }
 
+/// Locate the profile directory cargo builds the runtime into, and return the
+/// static archive path within it. Either library identifies the directory - the
+/// compiler only uses the directory, and picks the library itself at runtime -
+/// so a directory holding just the shared object still counts as a hit.
 #[cfg(target_family = "unix")]
 fn detect_runtime_library(
     workspace_root: &Path,
     debug_path: &Path,
     release_path: &Path,
     profile_path: &Path,
-) -> (PathBuf, PathBuf) {
+) -> PathBuf {
     let candidates =
         runtime_search_candidates(workspace_root, debug_path, release_path, profile_path);
 
     for (path, _) in &candidates {
-        let static_lib = path.join("libmux_runtime.a");
-        let dynamic_lib = path.join("libmux_runtime.so");
-        if static_lib.exists() || dynamic_lib.exists() {
-            return (static_lib, dynamic_lib);
+        if path.join("libmux_runtime.a").exists() || path.join("libmux_runtime.so").exists() {
+            return path.join("libmux_runtime.a");
         }
     }
 
-    let static_lib = profile_path.join("libmux_runtime.a");
-    let dynamic_lib = profile_path.join("libmux_runtime.so");
-
-    if !static_lib.exists() && !dynamic_lib.exists() {
+    if !profile_path.join("libmux_runtime.a").exists()
+        && !profile_path.join("libmux_runtime.so").exists()
+    {
         emit_missing_runtime_warning(
             "libmux_runtime",
             profile_path,
@@ -376,36 +416,30 @@ fn detect_runtime_library(
         );
     }
 
-    (static_lib, dynamic_lib)
+    profile_path.join("libmux_runtime.a")
 }
 
+/// Windows counterpart of the unix `detect_runtime_library` above.
 #[cfg(target_family = "windows")]
 fn detect_runtime_library(
     workspace_root: &Path,
     debug_path: &Path,
     release_path: &Path,
     profile_path: &Path,
-) -> (PathBuf, PathBuf) {
-    let check_path = |p: &Path| -> (PathBuf, PathBuf) {
-        let static_lib = p.join("mux_runtime.lib");
-        let dynamic_lib = p.join("mux_runtime.dll");
-        (static_lib, dynamic_lib)
-    };
+) -> PathBuf {
+    let has_runtime =
+        |p: &Path| p.join("mux_runtime.lib").exists() || p.join("mux_runtime.dll").exists();
 
     let candidates =
         runtime_search_candidates(workspace_root, debug_path, release_path, profile_path);
 
     for (path, _description) in &candidates {
-        let (static_lib, dynamic_lib) = check_path(path);
-        if static_lib.exists() || dynamic_lib.exists() {
-            return (static_lib, dynamic_lib);
+        if has_runtime(path) {
+            return path.join("mux_runtime.lib");
         }
     }
 
-    let static_lib = profile_path.join("mux_runtime.lib");
-    let dynamic_lib = profile_path.join("mux_runtime.dll");
-
-    if !static_lib.exists() && !dynamic_lib.exists() {
+    if !has_runtime(profile_path) {
         emit_missing_runtime_warning(
             "mux_runtime",
             profile_path,
@@ -415,5 +449,5 @@ fn detect_runtime_library(
         );
     }
 
-    (static_lib, dynamic_lib)
+    profile_path.join("mux_runtime.lib")
 }

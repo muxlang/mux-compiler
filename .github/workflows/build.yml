@@ -16,7 +16,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590
         id: filter
         with:
@@ -45,27 +45,14 @@ jobs:
       LLVM_SYS_221_STRICT_VERSIONING: "1"
       CC: clang-22
       CXX: clang++-22
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: muxlang/mux-runtime
-          ref: main
-          path: mux-runtime
-      - id: runtime_sha
-        run: echo "sha=$(git -C mux-runtime rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/mux-lang/runtime
-          key: ${{ runner.os }}-muxrt-1.93.1-${{ steps.runtime_sha.outputs.sha }}
-      # The compiler's build.rs reuses any libmux_runtime already present in the
-      # cache dir without checking whether the runtime source changed, so a
-      # restored-but-stale library can be linked into test programs and mismatch
-      # the current runtime ABI. Remove it AFTER the cache restore so the build
-      # rebuilds the runtime from the checked-out source.
-      - name: Clear restored runtime library
-        run: rm -rf ~/.cache/mux-lang/runtime
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # No mux-runtime checkout: cargo builds it from the commit Cargo.lock
+      # pins, into target/, which is the library every program here links. That
+      # is what a release ships, so testing anything else would test a
+      # configuration that never ships. FFI breaks against runtime `main` are
+      # caught by mux-runtime's own CI, which builds this repo's `main` against
+      # its source.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -80,7 +67,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
       - name: Cache Cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -122,27 +109,117 @@ jobs:
         # executed in the spawned compiler is captured.
         run: cargo llvm-cov -p mux-lang --all-features --lcov --output-path lcov.info
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-lcov
           path: lcov.info
           if-no-files-found: error
+  installer_scripts:
+    # Nothing else runs the installers, so a syntax error in either one ships
+    # silently and only surfaces when a user pipes it into their shell. Parsing
+    # is cheap and catches that class of break; PSScriptAnalyzer adds the
+    # PowerShell-specific ones.
+    name: Installer Scripts
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Parse and analyze install.ps1
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/install.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) {
+            $errors | ForEach-Object { Write-Host $_ }
+            throw "install.ps1 failed to parse"
+          }
+
+          # Import explicitly and stop on failure. Without this a module that
+          # cannot load leaves $findings null, and the step passes green having
+          # analyzed nothing.
+          # Pinned: newer PSScriptAnalyzer requires pwsh 7.4.6+, which not every
+          # runner image has. 1.22.0 loads on 7.4.2 and on current pwsh alike.
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.22.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module PSScriptAnalyzer -ErrorAction Stop
+          $findings = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Error -ErrorAction Stop
+          if ($findings) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer reported errors"
+          }
+          Write-Host "install.ps1 parses cleanly and is analyzer clean"
+
+      - name: Check install.sh
+        run: |
+          set -euo pipefail
+          bash -n scripts/install.sh
+          # Info level only reports SC2016 on the awk program, where the single
+          # quotes are deliberate; warnings and above are real.
+          shellcheck --severity=warning scripts/install.sh
+          echo "install.sh parses cleanly and is shellcheck clean"
+
+  packaged_artifact:
+    # Reproduces a binary install: the compiler plus the bundled runtime library
+    # in bin/ and lib/, and nothing else. This is what `scripts/install.sh`
+    # produces, and no other job runs the compiler from that layout - which is
+    # how a release that could not compile hello world reached users.
+    name: Packaged Artifact Smoke Test
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    env:
+      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
+      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
+      LLVM_SYS_221_STRICT_VERSIONING: "1"
+      CC: clang-22
+      CXX: clang++-22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: 1.93.1
+      - name: Install LLVM 22
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
+          sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
+          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-22-dev clang-22 lld-22 libpolly-22-dev
+      - name: Build compiler and runtime
+        run: |
+          cargo build -p mux-runtime --locked
+          cargo build -p mux-lang --locked
+      - name: Stage a binary install
+        run: |
+          set -euo pipefail
+          mkdir -p dist/bin dist/lib
+          cp target/debug/mux dist/bin/
+          cp target/debug/libmux_runtime.a target/debug/libmux_runtime.so dist/lib/
+      - name: Compile and run from the packaged layout
+        run: |
+          set -euo pipefail
+          printf 'print("hello")\n' > smoke.mux
+          run_packaged() {
+            env -u MUX_RUNTIME_LIB timeout 120 ./dist/bin/mux run "$1"
+          }
+          # One program importing nothing, one pulling in a std module, one
+          # reaching a heavier optional feature. All must link the bundled
+          # library from ../lib rather than looking anywhere else.
+          out="$(run_packaged smoke.mux)"
+          test "$out" = "hello" || { echo "unexpected output: $out"; exit 1; }
+          run_packaged test_scripts/test_std_math.mux
+          run_packaged test_scripts/test_std_sql_sqlite.mux
   integration_checks:
     name: Integration Checks
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # The dev container mounts the repo at /workspace and sets
-      # MUX_RUNTIME_SRC=/workspace/mux-runtime, so the compiler builds the
-      # runtime from source. Check it out here (root Cargo.toml excludes it
-      # from the workspace) instead of falling back to the crates.io pin.
-      - uses: actions/checkout@v4
-        with:
-          repository: muxlang/mux-runtime
-          ref: main
-          path: mux-runtime
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Docker info
         run: docker compose version
       - name: Service-backed checks
@@ -161,22 +238,10 @@ jobs:
       LLVM_SYS_221_STRICT_VERSIONING: "1"
       CC: clang-22
       CXX: clang++-22
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: muxlang/mux-runtime
-          ref: main
-          path: mux-runtime
-      - id: runtime_sha
-        run: echo "sha=$(git -C mux-runtime rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Clear stale runtime cache
-        run: rm -rf ~/.cache/mux-lang/runtime
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/mux-lang/runtime
-          key: ${{ runner.os }}-muxrt-1.93.1-${{ steps.runtime_sha.outputs.sha }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Programs link the runtime cargo builds into target/ from the commit
+      # Cargo.lock pins - the same library a release ships.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -193,7 +258,7 @@ jobs:
       - name: Install Valgrind
         run: sudo apt-get install -y valgrind
       - name: Cache Cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -210,7 +275,7 @@ jobs:
       - name: Upload valgrind log for PR comment
         # Raw log only; the trusted pr-comment workflow escapes and renders it.
         if: ${{ always() && github.event_name == 'pull_request' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pr-comment-valgrind
           path: valgrind.log
@@ -235,14 +300,13 @@ jobs:
       CC: clang-22
       CXX: clang++-22
       MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
-      # The compiler builds the runtime from MUX_RUNTIME_SRC with these features,
-      # so no manual cross-manifest build is needed. The list must be a superset
-      # of every program's required features, so it is the full set plus
-      # rc-leak-check; keep it in sync with mux-runtime's `full` feature.
-      MUX_RUNTIME_FEATURES: core,json,csv,net,sql,sync,rc-leak-check
+      # Built explicitly below and forced via MUX_RUNTIME_LIB, mirroring
+      # scripts/leak-check.sh. `rc-leak-check` is deliberately outside `full`,
+      # so it is the one runtime the compiler cannot produce on its own.
+      MUX_RUNTIME_LEAK_FEATURES: core,json,csv,net,sql,sync,rc-leak-check
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: muxlang/mux-runtime
           ref: main
@@ -261,7 +325,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
       - name: Cache Cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -270,11 +334,25 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+      - name: Build the rc-leak-check runtime
+        run: |
+          set -euo pipefail
+          cd "$MUX_RUNTIME_SRC"
+          # --locked: this is a clean checkout of mux-runtime with its committed
+          # lock, so resolving fresh here would build something the repo never
+          # pinned (flagged by sonar githubactions:S8549).
+          cargo build --locked --no-default-features \
+            --features "$MUX_RUNTIME_LEAK_FEATURES" \
+            --target-dir "$MUX_RUNTIME_SRC/target"
+          test -f "$MUX_RUNTIME_SRC/target/debug/libmux_runtime.a"
+
       - name: Executable suite under leak-check runtime
-        # The compiler builds mux-runtime with MUX_RUNTIME_FEATURES (above), so
-        # every program links the leak-check runtime and runs the exit-time
-        # assertion. A leaked block exits 101 with a diagnostic, so its snapshot
-        # no longer matches and the suite fails.
+        # MUX_RUNTIME_LIB forces the archive built above, so every program links
+        # the leak-check runtime and runs the exit-time assertion. A leaked block
+        # exits 101 with a diagnostic, so its snapshot no longer matches and the
+        # suite fails.
+        env:
+          MUX_RUNTIME_LIB: ${{ github.workspace }}/mux-runtime/target/debug/libmux_runtime.a
         run: cargo test -p mux-lang --test executable_integration
   benchmarks:
     name: Benchmarks (report-only)
@@ -293,24 +371,11 @@ jobs:
       LLVM_SYS_221_STRICT_VERSIONING: "1"
       CC: clang-22
       CXX: clang++-22
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
     steps:
-      - uses: actions/checkout@v4
-      # The execution benchmarks compile+link+run real programs, so the runtime
-      # is built from source (root Cargo.toml excludes it from the workspace).
-      - uses: actions/checkout@v4
-        with:
-          repository: muxlang/mux-runtime
-          ref: main
-          path: mux-runtime
-      - id: runtime_sha
-        run: echo "sha=$(git -C mux-runtime rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Clear stale runtime cache
-        run: rm -rf ~/.cache/mux-lang/runtime
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/mux-lang/runtime
-          key: ${{ runner.os }}-muxrt-1.93.1-${{ steps.runtime_sha.outputs.sha }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The execution benchmarks compile+link+run real programs, so they need
+      # the runtime staticlib. cargo builds only a dependency's rlib, so it is
+      # built explicitly below.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -325,7 +390,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
       - name: Cache Cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -334,6 +399,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+      - name: Build the runtime staticlib
+        run: cargo build -p mux-runtime --locked
       - name: Run benchmarks
         id: run
         run: |
@@ -342,7 +409,7 @@ jobs:
       - name: Build per-phase distribution report
         run: python3 scripts/bench-report.py --summary-json bench-summary.json
       - name: Upload benchmark report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: benchmark-report
           path: |
@@ -354,7 +421,7 @@ jobs:
         # compact per-phase summary it turns into charts. Both are fork-controlled
         # and re-validated there; nothing here is trusted.
         if: ${{ always() && github.event_name == 'pull_request' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pr-comment-benchmarks
           path: |
@@ -371,11 +438,11 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Download coverage report
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         continue-on-error: true
         with:
           name: coverage-lcov

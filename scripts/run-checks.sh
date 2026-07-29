@@ -40,7 +40,11 @@ run_step() {
   return 0
 }
 
-run_step "cargo build" "${cargo_cmd[@]}" build -p mux-lang
+# mux-runtime is a dependency, and cargo builds only a dependency's rlib -
+# not the staticlib compiled Mux programs link against. Build it explicitly
+# or every program fails to link with "Could not locate the mux-runtime
+# library".
+run_step "cargo build" "${cargo_cmd[@]}" build -p mux-runtime -p mux-lang
 run_step "cargo clippy --all-targets --all-features -- -D warnings" \
   "${cargo_cmd[@]}" clippy -p mux-lang --all-targets --all-features -- -D warnings
 if [[ "$with_service_tests" == "1" ]]; then

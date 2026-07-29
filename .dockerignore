@@ -1,0 +1,7 @@
+# The integration image (infra/docker/integration/Dockerfile) has no COPY or ADD
+# - it only installs a toolchain, and the repo arrives at runtime as a volume
+# mount. So nothing here needs a build context at all, but docker still uploads
+# one: without this file that is the whole working tree, including a target/
+# directory that reaches tens of gigabytes. Ignoring everything keeps the upload
+# at a few kilobytes.
+*

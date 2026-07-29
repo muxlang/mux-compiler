@@ -131,9 +131,6 @@ impl SemanticAnalyzer {
     /// that reads them. The imported module's own dependencies are appended
     /// here, ahead of the module itself, so they initialize first.
     fn absorb_module_analyzer(&mut self, module_analyzer: &mut SemanticAnalyzer) {
-        self.required_runtime_features
-            .extend(module_analyzer.required_runtime_features.iter().cloned());
-
         for (path, nodes) in std::mem::take(&mut module_analyzer.all_module_asts) {
             self.all_module_asts.entry(path).or_insert(nodes);
         }
@@ -364,9 +361,6 @@ impl SemanticAnalyzer {
 
         let submodule_symbols =
             self.collect_declared_module_symbols(&submodule_nodes, &submodule_analyzer);
-        self.required_runtime_features
-            .extend(submodule_analyzer.required_runtime_features.iter().cloned());
-
         self.mangle_and_import_module_symbols(&submodule_symbols, submodule_path)?;
 
         let mangled_submodule_symbols =
@@ -889,7 +883,7 @@ impl SemanticAnalyzer {
             ImportSpec::Module { alias } => {
                 self.import_all_std_as_namespace(alias.as_deref(), span, registry)?
             }
-            ImportSpec::Wildcard => self.import_all_std_wildcard(span, registry)?,
+            ImportSpec::Wildcard => self.import_all_std_wildcard(span)?,
             ImportSpec::Items { items } => {
                 for (item, alias) in items {
                     self.import_stdlib_module(
@@ -936,12 +930,7 @@ impl SemanticAnalyzer {
             })
             .collect();
 
-        for (module_path, def) in registry {
-            for feature in def.runtime_features {
-                self.required_runtime_features
-                    .insert((*feature).to_string());
-            }
-
+        for module_path in registry.keys() {
             let short_name = module_path.strip_prefix("std.").unwrap_or(module_path);
             if short_name.contains('.') {
                 continue;
@@ -962,21 +951,7 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    fn import_all_std_wildcard(
-        &mut self,
-        span: Span,
-        registry: &std::collections::HashMap<
-            &'static str,
-            crate::semantics::std_registry::StdModuleDef,
-        >,
-    ) -> Result<(), SemanticError> {
-        for def in registry.values() {
-            for feature in def.runtime_features {
-                self.required_runtime_features
-                    .insert((*feature).to_string());
-            }
-        }
-
+    fn import_all_std_wildcard(&mut self, span: Span) -> Result<(), SemanticError> {
         for (key, item) in crate::semantics::stdlib::all_stdlib_items() {
             if let Some(item_name) = key.find('.').map(|i| &key[i + 1..]) {
                 let symbol = crate::semantics::stdlib::stdlib_item_to_symbol(&item, span);
@@ -1045,7 +1020,6 @@ impl SemanticAnalyzer {
         spec: &ImportSpec,
         span: Span,
     ) -> Result<(), SemanticError> {
-        self.track_runtime_features_for_std_module_name(module_name);
         let module_symbols = self.collect_stdlib_module_symbols(module_name, span);
         // Inject any nested stdlib children declared for this parent
         self.inject_nested_stdlib_children(module_name, span);

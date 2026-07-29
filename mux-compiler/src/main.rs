@@ -19,7 +19,7 @@ use diagnostic::{ColorConfig, DiagnosticEmitter, FileId, Files, StandardEmitter,
 use module_resolver::ModuleResolver;
 use source::Source;
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -204,75 +204,6 @@ fn print_llvm_install_help() {
     }
 }
 
-fn runtime_profile() -> &'static str {
-    if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    }
-}
-
-fn normalize_runtime_features(features: &[String]) -> Vec<String> {
-    let mut normalized: BTreeSet<String> = BTreeSet::new();
-    for feature in features {
-        if !feature.is_empty() {
-            normalized.insert(feature.clone());
-        }
-    }
-    normalized.into_iter().collect()
-}
-
-fn runtime_feature_key(features: &[String]) -> String {
-    if features.is_empty() {
-        return "core".to_string();
-    }
-    features.join("+")
-}
-
-fn parse_runtime_feature_override() -> Option<Vec<String>> {
-    let raw = env::var("MUX_RUNTIME_FEATURES").ok()?;
-    let parsed: Vec<String> = raw
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-        .collect();
-    Some(normalize_runtime_features(&parsed))
-}
-
-fn resolve_runtime_features(required: &[String]) -> Vec<String> {
-    let required = normalize_runtime_features(required);
-    if let Some(override_features) = parse_runtime_feature_override() {
-        let missing: Vec<String> = required
-            .iter()
-            .filter(|feature| !override_features.contains(*feature))
-            .cloned()
-            .collect();
-        if !missing.is_empty() {
-            eprintln!(
-                "MUX_RUNTIME_FEATURES is missing required feature(s): {}",
-                missing.join(", ")
-            );
-            eprintln!(
-                "Required by imports in this program: {}",
-                required.join(", ")
-            );
-            process::exit(1);
-        }
-        return override_features;
-    }
-    required
-}
-
-/// Returns the full set of runtime features that indicate a pre-built library can be used.
-/// This list is derived from the std_registry and must match the `full` feature in mux-runtime/Cargo.toml.
-fn full_runtime_features() -> Vec<String> {
-    semantics::std_registry::all_runtime_features()
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect()
-}
-
 /// Path to the static runtime archive in `dir` for the target platform. The
 /// single source of the archive filename, so runtime discovery and static-only
 /// classification cannot disagree.
@@ -337,325 +268,58 @@ fn runtime_lib_from_env() -> Option<PathBuf> {
     None
 }
 
+/// The runtime library cargo built into `target/`, at the path `build.rs`
+/// recorded. Both recorded paths live in the same profile directory, so this
+/// asks `find_runtime_lib_in_dir` about that directory rather than repeating
+/// the static-then-dynamic decision - which also keeps the platform library
+/// names in one place.
 fn runtime_lib_from_build_config() -> Option<PathBuf> {
-    use crate::build_config::{MUX_RUNTIME_DYNAMIC, MUX_RUNTIME_STATIC};
+    use crate::build_config::MUX_RUNTIME_STATIC;
 
-    let static_path = PathBuf::from(MUX_RUNTIME_STATIC);
-    if static_path.exists() {
-        return static_path.parent().map(|p| p.to_path_buf());
-    }
-
-    let dynamic_path = PathBuf::from(MUX_RUNTIME_DYNAMIC);
-    if dynamic_path.exists() {
-        return dynamic_path.parent().map(|p| p.to_path_buf());
-    }
-
-    None
+    let profile_dir = PathBuf::from(MUX_RUNTIME_STATIC).parent()?.to_path_buf();
+    dir_holding_runtime_lib(&profile_dir)
 }
 
+/// `dir` itself, when it holds a runtime library. `find_runtime_lib_in_dir`
+/// builds the candidate paths from `dir`, so the containing directory is `dir`
+/// by construction - no need to walk back up from the file it found.
+fn dir_holding_runtime_lib(dir: &Path) -> Option<PathBuf> {
+    find_runtime_lib_in_dir(dir).map(|_| dir.to_path_buf())
+}
+
+/// Search a release install layout: the library beside the binary, or under a
+/// sibling `lib/` (optionally `lib/mux/`) as `scripts/install.sh` lays it out.
 fn runtime_lib_near_executable() -> Option<PathBuf> {
     let exe = env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
-    if let Some(parent) =
-        find_runtime_lib_in_dir(exe_dir).and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    {
-        return Some(parent);
+
+    let mut candidates = vec![exe_dir.to_path_buf()];
+    if let Some(prefix) = exe_dir.parent() {
+        candidates.push(prefix.join("lib"));
+        candidates.push(prefix.join("lib").join("mux"));
     }
 
-    if let Some(parent_dir) = exe_dir.parent() {
-        let bundled_dirs = [parent_dir.join("lib"), parent_dir.join("lib").join("mux")];
-        for lib_dir in bundled_dirs {
-            if !lib_dir.exists() {
-                continue;
-            }
-
-            if let Some(parent) =
-                find_runtime_lib_in_dir(&lib_dir).and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            {
-                return Some(parent);
-            }
-        }
-    }
-
-    None
+    candidates
+        .iter()
+        .find_map(|dir| dir_holding_runtime_lib(dir))
 }
 
-fn cargo_home_dir() -> Option<PathBuf> {
-    if let Ok(val) = env::var("CARGO_HOME") {
-        return Some(PathBuf::from(val));
-    }
-
-    if cfg!(target_family = "windows") {
-        let user = env::var("USERPROFILE").ok()?;
-        return Some(PathBuf::from(user).join(".cargo"));
-    }
-
-    let home = env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".cargo"))
-}
-
-fn default_cache_root() -> PathBuf {
-    if let Ok(val) = env::var("MUX_RUNTIME_CACHE_DIR") {
-        return PathBuf::from(val);
-    }
-
-    if cfg!(target_family = "windows") {
-        if let Ok(base) = env::var("LOCALAPPDATA") {
-            return PathBuf::from(base).join("mux-lang");
-        }
-        if let Ok(base) = env::var("USERPROFILE") {
-            return PathBuf::from(base).join(".mux-lang");
-        }
-    } else if cfg!(target_os = "macos") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Caches")
-                .join("mux-lang");
-        }
-    } else {
-        if let Ok(base) = env::var("XDG_CACHE_HOME") {
-            return PathBuf::from(base).join("mux-lang");
-        }
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(".cache").join("mux-lang");
-        }
-    }
-
-    env::temp_dir().join("mux-lang")
-}
-
-/// Where the compiler found the `mux-runtime` source to build into the cache.
-enum RuntimeSource {
-    /// A local, mutable checkout: the sibling `../mux-runtime` or the directory
-    /// named by `MUX_RUNTIME_SRC`. Its contents can change without a version
-    /// bump, so a cached build must be validated against a source fingerprint.
-    Local(PathBuf),
-    /// An immutable crates.io registry checkout. The pinned `MUX_RUNTIME_VERSION`
-    /// already determines the contents, so a cached build is never stale.
-    Registry(PathBuf),
-}
-
-impl RuntimeSource {
-    fn path(&self) -> &Path {
-        match self {
-            RuntimeSource::Local(p) | RuntimeSource::Registry(p) => p,
-        }
-    }
-}
-
-fn find_runtime_source() -> Option<RuntimeSource> {
-    let local_runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("mux-runtime");
-    if local_runtime.join("Cargo.toml").exists() {
-        return Some(RuntimeSource::Local(local_runtime));
-    }
-
-    if let Ok(src) = env::var("MUX_RUNTIME_SRC") {
-        let path = PathBuf::from(src);
-        if path.join("Cargo.toml").exists() {
-            return Some(RuntimeSource::Local(path));
-        }
-        eprintln!(
-            "MUX_RUNTIME_SRC is set but Cargo.toml was not found: {}",
-            path.display()
-        );
-    }
-
-    let cargo_home = cargo_home_dir()?;
-    let registry_src = cargo_home.join("registry").join("src");
-    let version = env!("MUX_RUNTIME_VERSION");
-    let dir_name = format!("mux-runtime-{}", version);
-
-    for entry in fs::read_dir(registry_src).ok()? {
-        let entry = entry.ok()?;
-        let candidate = entry.path().join(&dir_name);
-        if candidate.join("Cargo.toml").exists() {
-            return Some(RuntimeSource::Registry(candidate));
-        }
-    }
-
-    None
-}
-
-/// Name of the fingerprint file written next to a cached runtime library. It
-/// records the source fingerprint the library was built from so a later run can
-/// detect a local checkout that changed without a version bump.
-const RUNTIME_STAMP_FILE: &str = ".mux-runtime-source.stamp";
-
-/// Content fingerprint of a runtime source tree that changes whenever any
-/// `Cargo.toml` or `src/**/*.rs` file changes. Uses FNV-1a (stable and
-/// dependency-free) so a stamp written by one build is comparable across builds.
-/// Returns `None` only if the source cannot be read, which callers treat as
-/// "stale" so the library is rebuilt rather than trusted blindly.
-fn runtime_source_fingerprint(src: &Path) -> Option<String> {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    fn fold(hash: &mut u64, bytes: &[u8]) {
-        for &b in bytes {
-            *hash ^= u64::from(b);
-            *hash = hash.wrapping_mul(FNV_PRIME);
-        }
-    }
-
-    let mut files: Vec<PathBuf> = Vec::new();
-    let cargo_toml = src.join("Cargo.toml");
-    if cargo_toml.exists() {
-        files.push(cargo_toml);
-    }
-    collect_runtime_rs_files(&src.join("src"), &mut files);
-    files.sort();
-
-    // Nothing to fingerprint means the source is missing or empty; treat it as
-    // unverifiable so callers rebuild rather than trust a constant hash.
-    if files.is_empty() {
-        return None;
-    }
-
-    let mut hash = FNV_OFFSET;
-    for file in &files {
-        let rel = file.strip_prefix(src).unwrap_or(file);
-        fold(&mut hash, rel.to_string_lossy().as_bytes());
-        let contents = fs::read(file).ok()?;
-        fold(&mut hash, &contents);
-    }
-    Some(format!("{:016x}", hash))
-}
-
-fn collect_runtime_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_runtime_rs_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
-
-/// True when the cached library in `profile_dir` was built from the current
-/// contents of local `src`. A missing or unreadable stamp, or an unreadable
-/// source, counts as stale.
-fn cached_runtime_is_fresh(profile_dir: &Path, src: &Path) -> bool {
-    let Some(current) = runtime_source_fingerprint(src) else {
-        return false;
-    };
-    match fs::read_to_string(profile_dir.join(RUNTIME_STAMP_FILE)) {
-        Ok(stored) => stored.trim() == current,
-        Err(_) => false,
-    }
-}
-
-/// Record the source fingerprint next to a freshly built library so future runs
-/// can detect staleness. Best-effort: a write failure only forgoes the fast
-/// cache path on the next run.
-fn record_runtime_fingerprint(profile_dir: &Path, src: &Path) {
-    if let Some(fingerprint) = runtime_source_fingerprint(src) {
-        let _ = fs::write(profile_dir.join(RUNTIME_STAMP_FILE), fingerprint);
-    }
-}
-
-fn build_runtime_in_cache(profile: &str, features: &[String]) -> Option<PathBuf> {
-    let target_root = default_cache_root()
-        .join("runtime")
-        .join(env!("MUX_RUNTIME_VERSION"))
-        .join(runtime_feature_key(features));
-    let profile_dir = target_root.join(profile);
-
-    let source = find_runtime_source();
-
-    // Reuse a cached library only when it is not stale. For an immutable
-    // crates.io checkout the pinned version already determines the contents, so
-    // a hit is always fresh. For a local, mutable checkout the source can change
-    // without a version bump, so validate it against the recorded fingerprint.
-    if let Some(lib) = find_runtime_lib_in_dir(&profile_dir) {
-        let fresh = match &source {
-            Some(RuntimeSource::Local(src)) => cached_runtime_is_fresh(&profile_dir, src),
-            _ => true,
-        };
-        if fresh {
-            return lib.parent().map(|p| p.to_path_buf());
-        }
-        eprintln!("Rebuilding mux-runtime (local source changed since last build)...");
-    }
-
-    let runtime_src = match &source {
-        Some(source) => source.path().to_path_buf(),
-        None => {
-            eprintln!("Could not locate mux-runtime source in cargo registry.");
-            return None;
-        }
-    };
-
-    if fs::create_dir_all(&target_root).is_err() {
-        eprintln!(
-            "Failed to create runtime cache directory: {}",
-            target_root.display()
-        );
-        return None;
-    }
-
-    if find_runtime_lib_in_dir(&profile_dir).is_none() {
-        eprintln!("Building mux-runtime (first run)...");
-    }
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build")
-        .arg("--manifest-path")
-        .arg(runtime_src.join("Cargo.toml"))
-        .arg("--no-default-features")
-        .arg("--features")
-        .arg(features.join(","))
-        .env("CARGO_TARGET_DIR", &target_root);
-
-    if profile == "release" {
-        cmd.arg("--release");
-    }
-
-    let output = match cmd.output() {
-        Ok(output) => output,
-        Err(err) => {
-            eprintln!("Failed to run cargo: {}", err);
-            return None;
-        }
-    };
-
-    if !output.status.success() {
-        eprintln!("Failed to build mux-runtime.");
-        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-        return None;
-    }
-
-    if let Some(lib) = find_runtime_lib_in_dir(&profile_dir) {
-        // Record the fingerprint of a local checkout so a later run can detect
-        // an edit that did not bump the version. Registry sources are immutable
-        // and keyed by version, so they need no stamp.
-        if let Some(RuntimeSource::Local(src)) = &source {
-            record_runtime_fingerprint(&profile_dir, src);
-        }
-        return lib.parent().map(|p| p.to_path_buf());
-    }
-
-    eprintln!("mux-runtime build completed but library was not found.");
-    None
-}
-
-fn resolve_runtime_lib_dir(profile: &str, features: &[String]) -> Option<PathBuf> {
-    if let Some(dir) = runtime_lib_from_env() {
-        return Some(dir);
-    }
-
-    if features == full_runtime_features() {
-        return runtime_lib_near_executable()
-            .or_else(runtime_lib_from_build_config)
-            .or_else(|| build_runtime_in_cache(profile, features));
-    }
-
-    build_runtime_in_cache(profile, features)
+/// Directory holding the runtime library to link.
+///
+/// Always a prebuilt library carrying mux-runtime's `full` feature set. The
+/// compiler never builds a runtime at compile time: static linking pulls in
+/// only the archive members a program actually references, so a feature-trimmed
+/// runtime produces a byte-identical binary to the full one. Trimming bought
+/// nothing and cost a source tree, a build cache, and a resolution order deep
+/// enough to hide a broken install.
+///
+/// `MUX_RUNTIME_LIB` comes first so a specially built runtime can be forced -
+/// `scripts/leak-check.sh` relies on this to link the `rc-leak-check` runtime,
+/// which sits outside `full` and is the one build the compiler cannot produce.
+fn resolve_runtime_lib_dir() -> Option<PathBuf> {
+    runtime_lib_from_env()
+        .or_else(runtime_lib_near_executable)
+        .or_else(runtime_lib_from_build_config)
 }
 
 /// Colored ASCII status marker for doctor checks: green "[ok]" or red "[x]".
@@ -809,16 +473,7 @@ fn extract_clang_major(clang_cmd: &str) -> Option<u32> {
 }
 
 fn ensure_runtime_for_doctor() -> bool {
-    let profile = runtime_profile();
-    let features = full_runtime_features();
-    let runtime_ok = if resolve_runtime_lib_dir(profile, &features).is_some() {
-        true
-    } else {
-        println!("Mux runtime not found. Building it now...");
-        build_runtime_in_cache(profile, &features).is_some()
-    };
-
-    report_runtime_for_doctor(runtime_ok)
+    report_runtime_for_doctor(resolve_runtime_lib_dir().is_some())
 }
 
 fn report_runtime_for_doctor(runtime_ok: bool) -> bool {
@@ -1174,17 +829,18 @@ fn generate_ir_or_exit(
     }
 }
 
-fn resolve_runtime_lib_dir_or_exit(profile: &str, features: &[String]) -> PathBuf {
-    match resolve_runtime_lib_dir(profile, features) {
+fn resolve_runtime_lib_dir_or_exit() -> PathBuf {
+    match resolve_runtime_lib_dir() {
         Some(dir) => dir,
         None => {
             spinner::stop();
             eprintln!();
-            eprintln!("Could not locate mux-runtime.");
-            eprintln!("You can set MUX_RUNTIME_LIB to a built library path.");
-            eprintln!("You can set MUX_RUNTIME_SRC to a local mux-runtime source.");
-            eprintln!("Requested runtime features: {}", features.join(","));
-            eprintln!("Example:");
+            eprintln!("Could not locate the mux-runtime library.");
+            eprintln!("A release install ships it beside the compiler, in ../lib.");
+            eprintln!("In a source checkout, build it with:");
+            eprintln!("  cargo build -p mux-runtime");
+            eprintln!("(cargo builds only a dependency's rlib, not this staticlib.)");
+            eprintln!("Otherwise point MUX_RUNTIME_LIB at a built library:");
             eprintln!("  MUX_RUNTIME_LIB=/path/to/libmux_runtime.a mux run file.mux");
             process::exit(1);
         }
@@ -1454,7 +1110,6 @@ fn main() {
 
     let mut analyzer = semantics::SemanticAnalyzer::new_with_resolver(resolver);
     analyze_semantics_or_exit(&mut analyzer, &nodes, file_id, &mut files);
-    let runtime_features = resolve_runtime_features(&analyzer.required_runtime_features());
 
     let context = inkwell::context::Context::create();
     let source_name = file_path
@@ -1488,8 +1143,7 @@ fn main() {
         parent.join(file_stem)
     };
 
-    let profile = runtime_profile();
-    let lib_dir = resolve_runtime_lib_dir_or_exit(profile, &runtime_features);
+    let lib_dir = resolve_runtime_lib_dir_or_exit();
 
     let lib_path_str = lib_dir
         .to_str()
@@ -1554,22 +1208,15 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::full_runtime_features;
     use super::{
-        REQUIRED_LLVM_MAJOR, RUNTIME_STAMP_FILE, cached_runtime_is_fresh, clang_failure_detail,
-        clang_version_output, compiling_file, default_cache_root, extract_clang_major,
-        find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
-        llvm_config_candidates, normalize_runtime_features, pick_llvm_for_dev,
-        print_doctor_verdict, print_version_banner, record_runtime_fingerprint, relativize_to_cwd,
-        report_clang_for_doctor, report_runtime_for_doctor, runtime_feature_key,
-        runtime_lib_dir_is_static_only, runtime_profile, runtime_source_fingerprint,
-        set_compiling_file, status_marker, validate_llvm_for_doctor,
+        REQUIRED_LLVM_MAJOR, clang_failure_detail, clang_version_output, compiling_file,
+        dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
+        internal_compiler_error_report, llvm_config_candidates, pick_llvm_for_dev,
+        print_doctor_verdict, print_version_banner, relativize_to_cwd, report_clang_for_doctor,
+        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
+        status_marker, validate_llvm_for_doctor,
     };
     use std::path::{Path, PathBuf};
-
-    fn sv(items: &[&str]) -> Vec<String> {
-        items.iter().map(|s| s.to_string()).collect()
-    }
 
     #[test]
     fn internal_error_report_names_the_file_when_present() {
@@ -1717,26 +1364,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_runtime_features_dedups_sorts_and_drops_empty() {
-        assert_eq!(
-            normalize_runtime_features(&sv(&["math", "json", "math", "", "csv"])),
-            sv(&["csv", "json", "math"])
-        );
-        assert!(normalize_runtime_features(&[]).is_empty());
-    }
-
-    #[test]
-    fn runtime_feature_key_uses_core_for_empty_and_joins_otherwise() {
-        assert_eq!(runtime_feature_key(&[]), "core");
-        assert_eq!(runtime_feature_key(&sv(&["json", "math"])), "json+math");
-    }
-
-    #[test]
-    fn runtime_profile_is_a_known_cargo_profile() {
-        assert!(matches!(runtime_profile(), "debug" | "release"));
-    }
-
-    #[test]
     fn pick_llvm_for_dev_selects_required_major() {
         let empty: Vec<(String, String, u32)> = Vec::new();
         assert!(pick_llvm_for_dev(&empty).is_none());
@@ -1793,6 +1420,58 @@ mod tests {
         std::fs::remove_dir_all(&dyn_dir).ok();
     }
 
+    /// The compiler links whatever directory this reports, so it must name the
+    /// directory it was asked about - not the parent of the file found inside
+    /// it. Returning the file's parent happens to be the same path, which is
+    /// why the two are easy to conflate.
+    #[test]
+    fn dir_holding_runtime_lib_reports_the_directory_itself() {
+        let empty_dir = unique_tmp("rtdir_empty");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        assert!(dir_holding_runtime_lib(&empty_dir).is_none());
+        std::fs::remove_dir_all(&empty_dir).ok();
+
+        for name in [static_lib_name(), dynamic_lib_name()] {
+            let dir = unique_tmp("rtdir_present");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), b"x").unwrap();
+            assert_eq!(
+                dir_holding_runtime_lib(&dir),
+                Some(dir.clone()),
+                "expected the directory itself for {}",
+                name
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// A release install puts the library in `../lib` relative to the binary,
+    /// and `scripts/install.sh` is what creates that layout. The bundled
+    /// library was present but unreachable in v0.6.0, so this pins the shape
+    /// the search accepts.
+    #[test]
+    fn runtime_lib_search_accepts_the_release_install_layout() {
+        let prefix = unique_tmp("rtlayout");
+        let bin_dir = prefix.join("bin");
+        let lib_dir = prefix.join("lib");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(&lib_dir).unwrap();
+
+        // Nothing anywhere yet.
+        assert!(dir_holding_runtime_lib(&bin_dir).is_none());
+        assert!(dir_holding_runtime_lib(&lib_dir).is_none());
+
+        // The archive lands beside the binary, as a bare tarball extract has it.
+        std::fs::write(bin_dir.join(static_lib_name()), b"x").unwrap();
+        assert_eq!(dir_holding_runtime_lib(&bin_dir), Some(bin_dir.clone()));
+
+        // ...and in the sibling lib/, as the installer lays it out.
+        std::fs::write(lib_dir.join(static_lib_name()), b"x").unwrap();
+        assert_eq!(dir_holding_runtime_lib(&lib_dir), Some(lib_dir.clone()));
+
+        std::fs::remove_dir_all(&prefix).ok();
+    }
+
     #[test]
     fn static_only_detection_requires_archive_without_shared_lib() {
         // Static archive alone -> static-only.
@@ -1812,69 +1491,6 @@ mod tests {
         std::fs::write(dyn_dir.join(dynamic_lib_name()), b"x").unwrap();
         assert!(!runtime_lib_dir_is_static_only(&dyn_dir));
         std::fs::remove_dir_all(&dyn_dir).ok();
-    }
-
-    /// Write a minimal runtime-like source tree (Cargo.toml + src/lib.rs) for
-    /// fingerprint tests.
-    fn write_runtime_src(dir: &std::path::Path, lib_body: &str) {
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("Cargo.toml"), b"[package]\nname=\"mux-runtime\"\n").unwrap();
-        std::fs::write(dir.join("src").join("lib.rs"), lib_body).unwrap();
-    }
-
-    #[test]
-    fn runtime_source_fingerprint_is_stable_and_content_sensitive() {
-        let src = unique_tmp("rtfp_src");
-        write_runtime_src(&src, "pub fn a() {}\n");
-
-        let first = runtime_source_fingerprint(&src).expect("fingerprint");
-        // Same contents -> identical fingerprint.
-        assert_eq!(first, runtime_source_fingerprint(&src).unwrap());
-
-        // Editing a source file changes the fingerprint.
-        std::fs::write(
-            src.join("src").join("lib.rs"),
-            "pub fn a() { let _ = 1; }\n",
-        )
-        .unwrap();
-        assert_ne!(first, runtime_source_fingerprint(&src).unwrap());
-
-        // Adding a new source file also changes it.
-        let after_edit = runtime_source_fingerprint(&src).unwrap();
-        std::fs::write(src.join("src").join("extra.rs"), "pub fn b() {}\n").unwrap();
-        assert_ne!(after_edit, runtime_source_fingerprint(&src).unwrap());
-
-        // A missing source directory has no fingerprint.
-        assert!(runtime_source_fingerprint(&unique_tmp("rtfp_missing")).is_none());
-
-        std::fs::remove_dir_all(&src).ok();
-    }
-
-    #[test]
-    fn cached_runtime_freshness_tracks_recorded_fingerprint() {
-        let src = unique_tmp("rtfresh_src");
-        write_runtime_src(&src, "pub fn a() {}\n");
-        let profile_dir = unique_tmp("rtfresh_profile");
-        std::fs::create_dir_all(&profile_dir).unwrap();
-
-        // No stamp yet -> stale.
-        assert!(!cached_runtime_is_fresh(&profile_dir, &src));
-
-        // After recording, the cache is fresh for the same source.
-        record_runtime_fingerprint(&profile_dir, &src);
-        assert!(profile_dir.join(RUNTIME_STAMP_FILE).exists());
-        assert!(cached_runtime_is_fresh(&profile_dir, &src));
-
-        // Editing the source without re-recording makes it stale again.
-        std::fs::write(
-            src.join("src").join("lib.rs"),
-            "pub fn a() { let _ = 2; }\n",
-        )
-        .unwrap();
-        assert!(!cached_runtime_is_fresh(&profile_dir, &src));
-
-        std::fs::remove_dir_all(&src).ok();
-        std::fs::remove_dir_all(&profile_dir).ok();
     }
 
     #[test]
@@ -1979,101 +1595,5 @@ mod tests {
     fn version_banner_prints_without_error() {
         // Exercise the printing path used by `mux version`.
         print_version_banner();
-    }
-
-    #[test]
-    fn default_cache_root_is_namespaced() {
-        assert!(default_cache_root().to_string_lossy().contains("mux-lang"));
-    }
-
-    /// Locate the `mux-runtime` `Cargo.toml`, mirroring the binary's runtime
-    /// source resolution: in-workspace/sibling checkout, then `MUX_RUNTIME_SRC`,
-    /// then the fetched crate in the cargo registry. Returns `None` when no
-    /// source is available (e.g. CI that only links the published crate's lib).
-    fn locate_runtime_cargo_toml() -> Option<std::path::PathBuf> {
-        use std::path::{Path, PathBuf};
-
-        // 1. In-workspace / sibling checkout (`../mux-runtime`).
-        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR")
-            && let Some(parent) = Path::new(&manifest_dir).parent()
-        {
-            let sibling = parent.join("mux-runtime").join("Cargo.toml");
-            if sibling.exists() {
-                return Some(sibling);
-            }
-        }
-
-        // 2. Explicit override for coupled local dev.
-        if let Ok(src) = std::env::var("MUX_RUNTIME_SRC") {
-            let p = Path::new(&src).join("Cargo.toml");
-            if p.exists() {
-                return Some(p);
-            }
-        }
-
-        // 3. Fetched crate in the cargo registry (production path).
-        let cargo_home = std::env::var("CARGO_HOME")
-            .map(PathBuf::from)
-            .ok()
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".cargo"))
-            })?;
-        let registry_src = cargo_home.join("registry").join("src");
-        let dir_name = format!("mux-runtime-{}", env!("MUX_RUNTIME_VERSION"));
-        for entry in std::fs::read_dir(registry_src).ok()?.flatten() {
-            let candidate = entry.path().join(&dir_name).join("Cargo.toml");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-
-        None
-    }
-
-    #[test]
-    fn full_runtime_features_matches_cargo_toml() {
-        let Some(cargo_toml_path) = locate_runtime_cargo_toml() else {
-            eprintln!(
-                "skipping full_runtime_features parity check: mux-runtime source not \
-                 found (set MUX_RUNTIME_SRC or check out mux-runtime as a sibling)"
-            );
-            return;
-        };
-        let cargo_toml_content = std::fs::read_to_string(&cargo_toml_path)
-            .expect("Failed to read mux-runtime Cargo.toml");
-
-        // Parse the [features].full array. Use a real TOML parser: cargo
-        // normalizes the published manifest (the array may span multiple lines),
-        // so naive line parsing is not reliable.
-        let manifest: toml::Value =
-            toml::from_str(&cargo_toml_content).expect("Failed to parse mux-runtime Cargo.toml");
-        let full = manifest
-            .get("features")
-            .and_then(|features| features.get("full"))
-            .and_then(|value| value.as_array())
-            .expect("mux-runtime Cargo.toml has no [features].full array");
-        // Remove "core": it is a meta-feature, not a stdlib module that needs checking.
-        let mut toml_features: Vec<String> = full
-            .iter()
-            .filter_map(|value| value.as_str())
-            .filter(|name| *name != "core")
-            .map(|name| name.to_string())
-            .collect();
-        toml_features.sort();
-
-        // Get the runtime features from our function
-        let mut runtime_features = full_runtime_features();
-        runtime_features.sort();
-
-        assert_eq!(
-            toml_features, runtime_features,
-            "full_runtime_features() does not match mux-runtime/Cargo.toml full feature list.\n\
-             Expected (from Cargo.toml): {:?}\n\
-             Actual (from function):   {:?}\n\
-             Hint: Update the hardcoded list in full_runtime_features() to match the full feature in Cargo.toml",
-            toml_features, runtime_features
-        );
     }
 }

@@ -21,7 +21,6 @@ jobs:
       LLVM_SYS_221_STRICT_VERSIONING: "1"
       CC: clang-22
       CXX: clang++-22
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -99,7 +98,6 @@ jobs:
             publish: true
 
     env:
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
       LLVM_SYS_221_STRICT_VERSIONING: "1"
 
     steps:

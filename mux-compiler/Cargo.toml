@@ -23,7 +23,13 @@ unicode-width = "0.1.11"
 lazy_static = "1.4"
 inkwell = { version = "0.9.0", features = ["llvm22-1"] }
 clap = { version = "4", features = ["derive"] }
-mux-runtime = "0.5"
+# Resolved from muxlang/mux-runtime `main`, not crates.io: the compiler and the
+# runtime are ABI-coupled and change together, so a coupled change must build
+# against the source that defines the new FFI symbols rather than waiting on a
+# publish. Cargo.lock pins the exact commit, so `--locked` builds - CI and
+# release tags included - are reproducible. Move the pin with
+# `cargo update -p mux-runtime`.
+mux-runtime = { git = "https://github.com/muxlang/mux-runtime", branch = "main" }
 phf = { version = "0.11", features = ["macros"] }
 
 [dev-dependencies]

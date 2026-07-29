@@ -87,6 +87,72 @@ Thanks for your interest! This guide explains how to contribute to Mux.
 
 ---
 
+## Working with mux-runtime
+
+Compiled Mux programs link against
+[mux-runtime](https://github.com/muxlang/mux-runtime), which lives in its own
+repository. **You do not need to clone it.** It is a git dependency on that
+repo's `main` branch, so `cargo build` fetches it, and `Cargo.lock` pins one
+exact commit - which is why `--locked` builds are reproducible.
+
+### Landing a coupled change
+
+When a compiler change needs a runtime change (a new FFI symbol, say), the
+runtime side merges first. After it does, move the pin:
+
+```bash
+cargo update -p mux-runtime
+```
+
+Commit the resulting `Cargo.lock` alongside your compiler change. Without it,
+CI builds `--locked` against the old commit and your change looks broken for no
+visible reason.
+
+Nothing advances the pin on a schedule, and nothing needs to: it moves when a
+change needs it to move, and a release can move it deliberately. Meanwhile CI
+already tests against runtime `main` on both sides - this repo's `build.yml`
+checks out the runtime's `main` source, and mux-runtime's CI builds this repo's
+`main` against it - so a runtime change that breaks the compiler surfaces
+without waiting for the pin to advance.
+
+### Where the runtime library comes from
+
+The compiler never builds a runtime while compiling your program. It links a
+prebuilt library, found in this order:
+
+1. `MUX_RUNTIME_LIB` - a path to a built library (a `.a` file, not a directory).
+2. A library beside the compiler binary, or in `../lib` next to it. This is what
+   a release install ships.
+3. The library in `target/`, built from the commit `Cargo.lock` pins. This is
+   the one you get while developing - but **`cargo build` alone does not produce
+   it**. Cargo emits a dependency's rlib and never its staticlib, so you need:
+
+   ```bash
+   cargo build -p mux-runtime
+   ```
+
+   `scripts/run-checks.sh` and `scripts/valgrind-checks.sh` already do this. If
+   compiled programs suddenly fail to link with undefined references to
+   `mux_*` symbols, this is why.
+
+That library always carries mux-runtime's `full` feature set. Linking the full
+runtime costs nothing: static linking pulls in only the archive members a
+program actually references, so a program that never touches `sql` does not
+carry SQLite.
+
+The one thing to watch is rule 1. A leftover `MUX_RUNTIME_LIB` - in your
+environment or in a gitignored `.cargo/config.toml` - wins over the library
+cargo just built, so runtime behavior stops matching the source you are reading.
+Check it first when something inexplicable happens.
+
+To test a compiler change against uncommitted runtime changes, build the runtime
+in your checkout and point `MUX_RUNTIME_LIB` at the resulting `.a`.
+
+`mux version` prints the runtime it resolved, including the locked commit
+(`runtime v0.5.0+g1a2b3c4`). Include that line in bug reports.
+
+---
+
 ## What Contributions Are Welcome
 
 - Bug fixes
