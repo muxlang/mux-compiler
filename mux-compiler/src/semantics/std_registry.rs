@@ -89,21 +89,3 @@ pub fn std_module_registry() -> &'static HashMap<&'static str, StdModuleDef> {
     static REGISTRY: OnceLock<HashMap<&'static str, StdModuleDef>> = OnceLock::new();
     REGISTRY.get_or_init(build_std_module_registry)
 }
-
-/// Extract all unique runtime features required across all stdlib modules.
-/// This is the single source of truth for runtime features and must match
-/// the `full` feature in mux-runtime/Cargo.toml.
-pub fn all_runtime_features() -> Vec<&'static str> {
-    let registry = std_module_registry();
-    let mut features = std::collections::HashSet::new();
-
-    for def in registry.values() {
-        for feature in def.runtime_features {
-            features.insert(*feature);
-        }
-    }
-
-    let mut result: Vec<_> = features.into_iter().collect();
-    result.sort();
-    result
-}

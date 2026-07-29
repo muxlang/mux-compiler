@@ -45,27 +45,14 @@ jobs:
       LLVM_SYS_221_STRICT_VERSIONING: "1"
       CC: clang-22
       CXX: clang++-22
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: muxlang/mux-runtime
-          ref: main
-          path: mux-runtime
-      - id: runtime_sha
-        run: echo "sha=$(git -C mux-runtime rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/mux-lang/runtime
-          key: ${{ runner.os }}-muxrt-1.93.1-${{ steps.runtime_sha.outputs.sha }}
-      # The compiler's build.rs reuses any libmux_runtime already present in the
-      # cache dir without checking whether the runtime source changed, so a
-      # restored-but-stale library can be linked into test programs and mismatch
-      # the current runtime ABI. Remove it AFTER the cache restore so the build
-      # rebuilds the runtime from the checked-out source.
-      - name: Clear restored runtime library
-        run: rm -rf ~/.cache/mux-lang/runtime
+      # No mux-runtime checkout: cargo builds it from the commit Cargo.lock
+      # pins, into target/, which is the library every program here links. That
+      # is what a release ships, so testing anything else would test a
+      # configuration that never ships. FFI breaks against runtime `main` are
+      # caught by mux-runtime's own CI, which builds this repo's `main` against
+      # its source.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -174,11 +161,10 @@ jobs:
           echo "install.sh parses cleanly and is shellcheck clean"
 
   packaged_artifact:
-    # Reproduces a binary install: the compiler and the bundled runtime library
-    # in bin/ and lib/, with NO runtime source and NO cargo registry to build one
-    # from. This is what `scripts/install.sh` produces, and it is not covered by
-    # any other job - every one of them has the runtime checked out as a sibling,
-    # which is exactly what masked the resolution bug this job guards.
+    # Reproduces a binary install: the compiler plus the bundled runtime library
+    # in bin/ and lib/, and nothing else. This is what `scripts/install.sh`
+    # produces, and no other job runs the compiler from that layout - which is
+    # how a release that could not compile hello world reached users.
     name: Packaged Artifact Smoke Test
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
@@ -191,11 +177,6 @@ jobs:
       CXX: clang++-22
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: muxlang/mux-runtime
-          ref: main
-          path: mux-runtime
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -218,27 +199,20 @@ jobs:
           mkdir -p dist/bin dist/lib
           cp target/debug/mux dist/bin/
           cp target/debug/libmux_runtime.a target/debug/libmux_runtime.so dist/lib/
-          # The compiler falls back to a sibling ../mux-runtime relative to the
-          # path baked in at build time. Move the checkout aside so this job
-          # tests the packaged layout rather than the build tree.
-          mv mux-runtime mux-runtime-build-only
-      - name: Compile and run without runtime source
+      - name: Compile and run from the packaged layout
         run: |
           set -euo pipefail
-          mkdir -p empty-cargo-home
           printf 'print("hello")\n' > smoke.mux
           run_packaged() {
-            env -u MUX_RUNTIME_SRC -u MUX_RUNTIME_LIB -u MUX_RUNTIME_FEATURES \
-              CARGO_HOME="$PWD/empty-cargo-home" \
-              XDG_CACHE_HOME="$PWD/empty-cache" \
-              timeout 120 ./dist/bin/mux run "$1"
+            env -u MUX_RUNTIME_LIB timeout 120 ./dist/bin/mux run "$1"
           }
-          # A program importing nothing requests an empty feature set, and one
-          # importing std.math requests a strict subset. Both must resolve to the
-          # bundled library instead of looking for runtime source to build.
+          # One program importing nothing, one pulling in a std module, one
+          # reaching a heavier optional feature. All must link the bundled
+          # library from ../lib rather than looking anywhere else.
           out="$(run_packaged smoke.mux)"
           test "$out" = "hello" || { echo "unexpected output: $out"; exit 1; }
           run_packaged test_scripts/test_std_math.mux
+          run_packaged test_scripts/test_std_sql_sqlite.mux
   integration_checks:
     name: Integration Checks
     needs: detect-changes
@@ -246,15 +220,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # The dev container mounts the repo at /workspace and sets
-      # MUX_RUNTIME_SRC=/workspace/mux-runtime, so the compiler builds the
-      # runtime from source. Check it out here (root Cargo.toml excludes it
-      # from the workspace) instead of falling back to the crates.io pin.
-      - uses: actions/checkout@v4
-        with:
-          repository: muxlang/mux-runtime
-          ref: main
-          path: mux-runtime
       - name: Docker info
         run: docker compose version
       - name: Service-backed checks
@@ -273,22 +238,10 @@ jobs:
       LLVM_SYS_221_STRICT_VERSIONING: "1"
       CC: clang-22
       CXX: clang++-22
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: muxlang/mux-runtime
-          ref: main
-          path: mux-runtime
-      - id: runtime_sha
-        run: echo "sha=$(git -C mux-runtime rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Clear stale runtime cache
-        run: rm -rf ~/.cache/mux-lang/runtime
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/mux-lang/runtime
-          key: ${{ runner.os }}-muxrt-1.93.1-${{ steps.runtime_sha.outputs.sha }}
+      # Programs link the runtime cargo builds into target/ from the commit
+      # Cargo.lock pins - the same library a release ships.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -415,24 +368,10 @@ jobs:
       LLVM_SYS_221_STRICT_VERSIONING: "1"
       CC: clang-22
       CXX: clang++-22
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
     steps:
       - uses: actions/checkout@v4
-      # The execution benchmarks compile+link+run real programs, so the runtime
-      # is built from source (root Cargo.toml excludes it from the workspace).
-      - uses: actions/checkout@v4
-        with:
-          repository: muxlang/mux-runtime
-          ref: main
-          path: mux-runtime
-      - id: runtime_sha
-        run: echo "sha=$(git -C mux-runtime rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Clear stale runtime cache
-        run: rm -rf ~/.cache/mux-lang/runtime
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/mux-lang/runtime
-          key: ${{ runner.os }}-muxrt-1.93.1-${{ steps.runtime_sha.outputs.sha }}
+      # The execution benchmarks compile+link+run real programs; they link the
+      # runtime cargo builds into target/ from the commit Cargo.lock pins.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
