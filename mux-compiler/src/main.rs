@@ -644,15 +644,46 @@ fn build_runtime_in_cache(profile: &str, features: &[String]) -> Option<PathBuf>
     None
 }
 
+/// Whether a prebuilt runtime library can serve a request for `features`.
+///
+/// Prebuilt libraries - the one bundled beside a released binary and the one
+/// cargo builds into `target/` - carry the full feature set, so they satisfy any
+/// subset of it. A request naming a feature outside that set is only reachable
+/// through an explicit `MUX_RUNTIME_FEATURES`, and needs a source build.
+fn prebuilt_runtime_satisfies(features: &[String], full: &[String]) -> bool {
+    features.iter().all(|feature| full.contains(feature))
+}
+
 fn resolve_runtime_lib_dir(profile: &str, features: &[String]) -> Option<PathBuf> {
     if let Some(dir) = runtime_lib_from_env() {
         return Some(dir);
     }
 
-    if features == full_runtime_features() {
-        return runtime_lib_near_executable()
-            .or_else(runtime_lib_from_build_config)
-            .or_else(|| build_runtime_in_cache(profile, features));
+    let full = full_runtime_features();
+
+    if !prebuilt_runtime_satisfies(features, &full) {
+        return build_runtime_in_cache(profile, features);
+    }
+
+    // For a strict subset, an exact-feature build keeps unused std dependencies
+    // out of the linked program, so prefer it when runtime source is available.
+    let tried_source_build = features != full && find_runtime_source().is_some();
+    if tried_source_build && let Some(dir) = build_runtime_in_cache(profile, features) {
+        return Some(dir);
+    }
+
+    // A binary install has no runtime source - and not necessarily cargo to
+    // build one with - so a prebuilt library serves any request it covers
+    // rather than failing on one it could satisfy.
+    if let Some(dir) = runtime_lib_near_executable().or_else(runtime_lib_from_build_config) {
+        return Some(dir);
+    }
+
+    // Nothing prebuilt to fall back on. Build from source, unless that was
+    // already attempted above and failed - retrying repeats the whole build and
+    // prints the same failure twice.
+    if tried_source_build {
+        return None;
     }
 
     build_runtime_in_cache(profile, features)
@@ -1560,10 +1591,11 @@ mod tests {
         clang_version_output, compiling_file, default_cache_root, extract_clang_major,
         find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
         llvm_config_candidates, normalize_runtime_features, pick_llvm_for_dev,
-        print_doctor_verdict, print_version_banner, record_runtime_fingerprint, relativize_to_cwd,
-        report_clang_for_doctor, report_runtime_for_doctor, runtime_feature_key,
-        runtime_lib_dir_is_static_only, runtime_profile, runtime_source_fingerprint,
-        set_compiling_file, status_marker, validate_llvm_for_doctor,
+        prebuilt_runtime_satisfies, print_doctor_verdict, print_version_banner,
+        record_runtime_fingerprint, relativize_to_cwd, report_clang_for_doctor,
+        report_runtime_for_doctor, runtime_feature_key, runtime_lib_dir_is_static_only,
+        runtime_profile, runtime_source_fingerprint, set_compiling_file, status_marker,
+        validate_llvm_for_doctor,
     };
     use std::path::{Path, PathBuf};
 
@@ -1723,6 +1755,26 @@ mod tests {
             sv(&["csv", "json", "math"])
         );
         assert!(normalize_runtime_features(&[]).is_empty());
+    }
+
+    /// A binary install ships a prebuilt runtime library and no runtime source,
+    /// so every feature set it can serve must resolve to that library rather
+    /// than to a source build. Programs requesting a subset - which is most of
+    /// them, since the set is derived from a program's imports - previously fell
+    /// through to a source build and failed with "Could not locate mux-runtime
+    /// source in cargo registry".
+    #[test]
+    fn prebuilt_runtime_serves_any_subset_of_the_full_feature_set() {
+        let full = full_runtime_features();
+        assert!(!full.is_empty(), "full feature set should not be empty");
+
+        assert!(prebuilt_runtime_satisfies(&[], &full));
+        assert!(prebuilt_runtime_satisfies(&full, &full));
+        assert!(prebuilt_runtime_satisfies(&full[..1], &full));
+        assert!(!prebuilt_runtime_satisfies(
+            &sv(&["definitely-not-a-runtime-feature"]),
+            &full
+        ));
     }
 
     #[test]
