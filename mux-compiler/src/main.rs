@@ -990,7 +990,7 @@ fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
         ));
 
         let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
+        options.read(true).write(true).create_new(true);
         #[cfg(windows)]
         {
             // FILE_FLAG_DELETE_ON_CLOSE: the OS removes the file when the last
