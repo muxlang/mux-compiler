@@ -1551,6 +1551,33 @@ mod tests {
         }
     }
 
+    /// The object file is created exclusively too, not just the directory
+    /// holding it. LLVM emits into memory and the compiler writes the bytes
+    /// itself, so the only filesystem entry involved is one this process
+    /// creates - a file or symlink already at that path is an error rather than
+    /// a write redirected somewhere else.
+    #[cfg(unix)]
+    #[test]
+    fn object_file_creation_refuses_an_existing_symlink() {
+        let base = unique_tmp("obj_squat");
+        std::fs::create_dir_all(&base).unwrap();
+        let victim = base.join("victim");
+        std::fs::write(&victim, b"UNTOUCHED").unwrap();
+
+        let object = base.join("module.o");
+        std::os::unix::fs::symlink(&victim, &object).unwrap();
+
+        let err = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&object)
+            .expect_err("create_new must refuse an existing symlink, not follow it");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"UNTOUCHED");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
     /// The scratch directory must be created exclusively, because a bare
     /// predictable path in a shared temp directory is a symlink-squatting
     /// target: a local process pre-creates it pointing at a file this user can

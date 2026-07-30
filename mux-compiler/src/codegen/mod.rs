@@ -14,6 +14,8 @@
 //! - statements: Statement code generation
 //! - types: Type conversion functions
 
+use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use inkwell::AddressSpace;
@@ -917,13 +919,20 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    /// Compile the module straight to a native object file.
+    /// Compile the module to a native object file.
     ///
     /// The alternative is writing `.ll` and having clang parse it back, which
     /// couples every install to a clang whose major version matches the LLVM
     /// this compiler links - textual IR is not stable across versions. Emitting
-    /// the object here removes that coupling entirely: whatever links the
-    /// result only has to understand object files.
+    /// the object here removes that coupling: whatever links the result only has
+    /// to understand object files.
+    ///
+    /// LLVM emits into memory rather than to a path, and this writes the bytes
+    /// itself with `create_new` (`O_CREAT|O_EXCL`). Handing LLVM a path would
+    /// mean a pathname resolved at write time, which is a symlink-replacement
+    /// target; creating the file exclusively means the only filesystem entry
+    /// involved is one this process made, and an existing file or symlink there
+    /// is an error rather than a redirect.
     pub fn emit_object_to_file(&self, filename: &str) -> Result<(), String> {
         self.module
             .verify()
@@ -936,8 +945,8 @@ impl<'a> CodeGenerator<'a> {
         let target = Target::from_triple(&triple)
             .map_err(|e| format!("no LLVM target for {}: {}", triple, e.to_string()))?;
 
-        // PIC because distributions default to position-independent executables;
-        // a non-PIC object fails to link against them.
+        // PIC because distributions default to position-independent
+        // executables; a non-PIC object fails to link against them.
         let machine = target
             .create_target_machine(
                 &triple,
@@ -957,9 +966,17 @@ impl<'a> CodeGenerator<'a> {
         self.module
             .set_data_layout(&machine.get_target_data().get_data_layout());
 
-        machine
-            .write_to_file(&self.module, FileType::Object, Path::new(filename))
-            .map_err(|e| format!("failed to write object file: {}", e.to_string()))
+        let object = machine
+            .write_to_memory_buffer(&self.module, FileType::Object)
+            .map_err(|e| format!("failed to emit object code: {}", e.to_string()))?;
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(Path::new(filename))
+            .map_err(|e| format!("failed to create {}: {}", filename, e))?;
+        file.write_all(object.as_slice())
+            .map_err(|e| format!("failed to write {}: {}", filename, e))
     }
 
     pub fn emit_ir_to_file(&self, filename: &str) -> Result<(), String> {
