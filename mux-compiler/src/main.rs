@@ -828,12 +828,14 @@ fn generate_object_or_exit(
     nodes: &[ast::AstNode],
     object_file: &str,
     ir_file: Option<&str>,
+    scratch_dir: &Path,
 ) {
     if let Err(e) = codegen.generate(nodes) {
         spinner::stop();
         // A codegen failure is an internal compiler bug, not a language-level
         // error in the user's program, so it gets the internal-error framing
         // rather than a bare message.
+        remove_scratch_dir(scratch_dir);
         report_internal_compiler_error(&format!("codegen error: {}", e));
         process::exit(1);
     }
@@ -843,11 +845,13 @@ fn generate_object_or_exit(
         && let Err(e) = codegen.emit_ir_to_file(ir_file)
     {
         spinner::stop();
+        remove_scratch_dir(scratch_dir);
         report_internal_compiler_error(&format!("failed to emit IR: {}", e));
         process::exit(1);
     }
     if let Err(e) = codegen.emit_object_to_file(object_file) {
         spinner::stop();
+        remove_scratch_dir(scratch_dir);
         report_internal_compiler_error(&format!("failed to emit object file: {}", e));
         process::exit(1);
     }
@@ -1202,6 +1206,18 @@ fn main() {
         .trim_end_matches(".mux")
         .to_string();
     let ir_file = format!("{}.ll", stem);
+
+    // Resolved before the scratch directory exists and before codegen runs.
+    // Neither depends on codegen, both exit the process on failure, and
+    // `process::exit` skips destructors - so anything created first would be
+    // left behind. Failing before the expensive work is better regardless.
+    let lib_dir = resolve_runtime_lib_dir_or_exit();
+    let lib_path_str = lib_dir
+        .to_str()
+        .expect("library path should be valid Unicode")
+        .to_string();
+    let linker_cmd = find_linker_or_exit();
+
     let scratch_dir = match scratch_object_dir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -1216,6 +1232,7 @@ fn main() {
         &nodes,
         &object_file,
         intermediate.then_some(ir_file.as_str()),
+        &scratch_dir,
     );
 
     // build executable
@@ -1237,13 +1254,6 @@ fn main() {
         parent.join(file_stem)
     };
 
-    let lib_dir = resolve_runtime_lib_dir_or_exit();
-
-    let lib_path_str = lib_dir
-        .to_str()
-        .expect("library path should be valid Unicode");
-
-    let linker_cmd = find_linker_or_exit();
     let mut linker_args = vec![
         object_file.clone(),
         "-L".to_string(),
