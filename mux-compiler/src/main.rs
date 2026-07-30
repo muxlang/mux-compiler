@@ -835,7 +835,7 @@ fn generate_object_or_exit(
         // A codegen failure is an internal compiler bug, not a language-level
         // error in the user's program, so it gets the internal-error framing
         // rather than a bare message.
-        remove_scratch_object(object_file);
+        remove_scratch_object(object_file, object);
         report_internal_compiler_error(&format!("codegen error: {}", e));
         process::exit(1);
     }
@@ -845,13 +845,13 @@ fn generate_object_or_exit(
         && let Err(e) = codegen.emit_ir_to_file(ir_file)
     {
         spinner::stop();
-        remove_scratch_object(object_file);
+        remove_scratch_object(object_file, object);
         report_internal_compiler_error(&format!("failed to emit IR: {}", e));
         process::exit(1);
     }
     if let Err(e) = codegen.emit_object(object) {
         spinner::stop();
-        remove_scratch_object(object_file);
+        remove_scratch_object(object_file, object);
         report_internal_compiler_error(&format!("failed to emit object file: {}", e));
         process::exit(1);
     }
@@ -1007,16 +1007,43 @@ fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
     Err("could not create a temporary object file".to_string())
 }
 
-/// Remove the object file once it has been linked. It is a build artifact the
-/// user did not ask for, unlike the `.ll`, which is only written when `-i` asked
-/// for it and is never cleaned up here.
+/// Remove the object file once it has been linked, but only if the path still
+/// names the file this process created. It is a build artifact the user did not
+/// ask for, unlike the `.ll`, which is only written when `-i` asked for it and is
+/// never cleaned up here.
 ///
-/// `unlink` does not follow the final path component, so this removes this
-/// path's own entry and never anything it might point at.
+/// The identity check is the point. A path is not a file: if the entry were
+/// replaced after emission, unlinking the path would delete something this
+/// process never made. Comparing the open handle's `fstat` against the path's
+/// `lstat` - device and inode - leaves an entry that is no longer ours alone.
+/// `lstat` also does not follow symlinks, so a link is compared as a link rather
+/// than resolved.
+///
+/// This narrows rather than eliminates: between the comparison and the unlink the
+/// entry could still change, and closing that needs `unlinkat` against a retained
+/// directory descriptor, which `std` does not expose. Reaching it requires
+/// replacing a file in a sticky-bit temp directory, which only this user or root
+/// can do - and a process running as this user can already replace the compiler
+/// binary.
 ///
 /// Best-effort: failing to remove a temporary file must not fail an otherwise
 /// successful compile.
-fn remove_scratch_object(object_file: &str) {
+fn remove_scratch_object(object_file: &str, handle: &fs::File) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let (Ok(ours), Ok(named)) = (handle.metadata(), fs::symlink_metadata(object_file)) else {
+            // Cannot establish identity, so cannot establish ownership.
+            return;
+        };
+        if ours.dev() != named.dev() || ours.ino() != named.ino() {
+            return;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = handle;
+
     let _ = fs::remove_file(object_file);
 }
 
@@ -1241,8 +1268,15 @@ fn main() {
         &object_file,
         intermediate.then_some(ir_file.as_str()),
     );
-    // Close the handle so the linker reads a fully flushed file.
-    drop(object);
+    // Flushed, not closed: the handle is what proves at cleanup that the path
+    // still names the file emitted here. std opens with shared access on Windows
+    // too, so the linker can still read it.
+    if let Err(e) = object.sync_all() {
+        spinner::stop();
+        remove_scratch_object(&object_file, &object);
+        report_internal_compiler_error(&format!("failed to flush the object file: {}", e));
+        process::exit(1);
+    }
 
     // build executable
     // Use ./ prefix to ensure we run the local executable, not a system command
@@ -1313,7 +1347,7 @@ fn main() {
     // Before interpreting the result: a spawn failure or a nonzero linker exit
     // ends the process inside the call below, so cleaning up afterwards would
     // leak the scratch object on exactly the paths that fail.
-    remove_scratch_object(&object_file);
+    remove_scratch_object(&object_file, &object);
     report_clang_output_or_exit(linker_output, do_run, &file_path, &ir_file);
 
     if do_run {
@@ -1585,34 +1619,63 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
-    /// Cleanup must not reach outside the path it was given. `unlink` does not
-    /// follow the final component, so a swapped entry loses the replacement link
-    /// itself and never what it points at - which is why the object lives
-    /// directly in the temp directory with no directory of ours in between: an
-    /// intermediate component *would* be traversed.
+    /// Cleanup must delete only the file emission created. The path is not the
+    /// file: if the entry has been replaced, unlinking the path would destroy
+    /// something this process never made. The handle's identity is what
+    /// distinguishes them.
     #[cfg(unix)]
     #[test]
-    fn scratch_object_cleanup_does_not_follow_a_replacement_symlink() {
-        let base = unique_tmp("obj_cleanup");
+    fn scratch_object_cleanup_spares_a_replaced_entry() {
+        let base = unique_tmp("obj_identity");
         std::fs::create_dir_all(&base).unwrap();
+        let path = base.join("scratch.o");
 
-        let bystander = base.join("someone_elses.o");
-        std::fs::write(&bystander, b"KEEP").unwrap();
+        // The file this process created, and its handle.
+        let handle = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
 
-        let object = base.join("scratch.o");
-        std::os::unix::fs::symlink(&bystander, &object).unwrap();
+        // Someone replaces the entry with a different regular file.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"NOT OURS").unwrap();
 
-        remove_scratch_object(object.to_str().unwrap());
+        remove_scratch_object(path.to_str().unwrap(), &handle);
 
-        assert!(
-            !object.exists() && std::fs::symlink_metadata(&object).is_err(),
-            "the replacement link itself should be gone"
-        );
         assert_eq!(
-            std::fs::read(&bystander).unwrap(),
-            b"KEEP",
-            "the link target must survive cleanup"
+            std::fs::read(&path).unwrap(),
+            b"NOT OURS",
+            "an entry the compiler did not create must survive cleanup"
         );
+
+        // A replacement symlink is likewise left alone, and never followed.
+        let bystander = base.join("bystander");
+        std::fs::write(&bystander, b"KEEP").unwrap();
+        let linked = base.join("linked.o");
+        let linked_handle = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&linked)
+            .unwrap();
+        std::fs::remove_file(&linked).unwrap();
+        std::os::unix::fs::symlink(&bystander, &linked).unwrap();
+        remove_scratch_object(linked.to_str().unwrap(), &linked_handle);
+        assert!(
+            std::fs::symlink_metadata(&linked).is_ok(),
+            "link left alone"
+        );
+        assert_eq!(std::fs::read(&bystander).unwrap(), b"KEEP");
+
+        // And the untouched case still cleans up.
+        let ours = base.join("ours.o");
+        let ours_handle = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ours)
+            .unwrap();
+        remove_scratch_object(ours.to_str().unwrap(), &ours_handle);
+        assert!(!ours.exists(), "our own object should be removed");
 
         std::fs::remove_dir_all(&base).ok();
     }
