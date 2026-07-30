@@ -987,11 +987,20 @@ fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
 
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(windows)]
         {
+            // FILE_FLAG_DELETE_ON_CLOSE: the OS removes the file when the last
+            // handle closes, so Windows needs no delete-by-path at all - and so
+            // has no pathname that could be replaced between check and unlink.
+            // std's default share mode includes FILE_SHARE_DELETE, so the linker
+            // can still read it while this handle is open.
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+            options.custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
+        }
+        match options.open(&candidate) {
             Ok(file) => return Ok((candidate.to_string_lossy().into_owned(), file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
@@ -1019,33 +1028,40 @@ fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
 /// `lstat` also does not follow symlinks, so a link is compared as a link rather
 /// than resolved.
 ///
-/// This narrows rather than eliminates: between the comparison and the unlink the
-/// entry could still change, and closing that needs `unlinkat` against a retained
-/// directory descriptor, which `std` does not expose. Reaching it requires
-/// replacing a file in a sticky-bit temp directory, which only this user or root
-/// can do - and a process running as this user can already replace the compiler
-/// binary.
+/// A residual window remains between the comparison and the unlink, and it is not
+/// closeable: POSIX has no unlink-by-descriptor, and `unlinkat` still resolves the
+/// final path component, so a directory descriptor would not help either. Only
+/// FreeBSD's `funlinkat` compares against an open file, and Linux has no
+/// equivalent. Reaching that window also requires replacing a file in a
+/// sticky-bit temp directory, which only this user or root can do - and a process
+/// running as this user can already replace the compiler binary.
+///
+/// Windows does not take this path at all: the file is opened
+/// `FILE_FLAG_DELETE_ON_CLOSE`, so the OS removes it when the handle closes and
+/// there is no pathname to validate.
 ///
 /// Best-effort: failing to remove a temporary file must not fail an otherwise
 /// successful compile.
+#[cfg(unix)]
 fn remove_scratch_object(object_file: &str, handle: &fs::File) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::MetadataExt;
 
-        let (Ok(ours), Ok(named)) = (handle.metadata(), fs::symlink_metadata(object_file)) else {
-            // Cannot establish identity, so cannot establish ownership.
-            return;
-        };
-        if ours.dev() != named.dev() || ours.ino() != named.ino() {
-            return;
-        }
+    let (Ok(ours), Ok(named)) = (handle.metadata(), fs::symlink_metadata(object_file)) else {
+        // Cannot establish identity, so cannot establish ownership.
+        return;
+    };
+    if ours.dev() != named.dev() || ours.ino() != named.ino() {
+        return;
     }
-    #[cfg(not(unix))]
-    let _ = handle;
 
     let _ = fs::remove_file(object_file);
 }
+
+/// Nothing to do: the file was opened `FILE_FLAG_DELETE_ON_CLOSE`, so closing the
+/// handle removes it. Deleting by path here would reintroduce exactly the
+/// replaceable pathname that flag avoids.
+#[cfg(not(unix))]
+fn remove_scratch_object(_object_file: &str, _handle: &fs::File) {}
 
 fn run_executable_or_exit(exe_file: &Path) {
     let run_path = if exe_file.is_absolute() {
