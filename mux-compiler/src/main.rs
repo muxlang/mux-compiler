@@ -942,41 +942,70 @@ fn report_clang_output_or_exit(
     }
 }
 
-/// A private path for the object file handed to the linker.
+/// A private directory to emit the object file into, and the path within it.
 ///
-/// Deliberately not `<source>.o`: that would overwrite a `foo.o` the user
-/// already had beside `foo.mux` and then delete it during cleanup, losing a
-/// file the compiler does not own. The name carries the process id and a
-/// monotonic counter so concurrent compiles - the test suite runs many at once -
-/// cannot collide either.
-fn scratch_object_path(stem: &str) -> String {
+/// Not `<source>.o`: that would overwrite a `foo.o` the user already had beside
+/// `foo.mux` and then delete it during cleanup, losing a file the compiler does
+/// not own.
+///
+/// Not a bare path in the shared temp directory either. A predictable name that
+/// LLVM opens without exclusive creation is a symlink-squatting target - a local
+/// process can pre-create it pointing at any file this user can write, and the
+/// emitted object lands there instead. So the *directory* is created
+/// exclusively: `create_dir` fails if the path exists at all, including as a
+/// symlink, and mode 0700 keeps anyone else from placing entries inside it
+/// afterwards. The object name within it can then be fixed and boring.
+fn scratch_object_dir() -> Result<PathBuf, String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
-    let name = Path::new(stem)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "mux_module".to_string());
-
-    env::temp_dir()
-        .join(format!(
-            "mux-{}-{}-{}.o",
-            name,
+    // Distinct candidates rather than secret ones: exclusive creation is what
+    // provides the safety, and the nanosecond clock only avoids self-collision
+    // between concurrent compiles.
+    for _ in 0..16 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let candidate = env::temp_dir().join(format!(
+            "mux-{}-{}-{}",
             process::id(),
+            nanos,
             SEQ.fetch_add(1, Ordering::Relaxed)
-        ))
-        .to_string_lossy()
-        .into_owned()
+        ));
+
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&candidate) {
+            Ok(()) => return Ok(candidate),
+            // Taken already - by a concurrent compile or by a squatter. Either
+            // way, try a different name rather than writing into it.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "failed to create a temporary directory at {}: {}",
+                    candidate.display(),
+                    e
+                ));
+            }
+        }
+    }
+
+    Err("could not create a temporary directory for the object file".to_string())
 }
 
-/// Delete the object file once it has been linked. It is a build artifact the
-/// user did not ask for, unlike the `.ll`, which is now only written when `-i`
-/// requested it and so is never cleaned up here.
+/// Delete the private directory holding the object file once it has been
+/// linked. It is a build artifact the user did not ask for, unlike the `.ll`,
+/// which is only written when `-i` requested it and so is never cleaned up here.
 ///
-/// Best-effort: a failure to remove a temporary file should not fail a
+/// Best-effort: failing to remove a temporary directory should not fail a
 /// successful compile.
-fn remove_object_file(object_file: &str) {
-    let _ = fs::remove_file(object_file);
+fn remove_scratch_dir(dir: &Path) {
+    let _ = fs::remove_dir_all(dir);
 }
 
 fn run_executable_or_exit(exe_file: &Path) {
@@ -1173,7 +1202,15 @@ fn main() {
         .trim_end_matches(".mux")
         .to_string();
     let ir_file = format!("{}.ll", stem);
-    let object_file = scratch_object_path(&stem);
+    let scratch_dir = match scratch_object_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            spinner::stop();
+            report_internal_compiler_error(&e);
+            process::exit(1);
+        }
+    };
+    let object_file = scratch_dir.join("module.o").to_string_lossy().into_owned();
     generate_object_or_exit(
         &mut codegen,
         &nodes,
@@ -1257,7 +1294,7 @@ fn main() {
     // Before interpreting the result: a spawn failure or a nonzero linker exit
     // ends the process inside the call below, so cleaning up afterwards would
     // leak the scratch object on exactly the paths that fail.
-    remove_object_file(&object_file);
+    remove_scratch_dir(&scratch_dir);
     report_clang_output_or_exit(linker_output, do_run, &file_path, &ir_file);
 
     if do_run {
@@ -1502,6 +1539,39 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    /// The scratch directory must be created exclusively, because a bare
+    /// predictable path in a shared temp directory is a symlink-squatting
+    /// target: a local process pre-creates it pointing at a file this user can
+    /// write, and the object LLVM emits lands there instead. `create_dir` is
+    /// what prevents that - this pins that it refuses an existing symlink
+    /// rather than following it.
+    #[cfg(unix)]
+    #[test]
+    fn scratch_dir_creation_refuses_an_existing_symlink() {
+        let base = unique_tmp("scratch_squat");
+        std::fs::create_dir_all(&base).unwrap();
+        let target = base.join("attacker_target");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let squatted = base.join("scratch");
+        std::os::unix::fs::symlink(&target, &squatted).unwrap();
+
+        let err = std::fs::DirBuilder::new()
+            .create(&squatted)
+            .expect_err("creating over an existing symlink must fail, not follow it");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+
+        // Nothing was written through the symlink.
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+
+        // A fresh name still succeeds, which is what the retry loop relies on.
+        let fresh = base.join("scratch-2");
+        std::fs::DirBuilder::new().create(&fresh).unwrap();
+        assert!(fresh.is_dir());
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     /// A release install puts the library in `../lib` relative to the binary,
