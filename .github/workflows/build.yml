@@ -27,12 +27,15 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'clippy.toml'
-              - 'scripts/run-checks.sh'
-              - 'scripts/dev-cargo.sh'
-              - 'scripts/valgrind-checks.sh'
-              - 'scripts/bench-report.py'
+              # All of scripts/, not an enumeration: the installers, leak-check
+              # and the integration helpers are all exercised by jobs here, and
+              # a list drifts out of date as jobs are added.
+              - 'scripts/**'
               - 'test_scripts/**'
               - 'infra/**'
+              # A workflow-only change would otherwise skip every job here,
+              # including the one being changed.
+              - '.github/workflows/**'
 
   rust_checks:
     name: Rust Checks
