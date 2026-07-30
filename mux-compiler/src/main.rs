@@ -946,6 +946,10 @@ fn report_clang_output_or_exit(
     }
 }
 
+/// Name of the object file inside the scratch directory. Shared so cleanup
+/// removes exactly the file emission created.
+const SCRATCH_OBJECT_NAME: &str = "module.o";
+
 /// A private directory to emit the object file into, and the path within it.
 ///
 /// Not `<source>.o`: that would overwrite a `foo.o` the user already had beside
@@ -1002,14 +1006,23 @@ fn scratch_object_dir() -> Result<PathBuf, String> {
     Err("could not create a temporary directory for the object file".to_string())
 }
 
-/// Delete the private directory holding the object file once it has been
-/// linked. It is a build artifact the user did not ask for, unlike the `.ll`,
-/// which is only written when `-i` requested it and so is never cleaned up here.
+/// Remove exactly what was put in the scratch directory, then the directory
+/// itself. The object is a build artifact the user did not ask for, unlike the
+/// `.ll`, which is only written when `-i` requested it and is never cleaned up
+/// here.
 ///
-/// Best-effort: failing to remove a temporary directory should not fail a
-/// successful compile.
+/// Deliberately not `remove_dir_all`: that recursively deletes whatever is at
+/// the path, and the path is all this holds - if the directory it names is no
+/// longer the one this process created, a recursive delete would take unrelated
+/// data with it. Removing the single known file and then a non-recursive
+/// `remove_dir` cannot: `remove_dir` refuses a directory containing anything
+/// else, and refuses a symlink outright. Anything unexpected is left alone.
+///
+/// Best-effort throughout: failing to clean up a temporary file must not fail an
+/// otherwise successful compile.
 fn remove_scratch_dir(dir: &Path) {
-    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_file(dir.join(SCRATCH_OBJECT_NAME));
+    let _ = fs::remove_dir(dir);
 }
 
 fn run_executable_or_exit(exe_file: &Path) {
@@ -1226,7 +1239,10 @@ fn main() {
             process::exit(1);
         }
     };
-    let object_file = scratch_dir.join("module.o").to_string_lossy().into_owned();
+    let object_file = scratch_dir
+        .join(SCRATCH_OBJECT_NAME)
+        .to_string_lossy()
+        .into_owned();
     generate_object_or_exit(
         &mut codegen,
         &nodes,
@@ -1318,9 +1334,9 @@ mod tests {
         REQUIRED_LLVM_MAJOR, clang_failure_detail, clang_version_output, compiling_file,
         dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
         internal_compiler_error_report, llvm_config_candidates, pick_llvm_for_dev,
-        print_doctor_verdict, print_version_banner, relativize_to_cwd, report_clang_for_doctor,
-        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
-        status_marker, validate_llvm_for_doctor,
+        print_doctor_verdict, print_version_banner, relativize_to_cwd, remove_scratch_dir,
+        report_clang_for_doctor, report_runtime_for_doctor, runtime_lib_dir_is_static_only,
+        set_compiling_file, status_marker, validate_llvm_for_doctor,
     };
     use std::path::{Path, PathBuf};
 
@@ -1549,6 +1565,43 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    /// Cleanup must remove only what emission created. The scratch path is all
+    /// the compiler holds, so if the directory it names is no longer the one
+    /// this process made, a recursive delete would take unrelated data with it.
+    /// This pins that a directory holding anything else survives.
+    #[test]
+    fn scratch_cleanup_leaves_a_replaced_directory_alone() {
+        let base = unique_tmp("scratch_replace");
+        std::fs::create_dir_all(&base).unwrap();
+
+        // Stand in for a directory that is not the one emission created: it has
+        // unrelated contents and no object file.
+        let replacement = base.join("scratch");
+        std::fs::create_dir_all(&replacement).unwrap();
+        std::fs::write(replacement.join("someone_elses_data"), b"KEEP").unwrap();
+
+        remove_scratch_dir(&replacement);
+
+        assert!(
+            replacement.is_dir(),
+            "a directory holding unrelated files must survive cleanup"
+        );
+        assert_eq!(
+            std::fs::read(replacement.join("someone_elses_data")).unwrap(),
+            b"KEEP"
+        );
+
+        // The directory this process did create - one object file, nothing else -
+        // is removed completely.
+        let ours = base.join("ours");
+        std::fs::create_dir_all(&ours).unwrap();
+        std::fs::write(ours.join("module.o"), b"obj").unwrap();
+        remove_scratch_dir(&ours);
+        assert!(!ours.exists(), "our own scratch directory should be gone");
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     /// The object file is created exclusively too, not just the directory
