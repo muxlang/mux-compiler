@@ -942,6 +942,33 @@ fn report_clang_output_or_exit(
     }
 }
 
+/// A private path for the object file handed to the linker.
+///
+/// Deliberately not `<source>.o`: that would overwrite a `foo.o` the user
+/// already had beside `foo.mux` and then delete it during cleanup, losing a
+/// file the compiler does not own. The name carries the process id and a
+/// monotonic counter so concurrent compiles - the test suite runs many at once -
+/// cannot collide either.
+fn scratch_object_path(stem: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let name = Path::new(stem)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mux_module".to_string());
+
+    env::temp_dir()
+        .join(format!(
+            "mux-{}-{}-{}.o",
+            name,
+            process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ))
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Delete the object file once it has been linked. It is a build artifact the
 /// user did not ask for, unlike the `.ll`, which is now only written when `-i`
 /// requested it and so is never cleaned up here.
@@ -1146,7 +1173,7 @@ fn main() {
         .trim_end_matches(".mux")
         .to_string();
     let ir_file = format!("{}.ll", stem);
-    let object_file = format!("{}.o", stem);
+    let object_file = scratch_object_path(&stem);
     generate_object_or_exit(
         &mut codegen,
         &nodes,
