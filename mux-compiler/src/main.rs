@@ -93,7 +93,7 @@ enum Commands {
     Version {},
 }
 
-fn find_clang_command() -> Option<String> {
+fn find_linker_command() -> Option<String> {
     if let Ok(cc) = env::var("CC") {
         let output = Command::new(&cc).arg("--version").output();
         if output.is_ok_and(|o| o.status.success()) {
@@ -513,8 +513,8 @@ fn run_doctor(dev_mode: bool) {
 
     print_detected_llvm_versions(&llvm_versions);
     let llvm_ok = validate_llvm_for_doctor(dev_mode, selected_dev_llvm);
-    let clang = find_clang_command();
-    let clang_ok = report_clang_for_doctor(clang.as_deref());
+    let linker = find_linker_command();
+    let clang_ok = report_clang_for_doctor(linker.as_deref());
     let runtime_ok = ensure_runtime_for_doctor();
 
     if !print_doctor_verdict(llvm_ok && clang_ok && runtime_ok) {
@@ -522,9 +522,10 @@ fn run_doctor(dev_mode: bool) {
     }
 }
 
-fn get_clang_version() -> Option<String> {
-    let clang = find_clang_command()?;
-    let output = Command::new(&clang).arg("--version").output().ok()?;
+/// Version of the C driver used to link programs, for the version banner.
+fn get_linker_version() -> Option<String> {
+    let linker = find_linker_command()?;
+    let output = Command::new(&linker).arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -688,7 +689,7 @@ fn banner_version_lines(green: anstyle::Style) -> Vec<String> {
         format!("{green}compiler{green:#} v{}", env!("CARGO_PKG_VERSION")),
         format!("{green}runtime{green:#} v{}", env!("MUX_RUNTIME_VERSION")),
     ];
-    if let Some(ref c) = get_clang_version() {
+    if let Some(ref c) = get_linker_version() {
         version_lines.push(format!("{green}clang{green:#} v{c}"));
     }
     version_lines.push(format!("{green}llvm{green:#} v{}", get_llvm_version()));
@@ -870,13 +871,13 @@ fn resolve_runtime_lib_dir_or_exit() -> PathBuf {
     }
 }
 
-fn find_clang_or_exit() -> String {
-    match find_clang_command() {
+fn find_linker_or_exit() -> String {
+    match find_linker_command() {
         Some(cmd) => cmd,
         None => {
             spinner::stop();
-            eprintln!("clang is required to link Mux programs but was not found on PATH.");
-            print_llvm_install_help();
+            eprintln!("A C compiler is required to link Mux programs, and none was found.");
+            print_linker_install_help();
             process::exit(1);
         }
     }
@@ -1178,8 +1179,8 @@ fn main() {
         .to_str()
         .expect("library path should be valid Unicode");
 
-    let clang_cmd = find_clang_or_exit();
-    let mut clang_args = vec![
+    let linker_cmd = find_linker_or_exit();
+    let mut linker_args = vec![
         object_file.clone(),
         "-L".to_string(),
         lib_path_str.to_string(),
@@ -1189,15 +1190,15 @@ fn main() {
     ];
 
     #[cfg(not(target_os = "macos"))]
-    clang_args.push("-Wl,--disable-new-dtags".to_string());
+    linker_args.push("-Wl,--disable-new-dtags".to_string());
 
     let gc_sections_flag = if cfg!(target_os = "macos") {
         "-Wl,-dead_strip".to_string()
     } else {
         "-Wl,--gc-sections".to_string()
     };
-    clang_args.push(gc_sections_flag);
-    clang_args.push("-lmux_runtime".to_string());
+    linker_args.push(gc_sections_flag);
+    linker_args.push("-lmux_runtime".to_string());
 
     // A static-only libmux_runtime.a carries no NEEDED entries, so its undefined
     // native symbols must be resolved explicitly - otherwise a program using
@@ -1211,19 +1212,19 @@ fn main() {
         && runtime_lib_dir_is_static_only(&lib_dir)
     {
         for native_lib in ["-lm", "-lz", "-lpthread", "-ldl"] {
-            clang_args.push(native_lib.to_string());
+            linker_args.push(native_lib.to_string());
         }
     }
 
-    clang_args.push("-o".to_string());
-    clang_args.push(
+    linker_args.push("-o".to_string());
+    linker_args.push(
         exe_file
             .to_str()
             .expect("executable path should be valid Unicode")
             .to_string(),
     );
 
-    let clang_output = Command::new(&clang_cmd).args(&clang_args).output();
+    let clang_output = Command::new(&linker_cmd).args(&linker_args).output();
 
     spinner::stop();
     report_clang_output_or_exit(clang_output, do_run, &file_path, &ir_file);
