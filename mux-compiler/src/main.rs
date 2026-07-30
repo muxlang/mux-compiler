@@ -1251,12 +1251,14 @@ fn main() {
             .to_string(),
     );
 
-    let clang_output = Command::new(&linker_cmd).args(&linker_args).output();
+    let linker_output = Command::new(&linker_cmd).args(&linker_args).output();
 
     spinner::stop();
-    report_clang_output_or_exit(clang_output, do_run, &file_path, &ir_file);
-
+    // Before interpreting the result: a spawn failure or a nonzero linker exit
+    // ends the process inside the call below, so cleaning up afterwards would
+    // leak the scratch object on exactly the paths that fail.
     remove_object_file(&object_file);
+    report_clang_output_or_exit(linker_output, do_run, &file_path, &ir_file);
 
     if do_run {
         run_executable_or_exit(&exe_file);
