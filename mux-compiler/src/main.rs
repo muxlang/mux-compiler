@@ -823,34 +823,44 @@ fn analyze_semantics_or_exit(
 ///
 /// Only the object is on the critical path. The textual IR used to be, which is
 /// what tied an install to a clang matching this compiler's LLVM major.
-fn generate_object_or_exit(
+/// Returns rather than exiting, so the caller can release the object handle
+/// first. `process::exit` skips destructors, and on Windows that handle is what
+/// deletes the file - exiting while holding it would leave the object in the
+/// temp directory for good.
+fn generate_object(
     codegen: &mut codegen::CodeGenerator,
     nodes: &[ast::AstNode],
     object: &mut fs::File,
     ir_file: Option<&str>,
-) {
-    if let Err(e) = codegen.generate(nodes) {
-        spinner::stop();
-        // A codegen failure is an internal compiler bug, not a language-level
-        // error in the user's program, so it gets the internal-error framing
-        // rather than a bare message.
-        report_internal_compiler_error(&format!("codegen error: {}", e));
-        process::exit(1);
-    }
+) -> Result<(), String> {
+    // A codegen failure is an internal compiler bug, not a language-level error
+    // in the user's program, so callers give it the internal-error framing
+    // rather than a bare message.
+    codegen
+        .generate(nodes)
+        .map_err(|e| format!("codegen error: {}", e))?;
+
     // IR first: when the module is invalid, the emitted `.ll` is exactly what is
     // needed to debug it, and object emission verifies and would bail first.
-    if let Some(ir_file) = ir_file
-        && let Err(e) = codegen.emit_ir_to_file(ir_file)
-    {
-        spinner::stop();
-        report_internal_compiler_error(&format!("failed to emit IR: {}", e));
-        process::exit(1);
+    if let Some(ir_file) = ir_file {
+        codegen
+            .emit_ir_to_file(ir_file)
+            .map_err(|e| format!("failed to emit IR: {}", e))?;
     }
-    if let Err(e) = codegen.emit_object(object) {
-        spinner::stop();
-        report_internal_compiler_error(&format!("failed to emit object file: {}", e));
-        process::exit(1);
-    }
+
+    codegen
+        .emit_object(object)
+        .map_err(|e| format!("failed to emit object file: {}", e))?;
+
+    // The bytes must be on disk, and read from the start: on unix the handle
+    // becomes the linker's stdin, on Windows it is reopened by path.
+    object
+        .sync_all()
+        .and_then(|()| {
+            use std::io::Seek;
+            object.rewind()
+        })
+        .map_err(|e| format!("failed to finalize the object file: {}", e))
 }
 
 fn resolve_runtime_lib_dir_or_exit() -> PathBuf {
@@ -1252,21 +1262,18 @@ fn main() {
             process::exit(1);
         }
     };
-    generate_object_or_exit(
+    if let Err(e) = generate_object(
         &mut codegen,
         &nodes,
         &mut object,
         intermediate.then_some(ir_file.as_str()),
-    );
-    // Rewind rather than close: on unix the handle becomes the linker's stdin and
-    // is read from the start; on Windows it is held open so DELETE_ON_CLOSE fires
-    // once linking is done. Either way the bytes must be on disk first.
-    if let Err(e) = object.sync_all().and_then(|()| {
-        use std::io::Seek;
-        object.rewind()
-    }) {
+    ) {
+        // Release the handle before exiting. `process::exit` skips destructors,
+        // so on Windows - where closing the handle is what deletes the file -
+        // exiting while holding it would leave the object behind for good.
+        drop(object);
         spinner::stop();
-        report_internal_compiler_error(&format!("failed to finalize the object file: {}", e));
+        report_internal_compiler_error(&e);
         process::exit(1);
     }
 
@@ -1343,6 +1350,11 @@ fn main() {
         linker.stdin(Stdio::from(object));
     }
     let linker_output = linker.output();
+
+    // Unix moved the handle into the child's stdin above; elsewhere release it
+    // here, before a link failure can exit the process while it is still held.
+    #[cfg(not(unix))]
+    drop(object);
 
     spinner::stop();
     report_clang_output_or_exit(linker_output, do_run, &file_path, &ir_file);
