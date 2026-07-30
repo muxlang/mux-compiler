@@ -93,7 +93,7 @@ enum Commands {
     Version {},
 }
 
-fn find_clang_command() -> Option<String> {
+fn find_linker_command() -> Option<String> {
     if let Ok(cc) = env::var("CC") {
         let output = Command::new(&cc).arg("--version").output();
         if output.is_ok_and(|o| o.status.success()) {
@@ -101,9 +101,13 @@ fn find_clang_command() -> Option<String> {
         }
     }
 
+    // Any C driver can link an object file. The version used to matter because
+    // the compiler handed clang textual IR to parse; it emits an object now, so
+    // `cc` and `gcc` are just as valid and the search no longer needs a
+    // version-matched clang to exist.
     let linked_major = env!("MUX_LLVM_MAJOR");
     let versioned = format!("clang-{}", linked_major);
-    let candidates: &[&str] = &[versioned.as_str(), "clang"];
+    let candidates: &[&str] = &[versioned.as_str(), "clang", "cc", "gcc"];
     for candidate in candidates {
         let output = match Command::new(candidate).arg("--version").output() {
             Ok(output) => output,
@@ -170,6 +174,25 @@ fn pick_llvm_for_dev(versions: &[(String, String, u32)]) -> Option<(String, Stri
         .iter()
         .find(|(_, _, major)| *major == REQUIRED_LLVM_MAJOR)
         .map(|(tool, version, major)| (tool.clone(), version.clone(), *major))
+}
+
+/// Install help for the C driver used to link programs. Distinct from
+/// `print_llvm_install_help`, which is about the LLVM *development* libraries a
+/// source build of the compiler needs - linking a compiled program only needs a
+/// C toolchain, of any version.
+fn print_linker_install_help() {
+    if cfg!(target_os = "linux") {
+        println!("Install a C toolchain:");
+        println!("  Debian/Ubuntu: sudo apt-get install clang");
+        println!("  Arch Linux:    sudo pacman -S clang");
+        println!("Any recent clang or gcc works; the version does not need to match.");
+    } else if cfg!(target_os = "macos") {
+        println!("Install the Xcode command line tools:");
+        println!("  xcode-select --install");
+    } else if cfg!(target_family = "windows") {
+        println!("Install LLVM (which provides clang), for example via Chocolatey:");
+        println!("  choco install llvm");
+    }
 }
 
 fn print_llvm_install_help() {
@@ -391,46 +414,31 @@ fn validate_llvm_for_doctor(
     true
 }
 
-fn report_clang_for_doctor(clang: Option<&str>) -> bool {
-    if let Some(clang_cmd) = clang {
-        let linked_major: u32 = env!("MUX_LLVM_MAJOR")
-            .parse()
-            .unwrap_or(REQUIRED_LLVM_MAJOR);
-        let clang_ok = match extract_clang_major(clang_cmd) {
-            Some(clang_major) if clang_major == linked_major => {
-                println!(
-                    "{} Clang is installed: {} (matches linked LLVM {}).",
-                    status_marker(true),
-                    clang_cmd,
-                    linked_major
-                );
-                true
-            }
-            Some(clang_major) => {
-                println!(
-                    "{} {} (clang {}) does not match linked LLVM {}.",
-                    status_marker(false),
-                    clang_cmd,
-                    clang_major,
-                    linked_major
-                );
-                println!(
-                    "  This will cause IR parse errors. Install clang-{} or set CC=clang-{}.",
-                    linked_major, linked_major
-                );
-                false
-            }
-            None => {
-                println!("{} Clang is installed: {}.", status_marker(true), clang_cmd);
-                true
-            }
-        };
-        return clang_ok;
-    }
+/// Report the C driver used to link compiled programs.
+///
+/// Its version is informational. The compiler emits an object file, so any
+/// driver that can link one works - a mismatch against the linked LLVM used to
+/// mean IR parse errors and no longer means anything.
+fn report_clang_for_doctor(linker: Option<&str>) -> bool {
+    let Some(linker_cmd) = linker else {
+        println!(
+            "{} No C compiler found to link programs with.",
+            status_marker(false)
+        );
+        print_linker_install_help();
+        return false;
+    };
 
-    println!("{} Clang is not installed.", status_marker(false));
-    print_llvm_install_help();
-    false
+    match extract_clang_major(linker_cmd) {
+        Some(major) => println!(
+            "{} Linker driver: {} (version {}).",
+            status_marker(true),
+            linker_cmd,
+            major
+        ),
+        None => println!("{} Linker driver: {}.", status_marker(true), linker_cmd),
+    }
+    true
 }
 
 // Running a clang binary that was just written and chmod'd can transiently fail
@@ -505,8 +513,8 @@ fn run_doctor(dev_mode: bool) {
 
     print_detected_llvm_versions(&llvm_versions);
     let llvm_ok = validate_llvm_for_doctor(dev_mode, selected_dev_llvm);
-    let clang = find_clang_command();
-    let clang_ok = report_clang_for_doctor(clang.as_deref());
+    let linker = find_linker_command();
+    let clang_ok = report_clang_for_doctor(linker.as_deref());
     let runtime_ok = ensure_runtime_for_doctor();
 
     if !print_doctor_verdict(llvm_ok && clang_ok && runtime_ok) {
@@ -514,9 +522,10 @@ fn run_doctor(dev_mode: bool) {
     }
 }
 
-fn get_clang_version() -> Option<String> {
-    let clang = find_clang_command()?;
-    let output = Command::new(&clang).arg("--version").output().ok()?;
+/// Version of the C driver used to link programs, for the version banner.
+fn get_linker_version() -> Option<String> {
+    let linker = find_linker_command()?;
+    let output = Command::new(&linker).arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -680,7 +689,7 @@ fn banner_version_lines(green: anstyle::Style) -> Vec<String> {
         format!("{green}compiler{green:#} v{}", env!("CARGO_PKG_VERSION")),
         format!("{green}runtime{green:#} v{}", env!("MUX_RUNTIME_VERSION")),
     ];
-    if let Some(ref c) = get_clang_version() {
+    if let Some(ref c) = get_linker_version() {
         version_lines.push(format!("{green}clang{green:#} v{c}"));
     }
     version_lines.push(format!("{green}llvm{green:#} v{}", get_llvm_version()));
@@ -809,24 +818,49 @@ fn analyze_semantics_or_exit(
     }
 }
 
-fn generate_ir_or_exit(
+/// Run codegen, then write the object file the linker consumes - and, when
+/// `-i` asked for it, the readable `.ll` alongside it.
+///
+/// Only the object is on the critical path. The textual IR used to be, which is
+/// what tied an install to a clang matching this compiler's LLVM major.
+/// Returns rather than exiting, so the caller can release the object handle
+/// first. `process::exit` skips destructors, and on Windows that handle is what
+/// deletes the file - exiting while holding it would leave the object in the
+/// temp directory for good.
+fn generate_object(
     codegen: &mut codegen::CodeGenerator,
     nodes: &[ast::AstNode],
-    ir_file: &str,
-) {
-    if let Err(e) = codegen.generate(nodes) {
-        spinner::stop();
-        // A codegen failure is an internal compiler bug, not a language-level
-        // error in the user's program, so it gets the internal-error framing
-        // rather than a bare message.
-        report_internal_compiler_error(&format!("codegen error: {}", e));
-        process::exit(1);
+    object: &mut fs::File,
+    ir_file: Option<&str>,
+) -> Result<(), String> {
+    // A codegen failure is an internal compiler bug, not a language-level error
+    // in the user's program, so callers give it the internal-error framing
+    // rather than a bare message.
+    codegen
+        .generate(nodes)
+        .map_err(|e| format!("codegen error: {}", e))?;
+
+    // IR first: when the module is invalid, the emitted `.ll` is exactly what is
+    // needed to debug it, and object emission verifies and would bail first.
+    if let Some(ir_file) = ir_file {
+        codegen
+            .emit_ir_to_file(ir_file)
+            .map_err(|e| format!("failed to emit IR: {}", e))?;
     }
-    if let Err(e) = codegen.emit_ir_to_file(ir_file) {
-        spinner::stop();
-        report_internal_compiler_error(&format!("failed to emit IR: {}", e));
-        process::exit(1);
-    }
+
+    codegen
+        .emit_object(object)
+        .map_err(|e| format!("failed to emit object file: {}", e))?;
+
+    // The bytes must be on disk, and read from the start: on unix the handle
+    // becomes the linker's stdin, on Windows it is reopened by path.
+    object
+        .sync_all()
+        .and_then(|()| {
+            use std::io::Seek;
+            object.rewind()
+        })
+        .map_err(|e| format!("failed to finalize the object file: {}", e))
 }
 
 fn resolve_runtime_lib_dir_or_exit() -> PathBuf {
@@ -847,13 +881,13 @@ fn resolve_runtime_lib_dir_or_exit() -> PathBuf {
     }
 }
 
-fn find_clang_or_exit() -> String {
-    match find_clang_command() {
+fn find_linker_or_exit() -> String {
+    match find_linker_command() {
         Some(cmd) => cmd,
         None => {
             spinner::stop();
-            eprintln!("clang is required to link Mux programs but was not found on PATH.");
-            print_llvm_install_help();
+            eprintln!("A C compiler is required to link Mux programs, and none was found.");
+            print_linker_install_help();
             process::exit(1);
         }
     }
@@ -918,15 +952,100 @@ fn report_clang_output_or_exit(
     }
 }
 
-fn remove_ir_if_requested(intermediate: bool, ir_file: &str) {
-    if intermediate {
-        return;
+/// How the linker refers to an object it reads from inherited stdin. `/dev/fd` is
+/// standard on Linux and the BSDs, macOS included, and `/dev/stdin` is the
+/// descriptor-0 entry within it.
+#[cfg(unix)]
+const LINKER_STDIN_OBJECT: &str = "/dev/stdin";
+
+/// An open handle to the object file, and the argument naming it to the linker.
+///
+/// A file directly in the temp directory, with no directory of our own in
+/// between. Two properties make that safe, and an intermediate component would
+/// lose both:
+///
+/// - `create_new` is `O_CREAT|O_EXCL`, so an existing file or symlink here is an
+///   error, never a write redirected through it. Nothing is opened that this
+///   process did not create, and the handle is returned so no path is resolved
+///   again afterwards.
+/// - Symlink traversal applies only to *non-final* path components, and `unlink`
+///   never follows the final one. So cleanup cannot reach outside this path even
+///   if the entry is swapped later: it would remove the replacement link itself,
+///   not whatever it points at.
+///
+/// Not `<source>.o` - that would clobber a `foo.o` the user already had beside
+/// `foo.mux`. The pid and a monotonic counter keep concurrent compiles from
+/// colliding (the test suite runs many at once), and exclusive creation turns
+/// any collision that does occur into a retry rather than an overwrite.
+fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let name = Path::new(stem)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mux_module".to_string());
+
+    for _ in 0..16 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let candidate = env::temp_dir().join(format!(
+            "mux-{}-{}-{}-{}.o",
+            name,
+            process::id(),
+            nanos,
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            // FILE_FLAG_DELETE_ON_CLOSE: the OS removes the file when the last
+            // handle closes, so Windows needs no delete-by-path at all - and so
+            // has no pathname that could be replaced between check and unlink.
+            // std's default share mode includes FILE_SHARE_DELETE, so the linker
+            // can still read it while this handle is open.
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+            options.custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
+        }
+        match options.open(&candidate) {
+            Ok(file) => {
+                #[cfg(unix)]
+                {
+                    // Drop the name straight away. From here the object exists
+                    // only as this descriptor, so there is no path for anything
+                    // to replace and nothing to unlink afterwards - the file is
+                    // released when the descriptor closes. The linker reads it as
+                    // `/dev/stdin`, which is why the handle becomes the child's
+                    // stdin rather than being closed here.
+                    if let Err(e) = fs::remove_file(&candidate) {
+                        return Err(format!(
+                            "failed to unlink the temporary object file {}: {}",
+                            candidate.display(),
+                            e
+                        ));
+                    }
+                    return Ok((LINKER_STDIN_OBJECT.to_string(), file));
+                }
+                #[cfg(not(unix))]
+                return Ok((candidate.to_string_lossy().into_owned(), file));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "failed to create a temporary object file at {}: {}",
+                    candidate.display(),
+                    e
+                ));
+            }
+        }
     }
 
-    Command::new("rm")
-        .arg(ir_file)
-        .status()
-        .expect("Failed to remove intermediate IR file");
+    Err("could not create a temporary object file".to_string())
 }
 
 fn run_executable_or_exit(exe_file: &Path) {
@@ -1118,11 +1237,45 @@ fn main() {
         .unwrap_or_else(|| file_path.to_string_lossy().into_owned());
     let mut codegen = codegen::CodeGenerator::new(&context, &mut analyzer, &source_name);
 
-    let ir_file = format!(
-        "{}.ll",
-        file_path.to_string_lossy().trim_end_matches(".mux")
-    );
-    generate_ir_or_exit(&mut codegen, &nodes, &ir_file);
+    let stem = file_path
+        .to_string_lossy()
+        .trim_end_matches(".mux")
+        .to_string();
+    let ir_file = format!("{}.ll", stem);
+
+    // Resolved before the scratch directory exists and before codegen runs.
+    // Neither depends on codegen, both exit the process on failure, and
+    // `process::exit` skips destructors - so anything created first would be
+    // left behind. Failing before the expensive work is better regardless.
+    let lib_dir = resolve_runtime_lib_dir_or_exit();
+    let lib_path_str = lib_dir
+        .to_str()
+        .expect("library path should be valid Unicode")
+        .to_string();
+    let linker_cmd = find_linker_or_exit();
+
+    let (object_file, mut object) = match create_scratch_object(&stem) {
+        Ok(pair) => pair,
+        Err(e) => {
+            spinner::stop();
+            report_internal_compiler_error(&e);
+            process::exit(1);
+        }
+    };
+    if let Err(e) = generate_object(
+        &mut codegen,
+        &nodes,
+        &mut object,
+        intermediate.then_some(ir_file.as_str()),
+    ) {
+        // Release the handle before exiting. `process::exit` skips destructors,
+        // so on Windows - where closing the handle is what deletes the file -
+        // exiting while holding it would leave the object behind for good.
+        drop(object);
+        spinner::stop();
+        report_internal_compiler_error(&e);
+        process::exit(1);
+    }
 
     // build executable
     // Use ./ prefix to ensure we run the local executable, not a system command
@@ -1143,15 +1296,8 @@ fn main() {
         parent.join(file_stem)
     };
 
-    let lib_dir = resolve_runtime_lib_dir_or_exit();
-
-    let lib_path_str = lib_dir
-        .to_str()
-        .expect("library path should be valid Unicode");
-
-    let clang_cmd = find_clang_or_exit();
-    let mut clang_args = vec![
-        ir_file.clone(),
+    let mut linker_args = vec![
+        object_file.clone(),
         "-L".to_string(),
         lib_path_str.to_string(),
         format!("-Wl,-rpath,{}", lib_path_str),
@@ -1160,15 +1306,15 @@ fn main() {
     ];
 
     #[cfg(not(target_os = "macos"))]
-    clang_args.push("-Wl,--disable-new-dtags".to_string());
+    linker_args.push("-Wl,--disable-new-dtags".to_string());
 
     let gc_sections_flag = if cfg!(target_os = "macos") {
         "-Wl,-dead_strip".to_string()
     } else {
         "-Wl,--gc-sections".to_string()
     };
-    clang_args.push(gc_sections_flag);
-    clang_args.push("-lmux_runtime".to_string());
+    linker_args.push(gc_sections_flag);
+    linker_args.push("-lmux_runtime".to_string());
 
     // A static-only libmux_runtime.a carries no NEEDED entries, so its undefined
     // native symbols must be resolved explicitly - otherwise a program using
@@ -1182,24 +1328,36 @@ fn main() {
         && runtime_lib_dir_is_static_only(&lib_dir)
     {
         for native_lib in ["-lm", "-lz", "-lpthread", "-ldl"] {
-            clang_args.push(native_lib.to_string());
+            linker_args.push(native_lib.to_string());
         }
     }
 
-    clang_args.push("-o".to_string());
-    clang_args.push(
+    linker_args.push("-o".to_string());
+    linker_args.push(
         exe_file
             .to_str()
             .expect("executable path should be valid Unicode")
             .to_string(),
     );
 
-    let clang_output = Command::new(&clang_cmd).args(&clang_args).output();
+    let mut linker = Command::new(&linker_cmd);
+    linker.args(&linker_args);
+    #[cfg(unix)]
+    {
+        // `/dev/stdin` in linker_args refers to this descriptor. Moving the
+        // handle in also closes this process's copy once the child has it, so the
+        // file is released as soon as linking finishes - no cleanup path at all.
+        linker.stdin(Stdio::from(object));
+    }
+    let linker_output = linker.output();
+
+    // Unix moved the handle into the child's stdin above; elsewhere release it
+    // here, before a link failure can exit the process while it is still held.
+    #[cfg(not(unix))]
+    drop(object);
 
     spinner::stop();
-    report_clang_output_or_exit(clang_output, do_run, &file_path, &ir_file);
-
-    remove_ir_if_requested(intermediate, &ir_file);
+    report_clang_output_or_exit(linker_output, do_run, &file_path, &ir_file);
 
     if do_run {
         run_executable_or_exit(&exe_file);
@@ -1445,6 +1603,31 @@ mod tests {
         }
     }
 
+    /// Exclusive creation is what keeps the object off a path this process did
+    /// not make: an existing file or symlink there must be an error, never a
+    /// write redirected through it.
+    #[cfg(unix)]
+    #[test]
+    fn scratch_object_creation_refuses_an_existing_entry() {
+        let base = unique_tmp("obj_excl");
+        std::fs::create_dir_all(&base).unwrap();
+
+        let victim = base.join("victim");
+        std::fs::write(&victim, b"UNTOUCHED").unwrap();
+        let squatted = base.join("scratch.o");
+        std::os::unix::fs::symlink(&victim, &squatted).unwrap();
+
+        let err = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&squatted)
+            .expect_err("create_new must refuse an existing symlink, not follow it");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"UNTOUCHED");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
     /// A release install puts the library in `../lib` relative to the binary,
     /// and `scripts/install.sh` is what creates that layout. The bundled
     /// library was present but unreachable in v0.6.0, so this pins the shape
@@ -1518,7 +1701,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn clang_doctor_reports_matching_and_mismatching_majors() {
+    fn linker_doctor_accepts_any_driver_version() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = unique_tmp("fake_clang");
@@ -1545,10 +1728,16 @@ mod tests {
         assert_eq!(extract_clang_major(matching), Some(linked_major));
         assert!(report_clang_for_doctor(Some(matching)));
 
+        // A driver whose version differs from the linked LLVM is fine now: the
+        // compiler emits an object file, so nothing parses textual IR and the
+        // versions need not agree. This used to be a hard failure.
         let mismatching = write_fake_clang("clang-mismatch", linked_major + 1);
-        assert!(!report_clang_for_doctor(Some(
-            mismatching.to_str().unwrap()
-        )));
+        let mismatching = mismatching.to_str().unwrap();
+        assert_eq!(extract_clang_major(mismatching), Some(linked_major + 1));
+        assert!(report_clang_for_doctor(Some(mismatching)));
+
+        // No driver at all is still a failure - something has to link.
+        assert!(!report_clang_for_doctor(None));
 
         std::fs::remove_dir_all(&dir).ok();
     }
