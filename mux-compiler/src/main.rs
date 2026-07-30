@@ -826,16 +826,16 @@ fn analyze_semantics_or_exit(
 fn generate_object_or_exit(
     codegen: &mut codegen::CodeGenerator,
     nodes: &[ast::AstNode],
+    object: &mut fs::File,
     object_file: &str,
     ir_file: Option<&str>,
-    scratch_dir: &Path,
 ) {
     if let Err(e) = codegen.generate(nodes) {
         spinner::stop();
         // A codegen failure is an internal compiler bug, not a language-level
         // error in the user's program, so it gets the internal-error framing
         // rather than a bare message.
-        remove_scratch_dir(scratch_dir);
+        remove_scratch_object(object_file);
         report_internal_compiler_error(&format!("codegen error: {}", e));
         process::exit(1);
     }
@@ -845,13 +845,13 @@ fn generate_object_or_exit(
         && let Err(e) = codegen.emit_ir_to_file(ir_file)
     {
         spinner::stop();
-        remove_scratch_dir(scratch_dir);
+        remove_scratch_object(object_file);
         report_internal_compiler_error(&format!("failed to emit IR: {}", e));
         process::exit(1);
     }
-    if let Err(e) = codegen.emit_object_to_file(object_file) {
+    if let Err(e) = codegen.emit_object(object) {
         spinner::stop();
-        remove_scratch_dir(scratch_dir);
+        remove_scratch_object(object_file);
         report_internal_compiler_error(&format!("failed to emit object file: {}", e));
         process::exit(1);
     }
@@ -946,56 +946,57 @@ fn report_clang_output_or_exit(
     }
 }
 
-/// Name of the object file inside the scratch directory. Shared so cleanup
-/// removes exactly the file emission created.
-const SCRATCH_OBJECT_NAME: &str = "module.o";
-
-/// A private directory to emit the object file into, and the path within it.
+/// An exclusively created path for the object file, plus its open handle.
 ///
-/// Not `<source>.o`: that would overwrite a `foo.o` the user already had beside
-/// `foo.mux` and then delete it during cleanup, losing a file the compiler does
-/// not own.
+/// A file directly in the temp directory, with no directory of our own in
+/// between. Two properties make that safe, and an intermediate component would
+/// lose both:
 ///
-/// Not a bare path in the shared temp directory either. A predictable name that
-/// LLVM opens without exclusive creation is a symlink-squatting target - a local
-/// process can pre-create it pointing at any file this user can write, and the
-/// emitted object lands there instead. So the *directory* is created
-/// exclusively: `create_dir` fails if the path exists at all, including as a
-/// symlink, and mode 0700 keeps anyone else from placing entries inside it
-/// afterwards. The object name within it can then be fixed and boring.
-fn scratch_object_dir() -> Result<PathBuf, String> {
+/// - `create_new` is `O_CREAT|O_EXCL`, so an existing file or symlink here is an
+///   error, never a write redirected through it. Nothing is opened that this
+///   process did not create, and the handle is returned so no path is resolved
+///   again afterwards.
+/// - Symlink traversal applies only to *non-final* path components, and `unlink`
+///   never follows the final one. So cleanup cannot reach outside this path even
+///   if the entry is swapped later: it would remove the replacement link itself,
+///   not whatever it points at.
+///
+/// Not `<source>.o` - that would clobber a `foo.o` the user already had beside
+/// `foo.mux`. The pid and a monotonic counter keep concurrent compiles from
+/// colliding (the test suite runs many at once), and exclusive creation turns
+/// any collision that does occur into a retry rather than an overwrite.
+fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
-    // Distinct candidates rather than secret ones: exclusive creation is what
-    // provides the safety, and the nanosecond clock only avoids self-collision
-    // between concurrent compiles.
+    let name = Path::new(stem)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mux_module".to_string());
+
     for _ in 0..16 {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let candidate = env::temp_dir().join(format!(
-            "mux-{}-{}-{}",
+            "mux-{}-{}-{}-{}.o",
+            name,
             process::id(),
             nanos,
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
 
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
         {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        match builder.create(&candidate) {
-            Ok(()) => return Ok(candidate),
-            // Taken already - by a concurrent compile or by a squatter. Either
-            // way, try a different name rather than writing into it.
+            Ok(file) => return Ok((candidate.to_string_lossy().into_owned(), file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(format!(
-                    "failed to create a temporary directory at {}: {}",
+                    "failed to create a temporary object file at {}: {}",
                     candidate.display(),
                     e
                 ));
@@ -1003,26 +1004,20 @@ fn scratch_object_dir() -> Result<PathBuf, String> {
         }
     }
 
-    Err("could not create a temporary directory for the object file".to_string())
+    Err("could not create a temporary object file".to_string())
 }
 
-/// Remove exactly what was put in the scratch directory, then the directory
-/// itself. The object is a build artifact the user did not ask for, unlike the
-/// `.ll`, which is only written when `-i` requested it and is never cleaned up
-/// here.
+/// Remove the object file once it has been linked. It is a build artifact the
+/// user did not ask for, unlike the `.ll`, which is only written when `-i` asked
+/// for it and is never cleaned up here.
 ///
-/// Deliberately not `remove_dir_all`: that recursively deletes whatever is at
-/// the path, and the path is all this holds - if the directory it names is no
-/// longer the one this process created, a recursive delete would take unrelated
-/// data with it. Removing the single known file and then a non-recursive
-/// `remove_dir` cannot: `remove_dir` refuses a directory containing anything
-/// else, and refuses a symlink outright. Anything unexpected is left alone.
+/// `unlink` does not follow the final path component, so this removes this
+/// path's own entry and never anything it might point at.
 ///
-/// Best-effort throughout: failing to clean up a temporary file must not fail an
-/// otherwise successful compile.
-fn remove_scratch_dir(dir: &Path) {
-    let _ = fs::remove_file(dir.join(SCRATCH_OBJECT_NAME));
-    let _ = fs::remove_dir(dir);
+/// Best-effort: failing to remove a temporary file must not fail an otherwise
+/// successful compile.
+fn remove_scratch_object(object_file: &str) {
+    let _ = fs::remove_file(object_file);
 }
 
 fn run_executable_or_exit(exe_file: &Path) {
@@ -1231,25 +1226,23 @@ fn main() {
         .to_string();
     let linker_cmd = find_linker_or_exit();
 
-    let scratch_dir = match scratch_object_dir() {
-        Ok(dir) => dir,
+    let (object_file, mut object) = match create_scratch_object(&stem) {
+        Ok(pair) => pair,
         Err(e) => {
             spinner::stop();
             report_internal_compiler_error(&e);
             process::exit(1);
         }
     };
-    let object_file = scratch_dir
-        .join(SCRATCH_OBJECT_NAME)
-        .to_string_lossy()
-        .into_owned();
     generate_object_or_exit(
         &mut codegen,
         &nodes,
+        &mut object,
         &object_file,
         intermediate.then_some(ir_file.as_str()),
-        &scratch_dir,
     );
+    // Close the handle so the linker reads a fully flushed file.
+    drop(object);
 
     // build executable
     // Use ./ prefix to ensure we run the local executable, not a system command
@@ -1320,7 +1313,7 @@ fn main() {
     // Before interpreting the result: a spawn failure or a nonzero linker exit
     // ends the process inside the call below, so cleaning up afterwards would
     // leak the scratch object on exactly the paths that fail.
-    remove_scratch_dir(&scratch_dir);
+    remove_scratch_object(&object_file);
     report_clang_output_or_exit(linker_output, do_run, &file_path, &ir_file);
 
     if do_run {
@@ -1334,7 +1327,7 @@ mod tests {
         REQUIRED_LLVM_MAJOR, clang_failure_detail, clang_version_output, compiling_file,
         dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
         internal_compiler_error_report, llvm_config_candidates, pick_llvm_for_dev,
-        print_doctor_verdict, print_version_banner, relativize_to_cwd, remove_scratch_dir,
+        print_doctor_verdict, print_version_banner, relativize_to_cwd, remove_scratch_object,
         report_clang_for_doctor, report_runtime_for_doctor, runtime_lib_dir_is_static_only,
         set_compiling_file, status_marker, validate_llvm_for_doctor,
     };
@@ -1567,63 +1560,24 @@ mod tests {
         }
     }
 
-    /// Cleanup must remove only what emission created. The scratch path is all
-    /// the compiler holds, so if the directory it names is no longer the one
-    /// this process made, a recursive delete would take unrelated data with it.
-    /// This pins that a directory holding anything else survives.
-    #[test]
-    fn scratch_cleanup_leaves_a_replaced_directory_alone() {
-        let base = unique_tmp("scratch_replace");
-        std::fs::create_dir_all(&base).unwrap();
-
-        // Stand in for a directory that is not the one emission created: it has
-        // unrelated contents and no object file.
-        let replacement = base.join("scratch");
-        std::fs::create_dir_all(&replacement).unwrap();
-        std::fs::write(replacement.join("someone_elses_data"), b"KEEP").unwrap();
-
-        remove_scratch_dir(&replacement);
-
-        assert!(
-            replacement.is_dir(),
-            "a directory holding unrelated files must survive cleanup"
-        );
-        assert_eq!(
-            std::fs::read(replacement.join("someone_elses_data")).unwrap(),
-            b"KEEP"
-        );
-
-        // The directory this process did create - one object file, nothing else -
-        // is removed completely.
-        let ours = base.join("ours");
-        std::fs::create_dir_all(&ours).unwrap();
-        std::fs::write(ours.join("module.o"), b"obj").unwrap();
-        remove_scratch_dir(&ours);
-        assert!(!ours.exists(), "our own scratch directory should be gone");
-
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    /// The object file is created exclusively too, not just the directory
-    /// holding it. LLVM emits into memory and the compiler writes the bytes
-    /// itself, so the only filesystem entry involved is one this process
-    /// creates - a file or symlink already at that path is an error rather than
-    /// a write redirected somewhere else.
+    /// Exclusive creation is what keeps the object off a path this process did
+    /// not make: an existing file or symlink there must be an error, never a
+    /// write redirected through it.
     #[cfg(unix)]
     #[test]
-    fn object_file_creation_refuses_an_existing_symlink() {
-        let base = unique_tmp("obj_squat");
+    fn scratch_object_creation_refuses_an_existing_entry() {
+        let base = unique_tmp("obj_excl");
         std::fs::create_dir_all(&base).unwrap();
+
         let victim = base.join("victim");
         std::fs::write(&victim, b"UNTOUCHED").unwrap();
-
-        let object = base.join("module.o");
-        std::os::unix::fs::symlink(&victim, &object).unwrap();
+        let squatted = base.join("scratch.o");
+        std::os::unix::fs::symlink(&victim, &squatted).unwrap();
 
         let err = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&object)
+            .open(&squatted)
             .expect_err("create_new must refuse an existing symlink, not follow it");
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&victim).unwrap(), b"UNTOUCHED");
@@ -1631,35 +1585,34 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
-    /// The scratch directory must be created exclusively, because a bare
-    /// predictable path in a shared temp directory is a symlink-squatting
-    /// target: a local process pre-creates it pointing at a file this user can
-    /// write, and the object LLVM emits lands there instead. `create_dir` is
-    /// what prevents that - this pins that it refuses an existing symlink
-    /// rather than following it.
+    /// Cleanup must not reach outside the path it was given. `unlink` does not
+    /// follow the final component, so a swapped entry loses the replacement link
+    /// itself and never what it points at - which is why the object lives
+    /// directly in the temp directory with no directory of ours in between: an
+    /// intermediate component *would* be traversed.
     #[cfg(unix)]
     #[test]
-    fn scratch_dir_creation_refuses_an_existing_symlink() {
-        let base = unique_tmp("scratch_squat");
+    fn scratch_object_cleanup_does_not_follow_a_replacement_symlink() {
+        let base = unique_tmp("obj_cleanup");
         std::fs::create_dir_all(&base).unwrap();
-        let target = base.join("attacker_target");
-        std::fs::create_dir_all(&target).unwrap();
 
-        let squatted = base.join("scratch");
-        std::os::unix::fs::symlink(&target, &squatted).unwrap();
+        let bystander = base.join("someone_elses.o");
+        std::fs::write(&bystander, b"KEEP").unwrap();
 
-        let err = std::fs::DirBuilder::new()
-            .create(&squatted)
-            .expect_err("creating over an existing symlink must fail, not follow it");
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        let object = base.join("scratch.o");
+        std::os::unix::fs::symlink(&bystander, &object).unwrap();
 
-        // Nothing was written through the symlink.
-        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+        remove_scratch_object(object.to_str().unwrap());
 
-        // A fresh name still succeeds, which is what the retry loop relies on.
-        let fresh = base.join("scratch-2");
-        std::fs::DirBuilder::new().create(&fresh).unwrap();
-        assert!(fresh.is_dir());
+        assert!(
+            !object.exists() && std::fs::symlink_metadata(&object).is_err(),
+            "the replacement link itself should be gone"
+        );
+        assert_eq!(
+            std::fs::read(&bystander).unwrap(),
+            b"KEEP",
+            "the link target must survive cleanup"
+        );
 
         std::fs::remove_dir_all(&base).ok();
     }

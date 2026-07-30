@@ -14,9 +14,7 @@
 //! - statements: Statement code generation
 //! - types: Type conversion functions
 
-use std::fs;
 use std::io::Write;
-use std::path::Path;
 
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
@@ -927,13 +925,12 @@ impl<'a> CodeGenerator<'a> {
     /// the object here removes that coupling: whatever links the result only has
     /// to understand object files.
     ///
-    /// LLVM emits into memory rather than to a path, and this writes the bytes
-    /// itself with `create_new` (`O_CREAT|O_EXCL`). Handing LLVM a path would
-    /// mean a pathname resolved at write time, which is a symlink-replacement
-    /// target; creating the file exclusively means the only filesystem entry
-    /// involved is one this process made, and an existing file or symlink there
-    /// is an error rather than a redirect.
-    pub fn emit_object_to_file(&self, filename: &str) -> Result<(), String> {
+    /// LLVM emits into memory and the bytes go to an already-open handle, so no
+    /// path is resolved here at all. The caller created that file exclusively
+    /// (`create_new`), so the only filesystem entry involved is one it made -
+    /// there is no pathname for anything to swap between deciding to write and
+    /// writing.
+    pub fn emit_object(&self, out: &mut impl Write) -> Result<(), String> {
         self.module
             .verify()
             .map_err(|e| format!("LLVM module verification failed: {}", e.to_string()))?;
@@ -970,13 +967,8 @@ impl<'a> CodeGenerator<'a> {
             .write_to_memory_buffer(&self.module, FileType::Object)
             .map_err(|e| format!("failed to emit object code: {}", e.to_string()))?;
 
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(Path::new(filename))
-            .map_err(|e| format!("failed to create {}: {}", filename, e))?;
-        file.write_all(object.as_slice())
-            .map_err(|e| format!("failed to write {}: {}", filename, e))
+        out.write_all(object.as_slice())
+            .map_err(|e| format!("failed to write the object file: {}", e))
     }
 
     pub fn emit_ir_to_file(&self, filename: &str) -> Result<(), String> {
