@@ -71,14 +71,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            runner_name: linux-ubuntu-latest-x86_64
+          # The PUBLISHED Linux build is the oldest supported runner, because a
+          # binary linked against a newer glibc will not start on an older one.
+          # Built on ubuntu-latest, `mux-linux-x86_64.tar.gz` required
+          # GLIBC_2.38/2.39 and so refused to run on Debian 12 stable (2.36),
+          # Ubuntu 22.04 LTS, RHEL 9 and Amazon Linux 2023 - while this build,
+          # which does run there, was produced and then thrown away.
+          - os: ubuntu-22.04
+            runner_name: linux-ubuntu-22.04-x86_64
             target: linux-x86_64
             archive_ext: tar.gz
             publish: true
-          - os: ubuntu-22.04
-            runner_name: linux-ubuntu-22.04-x86_64
-            target: linux-x86_64-ubuntu22
+          # Kept as a sanity build against a current toolchain, not shipped.
+          - os: ubuntu-latest
+            runner_name: linux-ubuntu-latest-x86_64
+            target: linux-x86_64-ubuntu-latest
             archive_ext: tar.gz
             publish: false
           - os: macos-15-intel

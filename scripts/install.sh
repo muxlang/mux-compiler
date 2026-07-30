@@ -1,5 +1,8 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+# POSIX sh, not bash: the documented one-liner is `curl ... | sh`, and on
+# Debian and Ubuntu /bin/sh is dash. As a bash script this died on line 2 with
+# "Illegal option -o pipefail" before doing anything at all.
+set -eu
 
 REPO="muxlang/mux-compiler"
 INSTALL_DIR_DEFAULT="${HOME}/.local/bin"
@@ -10,7 +13,7 @@ BASE_URL="${MUX_RELEASE_BASE_URL:-https://github.com/${REPO}/releases/latest/dow
 # awk program that extracts the first whitespace-separated field (the checksum).
 AWK_FIRST_FIELD='{print $1}'
 
-if [[ "${1:-}" == "--help" ]]; then
+if [ "${1:-}" = "--help" ]; then
   echo "Mux installer"
   echo
   echo "Environment variables:"
@@ -22,7 +25,8 @@ if [[ "${1:-}" == "--help" ]]; then
 fi
 
 detect_target() {
-  local os arch
+  # No `local`: it is not POSIX (shellcheck SC3043). Both assignments here are
+  # inside a command substitution anyway, so nothing leaks to the caller.
   os="$(uname -s)"
   arch="$(uname -m)"
 
@@ -49,7 +53,6 @@ detect_target() {
 }
 
 require_cmd() {
-  local cmd
   cmd="$1"
 
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -80,14 +83,14 @@ curl -fsSL "$CHECKSUM_URL" -o "$tmp_dir/$ARCHIVE.sha256"
 if command -v sha256sum >/dev/null 2>&1; then
   expected="$(awk "$AWK_FIRST_FIELD" "$tmp_dir/$ARCHIVE.sha256")"
   actual="$(sha256sum "$tmp_dir/$ARCHIVE" | awk "$AWK_FIRST_FIELD")"
-  if [[ "$expected" != "$actual" ]]; then
+  if [ "$expected" != "$actual" ]; then
     echo "Checksum verification failed"
     exit 1
   fi
 elif command -v shasum >/dev/null 2>&1; then
   expected="$(awk "$AWK_FIRST_FIELD" "$tmp_dir/$ARCHIVE.sha256")"
   actual="$(shasum -a 256 "$tmp_dir/$ARCHIVE" | awk "$AWK_FIRST_FIELD")"
-  if [[ "$expected" != "$actual" ]]; then
+  if [ "$expected" != "$actual" ]; then
     echo "Checksum verification failed"
     exit 1
   fi
@@ -101,7 +104,7 @@ tar -xzf "$tmp_dir/$ARCHIVE" -C "$tmp_dir"
 
 bundle_root="$tmp_dir/mux-${TARGET}"
 bin_path="$bundle_root/bin/mux"
-if [[ ! -f "$bin_path" ]]; then
+if [ ! -f "$bin_path" ]; then
   echo "Could not find mux binary in archive"
   exit 1
 fi
@@ -109,16 +112,19 @@ fi
 cp "$bin_path" "$INSTALL_DIR/mux"
 chmod +x "$INSTALL_DIR/mux"
 
-if [[ -d "$bundle_root/lib" ]]; then
+if [ -d "$bundle_root/lib" ]; then
   cp -f "$bundle_root/lib"/* "$LIB_DIR/" 2>/dev/null || true
 fi
 
 echo "Installed mux to $INSTALL_DIR/mux"
 echo "Installed runtime libraries to $LIB_DIR"
-if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-  echo "Add this to your shell profile:"
-  echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
-fi
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*) ;;
+  *)
+    echo "Add this to your shell profile:"
+    echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+    ;;
+esac
 
 # Downloading the archive is not the same as being able to compile: the
 # compiler shells out to a matching clang to link every program. `mux doctor`
