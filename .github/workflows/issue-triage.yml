@@ -15,6 +15,10 @@ jobs:
         with:
           script: |
             const labelName = 'needs triage';
+            // Returns true when the label was ABSENT at the moment this run
+            // looked - whether this run created it or lost the race to a
+            // concurrent one. That is exactly the condition under which GitHub
+            // already dropped it from the opening issue's template frontmatter.
             const ensureLabel = async (name, color, description) => {
               try {
                 await github.rest.issues.getLabel({
@@ -22,6 +26,7 @@ jobs:
                   repo: context.repo.repo,
                   name,
                 });
+                return false;
               } catch {
                 try {
                   await github.rest.issues.createLabel({
@@ -35,7 +40,11 @@ jobs:
                   if (createError.status !== 422) {
                     throw createError;
                   }
+                  // 422 means a concurrent run created it first. The label was
+                  // still missing when THIS run looked, so this run's issue had
+                  // its template label dropped too and needs the same recovery.
                 }
+                return true;
               }
             };
             const applyLabelIfMissing = async (name) => {
@@ -49,8 +58,19 @@ jobs:
                 });
               }
             };
-            await ensureLabel(labelName, 'ededed', 'Not yet reviewed or categorized');
-            await applyLabelIfMissing(labelName);
+            // Every issue template already sets `needs triage` in its frontmatter,
+            // so applying it here unconditionally was pure duplication. ensureLabel
+            // must stay: GitHub silently drops a template label that does not exist
+            // in the repo, so this call is what creates it.
+            //
+            // The one case that still needs an explicit apply is the run that
+            // creates the label: the template's request was already dropped, and
+            // creating the label now does not retroactively label the issue that
+            // triggered this run. Every later issue gets it from its template.
+            const createdTriageLabel = await ensureLabel(labelName, 'ededed', 'Not yet reviewed or categorized');
+            if (createdTriageLabel) {
+              await applyLabelIfMissing(labelName);
+            }
             if (!context.payload.issue.assignee) {
               await github.rest.issues.addAssignees({
                 owner: context.repo.owner,

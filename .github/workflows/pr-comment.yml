@@ -22,6 +22,20 @@ on:
     workflows: ["Build"]
     types: [completed]
 
+# Serialize report runs for the same PR branch. The sticky-comment update is a
+# lookup-then-create: two Build runs completing close together would both find
+# no marker and both post, producing exactly the duplicate comments the marker
+# exists to prevent. GitHub offers no atomic comment upsert, so serializing per
+# PR is what makes the pair safe. Keyed on the trusted workflow_run head fields
+# because the PR number is not resolved until a step below.
+#
+# cancel-in-progress is false so an in-flight post is never killed midway. A
+# queued run can still be superseded by a newer one, which is correct here: the
+# newest report is the one worth posting.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   actions: read # download artifacts + read job conclusions from the run
@@ -184,21 +198,39 @@ jobs:
           }
 
           # Leg A prints "N program(s), M failure(s)"; take those two integers only.
+          # A log that stops matching means the valgrind job changed its output
+          # format: say so in the comment. Dropping the chart silently is how a
+          # broken report goes unnoticed. Both notes are trusted literals - no
+          # fork-controlled text reaches the body through this path.
           emit_valgrind_pie() {
             local logf="$1" line total fails clean
             line="$(grep -Eo '[0-9]+ program\(s\), [0-9]+ failure\(s\)' "$logf" | tail -n 1 || true)"
-            [ -n "$line" ] || return 0
+            if [ -z "$line" ]; then
+              printf '_Chart unavailable: no "N program(s), M failure(s)" summary line in the valgrind log._\n\n'
+              return 0
+            fi
             total="$(printf '%s' "$line" | grep -Eo '^[0-9]+' || true)"
             fails="$(printf '%s' "$line" | grep -Eo '[0-9]+ failure' | grep -Eo '^[0-9]+' || true)"
-            { [[ "$total" =~ ^[0-9]+$ ]] && [[ "$fails" =~ ^[0-9]+$ ]] && [ "$total" -gt 0 ] && [ "$fails" -le "$total" ]; } || return 0
+            if ! { [[ "$total" =~ ^[0-9]+$ ]] && [[ "$fails" =~ ^[0-9]+$ ]] && [ "$total" -gt 0 ] && [ "$fails" -le "$total" ]; }; then
+              printf '_Chart unavailable: the valgrind summary line did not parse into usable counts._\n\n'
+              return 0
+            fi
             clean=$(( total - fails ))
             printf '```mermaid\n'
+            # Mermaid's default pie palette is dark blue/purple, which reads as
+            # arbitrary. Force clean=green, leaking=red: pie1 colors the first
+            # slice below, pie2 the second.
+            printf '%s\n' "%%{init: {'themeVariables': {'pie1': '#2da44e', 'pie2': '#cf222e'}}}%%"
             printf 'pie showData\n'
             printf '    title Leg A: compiled programs under Valgrind (%s total)\n' "$total"
             printf '    "Clean" : %s\n' "$clean"
             printf '    "Leaking" : %s\n' "$fails"
             printf '```\n\n'
           }
+
+          # Identifies our own report comment so each push updates it in place
+          # instead of appending one per push. Invisible in rendered markdown.
+          MARKER="<!-- mux-ci-report -->"
 
           : > body.md
           wrote=0
@@ -249,4 +281,17 @@ jobs:
             exit 0
           fi
           printf '_Commit `%s` - [full run](%s)_\n' "$HEAD_SHA" "$RUN_URL" >> body.md
-          gh pr comment "$PR" --repo "$REPO" --body-file body.md
+          printf '\n%s\n' "$MARKER" >> body.md
+
+          # Update our own previous comment instead of stacking one per push. The
+          # author filter is load-bearing: anyone can post a comment containing
+          # the marker, and only a github-actions[bot] comment is ours to edit.
+          existing="$(gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" \
+            | jq -r --arg m "$MARKER" \
+                '[.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($m)))] | .[0].id // empty')"
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@body.md --silent
+            echo "Updated report comment $existing on PR #$PR."
+          else
+            gh pr comment "$PR" --repo "$REPO" --body-file body.md
+          fi

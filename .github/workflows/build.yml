@@ -6,6 +6,14 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+concurrency:
+  # Supersede an in-flight run for the SAME PR. Push runs deliberately get a
+  # unique group (run_id): a shared group keeps only one pending run, so rapid
+  # pushes to main would evict an intermediate commit's queued run before it
+  # ever ran, leaving that commit unverified.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -464,13 +472,24 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          measure=$(curl -sf -u "$SONAR_TOKEN:" \
-            "https://sonarcloud.io/api/measures/component?component=muxlang_mux-compiler&pullRequest=${PR_NUMBER}&metricKeys=new_violations")
-          # new_violations is a new-code metric, so the count lives under
-          # period.value (or periods[].value on older responses), not value.
-          count=$(printf '%s' "$measure" | jq -r '(.component.measures[0] // {}) as $m | $m.value // $m.period.value // $m.periods[0].value // "0"')
+          api="https://sonarcloud.io/api/issues/search?componentKeys=muxlang_mux-compiler&pullRequest=${PR_NUMBER}&resolved=false&inNewCodePeriod=true&ps=1"
+          # Query the issues search endpoint rather than measures: its .total is
+          # always present (0 for a clean PR), so "no new issues" is never
+          # confused with "measure omitted from the response". Retry to ride out
+          # indexing lag; no readable .total after retries fails closed.
+          count=""
+          for attempt in 1 2 3 4 5; do
+            resp=$(curl -sf -u "$SONAR_TOKEN:" "$api") || { sleep 5; continue; }
+            count=$(printf '%s' "$resp" | jq -r '.total // empty')
+            [ -n "$count" ] && break
+            sleep 5
+          done
+          if [ -z "$count" ]; then
+            echo "::error::Could not read the new-issue count for PR #${PR_NUMBER} from SonarCloud after retries."
+            exit 1
+          fi
           echo "New SonarCloud issues on PR #${PR_NUMBER}: ${count}"
-          if [ "${count:-0}" -gt 0 ]; then
-            echo "::error::${count} new SonarCloud issue(s) introduced on this PR. See https://sonarcloud.io/project/issues?id=muxlang_mux-compiler&pullRequest=${PR_NUMBER}&resolved=false&inNewCodePeriod=true"
+          if [ "$count" -gt 0 ]; then
+            echo "::error::${count} new SonarCloud issue(s) introduced on this PR. See https://sonarcloud.io/project/issues?id=muxlang_mux-compiler&pullRequest=${PR_NUMBER}&resolved=false"
             exit 1
           fi
