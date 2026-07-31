@@ -7,10 +7,12 @@ on:
     types: [opened, synchronize, reopened]
 
 concurrency:
-  # A newer push supersedes an in-flight PR run. A push to main is never
-  # cancelled: its run is the authoritative record for that commit.
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Supersede an in-flight run for the SAME PR. Push runs deliberately get a
+  # unique group (run_id): a shared group keeps only one pending run, so rapid
+  # pushes to main would evict an intermediate commit's queued run before it
+  # ever ran, leaving that commit unverified.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
