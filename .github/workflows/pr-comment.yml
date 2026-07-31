@@ -22,6 +22,20 @@ on:
     workflows: ["Build"]
     types: [completed]
 
+# Serialize report runs for the same PR branch. The sticky-comment update is a
+# lookup-then-create: two Build runs completing close together would both find
+# no marker and both post, producing exactly the duplicate comments the marker
+# exists to prevent. GitHub offers no atomic comment upsert, so serializing per
+# PR is what makes the pair safe. Keyed on the trusted workflow_run head fields
+# because the PR number is not resolved until a step below.
+#
+# cancel-in-progress is false so an in-flight post is never killed midway. A
+# queued run can still be superseded by a newer one, which is correct here: the
+# newest report is the one worth posting.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   actions: read # download artifacts + read job conclusions from the run
