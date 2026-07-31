@@ -49,8 +49,11 @@ jobs:
                 });
               }
             };
+            // Every issue template already sets `needs triage` in its frontmatter,
+            // so applying it here was pure duplication. ensureLabel must stay:
+            // GitHub silently drops a template label that does not exist in the
+            // repo, so this call is what creates it.
             await ensureLabel(labelName, 'ededed', 'Not yet reviewed or categorized');
-            await applyLabelIfMissing(labelName);
             if (!context.payload.issue.assignee) {
               await github.rest.issues.addAssignees({
                 owner: context.repo.owner,
