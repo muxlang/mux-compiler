@@ -25,7 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offer their own `clear()` as a regular method, and the dsa classes do.
 
 ### Fixed
-- **Windows links one CRT instead of two**: clang defaults to the static CRT on
+- **Windows links one CRT instead of two**: clang's driver passes
+  `-defaultlib:libcmt` unconditionally when it links on Windows, pulling the
+  static CRT into a link whose every other member requests `MSVCRT`. The result
+  was `LNK4098` (conflicting default CRTs), `free`/`malloc` resolved out of the
+  static `libucrt.lib`, and `LNK2019` on `__imp_realloc` and friends - which only
+  exist in the import library. The compiler now countermands that at link time
+  with `/NODEFAULTLIB:libcmt`, `/NODEFAULTLIB:libucrt` and `/DEFAULTLIB:msvcrt`.
+  An earlier attempt used `-fms-runtime-lib=dll`; that only rewrites the
+  `--dependent-lib` directive clang bakes into objects it compiles itself, and
+  clang compiles nothing here, so it had no effect. Superseded: clang defaults to the static CRT on
   Windows while rustc builds `windows-msvc` objects against the dynamic one, so
   `libucrt.lib` was mixed into a link that expected the ucrt import library -
   reported as `LNK4098: defaultlib 'MSVCRT' conflicts` and then failing on the
