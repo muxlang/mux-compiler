@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offer their own `clear()` as a regular method, and the dsa classes do.
 
 ### Fixed
+- **Windows links one CRT instead of two**: clang defaults to the static CRT on
+  Windows while rustc builds `windows-msvc` objects against the dynamic one, so
+  `libucrt.lib` was mixed into a link that expected the ucrt import library -
+  reported as `LNK4098: defaultlib 'MSVCRT' conflicts` and then failing on the
+  CRT symbols the runtime's vendored C code imports (`__imp_realloc`,
+  `__imp_strcspn`). The compiler now asks clang for the DLL runtime.
+- **Windows links the system libraries a static runtime needs**: the explicit
+  native-dependency list was skipped on Windows, on the grounds that "the import
+  lib records its own deps". `mux_runtime.lib` is a *static* library, not an
+  import library, and a static `.lib` records nothing - so every compile failed
+  with `LNK2019` on symbols owned by `bcrypt`, `advapi32`, `ntdll`, `userenv`,
+  `secur32` and friends. Windows now gets the same treatment unix already had.
 - **Windows links against the import library, not a stray DLL**: runtime
   resolution accepted any directory containing `mux_runtime.dll` as the one to
   link against. A packaged install must keep that DLL beside `mux.exe` for the

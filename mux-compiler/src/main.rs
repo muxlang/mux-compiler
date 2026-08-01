@@ -1248,6 +1248,119 @@ fn install_internal_error_panic_hook() {
     }));
 }
 
+/// Native libraries a statically linked runtime needs, by target OS.
+///
+/// Takes the OS as a parameter rather than reading `cfg!` inline so that every
+/// platform's list is reachable from a test on any host. The Windows list in
+/// particular is unreachable on the Linux runners CI uses, so inline `cfg!`
+/// left it verified by nothing - and it was wrong for months, failing every
+/// Windows compile with LNK2019 on symbols these libraries own.
+fn native_runtime_deps(target_os: &str) -> &'static [&'static str] {
+    match target_os {
+        // libSystem already provides these.
+        "macos" => &[],
+        // What Rust's std and the runtime's vendored C code reference:
+        // bcrypt/advapi32 for getrandom, ntdll for pipes, userenv for the home
+        // directory, secur32 for the user name, ws2_32 for sockets, dbghelp for
+        // backtraces.
+        "windows" => &[
+            "-ladvapi32",
+            "-lbcrypt",
+            "-ldbghelp",
+            "-lkernel32",
+            "-lntdll",
+            "-lole32",
+            "-loleaut32",
+            "-lsecur32",
+            "-lshell32",
+            "-luserenv",
+            "-luuid",
+            "-lws2_32",
+        ],
+        // libm for `**`/pow, and the rest for what the runtime's C deps pull in
+        // (issue #291).
+        _ => &["-lm", "-lz", "-lpthread", "-ldl"],
+    }
+}
+
+/// Build the clang argument list that links the emitted object into an
+/// executable, minus the output path.
+///
+/// Extracted from `main` because the platform differences here are genuinely
+/// three-way - ELF, Mach-O and PE each want a different spelling of the same
+/// three ideas - and inlining them pushed `main` past the cognitive-complexity
+/// budget. Keeping them together also means the whole link line can be read in
+/// one place.
+fn build_linker_args(object_file: &str, lib_path_str: &str, lib_dir: &Path) -> Vec<String> {
+    let mut linker_args = vec![
+        object_file.to_string(),
+        "-L".to_string(),
+        lib_path_str.to_string(),
+        "-ffunction-sections".to_string(),
+        "-fdata-sections".to_string(),
+    ];
+
+    // clang defaults to the STATIC CRT on Windows; rustc builds windows-msvc
+    // objects against the DYNAMIC one. Linking both halves without saying so
+    // mixes libucrt.lib into a link that expects the ucrt import library, which
+    // the linker reports as
+    //
+    //   LNK4098: defaultlib 'MSVCRT' conflicts with use of other libs
+    //   LNK4217: symbol 'free' defined in 'libucrt.lib' is imported by ...
+    //
+    // and then fails on the CRT symbols the runtime's vendored C code imports
+    // (__imp_realloc, __imp_strcspn). Asking clang for the DLL runtime makes both
+    // halves agree on one CRT.
+    #[cfg(target_os = "windows")]
+    linker_args.push("-fms-runtime-lib=dll".to_string());
+
+    // rpath and the dtags flag are ELF concepts. MSVC's linker answers both with
+    // "LNK4044: unrecognized option" and ignores them; Windows resolves a DLL
+    // from the executable's own directory, which is where a packaged install
+    // puts the runtime.
+    #[cfg(not(target_os = "windows"))]
+    {
+        linker_args.push(format!("-Wl,-rpath,{}", lib_path_str));
+        #[cfg(not(target_os = "macos"))]
+        linker_args.push("-Wl,--disable-new-dtags".to_string());
+    }
+
+    // Dead-stripping is spelled differently per linker, and MSVC's does it by
+    // default at the optimisation levels that matter, so Windows passes nothing
+    // rather than an option that would only be warned about.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let gc_sections_flag = if cfg!(target_os = "macos") {
+            "-Wl,-dead_strip".to_string()
+        } else {
+            "-Wl,--gc-sections".to_string()
+        };
+        linker_args.push(gc_sections_flag);
+    }
+    linker_args.push("-lmux_runtime".to_string());
+
+    // A static runtime carries no record of its own dependencies, so its
+    // undefined native symbols must be resolved explicitly - otherwise a program
+    // using libm (e.g. `**`/`pow`) fails to link with "undefined reference to
+    // pow" (issue #291). These must follow -lmux_runtime so the archive's
+    // references are satisfied by the libraries after it. A dynamic runtime
+    // pulls them in on its own, so only the static-only case needs them.
+    //
+    // This applies to Windows too. It used to be skipped there on the grounds
+    // that "the import lib records its own deps", but mux_runtime.lib is a
+    // STATIC library, not an import library, and a static .lib records nothing.
+    // Every compile therefore failed with LNK2019 on symbols belonging to the
+    // Windows system libraries below. macOS still needs nothing: libSystem
+    // provides these.
+    if runtime_lib_dir_is_static_only(lib_dir) {
+        for native_lib in native_runtime_deps(env::consts::OS) {
+            linker_args.push((*native_lib).to_string());
+        }
+    }
+
+    linker_args
+}
+
 fn main() {
     install_internal_error_panic_hook();
     let (file_path, do_run, output, intermediate) = parse_args_or_exit();
@@ -1344,54 +1457,7 @@ fn main() {
         parent.join(file_stem)
     };
 
-    let mut linker_args = vec![
-        object_file.clone(),
-        "-L".to_string(),
-        lib_path_str.to_string(),
-        "-ffunction-sections".to_string(),
-        "-fdata-sections".to_string(),
-    ];
-
-    // rpath and the dtags flag are ELF concepts. MSVC's linker answers both with
-    // "LNK4044: unrecognized option" and ignores them; Windows resolves a DLL
-    // from the executable's own directory, which is where a packaged install
-    // puts the runtime.
-    #[cfg(not(target_os = "windows"))]
-    {
-        linker_args.push(format!("-Wl,-rpath,{}", lib_path_str));
-        #[cfg(not(target_os = "macos"))]
-        linker_args.push("-Wl,--disable-new-dtags".to_string());
-    }
-
-    // Dead-stripping is spelled differently per linker, and MSVC's does it by
-    // default at the optimisation levels that matter, so Windows passes nothing
-    // rather than an option that would only be warned about.
-    #[cfg(not(target_os = "windows"))]
-    {
-        let gc_sections_flag = if cfg!(target_os = "macos") {
-            "-Wl,-dead_strip".to_string()
-        } else {
-            "-Wl,--gc-sections".to_string()
-        };
-        linker_args.push(gc_sections_flag);
-    }
-    linker_args.push("-lmux_runtime".to_string());
-
-    // A static-only libmux_runtime.a carries no NEEDED entries, so its undefined
-    // native symbols must be resolved explicitly - otherwise a program using
-    // libm (e.g. `**`/`pow`) fails to link with "undefined reference to pow"
-    // (issue #291). These must follow -lmux_runtime so the archive's references
-    // are satisfied by the libraries after it. The cdylib pulls these in on its
-    // own, so only the static-only case needs them. Skipped on Windows (the
-    // import lib records its own deps) and macOS (libSystem provides them).
-    if !cfg!(target_os = "windows")
-        && !cfg!(target_os = "macos")
-        && runtime_lib_dir_is_static_only(&lib_dir)
-    {
-        for native_lib in ["-lm", "-lz", "-lpthread", "-ldl"] {
-            linker_args.push(native_lib.to_string());
-        }
-    }
+    let mut linker_args = build_linker_args(&object_file, &lib_path_str, &lib_dir);
 
     linker_args.push("-o".to_string());
     linker_args.push(
@@ -1440,12 +1506,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        REQUIRED_LLVM_MAJOR, clang_failure_detail, clang_version_output, compiling_file,
-        dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
-        internal_compiler_error_report, llvm_config_candidates, pick_llvm_for_dev,
-        print_doctor_verdict, print_version_banner, relativize_to_cwd, report_clang_for_doctor,
-        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
-        status_marker, validate_llvm_for_doctor,
+        REQUIRED_LLVM_MAJOR, build_linker_args, clang_failure_detail, clang_version_output,
+        compiling_file, dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir,
+        format_panic_detail, internal_compiler_error_report, llvm_config_candidates,
+        native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict, print_version_banner,
+        relativize_to_cwd, report_clang_for_doctor, report_runtime_for_doctor,
+        runtime_lib_dir_is_static_only, set_compiling_file, status_marker,
+        validate_llvm_for_doctor,
     };
     use std::path::{Path, PathBuf};
 
@@ -1642,6 +1709,134 @@ mod tests {
                 .iter()
                 .any(|c| c == &format!("llvm-config-{}", REQUIRED_LLVM_MAJOR))
         );
+    }
+
+    /// Every platform's list, checked on any host. The Windows entries are the
+    /// point: they are unreachable on the Linux runners CI uses, so with an
+    /// inline cfg! they were verified by nothing - and were in fact missing
+    /// entirely, failing every Windows compile with LNK2019 on symbols these
+    /// libraries own.
+    #[test]
+    fn native_runtime_deps_cover_every_platform() {
+        assert!(
+            native_runtime_deps("macos").is_empty(),
+            "libSystem already provides these"
+        );
+
+        let unixish = native_runtime_deps("linux");
+        for lib in ["-lm", "-lz", "-lpthread", "-ldl"] {
+            assert!(unixish.contains(&lib), "unix is missing {lib}");
+        }
+
+        let windows = native_runtime_deps("windows");
+        for lib in [
+            "-ladvapi32",
+            "-lbcrypt",
+            "-lntdll",
+            "-lsecur32",
+            "-luserenv",
+            "-lws2_32",
+        ] {
+            assert!(windows.contains(&lib), "windows is missing {lib}");
+        }
+        assert!(
+            !windows.contains(&"-lm"),
+            "libm is not a Windows system library"
+        );
+    }
+
+    /// The link line is what turns a compiled object into a program, and it was
+    /// entirely untested until it became a function of its own. These pin the
+    /// parts that are easy to break silently.
+    #[test]
+    fn build_linker_args_links_the_object_and_the_runtime() {
+        let dir = unique_tmp("linkargs_basic");
+        std::fs::create_dir_all(&dir).unwrap();
+        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+
+        assert_eq!(args.first().map(String::as_str), Some("scratch.o"));
+        assert!(args.iter().any(|a| a == "-lmux_runtime"));
+        let l_index = args.iter().position(|a| a == "-L").expect("-L present");
+        assert_eq!(args[l_index + 1], dir.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A static archive's undefined symbols are resolved only by libraries that
+    /// come AFTER it on the command line, so this ordering is load-bearing
+    /// rather than cosmetic - reversing it reintroduces issue #291.
+    #[test]
+    fn build_linker_args_puts_native_deps_after_the_runtime() {
+        let dir = unique_tmp("linkargs_static");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(static_lib_name()), b"x").unwrap();
+
+        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+        let runtime = args
+            .iter()
+            .position(|a| a == "-lmux_runtime")
+            .expect("runtime is linked");
+
+        if cfg!(target_os = "macos") {
+            // libSystem provides these, so nothing extra is expected.
+            assert!(!args.iter().any(|a| a == "-lm"));
+        } else {
+            let native = args
+                .iter()
+                .position(|a| a.starts_with("-l") && a != "-lmux_runtime")
+                .expect("native dependencies are linked for a static-only runtime");
+            assert!(
+                native > runtime,
+                "native deps must follow -lmux_runtime, got {args:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A dynamic runtime records its own dependencies, so the explicit list is
+    /// only for the static-only case.
+    #[test]
+    fn build_linker_args_omits_native_deps_when_a_dynamic_runtime_is_present() {
+        let dir = unique_tmp("linkargs_dynamic");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(static_lib_name()), b"x").unwrap();
+        std::fs::write(dir.join(dynamic_lib_name()), b"x").unwrap();
+
+        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+        let extra: Vec<&String> = args
+            .iter()
+            .filter(|a| a.starts_with("-l") && *a != "-lmux_runtime")
+            .collect();
+        assert!(extra.is_empty(), "expected no native deps, got {extra:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Platform-specific spellings of the same three ideas. Each linker rejects
+    /// the others', which is how the Windows leg first failed.
+    #[test]
+    fn build_linker_args_uses_the_right_dialect_for_this_platform() {
+        let dir = unique_tmp("linkargs_dialect");
+        std::fs::create_dir_all(&dir).unwrap();
+        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+        let joined = args.join(" ");
+
+        if cfg!(target_os = "windows") {
+            // rpath and the ELF dtags flag draw LNK4044 from MSVC's linker.
+            assert!(!joined.contains("-rpath"), "{joined}");
+            assert!(!joined.contains("disable-new-dtags"), "{joined}");
+            assert!(!joined.contains("gc-sections"), "{joined}");
+            // Both halves of the link must agree on one CRT.
+            assert!(joined.contains("-fms-runtime-lib=dll"), "{joined}");
+        } else {
+            assert!(joined.contains("-rpath"), "{joined}");
+            assert!(!joined.contains("-fms-runtime-lib"), "{joined}");
+            if cfg!(target_os = "macos") {
+                assert!(joined.contains("-dead_strip"), "{joined}");
+            } else {
+                assert!(joined.contains("--gc-sections"), "{joined}");
+                assert!(joined.contains("disable-new-dtags"), "{joined}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
