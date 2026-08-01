@@ -966,6 +966,22 @@ fn report_clang_output_or_exit(
     }
 }
 
+/// Remove the named scratch object, warning rather than failing if it will not
+/// go.
+///
+/// Only the platforms that keep a name need this; unix released it at creation.
+/// By the time this runs the link has already happened, so a stuck temp file is
+/// untidy rather than fatal and must not change the exit status - but it should
+/// not be silent either. On Windows an antivirus scanner can hold a transient
+/// lock on a freshly written object, and a discarded error there means these
+/// accumulate in the temp directory with nothing ever saying so.
+#[cfg(not(unix))]
+fn remove_scratch_object(path: &str) {
+    if let Err(e) = fs::remove_file(path) {
+        eprintln!("warning: could not remove the temporary object file {path}: {e}");
+    }
+}
+
 /// How the linker refers to an object it reads from inherited stdin. `/dev/fd` is
 /// standard on Linux and the BSDs, macOS included, and `/dev/stdin` is the
 /// descriptor-0 entry within it.
@@ -1289,9 +1305,9 @@ fn main() {
         // elsewhere the name is still on disk and has to be removed too, or a
         // codegen failure leaves the object behind for good.
         drop(object);
-        #[cfg(not(unix))]
-        let _ = fs::remove_file(&object_file);
         spinner::stop();
+        #[cfg(not(unix))]
+        remove_scratch_object(&object_file);
         report_internal_compiler_error(&e);
         process::exit(1);
     }
@@ -1391,14 +1407,16 @@ fn main() {
 
     let linker_output = linker.output();
 
+    spinner::stop();
+
     // The name outlives the handle now, so it has to be removed explicitly, and
     // before report_clang_output_or_exit - that exits the process on a link
     // failure, which would otherwise leak the object into the temp directory on
-    // exactly the runs that produce one.
+    // exactly the runs that produce one. After the spinner stops, so a warning
+    // cannot interleave with it.
     #[cfg(not(unix))]
-    let _ = fs::remove_file(&object_file);
+    remove_scratch_object(&object_file);
 
-    spinner::stop();
     report_clang_output_or_exit(linker_output, do_run, &file_path, &ir_file);
 
     if do_run {
