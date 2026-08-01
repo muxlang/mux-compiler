@@ -991,6 +991,12 @@ const LINKER_STDIN_OBJECT: &str = "/dev/stdin";
 /// `foo.mux`. The pid and a monotonic counter keep concurrent compiles from
 /// colliding (the test suite runs many at once), and exclusive creation turns
 /// any collision that does occur into a retry rather than an overwrite.
+///
+/// The two platforms then diverge, because only one of them can hand the linker
+/// a descriptor. Unix unlinks immediately and passes the open descriptor as the
+/// child's stdin, so no name exists to race against. Windows has no equivalent:
+/// the linker must open the object by path, so the file keeps its name, the
+/// handle is closed before the link, and the caller removes it afterwards.
 fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -1015,17 +1021,13 @@ fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
 
         let mut options = fs::OpenOptions::new();
         options.read(true).write(true).create_new(true);
-        #[cfg(windows)]
-        {
-            // FILE_FLAG_DELETE_ON_CLOSE: the OS removes the file when the last
-            // handle closes, so Windows needs no delete-by-path at all - and so
-            // has no pathname that could be replaced between check and unlink.
-            // std's default share mode includes FILE_SHARE_DELETE, so the linker
-            // can still read it while this handle is open.
-            use std::os::windows::fs::OpenOptionsExt;
-            const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
-            options.custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
-        }
+        // Deliberately NOT FILE_FLAG_DELETE_ON_CLOSE on Windows. That flag looks
+        // ideal - the OS reclaims the file with no delete-by-path at all - but it
+        // changes how OTHER processes may open the file: while such a handle is
+        // open, any opener that does not itself pass FILE_SHARE_DELETE gets a
+        // sharing violation. link.exe does not, so it failed with
+        // "LNK1104: cannot open file" on an object that existed and was readable.
+        // The share mode on THIS handle cannot grant that; only the opener's can.
         match options.open(&candidate) {
             Ok(file) => {
                 #[cfg(unix)]
@@ -1282,10 +1284,13 @@ fn main() {
         &mut object,
         intermediate.then_some(ir_file.as_str()),
     ) {
-        // Release the handle before exiting. `process::exit` skips destructors,
-        // so on Windows - where closing the handle is what deletes the file -
-        // exiting while holding it would leave the object behind for good.
+        // `process::exit` skips destructors, so both of these are explicit.
+        // Unix released the name at creation and needs only the handle dropped;
+        // elsewhere the name is still on disk and has to be removed too, or a
+        // codegen failure leaves the object behind for good.
         drop(object);
+        #[cfg(not(unix))]
+        let _ = fs::remove_file(&object_file);
         spinner::stop();
         report_internal_compiler_error(&e);
         process::exit(1);
@@ -1314,20 +1319,33 @@ fn main() {
         object_file.clone(),
         "-L".to_string(),
         lib_path_str.to_string(),
-        format!("-Wl,-rpath,{}", lib_path_str),
         "-ffunction-sections".to_string(),
         "-fdata-sections".to_string(),
     ];
 
-    #[cfg(not(target_os = "macos"))]
-    linker_args.push("-Wl,--disable-new-dtags".to_string());
+    // rpath and the dtags flag are ELF concepts. MSVC's linker answers both with
+    // "LNK4044: unrecognized option" and ignores them; Windows resolves a DLL
+    // from the executable's own directory, which is where a packaged install
+    // puts the runtime.
+    #[cfg(not(target_os = "windows"))]
+    {
+        linker_args.push(format!("-Wl,-rpath,{}", lib_path_str));
+        #[cfg(not(target_os = "macos"))]
+        linker_args.push("-Wl,--disable-new-dtags".to_string());
+    }
 
-    let gc_sections_flag = if cfg!(target_os = "macos") {
-        "-Wl,-dead_strip".to_string()
-    } else {
-        "-Wl,--gc-sections".to_string()
-    };
-    linker_args.push(gc_sections_flag);
+    // Dead-stripping is spelled differently per linker, and MSVC's does it by
+    // default at the optimisation levels that matter, so Windows passes nothing
+    // rather than an option that would only be warned about.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let gc_sections_flag = if cfg!(target_os = "macos") {
+            "-Wl,-dead_strip".to_string()
+        } else {
+            "-Wl,--gc-sections".to_string()
+        };
+        linker_args.push(gc_sections_flag);
+    }
     linker_args.push("-lmux_runtime".to_string());
 
     // A static-only libmux_runtime.a carries no NEEDED entries, so its undefined
@@ -1363,12 +1381,22 @@ fn main() {
         // file is released as soon as linking finishes - no cleanup path at all.
         linker.stdin(Stdio::from(object));
     }
-    let linker_output = linker.output();
 
-    // Unix moved the handle into the child's stdin above; elsewhere release it
-    // here, before a link failure can exit the process while it is still held.
+    // Elsewhere the linker opens the object by PATH, so this handle must be
+    // closed BEFORE the link, not after: an open writer blocks link.exe from
+    // opening it and surfaces as "LNK1104: cannot open file". Closing here also
+    // flushes the object to disk, which the linker is about to read.
     #[cfg(not(unix))]
     drop(object);
+
+    let linker_output = linker.output();
+
+    // The name outlives the handle now, so it has to be removed explicitly, and
+    // before report_clang_output_or_exit - that exits the process on a link
+    // failure, which would otherwise leak the object into the temp directory on
+    // exactly the runs that produce one.
+    #[cfg(not(unix))]
+    let _ = fs::remove_file(&object_file);
 
     spinner::stop();
     report_clang_output_or_exit(linker_output, do_run, &file_path, &ir_file);
