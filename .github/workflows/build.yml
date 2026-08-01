@@ -252,6 +252,26 @@ jobs:
       - name: Stage and smoke-test the packaged layout
         run: ./scripts/ci/smoke-packaged.sh debug
 
+      - name: Which CRT does the runtime archive ask for (Windows)
+        # Diagnostic. The link fails with LNK4098 (conflicting default CRT) plus
+        # unresolved __imp_ CRT symbols, which happens when one archive contains
+        # objects built against both the static and the dynamic CRT. Only the
+        # archive itself can say, and only dumpbin can read it - there is no way
+        # to determine this from a Linux host.
+        if: ${{ always() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $lib = "target/debug/mux_runtime.lib"
+          if (-not (Test-Path $lib)) { Write-Host "no $lib"; exit 0 }
+          Write-Host "=== /DEFAULTLIB directives requested by members of $lib ==="
+          dumpbin /directives $lib |
+            Select-String -Pattern "DEFAULTLIB:(\S+)" -AllMatches |
+            ForEach-Object { $_.Matches } |
+            ForEach-Object { $_.Groups[1].Value.Trim('"') } |
+            Group-Object |
+            Sort-Object Count -Descending |
+            Format-Table Count, Name -AutoSize
+
   packaged_artifact_result:
     # Aggregates the matrix under the single stable name that the branch ruleset
     # requires. Without this, matrixing renames the check to
