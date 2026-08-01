@@ -73,6 +73,25 @@ runs:
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
 
+    - name: Unshadow the MSVC linker (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Git for Windows ships a coreutils `link` as /usr/bin/link.exe, and in
+        # a bash step that directory sits ahead of the MSVC tools on PATH. rustc
+        # then invokes the wrong link.exe and every build fails with
+        # "linking with `link.exe` failed: exit code: 1", naming
+        # C:\Program Files\Git\usr\bin\link.exe in the note.
+        #
+        # Renamed rather than deleted so the failure mode is obvious if anything
+        # ever depends on it. Runners are ephemeral, so this is scoped to the job.
+        if [[ -f /usr/bin/link.exe ]]; then
+          mv /usr/bin/link.exe /usr/bin/link-coreutils.exe.disabled
+          echo "Renamed Git's coreutils link.exe so the MSVC linker resolves first."
+        fi
+        command -v link.exe || true
+
     - name: Create xml2 import lib (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
