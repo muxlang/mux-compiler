@@ -1352,6 +1352,20 @@ fn main() {
         "-fdata-sections".to_string(),
     ];
 
+    // clang defaults to the STATIC CRT on Windows; rustc builds windows-msvc
+    // objects against the DYNAMIC one. Linking both halves without saying so
+    // mixes libucrt.lib into a link that expects the ucrt import library, which
+    // the linker reports as
+    //
+    //   LNK4098: defaultlib 'MSVCRT' conflicts with use of other libs
+    //   LNK4217: symbol 'free' defined in 'libucrt.lib' is imported by ...
+    //
+    // and then fails on the CRT symbols the runtime's vendored C code imports
+    // (__imp_realloc, __imp_strcspn). Asking clang for the DLL runtime makes both
+    // halves agree on one CRT.
+    #[cfg(target_os = "windows")]
+    linker_args.push("-fms-runtime-lib=dll".to_string());
+
     // rpath and the dtags flag are ELF concepts. MSVC's linker answers both with
     // "LNK4044: unrecognized option" and ignores them; Windows resolves a DLL
     // from the executable's own directory, which is where a packaged install
