@@ -1314,19 +1314,34 @@ fn build_linker_args(object_file: &str, lib_path_str: &str, lib_dir: &Path) -> V
         "-fdata-sections".to_string(),
     ];
 
-    // clang defaults to the STATIC CRT on Windows; rustc builds windows-msvc
-    // objects against the DYNAMIC one. Linking both halves without saying so
-    // mixes libucrt.lib into a link that expects the ucrt import library, which
-    // the linker reports as
+    // Put the whole link on the DYNAMIC CRT, which is what everything else in it
+    // already expects.
+    //
+    // clang's driver passes `-defaultlib:libcmt` unconditionally when it links on
+    // Windows - the STATIC CRT - and that cannot be changed by asking politely.
+    // `-fms-runtime-lib=dll` only rewrites the `--dependent-lib` directive clang
+    // bakes into objects IT compiles; here clang compiles nothing, it links a
+    // pre-built object against an archive, so the flag has no effect at all.
+    // Verified from the driver's own `-###` output, which shows
+    // `-defaultlib:libcmt` present with and without it.
+    //
+    // Meanwhile mux_runtime.lib's members all request MSVCRT, so libcmt drags in
+    // the static libucrt and the link ends up with two CRTs:
     //
     //   LNK4098: defaultlib 'MSVCRT' conflicts with use of other libs
     //   LNK4217: symbol 'free' defined in 'libucrt.lib' is imported by ...
+    //   LNK2019: unresolved external symbol __imp_realloc
     //
-    // and then fails on the CRT symbols the runtime's vendored C code imports
-    // (__imp_realloc, __imp_strcspn). Asking clang for the DLL runtime makes both
-    // halves agree on one CRT.
+    // That last one is the giveaway: libucrt exports `realloc`, never
+    // `__imp_realloc`, because the `__imp_` form only exists in the import
+    // library. So the driver's default has to be countermanded at link time
+    // rather than influenced at compile time.
     #[cfg(target_os = "windows")]
-    linker_args.push("-fms-runtime-lib=dll".to_string());
+    {
+        linker_args.push("-Wl,/NODEFAULTLIB:libcmt".to_string());
+        linker_args.push("-Wl,/NODEFAULTLIB:libucrt".to_string());
+        linker_args.push("-Wl,/DEFAULTLIB:msvcrt".to_string());
+    }
 
     // rpath and the dtags flag are ELF concepts. MSVC's linker answers both with
     // "LNK4044: unrecognized option" and ignores them; Windows resolves a DLL
@@ -1863,11 +1878,16 @@ mod tests {
             assert!(!joined.contains("-rpath"), "{joined}");
             assert!(!joined.contains("disable-new-dtags"), "{joined}");
             assert!(!joined.contains("gc-sections"), "{joined}");
-            // Both halves of the link must agree on one CRT.
-            assert!(joined.contains("-fms-runtime-lib=dll"), "{joined}");
+            // The driver's hardcoded static CRT must be countermanded at LINK
+            // time; -fms-runtime-lib only affects objects clang compiles itself,
+            // and clang compiles nothing here.
+            assert!(joined.contains("/NODEFAULTLIB:libcmt"), "{joined}");
+            assert!(joined.contains("/NODEFAULTLIB:libucrt"), "{joined}");
+            assert!(joined.contains("/DEFAULTLIB:msvcrt"), "{joined}");
+            assert!(!joined.contains("-fms-runtime-lib"), "{joined}");
         } else {
             assert!(joined.contains("-rpath"), "{joined}");
-            assert!(!joined.contains("-fms-runtime-lib"), "{joined}");
+            assert!(!joined.contains("NODEFAULTLIB"), "{joined}");
             if cfg!(target_os = "macos") {
                 assert!(joined.contains("-dead_strip"), "{joined}");
             } else {
