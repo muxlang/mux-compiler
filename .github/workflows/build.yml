@@ -252,6 +252,41 @@ jobs:
       - name: Stage and smoke-test the packaged layout
         run: ./scripts/ci/smoke-packaged.sh debug
 
+  packaged_artifact_result:
+    # Aggregates the matrix under the single stable name that the branch ruleset
+    # requires. Without this, matrixing renames the check to
+    # "Packaged Artifact (linux-x86_64)" and the required context
+    # "Packaged Artifact Smoke Test" would never report again, wedging every PR.
+    #
+    # `always()` plus an explicit result test is load-bearing: a job whose
+    # dependency failed is SKIPPED, and GitHub reports a skipped job as
+    # successful to required checks. Without the test below, a macOS failure
+    # would surface as a green required check.
+    name: Packaged Artifact Smoke Test
+    needs: packaged_artifact
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: Check matrix result
+        env:
+          RESULT: ${{ needs.packaged_artifact.result }}
+        run: |
+          set -euo pipefail
+          echo "packaged_artifact matrix result: ${RESULT}"
+          # `skipped` is a pass: the whole job is path-gated, so a docs-only PR
+          # legitimately never runs it.
+          case "${RESULT}" in
+            success|skipped) ;;
+            *)
+              echo "packaged artifact smoke test did not pass (${RESULT})" >&2
+              printf '::error::packaged artifact smoke test did not pass (%s)\n' "${RESULT}"
+              exit 1
+              ;;
+          esac
+
   integration_checks:
     name: Integration Checks
     needs: detect-changes
