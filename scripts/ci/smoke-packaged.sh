@@ -105,7 +105,20 @@ run_bounded() {
 # the one just staged in ../lib. Unset in a subshell rather than via `env -u`,
 # which cannot invoke a shell function.
 run_packaged() {
-  ( unset MUX_RUNTIME_LIB; run_bounded 120 "./$dist/bin/mux${exe_suffix}" run "$1" )
+  local program="$1"
+  ( unset MUX_RUNTIME_LIB; run_bounded 120 "./$dist/bin/mux${exe_suffix}" run "$program" )
+}
+
+# `mux` reports a failed link as "linker command failed with exit code N" without
+# the linker's own output, so the exit status alone says nothing about which file
+# it could not open. Re-run with a backtrace to get the detail into the log.
+diagnose() {
+  local program="$1"
+  echo "--- '$program' failed; re-running with RUST_BACKTRACE=1 for detail ---" >&2
+  ( unset MUX_RUNTIME_LIB; RUST_BACKTRACE=1 run_bounded 120 \
+      "./$dist/bin/mux${exe_suffix}" run "$program" ) >&2 2>&1 || true
+  echo "--- staged layout at time of failure ---" >&2
+  ls -l "$dist/bin" "$dist/lib" >&2
 }
 
 printf 'print("hello")\n' > smoke.mux
@@ -113,14 +126,28 @@ printf 'print("hello")\n' > smoke.mux
 # One program importing nothing, one pulling in a std module, one reaching a
 # heavier optional feature. All must link the bundled library from ../lib rather
 # than looking anywhere else.
-out="$(run_packaged smoke.mux)"
+#
+# Output goes to a file rather than a command substitution: a substitution's pipe
+# stays open until every writer exits, so a grandchild outliving `mux run` would
+# block the caller past its own timeout.
+if ! run_packaged smoke.mux > smoke.out; then
+  diagnose smoke.mux
+  printf '::error::packaged compiler failed to compile and run smoke.mux\n'
+  exit 1
+fi
+out="$(cat smoke.out)"
 if [[ "$out" != "hello" ]]; then
   echo "unexpected output: $out" >&2
   printf '::error::packaged compiler produced unexpected output: %s\n' "$out"
   exit 1
 fi
 
-run_packaged test_scripts/test_std_math.mux
-run_packaged test_scripts/test_std_sql_sqlite.mux
+for program in test_scripts/test_std_math.mux test_scripts/test_std_sql_sqlite.mux; do
+  if ! run_packaged "$program"; then
+    diagnose "$program"
+    printf '::error::packaged compiler failed on %s\n' "$program"
+    exit 1
+  fi
+done
 
 echo "Packaged layout compiled and ran all smoke programs."

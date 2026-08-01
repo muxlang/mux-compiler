@@ -14,14 +14,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
-# Least privilege for every job in this workflow. Nothing here writes to the
-# repository: the jobs check out, build, test, and upload run artifacts (which
-# use the Actions runtime rather than this token). Declared at the top level
-# rather than per job so a job added later inherits the restriction instead of
-# silently inheriting the repository default.
-permissions:
-  contents: read
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -29,6 +21,8 @@ jobs:
   detect-changes:
     name: Detect Changed Paths
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
@@ -67,6 +61,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -83,6 +79,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
       LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
@@ -159,6 +157,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -212,6 +212,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     timeout-minutes: 45
     strategy:
       # One platform failing must not hide the others - telling "broken on
@@ -264,6 +266,8 @@ jobs:
     needs: packaged_artifact
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 5
     steps:
       - name: Check matrix result
@@ -288,6 +292,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Docker info
@@ -299,6 +305,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # PR-blocking: Leg A (compiled programs) fails the job on any definite or
     # indirect leak / memory error. Leg B (compiler under Valgrind) is
     # report-only inside the script and never changes the exit code.
@@ -349,6 +357,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # PR-blocking: runs the executable-integration suite against a mux-runtime
     # built with the `rc-leak-check` feature, which asserts at process exit that
     # every reference-counted Value block was released (see mux-runtime
@@ -421,6 +431,8 @@ jobs:
     needs: rust_checks
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
