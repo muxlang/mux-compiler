@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported as `LNK4098: defaultlib 'MSVCRT' conflicts` and then failing on the
   CRT symbols the runtime's vendored C code imports (`__imp_realloc`,
   `__imp_strcspn`). The compiler now asks clang for the DLL runtime.
+- **A DLL beside the runtime archive no longer suppresses Windows system
+  libraries**: `runtime_lib_dir_is_static_only` treated the presence of
+  `mux_runtime.dll` as proof the link was dynamic, exactly as a `.so` would mean
+  on unix. On Windows the link target is whichever `.lib` is resolved, and cargo
+  names the staticlib `mux_runtime.lib` against the cdylib's
+  `mux_runtime.dll.lib` - so `-lmux_runtime` is always the static archive, and
+  the DLL is only there because the loader needs it. Reading it as dynamic
+  skipped the native system libraries and failed every Windows compile with
+  `LNK2019`, even after those libraries were added.
 - **Windows links the system libraries a static runtime needs**: the explicit
   native-dependency list was skipped on Windows, on the grounds that "the import
   lib records its own deps". `mux_runtime.lib` is a *static* library, not an
