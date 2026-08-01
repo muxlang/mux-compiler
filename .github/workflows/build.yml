@@ -198,51 +198,104 @@ jobs:
 
   packaged_artifact:
     # Reproduces a binary install: the compiler plus the bundled runtime library
-    # in bin/ and lib/, and nothing else. This is what `scripts/install.sh`
-    # produces, and no other job runs the compiler from that layout - which is
-    # how a release that could not compile hello world reached users.
-    name: Packaged Artifact Smoke Test
+    # in bin/ and lib/, and nothing else. No other job runs the compiler from
+    # that layout, which is how a release that could not compile hello world
+    # reached users.
+    #
+    # This is also the ONLY place a compiled Mux program is executed on macOS.
+    # Everything else in CI is Linux, so the platform-specific work in #318 was
+    # shipped unexercised there.
+    #
+    # GitHub-hosted on purpose: public repos get macOS unmetered here, and a
+    # macOS minute is ~20x on metered runners.
+    name: Packaged Artifact (${{ matrix.label }})
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
-    env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
-      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
-      LLVM_SYS_221_STRICT_VERSIONING: "1"
-      CC: clang-22
-      CXX: clang++-22
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # One platform failing must not hide the others - telling "broken on
+      # macOS" apart from "broken everywhere" is the entire point of a matrix.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+          - os: macos-14
+            label: macos-aarch64
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: 1.93.1
-      - name: Install LLVM 22
-        run: ./scripts/ci/install-llvm.sh lld
+      # LLVM comes from a different place on each platform, so the toolchain
+      # variables are exported here rather than as job-level env, which could
+      # only ever be right for one of them.
+      - name: Install LLVM 22 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ./scripts/ci/install-llvm.sh lld
+          {
+            echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22"
+            echo "LLVM_CONFIG_PATH=/usr/bin/llvm-config-22"
+            echo "LLVM_SYS_221_STRICT_VERSIONING=1"
+            echo "CC=clang-22"
+            echo "CXX=clang++-22"
+          } >> "$GITHUB_ENV"
+      - name: Install LLVM 22 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install llvm@22
+          LLVM_PREFIX="$(brew --prefix llvm@22)"
+          {
+            echo "LLVM_SYS_221_PREFIX=${LLVM_PREFIX}"
+            echo "LLVM_CONFIG_PATH=${LLVM_PREFIX}/bin/llvm-config"
+            echo "LLVM_SYS_221_STRICT_VERSIONING=1"
+            echo "CC=${LLVM_PREFIX}/bin/clang"
+            echo "CXX=${LLVM_PREFIX}/bin/clang++"
+          } >> "$GITHUB_ENV"
       - name: Build compiler and runtime
         run: |
           cargo build -p mux-runtime --locked
           cargo build -p mux-lang --locked
-      - name: Stage a binary install
+      - name: Stage and smoke-test the packaged layout
+        run: ./scripts/ci/smoke-packaged.sh debug
+
+  packaged_artifact_result:
+    # Aggregates the matrix under the single stable name that the branch ruleset
+    # requires. Without this, matrixing renames the check to
+    # "Packaged Artifact (linux-x86_64)" and the required context
+    # "Packaged Artifact Smoke Test" would never report again, wedging every PR.
+    #
+    # `always()` plus an explicit result test is load-bearing: a job whose
+    # dependency failed is SKIPPED, and GitHub reports a skipped job as
+    # successful to required checks. Without the test below, a macOS failure
+    # would surface as a green required check.
+    name: Packaged Artifact Smoke Test
+    needs: packaged_artifact
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check matrix result
+        env:
+          RESULT: ${{ needs.packaged_artifact.result }}
         run: |
           set -euo pipefail
-          mkdir -p dist/bin dist/lib
-          cp target/debug/mux dist/bin/
-          cp target/debug/libmux_runtime.a target/debug/libmux_runtime.so dist/lib/
-      - name: Compile and run from the packaged layout
-        run: |
-          set -euo pipefail
-          printf 'print("hello")\n' > smoke.mux
-          run_packaged() {
-            env -u MUX_RUNTIME_LIB timeout 120 ./dist/bin/mux run "$1"
-          }
-          # One program importing nothing, one pulling in a std module, one
-          # reaching a heavier optional feature. All must link the bundled
-          # library from ../lib rather than looking anywhere else.
-          out="$(run_packaged smoke.mux)"
-          test "$out" = "hello" || { echo "unexpected output: $out"; exit 1; }
-          run_packaged test_scripts/test_std_math.mux
-          run_packaged test_scripts/test_std_sql_sqlite.mux
+          echo "packaged_artifact matrix result: ${RESULT}"
+          # `skipped` is a pass: the whole job is path-gated, so a docs-only PR
+          # legitimately never runs it.
+          case "${RESULT}" in
+            success|skipped) ;;
+            *)
+              echo "packaged artifact smoke test did not pass (${RESULT})" >&2
+              printf '::error::packaged artifact smoke test did not pass (%s)\n' "${RESULT}"
+              exit 1
+              ;;
+          esac
+
   integration_checks:
     name: Integration Checks
     needs: detect-changes
