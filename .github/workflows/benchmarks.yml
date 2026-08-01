@@ -74,10 +74,17 @@ jobs:
           cargo bench -p mux-lang 2>&1 | tee bench.log
       - name: Build per-phase distribution report
         run: python3 scripts/bench-report.py --summary-json bench-summary.json
+      - name: Derive a filesystem-safe artifact suffix
+        id: label
+        # upload-artifact rejects names containing path separators and several
+        # other characters. Branch names here are slash-delimited (ci/...,
+        # docs/...), so a manual dispatch would otherwise run the whole suite and
+        # only then fail on the upload.
+        run: printf 'suffix=%s\n' "${GITHUB_REF_NAME//[^A-Za-z0-9._-]/-}" >> "$GITHUB_OUTPUT"
       - name: Upload benchmark report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: benchmark-report-${{ github.ref_name }}
+          name: benchmark-report-${{ steps.label.outputs.suffix }}
           path: |
             target/bench-report/
             target/criterion/
