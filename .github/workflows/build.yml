@@ -14,6 +14,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+# Least privilege for every job in this workflow. Nothing here writes to the
+# repository: the jobs check out, build, test, and upload run artifacts (which
+# use the Actions runtime rather than this token). Declared at the top level
+# rather than per job so a job added later inherits the restriction instead of
+# silently inheriting the repository default.
+permissions:
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
