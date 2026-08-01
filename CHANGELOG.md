@@ -25,6 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offer their own `clear()` as a regular method, and the dsa classes do.
 
 ### Fixed
+- **Compiling a program on Windows now links**: the temporary object file was
+  created with `FILE_FLAG_DELETE_ON_CLOSE` and its handle held open across the
+  link. While such a handle is open, Windows fails any open that does not itself
+  pass `FILE_SHARE_DELETE` - and `link.exe` does not - so every compile ended in
+  `LNK1104: cannot open file` naming an object that existed and was readable.
+  The share mode on the creating handle cannot grant that; only the opener's can.
+  Windows now keeps the object named, closes the handle before linking, and
+  removes it afterwards, including on the codegen-failure path. The unix path is
+  unchanged: it still unlinks at creation and passes the descriptor as the
+  linker's stdin, which has no Windows equivalent.
+- **Windows no longer receives ELF-only linker options**: `-Wl,-rpath`,
+  `-Wl,--disable-new-dtags` and `-Wl,--gc-sections` were passed on every
+  platform. MSVC's linker answered each with `LNK4044: unrecognized option` and
+  ignored it. Windows resolves a DLL from the executable's own directory, and
+  MSVC dead-strips by default, so the flags are simply not emitted there.
 - **A failed link now reports the linker's own error, not just its exit code**:
   the internal-error report was built from clang's stderr alone. `ld` and `lld`
   write diagnostics there, but MSVC's `link.exe` writes them to stdout, so on
