@@ -1377,19 +1377,44 @@ fn main() {
     }
     linker_args.push("-lmux_runtime".to_string());
 
-    // A static-only libmux_runtime.a carries no NEEDED entries, so its undefined
-    // native symbols must be resolved explicitly - otherwise a program using
-    // libm (e.g. `**`/`pow`) fails to link with "undefined reference to pow"
-    // (issue #291). These must follow -lmux_runtime so the archive's references
-    // are satisfied by the libraries after it. The cdylib pulls these in on its
-    // own, so only the static-only case needs them. Skipped on Windows (the
-    // import lib records its own deps) and macOS (libSystem provides them).
-    if !cfg!(target_os = "windows")
-        && !cfg!(target_os = "macos")
-        && runtime_lib_dir_is_static_only(&lib_dir)
-    {
-        for native_lib in ["-lm", "-lz", "-lpthread", "-ldl"] {
-            linker_args.push(native_lib.to_string());
+    // A static runtime carries no record of its own dependencies, so its
+    // undefined native symbols must be resolved explicitly - otherwise a program
+    // using libm (e.g. `**`/`pow`) fails to link with "undefined reference to
+    // pow" (issue #291). These must follow -lmux_runtime so the archive's
+    // references are satisfied by the libraries after it. A dynamic runtime
+    // pulls them in on its own, so only the static-only case needs them.
+    //
+    // This applies to Windows too. It used to be skipped there on the grounds
+    // that "the import lib records its own deps", but mux_runtime.lib is a
+    // STATIC library, not an import library, and a static .lib records nothing.
+    // Every compile therefore failed with LNK2019 on symbols belonging to the
+    // Windows system libraries below. macOS still needs nothing: libSystem
+    // provides these.
+    if !cfg!(target_os = "macos") && runtime_lib_dir_is_static_only(&lib_dir) {
+        let native_libs: &[&str] = if cfg!(target_os = "windows") {
+            // What Rust's std and the runtime's vendored C code reference:
+            // bcrypt/advapi32 for getrandom, ntdll for pipes, userenv for the
+            // home directory, secur32 for the user name, ws2_32 for sockets,
+            // dbghelp for backtraces.
+            &[
+                "-ladvapi32",
+                "-lbcrypt",
+                "-ldbghelp",
+                "-lkernel32",
+                "-lntdll",
+                "-lole32",
+                "-loleaut32",
+                "-lsecur32",
+                "-lshell32",
+                "-luserenv",
+                "-luuid",
+                "-lws2_32",
+            ]
+        } else {
+            &["-lm", "-lz", "-lpthread", "-ldl"]
+        };
+        for native_lib in native_libs {
+            linker_args.push((*native_lib).to_string());
         }
     }
 
