@@ -1493,12 +1493,12 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        REQUIRED_LLVM_MAJOR, clang_failure_detail, clang_version_output, compiling_file,
-        dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
-        internal_compiler_error_report, llvm_config_candidates, pick_llvm_for_dev,
-        print_doctor_verdict, print_version_banner, relativize_to_cwd, report_clang_for_doctor,
-        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
-        status_marker, validate_llvm_for_doctor,
+        REQUIRED_LLVM_MAJOR, build_linker_args, clang_failure_detail, clang_version_output,
+        compiling_file, dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir,
+        format_panic_detail, internal_compiler_error_report, llvm_config_candidates,
+        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, relativize_to_cwd,
+        report_clang_for_doctor, report_runtime_for_doctor, runtime_lib_dir_is_static_only,
+        set_compiling_file, status_marker, validate_llvm_for_doctor,
     };
     use std::path::{Path, PathBuf};
 
@@ -1695,6 +1695,100 @@ mod tests {
                 .iter()
                 .any(|c| c == &format!("llvm-config-{}", REQUIRED_LLVM_MAJOR))
         );
+    }
+
+    /// The link line is what turns a compiled object into a program, and it was
+    /// entirely untested until it became a function of its own. These pin the
+    /// parts that are easy to break silently.
+    #[test]
+    fn build_linker_args_links_the_object_and_the_runtime() {
+        let dir = unique_tmp("linkargs_basic");
+        std::fs::create_dir_all(&dir).unwrap();
+        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+
+        assert_eq!(args.first().map(String::as_str), Some("scratch.o"));
+        assert!(args.iter().any(|a| a == "-lmux_runtime"));
+        let l_index = args.iter().position(|a| a == "-L").expect("-L present");
+        assert_eq!(args[l_index + 1], dir.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A static archive's undefined symbols are resolved only by libraries that
+    /// come AFTER it on the command line, so this ordering is load-bearing
+    /// rather than cosmetic - reversing it reintroduces issue #291.
+    #[test]
+    fn build_linker_args_puts_native_deps_after_the_runtime() {
+        let dir = unique_tmp("linkargs_static");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(static_lib_name()), b"x").unwrap();
+
+        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+        let runtime = args
+            .iter()
+            .position(|a| a == "-lmux_runtime")
+            .expect("runtime is linked");
+
+        if cfg!(target_os = "macos") {
+            // libSystem provides these, so nothing extra is expected.
+            assert!(!args.iter().any(|a| a == "-lm"));
+        } else {
+            let native = args
+                .iter()
+                .position(|a| a.starts_with("-l") && a != "-lmux_runtime")
+                .expect("native dependencies are linked for a static-only runtime");
+            assert!(
+                native > runtime,
+                "native deps must follow -lmux_runtime, got {args:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A dynamic runtime records its own dependencies, so the explicit list is
+    /// only for the static-only case.
+    #[test]
+    fn build_linker_args_omits_native_deps_when_a_dynamic_runtime_is_present() {
+        let dir = unique_tmp("linkargs_dynamic");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(static_lib_name()), b"x").unwrap();
+        std::fs::write(dir.join(dynamic_lib_name()), b"x").unwrap();
+
+        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+        let extra: Vec<&String> = args
+            .iter()
+            .filter(|a| a.starts_with("-l") && *a != "-lmux_runtime")
+            .collect();
+        assert!(extra.is_empty(), "expected no native deps, got {extra:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Platform-specific spellings of the same three ideas. Each linker rejects
+    /// the others', which is how the Windows leg first failed.
+    #[test]
+    fn build_linker_args_uses_the_right_dialect_for_this_platform() {
+        let dir = unique_tmp("linkargs_dialect");
+        std::fs::create_dir_all(&dir).unwrap();
+        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+        let joined = args.join(" ");
+
+        if cfg!(target_os = "windows") {
+            // rpath and the ELF dtags flag draw LNK4044 from MSVC's linker.
+            assert!(!joined.contains("-rpath"), "{joined}");
+            assert!(!joined.contains("disable-new-dtags"), "{joined}");
+            assert!(!joined.contains("gc-sections"), "{joined}");
+            // Both halves of the link must agree on one CRT.
+            assert!(joined.contains("-fms-runtime-lib=dll"), "{joined}");
+        } else {
+            assert!(joined.contains("-rpath"), "{joined}");
+            assert!(!joined.contains("-fms-runtime-lib"), "{joined}");
+            if cfg!(target_os = "macos") {
+                assert!(joined.contains("-dead_strip"), "{joined}");
+            } else {
+                assert!(joined.contains("--gc-sections"), "{joined}");
+                assert!(joined.contains("disable-new-dtags"), "{joined}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
