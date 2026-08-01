@@ -1248,6 +1248,106 @@ fn install_internal_error_panic_hook() {
     }));
 }
 
+/// Build the clang argument list that links the emitted object into an
+/// executable, minus the output path.
+///
+/// Extracted from `main` because the platform differences here are genuinely
+/// three-way - ELF, Mach-O and PE each want a different spelling of the same
+/// three ideas - and inlining them pushed `main` past the cognitive-complexity
+/// budget. Keeping them together also means the whole link line can be read in
+/// one place.
+fn build_linker_args(object_file: &str, lib_path_str: &str, lib_dir: &Path) -> Vec<String> {
+    let mut linker_args = vec![
+        object_file.to_string(),
+        "-L".to_string(),
+        lib_path_str.to_string(),
+        "-ffunction-sections".to_string(),
+        "-fdata-sections".to_string(),
+    ];
+
+    // clang defaults to the STATIC CRT on Windows; rustc builds windows-msvc
+    // objects against the DYNAMIC one. Linking both halves without saying so
+    // mixes libucrt.lib into a link that expects the ucrt import library, which
+    // the linker reports as
+    //
+    //   LNK4098: defaultlib 'MSVCRT' conflicts with use of other libs
+    //   LNK4217: symbol 'free' defined in 'libucrt.lib' is imported by ...
+    //
+    // and then fails on the CRT symbols the runtime's vendored C code imports
+    // (__imp_realloc, __imp_strcspn). Asking clang for the DLL runtime makes both
+    // halves agree on one CRT.
+    #[cfg(target_os = "windows")]
+    linker_args.push("-fms-runtime-lib=dll".to_string());
+
+    // rpath and the dtags flag are ELF concepts. MSVC's linker answers both with
+    // "LNK4044: unrecognized option" and ignores them; Windows resolves a DLL
+    // from the executable's own directory, which is where a packaged install
+    // puts the runtime.
+    #[cfg(not(target_os = "windows"))]
+    {
+        linker_args.push(format!("-Wl,-rpath,{}", lib_path_str));
+        #[cfg(not(target_os = "macos"))]
+        linker_args.push("-Wl,--disable-new-dtags".to_string());
+    }
+
+    // Dead-stripping is spelled differently per linker, and MSVC's does it by
+    // default at the optimisation levels that matter, so Windows passes nothing
+    // rather than an option that would only be warned about.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let gc_sections_flag = if cfg!(target_os = "macos") {
+            "-Wl,-dead_strip".to_string()
+        } else {
+            "-Wl,--gc-sections".to_string()
+        };
+        linker_args.push(gc_sections_flag);
+    }
+    linker_args.push("-lmux_runtime".to_string());
+
+    // A static runtime carries no record of its own dependencies, so its
+    // undefined native symbols must be resolved explicitly - otherwise a program
+    // using libm (e.g. `**`/`pow`) fails to link with "undefined reference to
+    // pow" (issue #291). These must follow -lmux_runtime so the archive's
+    // references are satisfied by the libraries after it. A dynamic runtime
+    // pulls them in on its own, so only the static-only case needs them.
+    //
+    // This applies to Windows too. It used to be skipped there on the grounds
+    // that "the import lib records its own deps", but mux_runtime.lib is a
+    // STATIC library, not an import library, and a static .lib records nothing.
+    // Every compile therefore failed with LNK2019 on symbols belonging to the
+    // Windows system libraries below. macOS still needs nothing: libSystem
+    // provides these.
+    if !cfg!(target_os = "macos") && runtime_lib_dir_is_static_only(lib_dir) {
+        let native_libs: &[&str] = if cfg!(target_os = "windows") {
+            // What Rust's std and the runtime's vendored C code reference:
+            // bcrypt/advapi32 for getrandom, ntdll for pipes, userenv for the
+            // home directory, secur32 for the user name, ws2_32 for sockets,
+            // dbghelp for backtraces.
+            &[
+                "-ladvapi32",
+                "-lbcrypt",
+                "-ldbghelp",
+                "-lkernel32",
+                "-lntdll",
+                "-lole32",
+                "-loleaut32",
+                "-lsecur32",
+                "-lshell32",
+                "-luserenv",
+                "-luuid",
+                "-lws2_32",
+            ]
+        } else {
+            &["-lm", "-lz", "-lpthread", "-ldl"]
+        };
+        for native_lib in native_libs {
+            linker_args.push((*native_lib).to_string());
+        }
+    }
+
+    linker_args
+}
+
 fn main() {
     install_internal_error_panic_hook();
     let (file_path, do_run, output, intermediate) = parse_args_or_exit();
@@ -1344,93 +1444,7 @@ fn main() {
         parent.join(file_stem)
     };
 
-    let mut linker_args = vec![
-        object_file.clone(),
-        "-L".to_string(),
-        lib_path_str.to_string(),
-        "-ffunction-sections".to_string(),
-        "-fdata-sections".to_string(),
-    ];
-
-    // clang defaults to the STATIC CRT on Windows; rustc builds windows-msvc
-    // objects against the DYNAMIC one. Linking both halves without saying so
-    // mixes libucrt.lib into a link that expects the ucrt import library, which
-    // the linker reports as
-    //
-    //   LNK4098: defaultlib 'MSVCRT' conflicts with use of other libs
-    //   LNK4217: symbol 'free' defined in 'libucrt.lib' is imported by ...
-    //
-    // and then fails on the CRT symbols the runtime's vendored C code imports
-    // (__imp_realloc, __imp_strcspn). Asking clang for the DLL runtime makes both
-    // halves agree on one CRT.
-    #[cfg(target_os = "windows")]
-    linker_args.push("-fms-runtime-lib=dll".to_string());
-
-    // rpath and the dtags flag are ELF concepts. MSVC's linker answers both with
-    // "LNK4044: unrecognized option" and ignores them; Windows resolves a DLL
-    // from the executable's own directory, which is where a packaged install
-    // puts the runtime.
-    #[cfg(not(target_os = "windows"))]
-    {
-        linker_args.push(format!("-Wl,-rpath,{}", lib_path_str));
-        #[cfg(not(target_os = "macos"))]
-        linker_args.push("-Wl,--disable-new-dtags".to_string());
-    }
-
-    // Dead-stripping is spelled differently per linker, and MSVC's does it by
-    // default at the optimisation levels that matter, so Windows passes nothing
-    // rather than an option that would only be warned about.
-    #[cfg(not(target_os = "windows"))]
-    {
-        let gc_sections_flag = if cfg!(target_os = "macos") {
-            "-Wl,-dead_strip".to_string()
-        } else {
-            "-Wl,--gc-sections".to_string()
-        };
-        linker_args.push(gc_sections_flag);
-    }
-    linker_args.push("-lmux_runtime".to_string());
-
-    // A static runtime carries no record of its own dependencies, so its
-    // undefined native symbols must be resolved explicitly - otherwise a program
-    // using libm (e.g. `**`/`pow`) fails to link with "undefined reference to
-    // pow" (issue #291). These must follow -lmux_runtime so the archive's
-    // references are satisfied by the libraries after it. A dynamic runtime
-    // pulls them in on its own, so only the static-only case needs them.
-    //
-    // This applies to Windows too. It used to be skipped there on the grounds
-    // that "the import lib records its own deps", but mux_runtime.lib is a
-    // STATIC library, not an import library, and a static .lib records nothing.
-    // Every compile therefore failed with LNK2019 on symbols belonging to the
-    // Windows system libraries below. macOS still needs nothing: libSystem
-    // provides these.
-    if !cfg!(target_os = "macos") && runtime_lib_dir_is_static_only(&lib_dir) {
-        let native_libs: &[&str] = if cfg!(target_os = "windows") {
-            // What Rust's std and the runtime's vendored C code reference:
-            // bcrypt/advapi32 for getrandom, ntdll for pipes, userenv for the
-            // home directory, secur32 for the user name, ws2_32 for sockets,
-            // dbghelp for backtraces.
-            &[
-                "-ladvapi32",
-                "-lbcrypt",
-                "-ldbghelp",
-                "-lkernel32",
-                "-lntdll",
-                "-lole32",
-                "-loleaut32",
-                "-lsecur32",
-                "-lshell32",
-                "-luserenv",
-                "-luuid",
-                "-lws2_32",
-            ]
-        } else {
-            &["-lm", "-lz", "-lpthread", "-ldl"]
-        };
-        for native_lib in native_libs {
-            linker_args.push((*native_lib).to_string());
-        }
-    }
+    let mut linker_args = build_linker_args(&object_file, &lib_path_str, &lib_dir);
 
     linker_args.push("-o".to_string());
     linker_args.push(
