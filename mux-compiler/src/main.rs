@@ -256,6 +256,19 @@ fn find_runtime_lib_in_dir(dir: &Path) -> Option<PathBuf> {
         return Some(static_lib);
     }
 
+    // A bare DLL is not a linker input on Windows: you link against the import
+    // library and the DLL is only loaded at run time. Accepting one here picks a
+    // directory the linker cannot use, and since a real install must put the DLL
+    // beside the executable for the loader to find it, `bin/` would always win
+    // over the `lib/` holding the import library - failing every compile with
+    // "LNK1181: cannot open input file 'mux_runtime.lib'".
+    //
+    // Elsewhere a shared object is a perfectly good link input, so it still
+    // counts.
+    if cfg!(target_family = "windows") {
+        return None;
+    }
+
     let dynamic_lib = runtime_dynamic_lib_path(dir);
     if dynamic_lib.exists() {
         return Some(dynamic_lib);
@@ -1647,13 +1660,45 @@ mod tests {
         assert_eq!(find_runtime_lib_in_dir(&static_dir), Some(static_path));
         std::fs::remove_dir_all(&static_dir).ok();
 
-        // Dynamic library is found when only it is present.
+        // A dynamic library alone: a link input everywhere except Windows, where
+        // only the import library is linkable and a bare DLL must not make the
+        // directory look usable.
         let dyn_dir = unique_tmp("rtlib_dyn");
         std::fs::create_dir_all(&dyn_dir).unwrap();
         let dyn_path = dyn_dir.join(dynamic_lib_name());
         std::fs::write(&dyn_path, b"x").unwrap();
-        assert_eq!(find_runtime_lib_in_dir(&dyn_dir), Some(dyn_path));
+        if cfg!(target_family = "windows") {
+            assert!(find_runtime_lib_in_dir(&dyn_dir).is_none());
+        } else {
+            assert_eq!(find_runtime_lib_in_dir(&dyn_dir), Some(dyn_path));
+        }
         std::fs::remove_dir_all(&dyn_dir).ok();
+    }
+
+    /// A packaged Windows install keeps the DLL beside the executable so the
+    /// loader finds it, and the import library under `lib/`. Resolution must
+    /// therefore skip `bin/` and choose `lib/` - picking `bin/` passes the
+    /// linker a directory holding nothing it can link, which is
+    /// "LNK1181: cannot open input file 'mux_runtime.lib'".
+    #[test]
+    fn a_dll_beside_the_binary_does_not_shadow_the_import_library() {
+        let root = unique_tmp("rtlib_install");
+        let bin = root.join("bin");
+        let lib = root.join("lib");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(bin.join(dynamic_lib_name()), b"x").unwrap();
+        let import_lib = lib.join(static_lib_name());
+        std::fs::write(&import_lib, b"x").unwrap();
+
+        if cfg!(target_family = "windows") {
+            assert!(
+                dir_holding_runtime_lib(&bin).is_none(),
+                "a bare DLL in bin/ must not claim to provide a linkable runtime"
+            );
+        }
+        assert_eq!(dir_holding_runtime_lib(&lib), Some(lib.clone()));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The compiler links whatever directory this reports, so it must name the
@@ -1667,7 +1712,14 @@ mod tests {
         assert!(dir_holding_runtime_lib(&empty_dir).is_none());
         std::fs::remove_dir_all(&empty_dir).ok();
 
-        for name in [static_lib_name(), dynamic_lib_name()] {
+        // Only the names that are actually linkable on this platform. A bare
+        // DLL is not one on Windows, so it deliberately reports nothing there.
+        let linkable: &[&str] = if cfg!(target_family = "windows") {
+            &[static_lib_name()]
+        } else {
+            &[static_lib_name(), dynamic_lib_name()]
+        };
+        for name in linkable {
             let dir = unique_tmp("rtdir_present");
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(name), b"x").unwrap();
