@@ -70,13 +70,7 @@ jobs:
           toolchain: 1.93.1
           components: rustfmt, clippy, llvm-tools-preview
       - name: Install LLVM 22
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
-          sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
-          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
+        run: ./scripts/ci/install-llvm.sh
       - name: Cache Cargo registry and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -193,13 +187,7 @@ jobs:
         with:
           toolchain: 1.93.1
       - name: Install LLVM 22
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
-          sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
-          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 lld-22 libpolly-22-dev
+        run: ./scripts/ci/install-llvm.sh lld
       - name: Build compiler and runtime
         run: |
           cargo build -p mux-runtime --locked
@@ -259,13 +247,7 @@ jobs:
           toolchain: 1.93.1
           components: llvm-tools-preview
       - name: Install LLVM 22
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
-          sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
-          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
+        run: ./scripts/ci/install-llvm.sh
       - name: Install Valgrind
         run: sudo apt-get install -y valgrind
       - name: Cache Cargo registry and build
@@ -328,13 +310,7 @@ jobs:
           toolchain: 1.93.1
           components: llvm-tools-preview
       - name: Install LLVM 22
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
-          sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
-          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
+        run: ./scripts/ci/install-llvm.sh
       - name: Cache Cargo registry and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -393,13 +369,7 @@ jobs:
           toolchain: 1.93.1
           components: llvm-tools-preview
       - name: Install LLVM 22
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
-          sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
-          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
+        run: ./scripts/ci/install-llvm.sh
       - name: Cache Cargo registry and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -461,35 +431,10 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      # The free SonarCloud plan locks every project to the built-in "Sonar way"
-      # gate, which only fails on rating/coverage thresholds and so lets new
-      # issues (e.g. a single code smell) through. Enforce "zero new issues"
-      # ourselves: the scan above waits for analysis (sonar.qualitygate.wait),
-      # so the new-issue count is queryable here.
+      # The scan above waits for analysis (sonar.qualitygate.wait), so the
+      # new-issue count is queryable by the time this runs.
       - name: Fail on new SonarCloud issues
         if: github.event_name == 'pull_request'
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          api="https://sonarcloud.io/api/issues/search?componentKeys=muxlang_mux-compiler&pullRequest=${PR_NUMBER}&resolved=false&inNewCodePeriod=true&ps=1"
-          # Query the issues search endpoint rather than measures: its .total is
-          # always present (0 for a clean PR), so "no new issues" is never
-          # confused with "measure omitted from the response". Retry to ride out
-          # indexing lag; no readable .total after retries fails closed.
-          count=""
-          for attempt in 1 2 3 4 5; do
-            resp=$(curl -sf -u "$SONAR_TOKEN:" "$api") || { sleep 5; continue; }
-            count=$(printf '%s' "$resp" | jq -r '.total // empty')
-            [ -n "$count" ] && break
-            sleep 5
-          done
-          if [ -z "$count" ]; then
-            echo "::error::Could not read the new-issue count for PR #${PR_NUMBER} from SonarCloud after retries."
-            exit 1
-          fi
-          echo "New SonarCloud issues on PR #${PR_NUMBER}: ${count}"
-          if [ "$count" -gt 0 ]; then
-            echo "::error::${count} new SonarCloud issue(s) introduced on this PR. See https://sonarcloud.io/project/issues?id=muxlang_mux-compiler&pullRequest=${PR_NUMBER}&resolved=false"
-            exit 1
-          fi
+        run: ./scripts/ci/sonar-new-issues.sh muxlang_mux-compiler "${{ github.event.pull_request.number }}"
