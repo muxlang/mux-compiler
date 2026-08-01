@@ -286,6 +286,20 @@ fn runtime_lib_dir_is_static_only(dir: &Path) -> bool {
     if !runtime_static_lib_path(dir).exists() {
         return false;
     }
+
+    // On Windows this is a question about which .lib the linker picks, not about
+    // whether a DLL is present. mux-runtime builds both a staticlib and a
+    // cdylib, and cargo names them `mux_runtime.lib` and `mux_runtime.dll.lib`
+    // respectively - so `-lmux_runtime` always resolves the STATIC archive. A
+    // DLL sitting beside it does not make the link dynamic; it is there because
+    // the loader needs it, and a packaged install ships it for that reason.
+    //
+    // Reading the DLL as "dynamic" here suppressed the native system libraries
+    // below and failed every Windows compile with LNK2019 on symbols they own.
+    if cfg!(target_family = "windows") {
+        return true;
+    }
+
     let dynamic_lib = runtime_dynamic_lib_path(dir);
     !dynamic_lib.exists()
 }
@@ -1709,6 +1723,31 @@ mod tests {
                 .iter()
                 .any(|c| c == &format!("llvm-config-{}", REQUIRED_LLVM_MAJOR))
         );
+    }
+
+    /// A packaged Windows install ships the DLL beside the import-less static
+    /// archive, because the loader needs it. That must not read as a dynamic
+    /// link: `-lmux_runtime` still resolves mux_runtime.lib, so the runtime's
+    /// native dependencies still have to be linked explicitly.
+    #[test]
+    fn a_dll_in_the_lib_dir_does_not_make_the_link_dynamic() {
+        let dir = unique_tmp("staticonly_both");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(static_lib_name()), b"x").unwrap();
+        std::fs::write(dir.join(dynamic_lib_name()), b"x").unwrap();
+
+        if cfg!(target_family = "windows") {
+            assert!(
+                runtime_lib_dir_is_static_only(&dir),
+                "a DLL beside the static archive is a loader artifact, not a dynamic link"
+            );
+        } else {
+            assert!(
+                !runtime_lib_dir_is_static_only(&dir),
+                "a shared object beside the archive genuinely is a dynamic link input"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Every platform's list, checked on any host. The Windows entries are the
