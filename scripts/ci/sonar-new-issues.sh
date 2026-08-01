@@ -26,18 +26,22 @@ count=""
 for _ in 1 2 3 4 5; do
   if resp="$(curl -sf -u "${SONAR_TOKEN}:" "$api")"; then
     count="$(printf '%s' "$resp" | jq -r '.total // empty')"
-    [ -n "$count" ] && break
+    [[ -n "$count" ]] && break
   fi
   sleep 5
 done
 
-if [ -z "$count" ]; then
+# `::error::` lines are GitHub Actions workflow commands, which the runner parses
+# from STDOUT only. They deliberately are not redirected to stderr: doing so
+# keeps the exit code but silently drops the annotation, which is the exact class
+# of "looks like it works, verifies nothing" failure this gate exists to catch.
+if [[ -z "$count" ]]; then
   echo "::error::Could not read the new-issue count for PR #${pr_number} from SonarCloud after retries."
   exit 1
 fi
 
 echo "New SonarCloud issues on PR #${pr_number}: ${count}"
-if [ "$count" -gt 0 ]; then
+if [[ "$count" -gt 0 ]]; then
   echo "::error::${count} new SonarCloud issue(s) introduced on this PR. See https://sonarcloud.io/project/issues?id=${project_key}&pullRequest=${pr_number}&resolved=false"
   exit 1
 fi
