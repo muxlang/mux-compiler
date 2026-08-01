@@ -1306,6 +1306,25 @@ fn native_runtime_deps(target_os: &str) -> &'static [&'static str] {
 /// budget. Keeping them together also means the whole link line can be read in
 /// one place.
 fn build_linker_args(object_file: &str, lib_path_str: &str, lib_dir: &Path) -> Vec<String> {
+    build_linker_args_for(env::consts::OS, object_file, lib_path_str, lib_dir)
+}
+
+/// The link line for a given target OS.
+///
+/// The OS is a parameter rather than a `cfg!` for the same reason as
+/// `native_runtime_deps`: a `cfg`-gated branch is not compiled on other hosts,
+/// so every platform's dialect except the host's is unreachable from a test. CI
+/// runs on Linux, and the Windows spelling of these flags was wrong for months
+/// with nothing able to catch it.
+fn build_linker_args_for(
+    target_os: &str,
+    object_file: &str,
+    lib_path_str: &str,
+    lib_dir: &Path,
+) -> Vec<String> {
+    let windows = target_os == "windows";
+    let macos = target_os == "macos";
+
     let mut linker_args = vec![
         object_file.to_string(),
         "-L".to_string(),
@@ -1314,75 +1333,62 @@ fn build_linker_args(object_file: &str, lib_path_str: &str, lib_dir: &Path) -> V
         "-fdata-sections".to_string(),
     ];
 
-    // Put the whole link on the DYNAMIC CRT, which is what everything else in it
-    // already expects.
-    //
-    // clang's driver passes `-defaultlib:libcmt` unconditionally when it links on
-    // Windows - the STATIC CRT - and that cannot be changed by asking politely.
-    // `-fms-runtime-lib=dll` only rewrites the `--dependent-lib` directive clang
-    // bakes into objects IT compiles; here clang compiles nothing, it links a
-    // pre-built object against an archive, so the flag has no effect at all.
-    // Verified from the driver's own `-###` output, which shows
-    // `-defaultlib:libcmt` present with and without it.
-    //
-    // Meanwhile mux_runtime.lib's members all request MSVCRT, so libcmt drags in
-    // the static libucrt and the link ends up with two CRTs:
-    //
-    //   LNK4098: defaultlib 'MSVCRT' conflicts with use of other libs
-    //   LNK4217: symbol 'free' defined in 'libucrt.lib' is imported by ...
-    //   LNK2019: unresolved external symbol __imp_realloc
-    //
-    // That last one is the giveaway: libucrt exports `realloc`, never
-    // `__imp_realloc`, because the `__imp_` form only exists in the import
-    // library. So the driver's default has to be countermanded at link time
-    // rather than influenced at compile time.
-    #[cfg(target_os = "windows")]
-    {
+    if windows {
+        // Put the whole link on the DYNAMIC CRT, which is what everything else
+        // in it already expects.
+        //
+        // clang's driver passes `-defaultlib:libcmt` unconditionally when it
+        // links on Windows - the STATIC CRT - and that cannot be changed by
+        // asking politely. `-fms-runtime-lib=dll` only rewrites the
+        // `--dependent-lib` directive clang bakes into objects IT compiles; here
+        // clang compiles nothing, it links a pre-built object against an
+        // archive, so the flag has no effect at all. Verified from the driver's
+        // own `-###` output, which shows `-defaultlib:libcmt` present with and
+        // without it.
+        //
+        // Meanwhile mux_runtime.lib's members all request MSVCRT, so libcmt
+        // drags in the static libucrt and the link ends up with two CRTs:
+        //
+        //   LNK4098: defaultlib 'MSVCRT' conflicts with use of other libs
+        //   LNK4217: symbol 'free' defined in 'libucrt.lib' is imported by ...
+        //   LNK2019: unresolved external symbol __imp_realloc
+        //
+        // That last one is the giveaway: libucrt exports `realloc`, never
+        // `__imp_realloc`, because the `__imp_` form only exists in the import
+        // library. So the driver's default has to be countermanded at link time
+        // rather than influenced at compile time.
         linker_args.push("-Wl,/NODEFAULTLIB:libcmt".to_string());
         linker_args.push("-Wl,/NODEFAULTLIB:libucrt".to_string());
         linker_args.push("-Wl,/DEFAULTLIB:msvcrt".to_string());
-    }
-
-    // rpath and the dtags flag are ELF concepts. MSVC's linker answers both with
-    // "LNK4044: unrecognized option" and ignores them; Windows resolves a DLL
-    // from the executable's own directory, which is where a packaged install
-    // puts the runtime.
-    #[cfg(not(target_os = "windows"))]
-    {
+    } else {
+        // rpath and the dtags flag are ELF concepts. MSVC's linker answers both
+        // with "LNK4044: unrecognized option" and ignores them; Windows resolves
+        // a DLL from the executable's own directory, which is where a packaged
+        // install puts the runtime.
         linker_args.push(format!("-Wl,-rpath,{}", lib_path_str));
-        #[cfg(not(target_os = "macos"))]
-        linker_args.push("-Wl,--disable-new-dtags".to_string());
-    }
+        if !macos {
+            linker_args.push("-Wl,--disable-new-dtags".to_string());
+        }
 
-    // Dead-stripping is spelled differently per linker, and MSVC's does it by
-    // default at the optimisation levels that matter, so Windows passes nothing
-    // rather than an option that would only be warned about.
-    #[cfg(not(target_os = "windows"))]
-    {
-        let gc_sections_flag = if cfg!(target_os = "macos") {
+        // Dead-stripping is spelled differently per linker, and MSVC's does it
+        // by default at the optimisation levels that matter, so Windows passes
+        // nothing rather than an option that would only be warned about.
+        linker_args.push(if macos {
             "-Wl,-dead_strip".to_string()
         } else {
             "-Wl,--gc-sections".to_string()
-        };
-        linker_args.push(gc_sections_flag);
+        });
     }
+
     linker_args.push("-lmux_runtime".to_string());
 
     // A static runtime carries no record of its own dependencies, so its
     // undefined native symbols must be resolved explicitly - otherwise a program
     // using libm (e.g. `**`/`pow`) fails to link with "undefined reference to
     // pow" (issue #291). These must follow -lmux_runtime so the archive's
-    // references are satisfied by the libraries after it. A dynamic runtime
-    // pulls them in on its own, so only the static-only case needs them.
-    //
-    // This applies to Windows too. It used to be skipped there on the grounds
-    // that "the import lib records its own deps", but mux_runtime.lib is a
-    // STATIC library, not an import library, and a static .lib records nothing.
-    // Every compile therefore failed with LNK2019 on symbols belonging to the
-    // Windows system libraries below. macOS still needs nothing: libSystem
-    // provides these.
+    // references are satisfied by the libraries after it.
     if runtime_lib_dir_is_static_only(lib_dir) {
-        for native_lib in native_runtime_deps(env::consts::OS) {
+        for native_lib in native_runtime_deps(target_os) {
             linker_args.push((*native_lib).to_string());
         }
     }
@@ -1535,13 +1541,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        REQUIRED_LLVM_MAJOR, build_linker_args, clang_failure_detail, clang_version_output,
-        compiling_file, dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir,
-        format_panic_detail, internal_compiler_error_report, llvm_config_candidates,
-        native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict, print_version_banner,
-        relativize_to_cwd, report_clang_for_doctor, report_runtime_for_doctor,
-        runtime_lib_dir_is_static_only, set_compiling_file, status_marker,
-        validate_llvm_for_doctor,
+        REQUIRED_LLVM_MAJOR, build_linker_args, build_linker_args_for, clang_failure_detail,
+        clang_version_output, compiling_file, dir_holding_runtime_lib, extract_clang_major,
+        find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
+        llvm_config_candidates, native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict,
+        print_version_banner, relativize_to_cwd, report_clang_for_doctor,
+        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
+        status_marker, validate_llvm_for_doctor,
     };
     use std::path::{Path, PathBuf};
 
@@ -1864,37 +1870,41 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Platform-specific spellings of the same three ideas. Each linker rejects
-    /// the others', which is how the Windows leg first failed.
+    /// Every platform's link dialect, checked on any host. Each linker rejects
+    /// the others' spellings, and CI runs only on Linux - so before this took
+    /// the OS as a parameter, two thirds of these were unreachable and the
+    /// Windows spelling was wrong for months with nothing able to notice.
     #[test]
-    fn build_linker_args_uses_the_right_dialect_for_this_platform() {
+    fn build_linker_args_uses_the_right_dialect_per_platform() {
         let dir = unique_tmp("linkargs_dialect");
         std::fs::create_dir_all(&dir).unwrap();
-        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
-        let joined = args.join(" ");
+        let path = dir.to_str().unwrap();
 
-        if cfg!(target_os = "windows") {
-            // rpath and the ELF dtags flag draw LNK4044 from MSVC's linker.
-            assert!(!joined.contains("-rpath"), "{joined}");
-            assert!(!joined.contains("disable-new-dtags"), "{joined}");
-            assert!(!joined.contains("gc-sections"), "{joined}");
-            // The driver's hardcoded static CRT must be countermanded at LINK
-            // time; -fms-runtime-lib only affects objects clang compiles itself,
-            // and clang compiles nothing here.
-            assert!(joined.contains("/NODEFAULTLIB:libcmt"), "{joined}");
-            assert!(joined.contains("/NODEFAULTLIB:libucrt"), "{joined}");
-            assert!(joined.contains("/DEFAULTLIB:msvcrt"), "{joined}");
-            assert!(!joined.contains("-fms-runtime-lib"), "{joined}");
-        } else {
-            assert!(joined.contains("-rpath"), "{joined}");
-            assert!(!joined.contains("NODEFAULTLIB"), "{joined}");
-            if cfg!(target_os = "macos") {
-                assert!(joined.contains("-dead_strip"), "{joined}");
-            } else {
-                assert!(joined.contains("--gc-sections"), "{joined}");
-                assert!(joined.contains("disable-new-dtags"), "{joined}");
-            }
-        }
+        let windows = build_linker_args_for("windows", "scratch.o", path, &dir).join(" ");
+        // rpath and the ELF dtags flag draw LNK4044 from MSVC's linker.
+        assert!(!windows.contains("-rpath"), "{windows}");
+        assert!(!windows.contains("disable-new-dtags"), "{windows}");
+        assert!(!windows.contains("gc-sections"), "{windows}");
+        // clang hardcodes -defaultlib:libcmt when it links, so the static CRT
+        // has to be countermanded at LINK time; -fms-runtime-lib only affects
+        // objects clang compiles itself, and it compiles none here.
+        assert!(windows.contains("/NODEFAULTLIB:libcmt"), "{windows}");
+        assert!(windows.contains("/NODEFAULTLIB:libucrt"), "{windows}");
+        assert!(windows.contains("/DEFAULTLIB:msvcrt"), "{windows}");
+        assert!(!windows.contains("-fms-runtime-lib"), "{windows}");
+
+        let macos = build_linker_args_for("macos", "scratch.o", path, &dir).join(" ");
+        assert!(macos.contains("-dead_strip"), "{macos}");
+        assert!(!macos.contains("gc-sections"), "{macos}");
+        assert!(!macos.contains("disable-new-dtags"), "{macos}");
+        assert!(!macos.contains("NODEFAULTLIB"), "{macos}");
+
+        let linux = build_linker_args_for("linux", "scratch.o", path, &dir).join(" ");
+        assert!(linux.contains("--gc-sections"), "{linux}");
+        assert!(linux.contains("disable-new-dtags"), "{linux}");
+        assert!(linux.contains("-rpath"), "{linux}");
+        assert!(!linux.contains("NODEFAULTLIB"), "{linux}");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
