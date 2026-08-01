@@ -893,14 +893,26 @@ fn find_linker_or_exit() -> String {
     }
 }
 
-/// Build the internal-error detail line for a failed link from clang's stderr.
+/// Build the internal-error detail line for a failed link from clang's output.
+///
+/// Both streams are reported because the linker's own diagnostics do not land on
+/// the same one everywhere: `ld` and `lld` write to stderr, while MSVC's
+/// `link.exe` writes to stdout. Reading stderr alone on Windows reduces the whole
+/// report to "linker command failed with exit code 1104" and drops the `LNK1104:
+/// cannot open file '...'` line that says what is actually wrong.
+///
 /// Trailing whitespace is trimmed so the report does not end with a blank line;
 /// pure so the wording is unit-tested without spawning clang.
-fn clang_failure_detail(stderr: &[u8]) -> String {
-    format!(
-        "linking failed: {}",
-        String::from_utf8_lossy(stderr).trim_end()
-    )
+fn clang_failure_detail(stdout: &[u8], stderr: &[u8]) -> String {
+    let mut parts = Vec::new();
+    for stream in [stderr, stdout] {
+        let text = String::from_utf8_lossy(stream);
+        let trimmed = text.trim_end();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
+        }
+    }
+    format!("linking failed: {}", parts.join("\n"))
 }
 
 /// What the driver should do about clang's result. Decided without side effects
@@ -923,7 +935,9 @@ fn classify_clang_output(
 ) -> ClangOutcome {
     match clang_output {
         Ok(output) if output.status.success() => ClangOutcome::Linked,
-        Ok(output) => ClangOutcome::LinkFailed(clang_failure_detail(&output.stderr)),
+        Ok(output) => {
+            ClangOutcome::LinkFailed(clang_failure_detail(&output.stdout, &output.stderr))
+        }
         Err(e) => ClangOutcome::SpawnFailed(format!(
             "Failed to run clang: {}. IR file generated at: {}",
             e, ir_file
@@ -1411,10 +1425,28 @@ mod tests {
     #[test]
     fn clang_failure_detail_labels_and_trims_stderr() {
         assert_eq!(
-            clang_failure_detail(b"ld: undefined symbol: pow\n\n"),
+            clang_failure_detail(b"", b"ld: undefined symbol: pow\n\n"),
             "linking failed: ld: undefined symbol: pow"
         );
-        assert_eq!(clang_failure_detail(b""), "linking failed: ");
+        assert_eq!(clang_failure_detail(b"", b""), "linking failed: ");
+    }
+
+    #[test]
+    fn clang_failure_detail_includes_stdout_for_msvc_link() {
+        // MSVC's link.exe writes LNK diagnostics to stdout, so a stderr-only
+        // report would say nothing but the exit code.
+        let detail = clang_failure_detail(
+            b"LINK : fatal error LNK1104: cannot open file 'zstd.lib'\n",
+            b"clang-22: error: linker command failed with exit code 1104\n",
+        );
+        assert!(
+            detail.contains("LNK1104: cannot open file 'zstd.lib'"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("linker command failed with exit code 1104"),
+            "{detail}"
+        );
     }
 
     #[cfg(unix)]
