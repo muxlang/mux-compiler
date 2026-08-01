@@ -1,6 +1,7 @@
 name: PR Report Comment
-# Posts the valgrind / benchmark reports produced by the "Build" workflow as a
-# comment on the PR. This is a SEPARATE workflow triggered via workflow_run so
+# Posts the valgrind report produced by the "Build" workflow as a comment on the
+# PR. (Benchmarks used to be reported here too; the full suite now runs from
+# benchmarks.yml on demand and on release tags, so it produces no PR artifact.) This is a SEPARATE workflow triggered via workflow_run so
 # it runs in the trusted base-repo context (with a write token) even when the
 # "Build" run it reports on came from an untrusted fork PR.
 #
@@ -97,7 +98,6 @@ jobs:
           # UNTRUSTED and escaped/capped HERE. Fields: artifact|logfile|job name|kind
           specs=(
             "pr-comment-valgrind|valgrind.log|Valgrind Memory Checks|gated"
-            "pr-comment-benchmarks|bench.log|Benchmarks (report-only)|report"
           )
           jobs_json="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs')"
           # When the report jobs were path-skipped there are no artifacts. Only
@@ -107,11 +107,11 @@ jobs:
           touched_ci="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
             --jq '.[].filename' | grep -Ec '^\.github/workflows/' || true)"
 
-          # INJECTION MODEL: charts/tables below must contain ONLY data this step
-          # can prove safe - integers/floats we numeric-validate, and phase labels
-          # from the fixed whitelist BELOW (never a string read from an artifact).
-          # A fork-controlled name/median that fails validation is dropped, not
-          # echoed. The one place raw fork text appears is the escaped <details>.
+          # INJECTION MODEL: the chart below must contain ONLY data this step can
+          # prove safe. In practice that is two integers parsed out of the log and
+          # range-checked against each other - never a string read from an
+          # artifact. Counts that fail validation produce a note, not a chart. The
+          # one place raw fork text appears is the escaped <details> block.
 
           # Render the fork-controlled raw log inside a code fence it cannot break
           # out of: open with MORE backticks than the longest backtick run inside
@@ -127,74 +127,6 @@ jobs:
             printf '%stext\n' "$fence"
             printf '%s\n' "${content:-(no output captured)}"
             printf '%s\n\n</details>\n\n' "$fence"
-          }
-
-          is_num() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
-
-          human_ns() {
-            awk -v ns="$1" 'BEGIN {
-              if (ns >= 1e9) printf "%.3g s", ns/1e9;
-              else if (ns >= 1e6) printf "%.3g ms", ns/1e6;
-              else if (ns >= 1e3) printf "%.3g us", ns/1e3;
-              else printf "%.3g ns", ns;
-            }'
-          }
-
-          # Whitelisted compile phases, split by magnitude. These labels are the
-          # ONLY phase strings that can reach the comment body, so this list is a
-          # security control, not just ordering. Keep it in sync with
-          # PREFERRED_ORDER in scripts/bench-report.py: a phase added there but
-          # not here is silently left out of the charts (by design - unknown
-          # names are dropped rather than rendered).
-          BENCH_FAST_PHASES="lex parse semantics codegen"
-          BENCH_SLOW_PHASES="pipeline execution"
-
-          # One xychart-beta bar per magnitude group so orders-of-magnitude phases
-          # do not flatten (mermaid xychart has no log axis). $1 summary json,
-          # $2 unit label, $3 ns divisor, $4 chart title, rest: phase names.
-          emit_bench_group() {
-            local summary="$1" unit="$2" divisor="$3" title="$4"; shift 4
-            local name med val labels="" values="" any=0
-            for name in "$@"; do
-              med="$(jq -r --arg p "$name" '(.phases[] | select(.name == $p) | .median_ns) // empty' "$summary" 2>/dev/null || true)"
-              is_num "$med" || continue
-              val="$(awk -v m="$med" -v d="$divisor" 'BEGIN { printf "%.4g", m / d }')"
-              labels="${labels:+$labels, }\"$name\""
-              values="${values:+$values, }$val"
-              any=1
-            done
-            [ "$any" -eq 1 ] || return 0
-            printf '```mermaid\n'
-            printf 'xychart-beta\n'
-            printf '    title "%s"\n' "$title"
-            printf '    x-axis [%s]\n' "$labels"
-            printf '    y-axis "%s"\n' "$unit"
-            printf '    bar [%s]\n' "$values"
-            printf '```\n\n'
-          }
-
-          # $1: path to the fork-produced summary json. jq reads it, but every
-          # value is numeric-validated and every label is a trusted literal above.
-          emit_bench_report() {
-            local summary="$1"
-            if [ -z "$summary" ] || [ ! -f "$summary" ]; then
-              echo "note: no bench summary at '${summary:-<unset>}'; skipping charts" >&2
-              return 0
-            fi
-            # shellcheck disable=SC2086 # word splitting is the intent
-            emit_bench_group "$summary" "microseconds" 1000 "Compile phases (median)" $BENCH_FAST_PHASES
-            # shellcheck disable=SC2086
-            emit_bench_group "$summary" "milliseconds" 1000000 "Pipeline + execution (median)" $BENCH_SLOW_PHASES
-            local name med n rows=""
-            for name in $BENCH_FAST_PHASES $BENCH_SLOW_PHASES; do
-              med="$(jq -r --arg p "$name" '(.phases[] | select(.name == $p) | .median_ns) // empty' "$summary" 2>/dev/null || true)"
-              is_num "$med" || continue
-              n="$(jq -r --arg p "$name" '(.phases[] | select(.name == $p) | .n) // empty' "$summary" 2>/dev/null || true)"
-              [[ "$n" =~ ^[0-9]+$ ]] || n="?"
-              rows="${rows}| \`$name\` | $(human_ns "$med") | $n |"$'\n'
-            done
-            [ -n "$rows" ] || return 0
-            printf '| Phase | Median | Samples |\n|:--|--:|--:|\n%s\n' "$rows"
           }
 
           # Leg A prints "N program(s), M failure(s)"; take those two integers only.
@@ -266,10 +198,6 @@ jobs:
               if [ "$art" = "pr-comment-valgrind" ]; then
                 emit_valgrind_pie "$logf"
                 emit_raw_details "$logf" "Full valgrind output (last 300 lines)"
-              elif [ "$art" = "pr-comment-benchmarks" ]; then
-                printf '_Informational only - shared runners are too noisy to gate on; full data is in the run artifacts._\n\n'
-                emit_bench_report "reports/$art/bench-summary.json"
-                emit_raw_details "$logf" "Full benchmark output (last 300 lines)"
               else
                 emit_raw_details "$logf" "Output (last 300 lines)"
               fi
