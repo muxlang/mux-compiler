@@ -1,0 +1,84 @@
+name: Setup LLVM 22
+description: >-
+  Install LLVM 22 for the current runner OS and export the toolchain variables
+  the compiler build needs (LLVM_SYS_221_PREFIX, LLVM_CONFIG_PATH, CC, CXX).
+
+# One place for a job to say "give me a working LLVM", instead of every job
+# knowing how each platform provides one. Linux is apt.llvm.org, macOS is
+# Homebrew, and Windows is a conda environment plus MSVC plus a hand-built
+# libxml2 import library - the Windows path alone is ~230 lines of PowerShell,
+# which is exactly why it should exist once.
+#
+# The Windows scripts here were extracted verbatim from release.yml. That
+# workflow still carries its own copy: it only runs on tags, so it cannot be
+# validated from a pull request, and swapping it over is a separate change that
+# should land on its own.
+
+inputs:
+  extra-components:
+    description: >-
+      Extra LLVM components to install, unversioned and space separated
+      (for example "lld"). Linux only - the macOS and Windows package sets are
+      fixed by their upstream formulas.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install LLVM 22 (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        ./scripts/ci/install-llvm.sh ${{ inputs.extra-components }}
+        {
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22"
+          echo "LLVM_CONFIG_PATH=/usr/bin/llvm-config-22"
+          echo "LLVM_SYS_221_STRICT_VERSIONING=1"
+          echo "CC=clang-22"
+          echo "CXX=clang++-22"
+        } >> "$GITHUB_ENV"
+
+    - name: Install LLVM 22 (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        brew install llvm@22
+        LLVM_PREFIX="$(brew --prefix llvm@22)"
+        {
+          echo "LLVM_SYS_221_PREFIX=${LLVM_PREFIX}"
+          echo "LLVM_CONFIG_PATH=${LLVM_PREFIX}/bin/llvm-config"
+          echo "LLVM_SYS_221_STRICT_VERSIONING=1"
+          echo "CC=${LLVM_PREFIX}/bin/clang"
+          echo "CXX=${LLVM_PREFIX}/bin/clang++"
+        } >> "$GITHUB_ENV"
+
+    - name: Setup Miniconda (Windows)
+      if: runner.os == 'Windows'
+      uses: conda-incubator/setup-miniconda@fc2d68f6413eb2d87b895e92f8584b5b94a10167
+      with:
+        auto-update-conda: true
+        use-mamba: true
+        channels: conda-forge
+        channel-priority: strict
+
+    - name: Install LLVM 22 with conda (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ${{ github.action_path }}/windows-llvm.ps1
+
+    - name: Setup MSVC developer command prompt (Windows)
+      if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+
+    - name: Create xml2 import lib (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ${{ github.action_path }}/windows-xml2-importlib.ps1
+
+    - name: Validate LLVM toolchain (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ${{ github.action_path }}/windows-validate.ps1

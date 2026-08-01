@@ -14,30 +14,53 @@ profile="${1:-debug}"
 target_dir="target/${profile}"
 dist="dist"
 
+# Runtime library naming is per-platform, and the shared library is not
+# optional: a program using libm (pow, say) fails to link without it, because
+# no -lm is passed.
 exe_suffix=""
-[[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]] && exe_suffix=".exe"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    exe_suffix=".exe"
+    runtime_libs=(mux_runtime.lib mux_runtime.dll)
+    ;;
+  Darwin)
+    runtime_libs=(libmux_runtime.a libmux_runtime.dylib)
+    ;;
+  *)
+    runtime_libs=(libmux_runtime.a libmux_runtime.so)
+    ;;
+esac
 
 rm -rf "$dist"
 mkdir -p "$dist/bin" "$dist/lib"
 cp "${target_dir}/mux${exe_suffix}" "$dist/bin/"
 
-# Copy whichever runtime libraries this platform produced: .a everywhere, plus
-# .so on Linux or .dylib on macOS. The shared library is not optional - a
-# program using libm (pow, say) fails to link without it, because no -lm is
-# passed.
 found_lib=0
-for lib in "${target_dir}"/libmux_runtime.a \
-           "${target_dir}"/libmux_runtime.so \
-           "${target_dir}"/libmux_runtime.dylib; do
+for name in "${runtime_libs[@]}"; do
+  lib="${target_dir}/${name}"
   if [[ -f "$lib" ]]; then
     cp "$lib" "$dist/lib/"
+    # Windows resolves a DLL next to the executable, not from lib/.
+    [[ "$name" == *.dll ]] && cp "$lib" "$dist/bin/"
     found_lib=1
   fi
 done
 if [[ "$found_lib" -eq 0 ]]; then
-  echo "no libmux_runtime.* found in ${target_dir} - was 'cargo build -p mux-runtime' run?" >&2
-  printf '::error::no libmux_runtime.* found in %s\n' "$target_dir"
+  echo "no runtime library (${runtime_libs[*]}) in ${target_dir} - was 'cargo build -p mux-runtime' run?" >&2
+  printf '::error::no runtime library found in %s\n' "$target_dir"
   exit 1
+fi
+
+# mux.exe loads LLVM dynamically on Windows, so a real install ships those DLLs
+# beside it. Copying them here keeps this a test of the packaged layout rather
+# than of whatever happens to be on PATH.
+if [[ "$exe_suffix" == ".exe" && -n "${LLVM_SYS_221_PREFIX:-}" ]]; then
+  llvm_bin="${LLVM_SYS_221_PREFIX}/bin"
+  if [[ -d "$llvm_bin" ]]; then
+    find "$llvm_bin" -maxdepth 1 -type f \
+      \( -name 'LLVM*.dll' -o -name 'libclang*.dll' -o -name 'clang*.dll' \) \
+      -exec cp {} "$dist/bin/" \; 2>/dev/null || true
+  fi
 fi
 
 echo "Staged install:"
