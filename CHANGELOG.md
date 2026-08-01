@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offer their own `clear()` as a regular method, and the dsa classes do.
 
 ### Fixed
+- **Windows links against the import library, not a stray DLL**: runtime
+  resolution accepted any directory containing `mux_runtime.dll` as the one to
+  link against. A packaged install must keep that DLL beside `mux.exe` for the
+  loader to find it, so `bin/` always won over the `lib/` holding
+  `mux_runtime.lib` - and a bare DLL is not a linker input on Windows, so every
+  compile failed with `LNK1181: cannot open input file 'mux_runtime.lib'`. A
+  dynamic library now only counts as linkable where it actually is, which is
+  everywhere except Windows.
 - **Compiling a program on Windows now links**: the temporary object file was
   created with `FILE_FLAG_DELETE_ON_CLOSE` and its handle held open across the
   link. While such a handle is open, Windows fails any open that does not itself
