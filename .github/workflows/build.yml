@@ -14,6 +14,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+# Least privilege for every job in this workflow. Nothing here writes to the
+# repository: the jobs check out, build, test, and upload run artifacts (which
+# use the Actions runtime rather than this token). Declared at the top level
+# rather than per job so a job added later inherits the restriction instead of
+# silently inheriting the repository default.
+permissions:
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -44,6 +52,31 @@ jobs:
               # A workflow-only change would otherwise skip every job here,
               # including the one being changed.
               - '.github/workflows/**'
+
+  format:
+    # Formatting only. Clippy deliberately stays with rust_checks: it compiles
+    # the crate, so it needs the LLVM install and the build cache and could
+    # never be a fast gate. rustfmt needs neither, so this reports a formatting
+    # slip in well under a minute instead of ~3 minutes behind an apt install.
+    #
+    # Not wired into the other jobs via `needs`. That would serialise this in
+    # front of every run to save compute on a rare failure - and the pre-commit
+    # hook already catches formatting locally, so the CI failures this catches
+    # are mostly fork contributors who do not have the hook.
+    name: Format
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: 1.93.1
+          components: rustfmt
+      - name: Formatting check
+        run: cargo fmt -- --check
 
   rust_checks:
     name: Rust Checks
@@ -81,8 +114,6 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-      - name: Formatting check
-        run: cargo fmt -- --check
       - name: Rust checks
         run: ./scripts/run-checks.sh
       - name: Install cargo-insta
