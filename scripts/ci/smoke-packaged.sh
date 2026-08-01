@@ -76,17 +76,26 @@ run_bounded() {
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout "$secs" "$@"
   else
+    # `set -m` puts the command in its own process group so the WHOLE tree can
+    # be signalled. Killing just the direct child is not enough: `mux run`
+    # spawns the compiled program, which inherits stdout, so a hung grandchild
+    # outlives its parent and holds the command-substitution pipe open - the
+    # caller then blocks until the job timeout even though the bound expired.
+    set -m
     "$@" &
     local pid=$!
+    set +m
     # kill -0 first so a pid reused after the command already exited is never
-    # signalled. The watcher is reaped so a fast command returns immediately
-    # rather than waiting out the full bound.
-    ( sleep "$secs"; kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null ) &
+    # signalled. The negative pid targets the process group.
+    ( sleep "$secs"; kill -0 "$pid" 2>/dev/null && kill -9 -"$pid" 2>/dev/null ) &
     local watcher=$!
     local rc=0
     wait "$pid" || rc=$?
     kill "$watcher" 2>/dev/null || true
     wait "$watcher" 2>/dev/null || true
+    # Sweep anything that outlived the parent. Safe because the group holds only
+    # this command's tree.
+    kill -9 -"$pid" 2>/dev/null || true
     return "$rc"
   fi
 }
