@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offer their own `clear()` as a regular method, and the dsa classes do.
 
 ### Fixed
+- **A failed link now reports the linker's own error, not just its exit code**:
+  the internal-error report was built from clang's stderr alone. `ld` and `lld`
+  write diagnostics there, but MSVC's `link.exe` writes them to stdout, so on
+  Windows the entire report was `linking failed: clang-22: error: linker command
+  failed with exit code 1104` - the `LNK1104: cannot open file '...'` line naming
+  the actual problem was discarded. Both streams are reported now. Found when the
+  packaged-artifact smoke test was first run on Windows, where a link failure was
+  undiagnosable from CI logs.
 - **Same-named globals in different modules no longer collide**: module-level
   globals were emitted and keyed by their bare name, so two imported modules
   each declaring e.g. `const int SHARED` shared one slot and both resolved to
