@@ -272,6 +272,53 @@ jobs:
             Sort-Object Count -Descending |
             Format-Table Count, Name -AutoSize
 
+          $clang = Join-Path $env:LLVM_SYS_221_PREFIX "bin\clang.exe"
+          $crt = 'libcmt|libucrt|msvcrt|ucrt|vcruntime|oldnames|defaultlib'
+
+          Write-Host "=== clang identity and default target ==="
+          & $clang --version
+
+          "int main(void){return 0;}" | Out-File -Encoding ascii probe.c
+
+          Write-Host "=== link line clang builds BY DEFAULT ==="
+          $out = (& $clang -### probe.c -o probe_a.exe 2>&1 | Out-String)
+          ($out -split '\s+') | Where-Object { $_ -imatch $crt } | Sort-Object -Unique
+
+          Write-Host "=== link line clang builds WITH -fms-runtime-lib=dll ==="
+          $out = (& $clang -### -fms-runtime-lib=dll probe.c -o probe_b.exe 2>&1 | Out-String)
+          ($out -split '\s+') | Where-Object { $_ -imatch $crt } | Sort-Object -Unique
+
+          Write-Host "=== directives clang bakes into an object, default vs dll ==="
+          & $clang -c probe.c -o probe_a.o
+          Write-Host "-- default:"
+          dumpbin /directives probe_a.o | Select-String "DEFAULTLIB"
+          & $clang -c -fms-runtime-lib=dll probe.c -o probe_b.o
+          Write-Host "-- dll:"
+          dumpbin /directives probe_b.o | Select-String "DEFAULTLIB"
+
+          # Prime suspect: clang always links its compiler-rt builtins, and a
+          # conda-forge LLVM is commonly built against the STATIC CRT. If those
+          # objects carry /DEFAULTLIB:libucrt they drag the static UCRT into a
+          # link that otherwise asks for MSVCRT, which is exactly the reported
+          # conflict - and libucrt exports `realloc`, never `__imp_realloc`.
+          Write-Host "=== CRT requested by the clang runtime libraries ==="
+          Get-ChildItem -Path (Join-Path $env:LLVM_SYS_221_PREFIX "lib") -Filter "clang_rt*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Write-Host "-- $($_.Name)"
+              dumpbin /directives $_.FullName |
+                Select-String "DEFAULTLIB" |
+                Select-Object -First 4
+            }
+
+          Write-Host "=== does ucrt.lib (dynamic) actually export __imp_realloc? ==="
+          $ucrt = Get-ChildItem -Path ($env:LIB -split ';') -Filter "ucrt.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($ucrt) {
+            Write-Host "found $($ucrt.FullName)"
+            dumpbin /exports $ucrt.FullName 2>$null | Select-String "realloc" | Select-Object -First 3
+          } else {
+            Write-Host "ucrt.lib not found on LIB - that alone would explain the unresolved __imp_ symbols"
+          }
+
   packaged_artifact_result:
     # Aggregates the matrix under the single stable name that the branch ruleset
     # requires. Without this, matrixing renames the check to
