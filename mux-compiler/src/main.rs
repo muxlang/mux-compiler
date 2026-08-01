@@ -1248,6 +1248,41 @@ fn install_internal_error_panic_hook() {
     }));
 }
 
+/// Native libraries a statically linked runtime needs, by target OS.
+///
+/// Takes the OS as a parameter rather than reading `cfg!` inline so that every
+/// platform's list is reachable from a test on any host. The Windows list in
+/// particular is unreachable on the Linux runners CI uses, so inline `cfg!`
+/// left it verified by nothing - and it was wrong for months, failing every
+/// Windows compile with LNK2019 on symbols these libraries own.
+fn native_runtime_deps(target_os: &str) -> &'static [&'static str] {
+    match target_os {
+        // libSystem already provides these.
+        "macos" => &[],
+        // What Rust's std and the runtime's vendored C code reference:
+        // bcrypt/advapi32 for getrandom, ntdll for pipes, userenv for the home
+        // directory, secur32 for the user name, ws2_32 for sockets, dbghelp for
+        // backtraces.
+        "windows" => &[
+            "-ladvapi32",
+            "-lbcrypt",
+            "-ldbghelp",
+            "-lkernel32",
+            "-lntdll",
+            "-lole32",
+            "-loleaut32",
+            "-lsecur32",
+            "-lshell32",
+            "-luserenv",
+            "-luuid",
+            "-lws2_32",
+        ],
+        // libm for `**`/pow, and the rest for what the runtime's C deps pull in
+        // (issue #291).
+        _ => &["-lm", "-lz", "-lpthread", "-ldl"],
+    }
+}
+
 /// Build the clang argument list that links the emitted object into an
 /// executable, minus the output path.
 ///
@@ -1317,30 +1352,8 @@ fn build_linker_args(object_file: &str, lib_path_str: &str, lib_dir: &Path) -> V
     // Every compile therefore failed with LNK2019 on symbols belonging to the
     // Windows system libraries below. macOS still needs nothing: libSystem
     // provides these.
-    if !cfg!(target_os = "macos") && runtime_lib_dir_is_static_only(lib_dir) {
-        let native_libs: &[&str] = if cfg!(target_os = "windows") {
-            // What Rust's std and the runtime's vendored C code reference:
-            // bcrypt/advapi32 for getrandom, ntdll for pipes, userenv for the
-            // home directory, secur32 for the user name, ws2_32 for sockets,
-            // dbghelp for backtraces.
-            &[
-                "-ladvapi32",
-                "-lbcrypt",
-                "-ldbghelp",
-                "-lkernel32",
-                "-lntdll",
-                "-lole32",
-                "-loleaut32",
-                "-lsecur32",
-                "-lshell32",
-                "-luserenv",
-                "-luuid",
-                "-lws2_32",
-            ]
-        } else {
-            &["-lm", "-lz", "-lpthread", "-ldl"]
-        };
-        for native_lib in native_libs {
+    if runtime_lib_dir_is_static_only(lib_dir) {
+        for native_lib in native_runtime_deps(env::consts::OS) {
             linker_args.push((*native_lib).to_string());
         }
     }
@@ -1496,9 +1509,10 @@ mod tests {
         REQUIRED_LLVM_MAJOR, build_linker_args, clang_failure_detail, clang_version_output,
         compiling_file, dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir,
         format_panic_detail, internal_compiler_error_report, llvm_config_candidates,
-        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, relativize_to_cwd,
-        report_clang_for_doctor, report_runtime_for_doctor, runtime_lib_dir_is_static_only,
-        set_compiling_file, status_marker, validate_llvm_for_doctor,
+        native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict, print_version_banner,
+        relativize_to_cwd, report_clang_for_doctor, report_runtime_for_doctor,
+        runtime_lib_dir_is_static_only, set_compiling_file, status_marker,
+        validate_llvm_for_doctor,
     };
     use std::path::{Path, PathBuf};
 
@@ -1694,6 +1708,40 @@ mod tests {
             candidates
                 .iter()
                 .any(|c| c == &format!("llvm-config-{}", REQUIRED_LLVM_MAJOR))
+        );
+    }
+
+    /// Every platform's list, checked on any host. The Windows entries are the
+    /// point: they are unreachable on the Linux runners CI uses, so with an
+    /// inline cfg! they were verified by nothing - and were in fact missing
+    /// entirely, failing every Windows compile with LNK2019 on symbols these
+    /// libraries own.
+    #[test]
+    fn native_runtime_deps_cover_every_platform() {
+        assert!(
+            native_runtime_deps("macos").is_empty(),
+            "libSystem already provides these"
+        );
+
+        let unixish = native_runtime_deps("linux");
+        for lib in ["-lm", "-lz", "-lpthread", "-ldl"] {
+            assert!(unixish.contains(&lib), "unix is missing {lib}");
+        }
+
+        let windows = native_runtime_deps("windows");
+        for lib in [
+            "-ladvapi32",
+            "-lbcrypt",
+            "-lntdll",
+            "-lsecur32",
+            "-luserenv",
+            "-lws2_32",
+        ] {
+            assert!(windows.contains(&lib), "windows is missing {lib}");
+        }
+        assert!(
+            !windows.contains(&"-lm"),
+            "libm is not a Windows system library"
         );
     }
 
