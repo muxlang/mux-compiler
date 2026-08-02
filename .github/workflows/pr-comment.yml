@@ -48,6 +48,13 @@ jobs:
     if: ${{ github.event.workflow_run.event == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
+      # Checks out this workflow's OWN ref (main - workflow_run always runs
+      # the copy on the default branch, never the triggering PR's), not the
+      # untrusted PR's code, so this stays consistent with the threat model
+      # above. Needed only so the two scripts below exist on disk to run;
+      # the original inline-shell version of this workflow needed no
+      # checkout at all, which is why this was missing until caught here.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Resolve target PR from trusted metadata
         id: pr
         env:

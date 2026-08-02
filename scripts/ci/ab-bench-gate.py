@@ -137,6 +137,57 @@ def evaluate(
     return tripped, pct_change, abs_delta_ms
 
 
+def evaluate_program(
+    program: Path,
+    baseline_bin: Path,
+    baseline_runtime_lib: Path,
+    pr_bin: Path,
+    pr_runtime_lib: Path,
+    tmp_path: Path,
+    pct_threshold: float,
+    abs_ms_threshold: float,
+) -> dict:
+    name = program.name
+    baseline_ir_dir = tmp_path / f"{name}-baseline"
+    pr_ir_dir = tmp_path / f"{name}-pr"
+    baseline_ir_dir.mkdir()
+    pr_ir_dir.mkdir()
+    baseline_ir = build_ir(baseline_bin, baseline_runtime_lib, program, baseline_ir_dir)
+    pr_ir = build_ir(pr_bin, pr_runtime_lib, program, pr_ir_dir)
+    ir_identical = baseline_ir == pr_ir
+
+    export_json = tmp_path / f"{name}.hyperfine.json"
+    hf_workdir = tmp_path / f"{name}-hf"
+    hf_workdir.mkdir()
+    by_name = run_hyperfine(
+        baseline_bin, baseline_runtime_lib, pr_bin, pr_runtime_lib, program, export_json, hf_workdir
+    )
+    tripped, pct_change, abs_delta_ms = evaluate(by_name, pct_threshold, abs_ms_threshold)
+
+    verdict = "ok"
+    if tripped:
+        if ir_identical:
+            verdict = "escaped (IR identical)"
+        else:
+            # Confirmation re-run: only this file, only once.
+            confirm_json = tmp_path / f"{name}.hyperfine.confirm.json"
+            confirm_by_name = run_hyperfine(
+                baseline_bin, baseline_runtime_lib, pr_bin, pr_runtime_lib, program, confirm_json, hf_workdir
+            )
+            confirm_tripped, _, _ = evaluate(confirm_by_name, pct_threshold, abs_ms_threshold)
+            verdict = "REGRESSION" if confirm_tripped else "ok (confirmation run did not reproduce)"
+
+    return {
+        "program": name,
+        "baseline_ms": by_name["baseline"]["median"] * 1000,
+        "pr_ms": by_name["pr"]["median"] * 1000,
+        "pct_change": pct_change,
+        "abs_delta_ms": abs_delta_ms,
+        "ir_identical": ir_identical,
+        "verdict": verdict,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--baseline-bin-dir", required=True, type=Path, help="dir containing baseline mux + libmux_runtime.a")
@@ -166,59 +217,22 @@ def main() -> int:
             return 2
 
     rows = []
-    failed = False
     with tempfile.TemporaryDirectory(prefix="ab-bench-gate-") as tmp:
         tmp_path = Path(tmp)
         for program in programs:
-            name = program.name
-            baseline_ir_dir = tmp_path / f"{name}-baseline"
-            pr_ir_dir = tmp_path / f"{name}-pr"
-            baseline_ir_dir.mkdir()
-            pr_ir_dir.mkdir()
-            baseline_ir = build_ir(baseline_bin, baseline_runtime_lib, program, baseline_ir_dir)
-            pr_ir = build_ir(pr_bin, pr_runtime_lib, program, pr_ir_dir)
-            ir_identical = baseline_ir == pr_ir
-
-            export_json = tmp_path / f"{name}.hyperfine.json"
-            hf_workdir = tmp_path / f"{name}-hf"
-            hf_workdir.mkdir()
-            by_name = run_hyperfine(
-                baseline_bin, baseline_runtime_lib, pr_bin, pr_runtime_lib, program, export_json, hf_workdir
-            )
-            tripped, pct_change, abs_delta_ms = evaluate(
-                by_name, args.pct_threshold, args.abs_ms_threshold
-            )
-
-            verdict = "ok"
-            if tripped:
-                if ir_identical:
-                    verdict = "escaped (IR identical)"
-                else:
-                    # Confirmation re-run: only this file, only once.
-                    confirm_json = tmp_path / f"{name}.hyperfine.confirm.json"
-                    confirm_by_name = run_hyperfine(
-                        baseline_bin, baseline_runtime_lib, pr_bin, pr_runtime_lib, program, confirm_json, hf_workdir
-                    )
-                    confirm_tripped, _, _ = evaluate(
-                        confirm_by_name, args.pct_threshold, args.abs_ms_threshold
-                    )
-                    if confirm_tripped:
-                        verdict = "REGRESSION"
-                        failed = True
-                    else:
-                        verdict = "ok (confirmation run did not reproduce)"
-
             rows.append(
-                {
-                    "program": name,
-                    "baseline_ms": by_name["baseline"]["median"] * 1000,
-                    "pr_ms": by_name["pr"]["median"] * 1000,
-                    "pct_change": pct_change,
-                    "abs_delta_ms": abs_delta_ms,
-                    "ir_identical": ir_identical,
-                    "verdict": verdict,
-                }
+                evaluate_program(
+                    program,
+                    baseline_bin,
+                    baseline_runtime_lib,
+                    pr_bin,
+                    pr_runtime_lib,
+                    tmp_path,
+                    args.pct_threshold,
+                    args.abs_ms_threshold,
+                )
             )
+    failed = any(r["verdict"] == "REGRESSION" for r in rows)
 
     header = f"{'program':<28} {'baseline (ms)':>13} {'pr (ms)':>10} {'change':>8} {'abs (ms)':>9} {'ir':>11}  verdict"
     print(header)

@@ -226,7 +226,7 @@ jobs:
       - name: Build
         # mux-runtime is a dependency, and cargo builds only a dependency's
         # rlib - not the staticlib compiled Mux programs link against.
-        run: cargo build -p mux-runtime -p mux-lang
+        run: cargo build -p mux-runtime -p mux-lang --locked
       - name: Clippy
         run: cargo clippy -p mux-lang --all-targets --all-features -- -D warnings
 

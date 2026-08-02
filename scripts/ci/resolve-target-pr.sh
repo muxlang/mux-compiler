@@ -17,7 +17,7 @@ mapfile -t hits < <(
     --jq '.[] | "\(.number) \(.head.sha)"' \
     | awk -v s="$HEAD_SHA" '$2 == s { print $1 }'
 )
-if [ "${#hits[@]}" -eq 1 ]; then
+if [[ "${#hits[@]}" -eq 1 ]]; then
   echo "number=${hits[0]}" >> "$GITHUB_OUTPUT"
 else
   echo "Expected exactly one open PR for $HEAD_OWNER:$HEAD_BRANCH@$HEAD_SHA, found ${#hits[@]}; nothing to comment."

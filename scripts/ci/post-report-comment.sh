@@ -32,7 +32,7 @@ emit_raw_details() {
   content="$(tail -n 300 "$logf")"
   maxrun="$(printf '%s' "$content" | { grep -oE '`+' || true; } | awk '{ if (length > m) m = length } END { print m + 0 }')"
   fence_len=3
-  [ "${maxrun:-0}" -ge 3 ] && fence_len=$(( maxrun + 1 ))
+  [[ "${maxrun:-0}" -ge 3 ]] && fence_len=$(( maxrun + 1 ))
   fence="$(printf '`%.0s' $(seq "$fence_len"))"
   printf '<details><summary>%s</summary>\n\n' "$summary"
   printf '%stext\n' "$fence"
@@ -48,13 +48,13 @@ emit_raw_details() {
 emit_valgrind_pie() {
   local logf="$1" line total fails clean
   line="$(grep -Eo '[0-9]+ program\(s\), [0-9]+ failure\(s\)' "$logf" | tail -n 1 || true)"
-  if [ -z "$line" ]; then
+  if [[ -z "$line" ]]; then
     printf '_Chart unavailable: no "N program(s), M failure(s)" summary line in the valgrind log._\n\n'
     return 0
   fi
   total="$(printf '%s' "$line" | grep -Eo '^[0-9]+' || true)"
   fails="$(printf '%s' "$line" | grep -Eo '[0-9]+ failure' | grep -Eo '^[0-9]+' || true)"
-  if ! { [[ "$total" =~ ^[0-9]+$ ]] && [[ "$fails" =~ ^[0-9]+$ ]] && [ "$total" -gt 0 ] && [ "$fails" -le "$total" ]; }; then
+  if ! { [[ "$total" =~ ^[0-9]+$ ]] && [[ "$fails" =~ ^[0-9]+$ ]] && [[ "$total" -gt 0 ]] && [[ "$fails" -le "$total" ]]; }; then
     printf '_Chart unavailable: the valgrind summary line did not parse into usable counts._\n\n'
     return 0
   fi
@@ -81,10 +81,10 @@ for spec in "${specs[@]}"; do
   IFS='|' read -r art logname title kind <<< "$spec"
   logf="reports/$art/$logname"
   concl="$(printf '%s' "$jobs_json" | jq -r --arg n "$title" 'map(select(.name == $n)) | .[0].conclusion // ""')"
-  if [ ! -f "$logf" ]; then
+  if [[ ! -f "$logf" ]]; then
     # No log: job was path-skipped or produced nothing. Note it only on
     # workflow-touching PRs.
-    if [ "${touched_ci:-0}" -gt 0 ]; then
+    if [[ "${touched_ci:-0}" -gt 0 ]]; then
       case "$concl" in
         skipped) note="Skipped - no relevant source changed in this PR." ;;
         "") note="Job not found in this run." ;;
@@ -95,7 +95,7 @@ for spec in "${specs[@]}"; do
     fi
     continue
   fi
-  if [ "$kind" = "gated" ]; then
+  if [[ "$kind" == "gated" ]]; then
     case "$concl" in
       success) status="PASSED" ;;
       failure) status="FAILED" ;;
@@ -106,7 +106,7 @@ for spec in "${specs[@]}"; do
   fi
   {
     printf '## %s - %s\n\n' "$title" "$status"
-    if [ "$art" = "pr-comment-valgrind" ]; then
+    if [[ "$art" == "pr-comment-valgrind" ]]; then
       emit_valgrind_pie "$logf"
       emit_raw_details "$logf" "Full valgrind output (last 300 lines)"
     else
@@ -115,7 +115,7 @@ for spec in "${specs[@]}"; do
   } >> body.md
   wrote=1
 done
-if [ "$wrote" -eq 0 ]; then
+if [[ "$wrote" -eq 0 ]]; then
   echo "Nothing to report for this PR; not commenting."
   exit 0
 fi
@@ -128,7 +128,7 @@ printf '\n%s\n' "$MARKER" >> body.md
 existing="$(gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" \
   | jq -r --arg m "$MARKER" \
       '[.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($m)))] | .[0].id // empty')"
-if [ -n "$existing" ]; then
+if [[ -n "$existing" ]]; then
   gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@body.md --silent
   echo "Updated report comment $existing on PR #$PR."
 else
