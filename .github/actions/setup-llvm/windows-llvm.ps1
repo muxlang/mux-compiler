@@ -175,6 +175,11 @@ if ($missingLibs.Count -gt 0) {
   Get-ChildItem -Path $llvmLib -Filter "*.lib" -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
 }
 
+# Kept in step with the Linux and macOS branches of action.yml. Without it the
+# exact-version check is off, and conda pins only the major (llvmdev=22) - so a
+# move to 22.2 would silently link a mismatched LLVM into a shipped artifact
+# instead of failing the build.
+"LLVM_SYS_221_STRICT_VERSIONING=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 "LLVM_SYS_221_PREFIX=$llvmPrefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 "LLVM_CONFIG_PATH=$llvmConfigPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 "LIB=$llvmLib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
