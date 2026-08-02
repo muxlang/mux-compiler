@@ -44,7 +44,14 @@ try {
         throw "Could not find mux.exe in archive"
     }
 
-    Copy-Item $muxExe (Join-Path $InstallDir "mux.exe") -Force
+    # Everything in bin/, not just mux.exe: the bundle also ships the LLVM and
+    # support DLLs (LLVM-C.dll, libxml2.dll, zlib.dll, zstd.dll) that mux.exe
+    # loads at run time, and Windows resolves those from the executable's own
+    # directory. Copying only the exe produced a missing-DLL failure on first
+    # use.
+    Get-ChildItem -Path (Join-Path $bundleRoot "bin") -File | ForEach-Object {
+        Copy-Item $_.FullName (Join-Path $InstallDir $_.Name) -Force
+    }
 
     $bundleLibDir = Join-Path $bundleRoot "lib"
     if (Test-Path $bundleLibDir) {
