@@ -35,7 +35,11 @@ archive="actionlint_${actionlint_version}_linux_amd64.tar.gz"
 # redirect could silently downgrade the transfer to plain HTTP (CWE-757). The
 # sha256 check below still catches a tampered file, but this stops the
 # downgrade itself rather than only detecting its result.
-curl -sSfL --proto "=https" -o "${workdir}/${archive}" \
+# --retry 5 --retry-all-errors: a single attempt under `set -e` fails the
+# whole job on any transient DNS/network/GitHub Releases hiccup before any
+# workflow gets linted. Matches the 5-attempt retry already used for the
+# SonarCloud issue-count check in these same workflows.
+curl -sSfL --proto "=https" --retry 5 --retry-all-errors -o "${workdir}/${archive}" \
   "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/${archive}"
 echo "${actionlint_sha256}  ${workdir}/${archive}" | sha256sum -c -
 tar -xzf "${workdir}/${archive}" -C "${workdir}" actionlint
