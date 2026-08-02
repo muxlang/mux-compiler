@@ -7,6 +7,12 @@
 # excluded here to match the threshold build.yml's own standalone shellcheck
 # check already uses (`--severity=warning` on install.sh); warning and error
 # still fail the job.
+#
+# actionlint's shellcheck integration only ever reaches inline `run:` blocks -
+# it has no visibility into a script an inline block merely calls. Plan.md
+# step 0 moves CI logic out of YAML into scripts/ci/*.sh specifically so it
+# can be linted "trivially" - that promise is empty unless those files get
+# checked directly too, which is what the loop below does.
 set -euo pipefail
 
 actionlint_version="1.7.12"
@@ -48,3 +54,15 @@ tar -xzf "${workdir}/${archive}" -C "${workdir}" actionlint
 # rules (runner-label, syntax-check, ...) never match this pattern, so they
 # always fail the job regardless of level.
 "${workdir}/actionlint" -color -ignore 'SC[0-9]+:(style|info):'
+
+# Direct shellcheck pass over the scripts actionlint cannot see into. Same
+# warning-and-above threshold as everywhere else in this file.
+shellcheck_failed=0
+for f in scripts/ci/*.sh; do
+  [ -e "$f" ] || continue
+  shellcheck --severity=warning "$f" || shellcheck_failed=1
+done
+if [ "$shellcheck_failed" -ne 0 ]; then
+  echo "shellcheck reported warning-or-above issues in scripts/ci/*.sh" >&2
+  exit 1
+fi
