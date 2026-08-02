@@ -63,10 +63,11 @@ jobs:
         run: ./scripts/ci/lint-workflows.sh
 
   format:
-    # Formatting only. Clippy deliberately stays with rust_checks: it compiles
-    # the crate, so it needs the LLVM install and the build cache and could
-    # never be a fast gate. rustfmt needs neither, so this reports a formatting
-    # slip in well under a minute instead of ~3 minutes behind an apt install.
+    # Formatting only. Clippy is its own job below: it compiles the crate, so
+    # it needs the LLVM install and the build cache and could never be a fast
+    # gate the way this one is. rustfmt needs neither, so this reports a
+    # formatting slip in well under a minute instead of ~3 minutes behind an
+    # apt install.
     #
     # Not wired into the other jobs via `needs`. That would serialise this in
     # front of every run to save compute on a rare failure - and the pre-commit
