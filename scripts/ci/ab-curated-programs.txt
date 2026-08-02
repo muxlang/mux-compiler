@@ -1,0 +1,23 @@
+# Curated program set for the A/B benchmark regression gate (plan.md step 5).
+# One mux program per line, path relative to the repo root. Blank lines and
+# lines starting with # are ignored.
+#
+# NOT "one file per compiler phase where that phase dominates" - that was
+# the original design brief, but it does not survive contact with real
+# data. Measured with `cargo bench --bench compile -- <file>` against every
+# candidate considered here: codegen is 61-74% of pipeline time in EVERY
+# file tried (nested_generics: 2.91ms/4.00ms=72%, generic_methods:
+# 2.36ms/3.88ms=61%, class_method_params: 1.60ms/2.17ms=74%, collections:
+# 1.53ms/2.24ms=68%, test_all_comparisons: 1.21ms/1.83ms=66%), so no file in
+# this corpus is lex- or parse-dominant relative to codegen. Picked instead
+# for workload diversity: size, generic-instantiation weight, class/method
+# density, comparison density, and the two std-path files the plan brief
+# mandates.
+test_scripts/collections.mux
+test_scripts/nested_generics.mux
+test_scripts/class_method_params.mux
+test_scripts/test_all_comparisons.mux
+test_scripts/generic_methods.mux
+mux-compiler/benches/programs/recursion.mux
+test_scripts/test_std_math.mux
+test_scripts/test_std_sql_sqlite.mux
