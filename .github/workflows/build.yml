@@ -89,6 +89,54 @@ jobs:
       - name: Formatting check
         run: cargo fmt -- --check
 
+  clippy:
+    # Separated from rust_checks so a clippy failure is not buried behind
+    # insta/coverage: it still needs the LLVM install and a full cargo build
+    # to compile the crate, so unlike `format` it can never be as fast as a
+    # rustfmt-only check - but it skips everything rust_checks does beyond
+    # that. Deliberately NOT wired via `needs` into the expensive jobs
+    # (integration/valgrind/rc-leak-check/packaged-artifact): the pre-commit
+    # hook already catches clippy locally, and serializing every green run
+    # behind this to save time only on the rare failure path is the wrong
+    # trade for the common case (same reasoning `format` already documents).
+    name: Clippy
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
+      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
+      LLVM_SYS_221_STRICT_VERSIONING: "1"
+      CC: clang-22
+      CXX: clang++-22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
+        with:
+          toolchain: 1.93.1
+          components: clippy
+      - name: Install LLVM 22
+        run: ./scripts/ci/install-llvm.sh
+      - name: Cache Cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build
+        # mux-runtime is a dependency, and cargo builds only a dependency's
+        # rlib - not the staticlib compiled Mux programs link against.
+        run: cargo build -p mux-runtime -p mux-lang
+      - name: Clippy
+        run: cargo clippy -p mux-lang --all-targets --all-features -- -D warnings
+
   rust_checks:
     name: Rust Checks
     needs: detect-changes
@@ -114,7 +162,7 @@ jobs:
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
         with:
           toolchain: 1.93.1
-          components: rustfmt, clippy, llvm-tools-preview
+          components: rustfmt, llvm-tools-preview
       - name: Install LLVM 22
         run: ./scripts/ci/install-llvm.sh
       - name: Cache Cargo registry and build
