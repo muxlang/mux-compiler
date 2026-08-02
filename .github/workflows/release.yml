@@ -194,7 +194,12 @@ jobs:
           }
 
           & "dist/mux-${{ matrix.target }}/bin/mux.exe" version
-          Compress-Archive -Path "dist/mux-${{ matrix.target }}/*" -DestinationPath "dist/mux-${{ matrix.target }}.${{ matrix.archive_ext }}" -Force
+          # No trailing /* : that packs bin/ and lib/ at the archive root and
+          # drops the mux-<target>/ parent, which the tarball keeps and which
+          # install.ps1 looks for. Windows installs failed on this from the
+          # start - install.ps1 threw "Could not find mux.exe in archive" for
+          # every release.
+          Compress-Archive -Path "dist/mux-${{ matrix.target }}" -DestinationPath "dist/mux-${{ matrix.target }}.${{ matrix.archive_ext }}" -Force
           $hash = (Get-FileHash -Algorithm SHA256 "dist/mux-${{ matrix.target }}.${{ matrix.archive_ext }}").Hash.ToLower()
           "$hash  mux-${{ matrix.target }}.${{ matrix.archive_ext }}" | Out-File -FilePath "dist/mux-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256" -Encoding ascii
 
@@ -207,11 +212,158 @@ jobs:
             dist/mux-${{ matrix.target }}.${{ matrix.archive_ext }}
             dist/mux-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
 
+  verify-install:
+    # Install the artifact that is about to be published, exactly the way a user
+    # would, and compile and run programs with it.
+    #
+    # This is the gate that makes "publish a compiler that cannot compile hello
+    # world" impossible - the failure that shipped in v0.6.0. It is also the only
+    # thing that ever EXECUTES scripts/install.sh and install.ps1; build.yml only
+    # parses them. Writing it immediately found that install.ps1 had never worked
+    # on any release: the zip packed bin/ at its root while the script looked for
+    # mux-<target>/bin/mux.exe, and it installed only mux.exe without the LLVM
+    # DLLs beside it. Both are fixed in this change.
+    #
+    # The installers take MUX_RELEASE_BASE_URL, so they run unmodified against
+    # the artifacts from this run rather than a published release that does not
+    # exist yet.
+    #
+    # NOTE on gating: `needs` is not the same as a required status check. A
+    # skipped or failed job here genuinely skips publish-release, so this does
+    # NOT need the aggregator pattern build.yml uses for its matrix - that exists
+    # because required checks treat a skipped job as green, which `needs` does
+    # not.
+    name: Verify Install (${{ matrix.label }})
+    needs: build-artifacts
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      # One platform failing must not hide the others.
+      fail-fast: false
+      matrix:
+        include:
+          # An old-glibc container is the only place a too-new glibc requirement
+          # can be caught: the build runner is always newer than the oldest
+          # system we support, so the binary always runs where it was built.
+          - label: debian-12
+            os: ubuntu-latest
+            container: debian:12
+            artifact: mux-linux-x86_64
+          - label: ubuntu-22.04
+            os: ubuntu-latest
+            container: ubuntu:22.04
+            artifact: mux-linux-x86_64
+          # Native, because a container cannot stand in for either.
+          - label: macos-aarch64
+            os: macos-14
+            artifact: mux-macos-aarch64
+          - label: macos-x86_64
+            os: macos-15-intel
+            artifact: mux-macos-x86_64
+          - label: windows-x86_64
+            os: windows-latest
+            artifact: mux-windows-x86_64
+          # rockylinux:9 is deliberately absent. It carries glibc 2.34 against
+          # the 2.35 the published runtime is built on, so libmux_runtime.so
+          # references hypot@GLIBC_2.35 and every compiled program there fails to
+          # load it. That is a real portability gap rather than a CI problem, and
+          # adding the leg now would block releases on it. Tracked separately;
+          # this is the leg to restore first once it is fixed, because it is the
+          # only one that would catch a glibc regression.
+    steps:
+      - name: Install container prerequisites
+        if: ${{ matrix.container != '' }}
+        shell: sh
+        run: |
+          set -eu
+          # A C toolchain is required: mux links compiled programs with cc.
+          # Deliberately gcc rather than clang - it also proves the "any C
+          # driver of any version" claim from #318. curl, tar, gzip and
+          # ca-certificates are already present in these images.
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl gcc libc6-dev tar gzip git python3
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Download the artifact built by this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          # This leg's platform only. Downloading the whole set would pull ~200MB
+          # to serve one file.
+          name: ${{ matrix.artifact }}
+          path: artifacts
+
+      - name: Serve the artifacts over loopback
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l artifacts
+          # Output is redirected to a file rather than inherited. A backgrounded
+          # process holding the step's stdout keeps the runner's stream readers
+          # open, which makes it kill the whole process tree ~5s after the step
+          # ends - on Windows that reaches this server, and the install step
+          # would then get connection-refused. Redirecting sidesteps that path
+          # entirely and drops the 5s stall with it.
+          python3 -m http.server 8000 --directory artifacts --bind 127.0.0.1 \
+            > "${RUNNER_TEMP}/artifact-server.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:8000/" >/dev/null 2>&1; then
+              echo "artifact server up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "artifact server did not come up:" >&2
+          cat "${RUNNER_TEMP}/artifact-server.log" >&2
+          exit 1
+
+      - name: Install with scripts/install.sh
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        env:
+          MUX_RELEASE_BASE_URL: http://127.0.0.1:8000
+          MUX_INSTALL_DIR: ${{ github.workspace }}/installed/bin
+          MUX_LIB_DIR: ${{ github.workspace }}/installed/lib
+        run: sh scripts/install.sh
+
+      - name: Install with scripts/install.ps1
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        env:
+          MUX_RELEASE_BASE_URL: http://127.0.0.1:8000
+          MUX_INSTALL_DIR: ${{ github.workspace }}\installed\bin
+          MUX_LIB_DIR: ${{ github.workspace }}\installed\lib
+        run: ./scripts/install.ps1
+
+      - name: Compile and run programs with the installed compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=""
+          if [ "${RUNNER_OS}" = "Windows" ]; then exe=".exe"; fi
+          ./scripts/ci/smoke-run.sh "installed/bin/mux${exe}"
+
+      - name: Show what was installed
+        # Only on failure, and it is the first question anyone asks: a missing
+        # runtime library or a DLL left behind in the bundle looks identical to a
+        # compiler bug from the error alone.
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          echo "--- installed/bin ---"; ls -l installed/bin || true
+          echo "--- installed/lib ---"; ls -l installed/lib || true
+          echo "--- artifact server log ---"; cat "${RUNNER_TEMP}/artifact-server.log" || true
+
   publish-release:
     name: Publish Release
     needs:
       - verify-release-commit
       - build-artifacts
+      - verify-install
     if: ${{ needs.verify-release-commit.outputs.on_main == 'true' }}
     runs-on: ubuntu-latest
     permissions:
