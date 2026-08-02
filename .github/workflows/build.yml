@@ -47,6 +47,21 @@ jobs:
               # including the one being changed.
               - '.github/workflows/**'
 
+  lint_workflows:
+    # actionlint plus its built-in shellcheck integration (active once
+    # shellcheck is on PATH, which it is on this image) - context #29's
+    # lint-the-pipeline-itself ask. Ungated: a workflow-only change is exactly
+    # what this exists to catch, and it is cheap enough not to need a filter.
+    name: Lint Workflows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: actionlint + shellcheck
+        run: ./scripts/ci/lint-workflows.sh
+
   format:
     # Formatting only. Clippy deliberately stays with rust_checks: it compiles
     # the crate, so it needs the LLVM install and the build cache and could
