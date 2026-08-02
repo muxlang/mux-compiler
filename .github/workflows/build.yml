@@ -26,8 +26,8 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
         id: filter
         with:
           filters: |
@@ -65,9 +65,9 @@ jobs:
       contents: read
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
         with:
           toolchain: 1.93.1
           components: rustfmt
@@ -88,7 +88,7 @@ jobs:
       CC: clang-22
       CXX: clang++-22
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # No mux-runtime checkout: cargo builds it from the commit Cargo.lock
       # pins, into target/, which is the library every program here links. That
       # is what a release ships, so testing anything else would test a
@@ -96,14 +96,14 @@ jobs:
       # caught by mux-runtime's own CI, which builds this repo's `main` against
       # its source.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
         with:
           toolchain: 1.93.1
           components: rustfmt, clippy, llvm-tools-preview
       - name: Install LLVM 22
         run: ./scripts/ci/install-llvm.sh
       - name: Cache Cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -143,7 +143,7 @@ jobs:
         # executed in the spawned compiler is captured.
         run: cargo llvm-cov -p mux-lang --all-features --lcov --output-path lcov.info
       - name: Upload coverage report
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-lcov
           path: lcov.info
@@ -160,7 +160,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Parse and analyze install.ps1
         shell: pwsh
@@ -233,9 +233,9 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
         with:
           toolchain: 1.93.1
       - name: Setup LLVM 22
@@ -295,7 +295,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Docker info
         run: docker compose version
       - name: Service-backed checks
@@ -317,11 +317,11 @@ jobs:
       CC: clang-22
       CXX: clang++-22
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Programs link the runtime cargo builds into target/ from the commit
       # Cargo.lock pins - the same library a release ships.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
         with:
           toolchain: 1.93.1
           components: llvm-tools-preview
@@ -330,7 +330,7 @@ jobs:
       - name: Install Valgrind
         run: sudo apt-get install -y valgrind
       - name: Cache Cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -347,7 +347,7 @@ jobs:
       - name: Upload valgrind log for PR comment
         # Raw log only; the trusted pr-comment workflow escapes and renders it.
         if: ${{ always() && github.event_name == 'pull_request' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pr-comment-valgrind
           path: valgrind.log
@@ -379,21 +379,21 @@ jobs:
       # so it is the one runtime the compiler cannot produce on its own.
       MUX_RUNTIME_LEAK_FEATURES: core,json,csv,net,sql,sync,rc-leak-check
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: muxlang/mux-runtime
           ref: main
           path: mux-runtime
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
         with:
           toolchain: 1.93.1
           components: llvm-tools-preview
       - name: Install LLVM 22
         run: ./scripts/ci/install-llvm.sh
       - name: Cache Cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -434,16 +434,16 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Download coverage report
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
         with:
           name: coverage-lcov
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9
+        uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # v7.0.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       # The scan above waits for analysis (sonar.qualitygate.wait), so the

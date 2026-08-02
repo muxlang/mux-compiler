@@ -1,0 +1,50 @@
+# Every action is pinned to a commit SHA, which is what stops a moved tag from
+# reaching our tokens. The cost is that a pin never updates on its own, so
+# pinning without this file just freezes the versions instead - including past a
+# security fix. Dependabot reads the `# vX.Y.Z` comment beside each SHA and
+# updates both together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # Patch and minor only, in one PR. Majors are deliberately excluded:
+      # several actions here are multiple majors behind, so a single ungated
+      # group would open one all-or-nothing PR crossing every one of them at
+      # once. That PR breaks CI everywhere, cannot be partially merged, and ends
+      # up sitting open forever - which freezes the pins just as effectively as
+      # having no Dependabot at all. Majors then arrive one action at a time,
+      # each reviewable on its own.
+      actions-routine:
+        patterns:
+          - "*"
+        update-types:
+          - patch
+          - minor
+    ignore:
+      # Pinned to an untagged commit on master that is NEWER than the repo's
+      # only tag (v1). Left to Dependabot the single "update" available is a
+      # downgrade, which would drop the cross-device copy fix. Move by hand.
+      - dependency-name: dtolnay/rust-toolchain
+    commit-message:
+      prefix: "ci"
+    # `chore` replaces Dependabot's default `dependencies` label rather than
+    # adding to it. Deliberate: `chore` is the label this org actually triages
+    # on, and it exists in every repo, whereas `dependencies` does not.
+    labels:
+      - chore
+
+  # Dependabot scans .github/workflows and a ROOT action.yml, but does not
+  # recurse into .github/actions/*/action.yml. Without this second entry the two
+  # pins inside the composite action would never be updated - the exact freeze
+  # this file exists to prevent.
+  - package-ecosystem: github-actions
+    directory: /.github/actions/setup-llvm
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    labels:
+      - chore
