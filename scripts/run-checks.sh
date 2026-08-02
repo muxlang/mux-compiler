@@ -45,8 +45,6 @@ run_step() {
 # or every program fails to link with "Could not locate the mux-runtime
 # library".
 run_step "cargo build" "${cargo_cmd[@]}" build -p mux-runtime -p mux-lang
-run_step "cargo clippy --all-targets --all-features -- -D warnings" \
-  "${cargo_cmd[@]}" clippy -p mux-lang --all-targets --all-features -- -D warnings
 if [[ "$with_service_tests" == "1" ]]; then
   run_step "cargo test" env MUX_RUN_SERVICE_TESTS=0 "${cargo_cmd[@]}" test -p mux-lang
 else

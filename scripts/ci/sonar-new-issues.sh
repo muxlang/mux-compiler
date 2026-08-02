@@ -38,7 +38,11 @@ api="https://sonarcloud.io/api/issues/search?componentKeys=${project_key}&pullRe
 count=""
 for _ in 1 2 3 4 5; do
   if resp="$(curl -sf -u "${SONAR_TOKEN}:" "$api")"; then
-    count="$(printf '%s' "$resp" | jq -r '.total // empty')"
+    # A 2xx response with a body jq cannot parse (a proxy error page, a
+    # truncated response) must retry like any other failure, not exit the
+    # whole script via set -e - it is exactly the transient case this loop
+    # exists to ride out.
+    count="$(printf '%s' "$resp" | jq -r '.total // empty' 2>/dev/null || true)"
     [[ -n "$count" ]] && break
   fi
   sleep 5
