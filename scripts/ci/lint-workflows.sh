@@ -59,10 +59,10 @@ tar -xzf "${workdir}/${archive}" -C "${workdir}" actionlint
 # warning-and-above threshold as everywhere else in this file.
 shellcheck_failed=0
 for f in scripts/ci/*.sh; do
-  [ -e "$f" ] || continue
+  [[ -e "$f" ]] || continue
   shellcheck --severity=warning "$f" || shellcheck_failed=1
 done
-if [ "$shellcheck_failed" -ne 0 ]; then
+if [[ "$shellcheck_failed" -ne 0 ]]; then
   echo "shellcheck reported warning-or-above issues in scripts/ci/*.sh" >&2
   exit 1
 fi
