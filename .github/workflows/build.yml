@@ -14,14 +14,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
-# Least privilege for every job in this workflow. Nothing here writes to the
-# repository: the jobs check out, build, test, and upload run artifacts (which
-# use the Actions runtime rather than this token). Declared at the top level
-# rather than per job so a job added later inherits the restriction instead of
-# silently inheriting the repository default.
-permissions:
-  contents: read
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -29,6 +21,8 @@ jobs:
   detect-changes:
     name: Detect Changed Paths
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
@@ -67,6 +61,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -83,6 +79,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
       LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
@@ -159,6 +157,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -198,56 +198,102 @@ jobs:
 
   packaged_artifact:
     # Reproduces a binary install: the compiler plus the bundled runtime library
-    # in bin/ and lib/, and nothing else. This is what `scripts/install.sh`
-    # produces, and no other job runs the compiler from that layout - which is
-    # how a release that could not compile hello world reached users.
-    name: Packaged Artifact Smoke Test
+    # in bin/ and lib/, and nothing else. No other job runs the compiler from
+    # that layout, which is how a release that could not compile hello world
+    # reached users.
+    #
+    # This is also the ONLY place a compiled Mux program is executed on macOS.
+    # Everything else in CI is Linux, so the platform-specific work in #318 was
+    # shipped unexercised there.
+    #
+    # GitHub-hosted on purpose: public repos get macOS unmetered here, and a
+    # macOS minute is ~20x on metered runners.
+    name: Packaged Artifact (${{ matrix.label }})
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
-    env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
-      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
-      LLVM_SYS_221_STRICT_VERSIONING: "1"
-      CC: clang-22
-      CXX: clang++-22
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    strategy:
+      # One platform failing must not hide the others - telling "broken on
+      # macOS" apart from "broken everywhere" is the entire point of a matrix.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+          - os: macos-14
+            label: macos-aarch64
+          - os: windows-latest
+            label: windows-x86_64
+    # Every step runs under bash, including on Windows, so the build and the
+    # smoke script are one code path rather than three.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: 1.93.1
-      - name: Install LLVM 22
-        run: ./scripts/ci/install-llvm.sh lld
+      - name: Setup LLVM 22
+        uses: ./.github/actions/setup-llvm
+        with:
+          extra-components: lld
       - name: Build compiler and runtime
+        # No explicit --target: the host triple is the shipped one on all three
+        # runners, so output lands in target/<profile>/ and the smoke script
+        # needs no per-platform path knowledge.
         run: |
           cargo build -p mux-runtime --locked
           cargo build -p mux-lang --locked
-      - name: Stage a binary install
+      - name: Stage and smoke-test the packaged layout
+        run: ./scripts/ci/smoke-packaged.sh debug
+
+  packaged_artifact_result:
+    # Aggregates the matrix under the single stable name that the branch ruleset
+    # requires. Without this, matrixing renames the check to
+    # "Packaged Artifact (linux-x86_64)" and the required context
+    # "Packaged Artifact Smoke Test" would never report again, wedging every PR.
+    #
+    # `always()` plus an explicit result test is load-bearing: a job whose
+    # dependency failed is SKIPPED, and GitHub reports a skipped job as
+    # successful to required checks. Without the test below, a macOS failure
+    # would surface as a green required check.
+    name: Packaged Artifact Smoke Test
+    needs: packaged_artifact
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: Check matrix result
+        env:
+          RESULT: ${{ needs.packaged_artifact.result }}
         run: |
           set -euo pipefail
-          mkdir -p dist/bin dist/lib
-          cp target/debug/mux dist/bin/
-          cp target/debug/libmux_runtime.a target/debug/libmux_runtime.so dist/lib/
-      - name: Compile and run from the packaged layout
-        run: |
-          set -euo pipefail
-          printf 'print("hello")\n' > smoke.mux
-          run_packaged() {
-            env -u MUX_RUNTIME_LIB timeout 120 ./dist/bin/mux run "$1"
-          }
-          # One program importing nothing, one pulling in a std module, one
-          # reaching a heavier optional feature. All must link the bundled
-          # library from ../lib rather than looking anywhere else.
-          out="$(run_packaged smoke.mux)"
-          test "$out" = "hello" || { echo "unexpected output: $out"; exit 1; }
-          run_packaged test_scripts/test_std_math.mux
-          run_packaged test_scripts/test_std_sql_sqlite.mux
+          echo "packaged_artifact matrix result: ${RESULT}"
+          # `skipped` is a pass: the whole job is path-gated, so a docs-only PR
+          # legitimately never runs it.
+          case "${RESULT}" in
+            success|skipped) ;;
+            *)
+              echo "packaged artifact smoke test did not pass (${RESULT})" >&2
+              printf '::error::packaged artifact smoke test did not pass (%s)\n' "${RESULT}"
+              exit 1
+              ;;
+          esac
+
   integration_checks:
     name: Integration Checks
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Docker info
@@ -259,6 +305,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # PR-blocking: Leg A (compiled programs) fails the job on any definite or
     # indirect leak / memory error. Leg B (compiler under Valgrind) is
     # report-only inside the script and never changes the exit code.
@@ -309,6 +357,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # PR-blocking: runs the executable-integration suite against a mux-runtime
     # built with the `rc-leak-check` feature, which asserts at process exit that
     # every reference-counted Value block was released (see mux-runtime
@@ -381,6 +431,8 @@ jobs:
     needs: rust_checks
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
