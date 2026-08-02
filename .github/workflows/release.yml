@@ -15,12 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       on_main: ${{ steps.branch_policy.outputs.on_main }}
-    env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
-      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
-      LLVM_SYS_221_STRICT_VERSIONING: "1"
-      CC: clang-22
-      CXX: clang++-22
+    # No LLVM env here: setup-llvm exports every one of these, and two sources
+    # for the same variable is how they drift apart.
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -44,12 +40,10 @@ jobs:
           toolchain: 1.93.1
           components: rustfmt, clippy
 
-      - name: Install LLVM 22
-        run: |
-          wget --max-redirect=0 -O llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 22
-          sudo apt-get install -y llvm-22-dev clang-22 lld-22 libpolly-22-dev
+      - name: Setup LLVM 22
+        uses: ./.github/actions/setup-llvm
+        with:
+          extra-components: lld
 
       - name: Formatting check
         run: cargo fmt -- --check
@@ -104,9 +98,6 @@ jobs:
             archive_ext: zip
             publish: true
 
-    env:
-      LLVM_SYS_221_STRICT_VERSIONING: "1"
-
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
@@ -119,308 +110,21 @@ jobs:
         if: runner.os == 'Windows'
         run: rustup target add x86_64-pc-windows-msvc
 
-      - name: Install LLVM 22 (Linux latest)
-        if: runner.os == 'Linux' && matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
-          sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
-          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 lld-22 libpolly-22-dev
-
-      - name: Install LLVM 22 (Linux 22.04)
-        if: runner.os == 'Linux' && matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
-          sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
-          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 lld-22 libpolly-22-dev
-
-      - name: Configure LLVM 22 (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          LLVM_PREFIX="$(llvm-config-22 --prefix)"
-          echo "LLVM_SYS_221_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
-          echo "LLVM_CONFIG_PATH=$(command -v llvm-config-22)" >> "$GITHUB_ENV"
-          echo "CC=clang-22" >> "$GITHUB_ENV"
-          echo "CXX=clang++-22" >> "$GITHUB_ENV"
-
-      - name: Install LLVM 22 (macOS)
-        if: runner.os == 'macOS'
-        run: brew install llvm@22
-
-      - name: Configure LLVM 22 (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          LLVM_PREFIX="$(brew --prefix llvm@22)"
-          echo "LLVM_SYS_221_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
-          echo "LLVM_CONFIG_PATH=${LLVM_PREFIX}/bin/llvm-config" >> "$GITHUB_ENV"
-          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
-
-      - name: Setup Miniconda (Windows)
-        if: runner.os == 'Windows'
-        uses: conda-incubator/setup-miniconda@fc2d68f6413eb2d87b895e92f8584b5b94a10167
+      - name: Setup LLVM 22
+        # One shared definition of "give me a working LLVM" for all three
+        # platforms, including the ~230 lines of Windows conda/MSVC/libxml2 work
+        # this file used to carry inline.
+        #
+        # build.yml's packaged-artifact matrix exercises these paths on
+        # ubuntu-latest, macos-14 and windows-latest. It does NOT cover the other
+        # two entries here, ubuntu-22.04 and macos-15-intel - which are the ones
+        # producing the published linux-x86_64 and macos-x86_64 artifacts. The
+        # underlying commands are identical for those (the two Linux installs
+        # were byte-identical and the codename is derived; macOS is the same brew
+        # formula), but nothing runs them until a tag does.
+        uses: ./.github/actions/setup-llvm
         with:
-          auto-update-conda: true
-          use-mamba: true
-          channels: conda-forge
-          channel-priority: strict
-
-      - name: Install LLVM 22 with conda (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          conda config --set remote_connect_timeout_secs 60
-          conda config --set remote_read_timeout_secs 300
-          conda config --set remote_max_retries 10
-          conda config --set remote_backoff_factor 2
-
-          $solver = if (Get-Command mamba -ErrorAction SilentlyContinue) { "mamba" } else { "conda" }
-          $createArgsFast = "create -y -n mux-llvm -c conda-forge --repodata-fn current_repodata.json llvmdev=22 clang=22 zlib zstd libxml2"
-          $createArgsFull = "create -y -n mux-llvm -c conda-forge llvmdev=22 clang=22 zlib zstd libxml2"
-          $maxAttempts = 5
-          $attempt = 1
-
-          while ($true) {
-            Write-Host "[$attempt/$maxAttempts] Installing LLVM toolchain with $solver (current_repodata)"
-            cmd /c "$solver $createArgsFast"
-            if ($LASTEXITCODE -eq 0) {
-              break
-            }
-
-            Write-Host "Fast repodata attempt failed, trying full repodata"
-            cmd /c "$solver $createArgsFull"
-            if ($LASTEXITCODE -eq 0) {
-              break
-            }
-
-            if ($attempt -ge $maxAttempts) {
-              throw "Failed to install conda packages after $maxAttempts attempts"
-            }
-
-            $sleepSeconds = 10 * $attempt
-            Write-Host "Package install failed. Retrying in $sleepSeconds seconds..."
-            Start-Sleep -Seconds $sleepSeconds
-            $attempt += 1
-          }
-
-          $condaBase = & conda info --base
-          $envRoot = Join-Path $condaBase "envs\mux-llvm"
-          $llvmPrefix = Join-Path $envRoot "Library"
-          $llvmBin = Join-Path $llvmPrefix "bin"
-          $llvmLib = Join-Path $llvmPrefix "lib"
-          $llvmInclude = Join-Path $llvmPrefix "include"
-          $llvmConfigPath = Join-Path $llvmBin "llvm-config.exe"
-          $clangPath = Join-Path $llvmBin "clang.exe"
-          $clangxxPath = Join-Path $llvmBin "clang++.exe"
-          $clangClPath = Join-Path $llvmBin "clang-cl.exe"
-
-          if (-not (Test-Path $llvmConfigPath)) {
-            throw "llvm-config.exe not found at $llvmConfigPath"
-          }
-
-          if (-not (Test-Path $clangPath)) {
-            throw "clang.exe not found in $llvmBin"
-          }
-
-          if (-not (Test-Path $clangxxPath)) {
-            if (Test-Path $clangClPath) {
-              $clangxxPath = $clangClPath
-            } else {
-              $clangxxPath = $clangPath
-            }
-          }
-
-          $llvmVersion = & $llvmConfigPath --version
-          if (-not $llvmVersion.StartsWith("22.")) {
-            throw "Expected LLVM 22.x on Windows runner, found $llvmVersion at $llvmConfigPath"
-          }
-
-          $requiredTokens = @()
-          foreach ($args in @(@("--system-libs", "--link-static"), @("--libs", "--link-static"))) {
-            $out = & $llvmConfigPath @args
-            if ($LASTEXITCODE -ne 0) {
-              throw "llvm-config $($args -join ' ') failed"
-            }
-            $requiredTokens += ($out -split "\s+")
-          }
-
-          $requiredLibNames = New-Object System.Collections.Generic.HashSet[string]
-          foreach ($tok in $requiredTokens) {
-            if ([string]::IsNullOrWhiteSpace($tok)) {
-              continue
-            }
-            $name = $tok.Trim('"')
-            if ($name.StartsWith("-l")) {
-              $name = $name.Substring(2) + ".lib"
-            } elseif ($name.StartsWith("/DEFAULTLIB:")) {
-              $name = $name.Substring(12)
-            }
-            if ($name -match "\.lib$") {
-              [void]$requiredLibNames.Add($name)
-            }
-          }
-
-          $aliases = @{
-            "z.lib" = @("zlib.lib", "zlibstatic.lib", "zdll.lib")
-            "zstd.dll.lib" = @("zstd.lib", "zstd_static.lib", "libzstd.lib")
-            "xml2.lib" = @("libxml2.lib", "libxml2.dll.lib", "libxml2_a.lib")
-          }
-
-          foreach ($libName in $requiredLibNames) {
-            $baseName = if ([System.IO.Path]::IsPathRooted($libName)) { [System.IO.Path]::GetFileName($libName) } else { $libName }
-            $targetPath = Join-Path $llvmLib $baseName
-            if (Test-Path $targetPath) {
-              continue
-            }
-
-            $candidateNames = New-Object System.Collections.Generic.List[string]
-            if ($aliases.ContainsKey($baseName)) {
-              foreach ($n in $aliases[$baseName]) {
-                [void]$candidateNames.Add($n)
-              }
-            }
-            if ($baseName.EndsWith(".dll.lib")) {
-              [void]$candidateNames.Add($baseName.Replace(".dll.lib", ".lib"))
-            }
-            if ($baseName.StartsWith("lib") -and $baseName.EndsWith(".lib")) {
-              [void]$candidateNames.Add($baseName.Substring(3))
-            } else {
-              [void]$candidateNames.Add("lib$baseName")
-            }
-
-            $sourcePath = $null
-            foreach ($candidate in $candidateNames) {
-              $p = Join-Path $llvmLib $candidate
-              if (Test-Path $p) {
-                $sourcePath = $p
-                break
-              }
-            }
-
-            if ($sourcePath) {
-              Copy-Item $sourcePath $targetPath
-              Write-Host "Created $baseName shim from $(Split-Path -Leaf $sourcePath)"
-            } elseif ($baseName -eq "xml2.lib") {
-              $xmlCandidate = Get-ChildItem -Path $llvmLib -Filter "*xml2*" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($xmlCandidate) {
-                Copy-Item $xmlCandidate.FullName $targetPath
-                Write-Host "Created $baseName shim from $($xmlCandidate.Name) (fallback glob)"
-              } else {
-                Write-Warning "Could not create xml2.lib shim; no xml2 lib found in $llvmLib"
-              }
-            }
-          }
-
-          $systemLibAllowlist = @(
-            "psapi.lib", "shell32.lib", "ole32.lib", "uuid.lib", "advapi32.lib",
-            "kernel32.lib", "ntdll.lib", "userenv.lib", "ws2_32.lib", "dbghelp.lib",
-            "legacy_stdio_definitions.lib"
-          )
-
-          $missingLibs = @()
-          foreach ($libName in $requiredLibNames) {
-            $baseName = if ([System.IO.Path]::IsPathRooted($libName)) { [System.IO.Path]::GetFileName($libName) } else { $libName }
-            if ($systemLibAllowlist -contains $baseName.ToLowerInvariant()) {
-              continue
-            }
-
-            if ([System.IO.Path]::IsPathRooted($libName)) {
-              if (-not (Test-Path $libName)) {
-                $missingLibs += $libName
-              }
-              continue
-            }
-
-            if (-not (Test-Path (Join-Path $llvmLib $baseName))) {
-              $missingLibs += $libName
-            }
-          }
-
-          if ($missingLibs.Count -gt 0) {
-            Write-Host "Warning: unresolved libraries after shim pass (link may still succeed):"
-            $missingLibs | ForEach-Object { Write-Host "  - $_" }
-            Write-Host "Available .lib files in ${llvmLib}:"
-            Get-ChildItem -Path $llvmLib -Filter "*.lib" -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-          }
-
-          "LLVM_SYS_221_PREFIX=$llvmPrefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "LLVM_CONFIG_PATH=$llvmConfigPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "LIB=$llvmLib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Setup MSVC developer command prompt
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
-
-      - name: Create xml2 import lib (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $libDir = "$env:LLVM_SYS_221_PREFIX\lib"
-          $binDir = "$env:LLVM_SYS_221_PREFIX\bin"
-          $outLib = Join-Path $libDir "xml2.lib"
-
-          if (Test-Path $outLib) {
-            Write-Host "xml2.lib already exists, skipping"
-            exit 0
-          }
-
-          $xml2Dll = Get-ChildItem -Path $binDir -File -Filter "libxml2*.dll" | Select-Object -First 1
-          if (-not $xml2Dll) {
-            Write-Host "No libxml2*.dll in $binDir, listing DLLs:"
-            Get-ChildItem -Path $binDir -File -Filter "*.dll" | Select-Object -ExpandProperty Name | Sort-Object
-            throw "Cannot create xml2.lib: no libxml2 DLL found"
-          }
-          Write-Host "Building xml2.lib from: $($xml2Dll.FullName)"
-
-          $rawExports = & dumpbin /exports $xml2Dll.FullName
-          $defLines = @("LIBRARY `"$($xml2Dll.BaseName)`"", "EXPORTS")
-          $inTable = $false
-          foreach ($line in $rawExports) {
-            if ($line -match "ordinal\s+hint\s+RVA\s+name") { $inTable = $true; continue }
-            if ($inTable -and $line -match "^\s+\d+\s+[\da-fA-F]+\s+[\da-fA-F]+\s+(\S+)") {
-              $defLines += $Matches[1]
-            }
-          }
-          if ($defLines.Count -le 2) {
-            throw "Failed to parse any exports from $($xml2Dll.FullName)"
-          }
-          Write-Host "Parsed $($defLines.Count - 2) exports"
-
-          $defPath = Join-Path $env:TEMP "libxml2.def"
-          ($defLines -join "`r`n") | Out-File -FilePath $defPath -Encoding ascii
-
-          & lib /nologo /machine:x64 /def:$defPath /out:$outLib
-          if ($LASTEXITCODE -ne 0) { throw "lib.exe failed to create xml2.lib" }
-          Write-Host "Created xml2.lib ($((Get-Item $outLib).Length) bytes)"
-
-      - name: Validate LLVM toolchain (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not $env:LLVM_CONFIG_PATH) {
-            throw "LLVM_CONFIG_PATH is not set"
-          }
-          if (-not $env:LLVM_SYS_221_PREFIX) {
-            throw "LLVM_SYS_221_PREFIX is not set"
-          }
-          if (-not (Test-Path $env:LLVM_SYS_221_PREFIX)) {
-            throw "LLVM_SYS_221_PREFIX path does not exist: $env:LLVM_SYS_221_PREFIX"
-          }
-          if (-not (Test-Path (Join-Path $env:LLVM_SYS_221_PREFIX "bin\llvm-config.exe"))) {
-            throw "Expected llvm-config at LLVM_SYS_221_PREFIX\\bin\\llvm-config.exe"
-          }
-          & $env:LLVM_CONFIG_PATH --version
-          & (Join-Path $env:LLVM_SYS_221_PREFIX "bin\llvm-config.exe") --version
-          $cl = Get-Command cl -ErrorAction SilentlyContinue
-          if (-not $cl) {
-            throw "MSVC compiler (cl.exe) not found on PATH"
-          }
+          extra-components: lld
 
       - name: Build runtime (Windows MSVC)
         if: runner.os == 'Windows'
