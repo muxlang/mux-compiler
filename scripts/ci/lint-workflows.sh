@@ -31,7 +31,11 @@ workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
 archive="actionlint_${actionlint_version}_linux_amd64.tar.gz"
-curl -sSfL -o "${workdir}/${archive}" \
+# --proto "=https": -L follows redirects, and without pinning the protocol a
+# redirect could silently downgrade the transfer to plain HTTP (CWE-757). The
+# sha256 check below still catches a tampered file, but this stops the
+# downgrade itself rather than only detecting its result.
+curl -sSfL --proto "=https" -o "${workdir}/${archive}" \
   "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/${archive}"
 echo "${actionlint_sha256}  ${workdir}/${archive}" | sha256sum -c -
 tar -xzf "${workdir}/${archive}" -C "${workdir}" actionlint
