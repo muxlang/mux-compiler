@@ -17,6 +17,13 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Inside a `container:`, GitHub defaults `run:` steps to `sh -e {0}`, not
+# bash - which turns `set -o pipefail` into "Illegal option" and killed the
+# valgrind job. Set it once here rather than per step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   detect-changes:
     name: Detect Changed Paths
@@ -564,7 +571,10 @@ jobs:
     # leaking program exits 101 with a diagnostic, so its snapshot no longer
     # matches and the suite fails.
     env:
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
+      # $GITHUB_WORKSPACE, not ${{ github.workspace }}: the expression
+      # resolves to the RUNNER's path, while inside the container the repo
+      # is mounted at /__w/... The env var is correct in both.
+      MUX_RUNTIME_SRC: $GITHUB_WORKSPACE/mux-runtime
       # Built explicitly below and forced via MUX_RUNTIME_LIB, mirroring
       # scripts/leak-check.sh. `rc-leak-check` is deliberately outside `full`,
       # so it is the one runtime the compiler cannot produce on its own.
@@ -615,7 +625,7 @@ jobs:
         # exits 101 with a diagnostic, so its snapshot no longer matches and the
         # suite fails.
         env:
-          MUX_RUNTIME_LIB: ${{ github.workspace }}/mux-runtime/target/debug/libmux_runtime.a
+          MUX_RUNTIME_LIB: $GITHUB_WORKSPACE/mux-runtime/target/debug/libmux_runtime.a
         run: cargo test -p mux-lang --test executable_integration
   sonarqube:
     name: SonarQube
