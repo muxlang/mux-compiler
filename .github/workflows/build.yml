@@ -108,20 +108,14 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 30
-    env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
-      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
-      LLVM_SYS_221_STRICT_VERSIONING: "1"
-      CC: clang-22
-      CXX: clang++-22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
         with:
           toolchain: 1.93.1
-      - name: Install LLVM 22
-        run: ./scripts/ci/install-llvm.sh
+      - name: Setup LLVM 22
+        uses: ./.github/actions/setup-llvm
       # Separate cache scope from rust_checks/clippy/valgrind's debug-build
       # cache: this is the only job building --release, and sharing one key
       # across debug and release artifacts would make every job pay for
@@ -198,12 +192,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
-      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
-      LLVM_SYS_221_STRICT_VERSIONING: "1"
-      CC: clang-22
-      CXX: clang++-22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Rust toolchain
@@ -211,8 +199,8 @@ jobs:
         with:
           toolchain: 1.93.1
           components: clippy
-      - name: Install LLVM 22
-        run: ./scripts/ci/install-llvm.sh
+      - name: Setup LLVM 22
+        uses: ./.github/actions/setup-llvm
       - name: Cache Cargo registry and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -237,12 +225,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
-      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
-      LLVM_SYS_221_STRICT_VERSIONING: "1"
-      CC: clang-22
-      CXX: clang++-22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # No mux-runtime checkout: cargo builds it from the commit Cargo.lock
@@ -256,8 +238,8 @@ jobs:
         with:
           toolchain: 1.93.1
           components: rustfmt, llvm-tools-preview
-      - name: Install LLVM 22
-        run: ./scripts/ci/install-llvm.sh
+      - name: Setup LLVM 22
+        uses: ./.github/actions/setup-llvm
       - name: Cache Cargo registry and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -466,12 +448,6 @@ jobs:
     # PR-blocking: Leg A (compiled programs) fails the job on any definite or
     # indirect leak / memory error. Leg B (compiler under Valgrind) is
     # report-only inside the script and never changes the exit code.
-    env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
-      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
-      LLVM_SYS_221_STRICT_VERSIONING: "1"
-      CC: clang-22
-      CXX: clang++-22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Programs link the runtime cargo builds into target/ from the commit
@@ -481,8 +457,8 @@ jobs:
         with:
           toolchain: 1.93.1
           components: llvm-tools-preview
-      - name: Install LLVM 22
-        run: ./scripts/ci/install-llvm.sh
+      - name: Setup LLVM 22
+        uses: ./.github/actions/setup-llvm
       - name: Install Valgrind
         run: sudo apt-get install -y valgrind
       - name: Cache Cargo registry and build
@@ -524,11 +500,6 @@ jobs:
     # leaking program exits 101 with a diagnostic, so its snapshot no longer
     # matches and the suite fails.
     env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
-      LLVM_CONFIG_PATH: /usr/bin/llvm-config-22
-      LLVM_SYS_221_STRICT_VERSIONING: "1"
-      CC: clang-22
-      CXX: clang++-22
       MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
       # Built explicitly below and forced via MUX_RUNTIME_LIB, mirroring
       # scripts/leak-check.sh. `rc-leak-check` is deliberately outside `full`,
@@ -546,8 +517,8 @@ jobs:
         with:
           toolchain: 1.93.1
           components: llvm-tools-preview
-      - name: Install LLVM 22
-        run: ./scripts/ci/install-llvm.sh
+      - name: Setup LLVM 22
+        uses: ./.github/actions/setup-llvm
       - name: Cache Cargo registry and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
