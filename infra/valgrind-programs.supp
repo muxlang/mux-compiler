@@ -53,23 +53,6 @@
    fun:*rustls*
    ...
 }
-# Same finding, different spelling. Valgrind names this parameter per-element
-# ("writev(vector[0])") in some versions and collectively ("writev(vector[...])")
-# in others, and a suppression matches the parameter name literally - so the two
-# entries above silently stop matching on a host whose Valgrind uses the other
-# form. Ubuntu 24.04 ships 3.22 and reports an index; the Debian bookworm base
-# of the CI image ships 3.19 and reports "[...]", which is how this surfaced
-# when the job moved into the container. Anchored to a rustls frame like the
-# rest, so it cannot hide anything in Mux.
-{
-   mux-thirdparty-tls-rustls-writev-uninitialised-vector-collective
-   Memcheck:Param
-   writev(vector[...])
-   fun:writev
-   ...
-   fun:*rustls*
-   ...
-}
 
 # `ring`'s constant-time comparisons and AEAD open/seal operate on buffers that
 # Memcheck cannot prove initialised (SIMD / hand-written assembly), producing
