@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kept `list` and `set` out of the interface. `Collection` is now a read-oriented
   view (`len`, `is_empty`, `to_list`, `contains`); implementations may still
   offer their own `clear()` as a regular method, and the dsa classes do.
+- **Integration Checks no longer re-runs the unit test suite.**
+  `run-checks.sh --with-service-tests` is now `--service-tests-only` and runs
+  the `service_integration` suite alone. The old flag ran the full unit suite
+  inside the compose container first, duplicating what the parallel Rust Checks
+  job already ran on the host and adding roughly 180s to every PR and push.
 
 ### Fixed
 - **Windows links one CRT instead of two**: clang's driver passes
