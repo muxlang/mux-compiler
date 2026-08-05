@@ -7,4 +7,10 @@
 # that introduced it. Add the label here in the same change, never after.
 self-hosted-runner:
   labels:
+    # 4vCPU: the A/B benchmark gate only, which is build-dominated and is the
+    # one job everything else waits behind.
     - blacksmith-4vcpu-ubuntu-2404
+    # 2vCPU: the container-based Linux jobs. They run in parallel, so wall
+    # clock is set by the slowest of them, and paying double the rate to shave
+    # seconds off jobs nothing waits on would be wasted allowance.
+    - blacksmith-2vcpu-ubuntu-2404

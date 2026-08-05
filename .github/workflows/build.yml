@@ -76,17 +76,17 @@ jobs:
     name: Format
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # The CI image already carries the pinned toolchain and rustfmt, so the
+    # per-job toolchain install is gone. 2vCPU, not 4: these jobs stay separate
+    # and parallel, so wall clock is set by the slowest one, and doubling the
+    # rate to shave seconds off a job nothing waits on is wasted allowance.
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: rustfmt
       - name: Formatting check
         run: cargo fmt -- --check
 
@@ -209,18 +209,13 @@ jobs:
     name: Clippy
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: clippy
-      - name: Setup LLVM 22
-        uses: ./.github/actions/setup-llvm
       - name: Cache Cargo registry and build artifacts
         # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
         # step name, target/ was never cached, so every job below did a cold
@@ -252,9 +247,11 @@ jobs:
     name: Rust Checks
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # No mux-runtime checkout: cargo builds it from the commit Cargo.lock
@@ -263,13 +260,6 @@ jobs:
       # configuration that never ships. FFI breaks against runtime `main` are
       # caught by mux-runtime's own CI, which builds this repo's `main` against
       # its source.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: rustfmt, llvm-tools-preview
-      - name: Setup LLVM 22
-        uses: ./.github/actions/setup-llvm
       - name: Cache Cargo registry and build artifacts
         # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
         # step name, target/ was never cached, so every job below did a cold
@@ -292,29 +282,17 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust checks
         run: ./scripts/run-checks.sh
-      - name: Install cargo-insta
-        # Pinned, and matched to the insta library version in mux-compiler's
-        # Cargo.lock. This step gates correctness rather than reporting, so it
-        # must not float: `--locked` pins cargo-insta's dependencies, not
-        # cargo-insta itself, and a release that changed what
-        # `--unreferenced=reject` means could stop enforcing without failing.
-        # Comparing the version rather than `command -v` so a cached ~/.cargo/bin
-        # from an earlier run cannot silently win over the pin.
-        env:
-          CARGO_INSTA_VERSION: 1.47.2
-        run: |
-          set -euo pipefail
-          if ! cargo insta --version 2>/dev/null | grep -qx "cargo-insta $CARGO_INSTA_VERSION"; then
-            cargo install cargo-insta --version "$CARGO_INSTA_VERSION" --locked --force
-          fi
+      # cargo-insta is no longer installed here. It is baked into the CI image
+      # at 1.47.2, still matched to the insta library version in Cargo.lock -
+      # the pin moved, it did not go away. See infra/docker/integration/Dockerfile.
       - name: Reject orphaned snapshots
         # test_scripts/ is auto-discovered, so deleting a script leaves its
         # snapshot behind, referenced by nothing and asserting nothing. Those
         # orphans read as coverage that does not exist - see #269. Runs here to
         # reuse the uninstrumented build from the step above.
         run: cargo insta test -p mux-lang --unreferenced=reject
-      - name: Install cargo-llvm-cov
-        run: command -v cargo-llvm-cov || cargo install cargo-llvm-cov --locked
+      # cargo-llvm-cov comes from the CI image too, pinned at 0.8.7 - it used
+      # to be installed unpinned here on every run.
       - name: Coverage
         # Re-runs the test suite under instrumentation. Integration tests shell
         # out to CARGO_BIN_EXE_mux, which llvm-cov instruments too, so codegen
@@ -482,9 +460,15 @@ jobs:
     name: Valgrind Memory Checks
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
+    # Longest of the Linux jobs, so it sets the wall clock for this group. The
+    # bound matters more now the runner is metered - and compiled Mux programs
+    # hang rather than crash under LLVM UB, which is exactly what this job runs
+    # hundreds of.
+    timeout-minutes: 30
     # PR-blocking: Leg A (compiled programs) fails the job on any definite or
     # indirect leak / memory error. Leg B (compiler under Valgrind) is
     # report-only inside the script and never changes the exit code.
@@ -492,15 +476,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Programs link the runtime cargo builds into target/ from the commit
       # Cargo.lock pins - the same library a release ships.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: llvm-tools-preview
-      - name: Setup LLVM 22
-        uses: ./.github/actions/setup-llvm
-      - name: Install Valgrind
-        run: sudo apt-get install -y valgrind
+      #
+      # Toolchain, LLVM 22 and valgrind itself all come from the CI image now.
       - name: Cache Cargo registry and build artifacts
         # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
         # step name, target/ was never cached, so every job below did a cold
@@ -538,7 +515,9 @@ jobs:
     name: RC Leak Check
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    container: ghcr.io/muxlang/mux-ci:main
+    timeout-minutes: 25
     permissions:
       contents: read
     # PR-blocking: runs the executable-integration suite against a mux-runtime
@@ -562,13 +541,7 @@ jobs:
           repository: muxlang/mux-runtime
           ref: main
           path: mux-runtime
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: llvm-tools-preview
-      - name: Setup LLVM 22
-        uses: ./.github/actions/setup-llvm
+      # Toolchain and LLVM 22 both come from the CI image.
       - name: Cache Cargo registry and build artifacts
         # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
         # step name, target/ was never cached, so every job below did a cold
