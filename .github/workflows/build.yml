@@ -475,14 +475,35 @@ jobs:
     name: Integration Checks
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Not containerised: this job drives `docker compose`, so it needs a daemon
+    # rather than to be inside one. Blacksmith runners are VMs with Docker, the
+    # same as ubuntu-latest - only the in-container jobs had that constraint.
+    #
+    # 4vCPU, unlike the other moved jobs. With the Linux jobs now at ~2.4m this
+    # is the longest thing on a PR run, so it is the one place left where more
+    # cores shorten the critical path rather than a job nothing waits on.
     permissions:
       contents: read
+      packages: read
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Docker info
         run: docker compose version
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Service-backed checks
+        # MUX_CI_PULL_IMAGE makes integration-up.sh pull the published dev image
+        # rather than rebuild it. The Dockerfile now installs cargo-insta and
+        # cargo-llvm-cov, which compile from source and added roughly 90s to
+        # every run of this job once the image gained them.
+        env:
+          MUX_CI_PULL_IMAGE: "1"
         run: ./scripts/integration-checks.sh
   valgrind:
     name: Valgrind Memory Checks
