@@ -201,16 +201,26 @@ jobs:
           components: clippy
       - name: Setup LLVM 22
         uses: ./.github/actions/setup-llvm
-      - name: Cache Cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache Cargo registry and build artifacts
+        # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
+        # step name, target/ was never cached, so every job below did a cold
+        # full compile of the LLVM/inkwell dependency tree on every run.
+        #
+        # Adding target/ to the old config would not have worked: all four jobs
+        # shared one key, so whichever finished first saved its target/ and the
+        # other three restored artifacts built under a different profile
+        # (clippy runs --all-targets --all-features, coverage runs
+        # instrumented). rust-cache keys per job automatically - job id plus
+        # rustc version plus Cargo.lock - which is what makes a shared cache
+        # correct here rather than merely large.
+        #
+        # save-if restricts writes to main: four jobs each saving a multi-GB
+        # target/ on every PR run would churn through the 10GB repo cache limit
+        # and evict the entries this exists to provide. PRs restore from main's
+        # cache, which is the state they branch from anyway.
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build
         # mux-runtime is a dependency, and cargo builds only a dependency's
         # rlib - not the staticlib compiled Mux programs link against.
@@ -240,16 +250,26 @@ jobs:
           components: rustfmt, llvm-tools-preview
       - name: Setup LLVM 22
         uses: ./.github/actions/setup-llvm
-      - name: Cache Cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache Cargo registry and build artifacts
+        # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
+        # step name, target/ was never cached, so every job below did a cold
+        # full compile of the LLVM/inkwell dependency tree on every run.
+        #
+        # Adding target/ to the old config would not have worked: all four jobs
+        # shared one key, so whichever finished first saved its target/ and the
+        # other three restored artifacts built under a different profile
+        # (clippy runs --all-targets --all-features, coverage runs
+        # instrumented). rust-cache keys per job automatically - job id plus
+        # rustc version plus Cargo.lock - which is what makes a shared cache
+        # correct here rather than merely large.
+        #
+        # save-if restricts writes to main: four jobs each saving a multi-GB
+        # target/ on every PR run would churn through the 10GB repo cache limit
+        # and evict the entries this exists to provide. PRs restore from main's
+        # cache, which is the state they branch from anyway.
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust checks
         run: ./scripts/run-checks.sh
       - name: Install cargo-insta
@@ -461,16 +481,26 @@ jobs:
         uses: ./.github/actions/setup-llvm
       - name: Install Valgrind
         run: sudo apt-get install -y valgrind
-      - name: Cache Cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache Cargo registry and build artifacts
+        # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
+        # step name, target/ was never cached, so every job below did a cold
+        # full compile of the LLVM/inkwell dependency tree on every run.
+        #
+        # Adding target/ to the old config would not have worked: all four jobs
+        # shared one key, so whichever finished first saved its target/ and the
+        # other three restored artifacts built under a different profile
+        # (clippy runs --all-targets --all-features, coverage runs
+        # instrumented). rust-cache keys per job automatically - job id plus
+        # rustc version plus Cargo.lock - which is what makes a shared cache
+        # correct here rather than merely large.
+        #
+        # save-if restricts writes to main: four jobs each saving a multi-GB
+        # target/ on every PR run would churn through the 10GB repo cache limit
+        # and evict the entries this exists to provide. PRs restore from main's
+        # cache, which is the state they branch from anyway.
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Valgrind checks
         id: run
         run: |
@@ -519,16 +549,26 @@ jobs:
           components: llvm-tools-preview
       - name: Setup LLVM 22
         uses: ./.github/actions/setup-llvm
-      - name: Cache Cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache Cargo registry and build artifacts
+        # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
+        # step name, target/ was never cached, so every job below did a cold
+        # full compile of the LLVM/inkwell dependency tree on every run.
+        #
+        # Adding target/ to the old config would not have worked: all four jobs
+        # shared one key, so whichever finished first saved its target/ and the
+        # other three restored artifacts built under a different profile
+        # (clippy runs --all-targets --all-features, coverage runs
+        # instrumented). rust-cache keys per job automatically - job id plus
+        # rustc version plus Cargo.lock - which is what makes a shared cache
+        # correct here rather than merely large.
+        #
+        # save-if restricts writes to main: four jobs each saving a multi-GB
+        # target/ on every PR run would churn through the 10GB repo cache limit
+        # and evict the entries this exists to provide. PRs restore from main's
+        # cache, which is the state they branch from anyway.
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the rc-leak-check runtime
         run: |
           set -euo pipefail
