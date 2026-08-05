@@ -592,10 +592,12 @@ jobs:
     # leaking program exits 101 with a diagnostic, so its snapshot no longer
     # matches and the suite fails.
     env:
-      # $GITHUB_WORKSPACE, not ${{ github.workspace }}: the expression
-      # resolves to the RUNNER's path, while inside the container the repo
-      # is mounted at /__w/... The env var is correct in both.
-      MUX_RUNTIME_SRC: $GITHUB_WORKSPACE/mux-runtime
+      # MUX_RUNTIME_SRC and MUX_RUNTIME_LIB are NOT set here. A job-level
+      # env: value is a literal - GitHub does not shell-expand it - so
+      # "$GITHUB_WORKSPACE/mux-runtime" would stay literal, and
+      # ${{ github.workspace }} resolves to the runner's path rather than
+      # the /__w/... mount the container sees. Both are wrong. They are
+      # exported from a step below instead, where the shell expands them.
       # Built explicitly below and forced via MUX_RUNTIME_LIB, mirroring
       # scripts/leak-check.sh. `rc-leak-check` is deliberately outside `full`,
       # so it is the one runtime the compiler cannot produce on its own.
@@ -628,6 +630,13 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Resolve runtime paths for the container
+        # Written through $GITHUB_ENV so the shell expands
+        # $GITHUB_WORKSPACE to the path this container actually sees.
+        run: |
+          set -euo pipefail
+          echo "MUX_RUNTIME_SRC=$GITHUB_WORKSPACE/mux-runtime" >> "$GITHUB_ENV"
+          echo "MUX_RUNTIME_LIB=$GITHUB_WORKSPACE/mux-runtime/target/debug/libmux_runtime.a" >> "$GITHUB_ENV"
       - name: Build the rc-leak-check runtime
         run: |
           set -euo pipefail
@@ -645,8 +654,6 @@ jobs:
         # the leak-check runtime and runs the exit-time assertion. A leaked block
         # exits 101 with a diagnostic, so its snapshot no longer matches and the
         # suite fails.
-        env:
-          MUX_RUNTIME_LIB: $GITHUB_WORKSPACE/mux-runtime/target/debug/libmux_runtime.a
         run: cargo test -p mux-lang --test executable_integration
   sonarqube:
     name: SonarQube
