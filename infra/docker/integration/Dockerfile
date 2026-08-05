@@ -32,11 +32,42 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clang-22 \
         libpolly-22-dev \
         llvm-22-dev \
-        valgrind \
+        bzip2 \
+        libc6-dbg \
     && rustup component add clippy rustfmt llvm-tools-preview \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 mux \
     && useradd --uid 1000 --gid mux --shell /bin/bash --create-home mux
+
+# Valgrind is built from source at a pinned version rather than taken from apt.
+#
+# Debian bookworm ships 3.19, which names the writev parameter collectively
+# ("writev(vector[...])"). Ubuntu 24.04 - what the GitHub runners used - ships
+# 3.22, which names it per element ("writev(vector[0])"). Suppressions match
+# that name LITERALLY, so infra/valgrind-programs.supp, written and validated
+# against 3.22, silently stopped matching under 3.19 and the TLS false
+# positives in test_std_http.mux began failing the gate.
+#
+# Both spellings were confirmed by running the same writev repro under each
+# version. Pinning 3.22.0 reproduces the behaviour the suppression file was
+# written for, and pins it - previously this tracked whatever the base image
+# happened to carry, which is how the skew appeared in the first place.
+#
+# If this is ever bumped, re-check that the suppressions still match; the
+# parameter naming is not a stable interface.
+ARG VALGRIND_VERSION=3.22.0
+ARG VALGRIND_SHA256=c811db5add2c5f729944caf47c4e7a65dcaabb9461e472b578765dd7bf6d2d4c
+RUN set -eux; \
+    cd /tmp; \
+    curl -fsSL --proto '=https' -O "https://sourceware.org/pub/valgrind/valgrind-${VALGRIND_VERSION}.tar.bz2"; \
+    echo "${VALGRIND_SHA256}  valgrind-${VALGRIND_VERSION}.tar.bz2" | sha256sum -c -; \
+    tar -xf "valgrind-${VALGRIND_VERSION}.tar.bz2"; \
+    cd "valgrind-${VALGRIND_VERSION}"; \
+    ./configure --prefix=/usr/local >/dev/null; \
+    make -j"$(nproc)" >/dev/null; \
+    make install >/dev/null; \
+    cd /; rm -rf "/tmp/valgrind-${VALGRIND_VERSION}" "/tmp/valgrind-${VALGRIND_VERSION}.tar.bz2"; \
+    valgrind --version
 
 # cargo-insta is matched to the `insta` library version in Cargo.lock (1.47.2).
 # It gates correctness rather than reporting - `--unreferenced=reject` is what
