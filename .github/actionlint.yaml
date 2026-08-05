@@ -1,0 +1,10 @@
+# actionlint validates `runs-on:` against the set of labels GitHub hosts, and
+# reports anything else as an error. Blacksmith runner labels are legitimate
+# but unknown to it, so they have to be declared here as self-hosted.
+#
+# `Lint Workflows` is a required status check, so a label added to a workflow
+# without a matching entry here blocks every PR in the repo - including the one
+# that introduced it. Add the label here in the same change, never after.
+self-hosted-runner:
+  labels:
+    - blacksmith-4vcpu-ubuntu-2404

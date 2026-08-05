@@ -104,9 +104,29 @@ jobs:
     name: A/B Benchmark Gate
     needs: detect-changes
     if: ${{ github.event_name == 'pull_request' && needs.detect-changes.outputs.rust == 'true' }}
-    runs-on: ubuntu-latest
+    # First job on Blacksmith, deliberately this one. It is the slowest job on
+    # a PR run (3.8-6.7m measured) and therefore the repo's critical path, so
+    # it is where a faster runner can actually shorten PR feedback - the Linux
+    # jobs all finish well inside it and would gain nothing visible.
+    #
+    # It stays a job of its own and must never be folded into a bundle: it is a
+    # benchmark, and sharing a machine with valgrind or a coverage build turns
+    # its measurements into contention noise. Dedicated hardware may also prove
+    # steadier than GitHub's shared runners, which is worth watching - the
+    # sibling gate in mux-runtime needed its threshold widened from 4% to 15%
+    # because of measurement noise, and that is the kind of thing better
+    # hardware fixes.
+    #
+    # 4vCPU because the job is dominated by two --release compiler builds,
+    # which parallelise; the benchmark phase itself is single-threaded and
+    # indifferent to core count.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
+    # Unchanged at 30m. Generous against a ~6m job, but the baseline cache miss
+    # path rebuilds a release binary from scratch, and a false timeout on a
+    # required check is worse than a slow one. Metered now, so a hang costs
+    # real allowance: 30m at the 4vCPU rate is 60 x64-2vCPU-equivalent minutes.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
