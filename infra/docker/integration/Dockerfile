@@ -1,3 +1,19 @@
+# The CI image: a complete Rust + LLVM 22 environment for this repo.
+#
+# Two consumers, deliberately the same image so they cannot drift:
+#   - docker-compose.integration.yml's `dev` service, which needs to reach the
+#     postgres and echo-server containers.
+#   - CI's bundled Linux job, which runs `container:` against the published
+#     copy at ghcr.io/muxlang/mux-ci and so does not install LLVM, cargo-insta
+#     or cargo-llvm-cov per job the way the split jobs each did.
+#
+# Published by .github/workflows/publish-ci-image.yml on any change to this
+# file. Compose still builds it locally, so a local edit takes effect without
+# waiting for a publish.
+#
+# Every tool version here is pinned. This image gates correctness, not just
+# convenience, and a floating tool changes what CI enforces without any commit
+# saying so.
 FROM rust:1.93.1-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,13 +32,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clang-22 \
         libpolly-22-dev \
         llvm-22-dev \
-    && rustup component add clippy rustfmt \
+        valgrind \
+    && rustup component add clippy rustfmt llvm-tools-preview \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 mux \
     && useradd --uid 1000 --gid mux --shell /bin/bash --create-home mux
 
-USER mux
+# cargo-insta is matched to the `insta` library version in Cargo.lock (1.47.2).
+# It gates correctness rather than reporting - `--unreferenced=reject` is what
+# catches orphaned snapshots - so a release that changed what that flag means
+# could stop enforcing without failing. Move this pin and the lockfile together.
+#
+# cargo-llvm-cov was previously installed unpinned in CI. Pinned here so the
+# image is reproducible; llvm-tools-preview above is its prerequisite.
+RUN cargo install cargo-insta --version 1.47.2 --locked \
+    && cargo install cargo-llvm-cov --version 0.8.7 --locked \
+    && rm -rf "${CARGO_HOME:-/usr/local/cargo}/registry" "${CARGO_HOME:-/usr/local/cargo}/git"
 
+# No USER directive, on purpose. Compose sets `user:` explicitly for the dev
+# service (LOCAL_UID/LOCAL_GID, so bind-mounted files keep the caller's
+# ownership), and GitHub Actions needs to write to a workspace it mounts as
+# root. Baking a non-root default would break the second without helping the
+# first. The mux user still exists for compose to select.
 ENV LLVM_SYS_221_PREFIX=/usr/lib/llvm-22 \
     LLVM_CONFIG_PATH=/usr/bin/llvm-config-22 \
     LLVM_SYS_221_STRICT_VERSIONING=1 \
