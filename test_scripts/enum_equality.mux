@@ -1,0 +1,38 @@
+// `==` and `!=` on enums compare structurally, through the same three-way glue
+// (mux_enum_cmp_<Enum>) that already orders enums as set members and map keys.
+// Both operators previously reached the codegen fallback and raised an internal
+// compiler error, so an enum could be used as a map key but never compared.
+//
+// The operand must be a pointer to the enum struct, NOT the result of
+// box_value: a boxed Value* makes the glue read a header as the discriminant,
+// which silently reports equal payloads as different - payload-less variants
+// still compare correctly, so testing only C-style enums hides it.
+
+enum Color { Red, Green, Blue }
+enum Item { Named(string n), Count(int c) }
+enum IntList { Nil, Cons(int head, IntList tail) }
+
+func main() returns void {
+    // Payload-less variants compare by discriminant.
+    print((Color.Red() == Color.Red()).to_string())
+    print((Color.Red() == Color.Green()).to_string())
+    print((Color.Red() != Color.Green()).to_string())
+
+    // Equal payloads are equal; the same variant with a different payload is not.
+    print((Item.Named("x") == Item.Named("x")).to_string())
+    print((Item.Named("x") == Item.Named("y")).to_string())
+    print((Item.Count(1) == Item.Count(1)).to_string())
+
+    // Different variants of the same enum differ on the discriminant alone.
+    print((Item.Named("x") == Item.Count(1)).to_string())
+    print((Item.Named("x") != Item.Count(1)).to_string())
+
+    // Recursive enums recurse through the box chain, as the compare glue does
+    // for collections.
+    auto a = IntList.Cons(1, IntList.Cons(2, IntList.Nil()))
+    auto b = IntList.Cons(1, IntList.Cons(2, IntList.Nil()))
+    auto c = IntList.Cons(1, IntList.Cons(3, IntList.Nil()))
+    print((a == b).to_string())
+    print((a == c).to_string())
+    return
+}

@@ -62,6 +62,59 @@ impl<'a> CodeGenerator<'a> {
 
     /// Call a runtime comparison function on two pointer values and convert
     /// the i32 result to an i1 bool.
+    /// Pointer to an enum's raw struct, for the compare glue.
+    ///
+    /// Deliberately NOT `ensure_pointer`: that falls back to `box_value`, which
+    /// wraps the operand in a managed `Value*`. `mux_enum_cmp_<Enum>` expects a
+    /// pointer to the enum struct itself, so boxing makes it read a header as a
+    /// discriminant and every comparison of equal payloads comes back false.
+    fn enum_struct_pointer(&mut self, val: BasicValueEnum<'a>) -> Result<PointerValue<'a>, String> {
+        if val.is_pointer_value() {
+            return Ok(val.into_pointer_value());
+        }
+        if !val.is_struct_value() {
+            return Err(format!("enum operand is not a struct value: {:?}", val));
+        }
+        let struct_val = val.into_struct_value();
+        let temp = self
+            .builder
+            .build_alloca(struct_val.get_type(), "enum_cmp_operand")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(temp, struct_val)
+            .map_err(|e| e.to_string())?;
+        Ok(temp)
+    }
+
+    /// Compare two user-enum values through the enum's structural compare glue.
+    ///
+    /// `mux_enum_cmp_<Enum>` is the same three-way function sets and maps
+    /// already use to order enum keys (issue #309); it compares discriminants
+    /// first, then the matching variant's payload fields. Equality is that
+    /// result against zero, so `==` and `!=` differ only by the predicate.
+    fn call_enum_comparison(
+        &mut self,
+        left: PointerValue<'a>,
+        right: PointerValue<'a>,
+        enum_name: &str,
+        predicate: inkwell::IntPredicate,
+        label: &str,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let func = self.get_or_create_enum_cmp_fn(enum_name)?;
+        let result = self
+            .builder
+            .build_call(func, &[left.into(), right.into()], label)
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("enum comparison returned no value")?;
+        let zero = self.context.i32_type().const_zero();
+        self.builder
+            .build_int_compare(predicate, result.into_int_value(), zero, label)
+            .map_err(|e| e.to_string())
+            .map(|v| v.into())
+    }
+
     fn call_comparison_runtime(
         &mut self,
         left: PointerValue<'a>,
@@ -895,6 +948,20 @@ impl<'a> CodeGenerator<'a> {
                 let right_ptr = self.ensure_pointer(right);
                 self.call_comparison_runtime(left_ptr, right_ptr, "mux_value_equal", "value_equal")
             }
+            // A user enum compares structurally, the same way it already does
+            // as a set member or map key. Classes also land in Type::Named, so
+            // the guard keeps this to enums.
+            Type::Named(name, _) if self.enum_variants.contains_key(name) => {
+                let left_ptr = self.enum_struct_pointer(left)?;
+                let right_ptr = self.enum_struct_pointer(right)?;
+                self.call_enum_comparison(
+                    left_ptr,
+                    right_ptr,
+                    &name.clone(),
+                    inkwell::IntPredicate::EQ,
+                    "enum_eq",
+                )
+            }
             _ => Err(format!(
                 "Equality comparison not supported for type: {:?}",
                 left_type
@@ -969,6 +1036,17 @@ impl<'a> CodeGenerator<'a> {
                     right_ptr,
                     "mux_value_not_equal",
                     "value_not_equal",
+                )
+            }
+            Type::Named(name, _) if self.enum_variants.contains_key(name) => {
+                let left_ptr = self.enum_struct_pointer(left)?;
+                let right_ptr = self.enum_struct_pointer(right)?;
+                self.call_enum_comparison(
+                    left_ptr,
+                    right_ptr,
+                    &name.clone(),
+                    inkwell::IntPredicate::NE,
+                    "enum_ne",
                 )
             }
             _ => Err(format!(
