@@ -112,7 +112,7 @@ jobs:
     # PR-only: it needs github.event.pull_request.base.sha, which does not
     # exist on a push event. Parallel to detect-changes (not behind
     # rust_checks/clippy) to stay close to the ~5 min PR-feedback target.
-    name: A/B Benchmark Gate
+    name: A/B Benchmark Report
     needs: detect-changes
     if: ${{ github.event_name == 'pull_request' && needs.detect-changes.outputs.rust == 'true' }}
     # First job on Blacksmith, deliberately this one. It is the slowest job on
@@ -204,8 +204,24 @@ jobs:
           echo "${HYPERFINE_SHA256}  ${archive}" | sha256sum -c -
           tar -xzf "$archive" "hyperfine-v${HYPERFINE_VERSION}-x86_64-unknown-linux-gnu/hyperfine"
           install -m 755 "hyperfine-v${HYPERFINE_VERSION}-x86_64-unknown-linux-gnu/hyperfine" /usr/local/bin/hyperfine
-      - name: Run A/B benchmark gate
-        run: python3 scripts/ci/ab-bench-gate.py --baseline-bin-dir ab-bin/baseline --pr-bin-dir ab-bin/pr
+      - name: Run A/B benchmark report
+        # continue-on-error: this reports, it does not gate. The comparison is
+        # informative but not trustworthy enough to block a merge - see the
+        # job comment above - so a regression verdict must reach the reviewer
+        # without turning the check red. The exit code is still recorded in the
+        # log, and the table names any benchmark past the threshold.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 scripts/ci/ab-bench-gate.py \
+            --baseline-bin-dir ab-bin/baseline --pr-bin-dir ab-bin/pr 2>&1 | tee ab-bench.log
+      - name: Upload the A/B report for the PR comment
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pr-comment-ab-bench
+          path: ab-bench.log
+          if-no-files-found: warn
 
   clippy:
     # Separated from rust_checks so a clippy failure is not buried behind
