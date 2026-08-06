@@ -816,7 +816,7 @@ impl<'a> CodeGenerator<'a> {
 
     /// Create an alloca in the entry block of the current function (inferred from builder position).
     /// If not in a function context, creates alloca at current position.
-    fn create_entry_alloca(
+    pub(super) fn create_entry_alloca(
         &self,
         ty: BasicTypeEnum<'a>,
         name: &str,

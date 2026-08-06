@@ -60,26 +60,42 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
-    /// Call a runtime comparison function on two pointer values and convert
-    /// the i32 result to an i1 bool.
     /// Pointer to an enum's raw struct, for the compare glue.
     ///
-    /// Deliberately NOT `ensure_pointer`: that falls back to `box_value`, which
-    /// wraps the operand in a managed `Value*`. `mux_enum_cmp_<Enum>` expects a
-    /// pointer to the enum struct itself, so boxing makes it read a header as a
-    /// discriminant and every comparison of equal payloads comes back false.
-    fn enum_struct_pointer(&mut self, val: BasicValueEnum<'a>) -> Result<PointerValue<'a>, String> {
-        if val.is_pointer_value() {
-            return Ok(val.into_pointer_value());
-        }
+    /// Two operand shapes reach here and both need converting:
+    ///
+    /// - an inline struct value (a local, a constructor result), which is
+    ///   spilled to a stack slot, and
+    /// - a POINTER, which for a user enum means a BOXED value - a managed
+    ///   BoxedEnum or Opaque out of a collection, as in `items[0] == Red`. It is
+    ///   unboxed here for the same reason `generate_enum_match` unboxes its
+    ///   subject (issue #309).
+    ///
+    /// `ensure_pointer` is wrong for both: it returns pointers untouched and
+    /// falls back to `box_value` otherwise, so either shape can leave
+    /// `mux_enum_cmp_<Enum>` reading a `Value` header as the discriminant. That
+    /// misreads equal payloads as different while payload-less variants still
+    /// compare correctly, which makes it easy to believe it works.
+    ///
+    /// The spill uses an entry-block alloca: codegen runs at
+    /// `OptimizationLevel::None`, so an alloca emitted at the current insertion
+    /// point is never hoisted, and a comparison inside a loop would grow the
+    /// stack on every iteration.
+    fn enum_struct_pointer(
+        &mut self,
+        val: BasicValueEnum<'a>,
+        enum_name: &str,
+    ) -> Result<PointerValue<'a>, String> {
+        let val = if val.is_pointer_value() {
+            self.unbox_enum_subject_value(enum_name, val.into_pointer_value())?
+        } else {
+            val
+        };
         if !val.is_struct_value() {
             return Err(format!("enum operand is not a struct value: {:?}", val));
         }
         let struct_val = val.into_struct_value();
-        let temp = self
-            .builder
-            .build_alloca(struct_val.get_type(), "enum_cmp_operand")
-            .map_err(|e| e.to_string())?;
+        let temp = self.create_entry_alloca(struct_val.get_type().into(), "enum_cmp_operand")?;
         self.builder
             .build_store(temp, struct_val)
             .map_err(|e| e.to_string())?;
@@ -115,6 +131,8 @@ impl<'a> CodeGenerator<'a> {
             .map(|v| v.into())
     }
 
+    /// Call a runtime comparison function on two pointer values and convert
+    /// the i32 result to an i1 bool.
     fn call_comparison_runtime(
         &mut self,
         left: PointerValue<'a>,
@@ -951,13 +969,20 @@ impl<'a> CodeGenerator<'a> {
             // A user enum compares structurally, the same way it already does
             // as a set member or map key. Classes also land in Type::Named, so
             // the guard keeps this to enums.
-            Type::Named(name, _) if self.enum_variants.contains_key(name) => {
-                let left_ptr = self.enum_struct_pointer(left)?;
-                let right_ptr = self.enum_struct_pointer(right)?;
+            // optional/result are seeded into enum_variants but are heap
+            // `*mut Value`, not inline structs, so every other consumer excludes
+            // them by name and this must too.
+            Type::Named(name, _)
+                if self.enum_variants.contains_key(name)
+                    && !matches!(name.as_str(), "optional" | "result") =>
+            {
+                let enum_name = name.clone();
+                let left_ptr = self.enum_struct_pointer(left, &enum_name)?;
+                let right_ptr = self.enum_struct_pointer(right, &enum_name)?;
                 self.call_enum_comparison(
                     left_ptr,
                     right_ptr,
-                    &name.clone(),
+                    &enum_name,
                     inkwell::IntPredicate::EQ,
                     "enum_eq",
                 )
@@ -1038,13 +1063,20 @@ impl<'a> CodeGenerator<'a> {
                     "value_not_equal",
                 )
             }
-            Type::Named(name, _) if self.enum_variants.contains_key(name) => {
-                let left_ptr = self.enum_struct_pointer(left)?;
-                let right_ptr = self.enum_struct_pointer(right)?;
+            // optional/result are seeded into enum_variants but are heap
+            // `*mut Value`, not inline structs, so every other consumer excludes
+            // them by name and this must too.
+            Type::Named(name, _)
+                if self.enum_variants.contains_key(name)
+                    && !matches!(name.as_str(), "optional" | "result") =>
+            {
+                let enum_name = name.clone();
+                let left_ptr = self.enum_struct_pointer(left, &enum_name)?;
+                let right_ptr = self.enum_struct_pointer(right, &enum_name)?;
                 self.call_enum_comparison(
                     left_ptr,
                     right_ptr,
-                    &name.clone(),
+                    &enum_name,
                     inkwell::IntPredicate::NE,
                     "enum_ne",
                 )
