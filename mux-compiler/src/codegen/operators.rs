@@ -952,9 +952,13 @@ impl<'a> CodeGenerator<'a> {
                     .map_err(|e| e.to_string())
                     .map(|v| v.into())
             }
+            // Type::Tuple is handled by the `==` arm above but was missing
+            // here, so `a == b` on tuples worked while `a != b` raised an
+            // internal compiler error from the fallback below.
             Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
+            | Type::Tuple(_, _)
             | Type::EmptyList
             | Type::EmptyMap
             | Type::EmptySet => {

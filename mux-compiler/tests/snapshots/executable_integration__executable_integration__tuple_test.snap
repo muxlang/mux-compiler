@@ -1,6 +1,6 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
 Running tuple tests...
 
@@ -51,5 +51,10 @@ Test 6: Collections with tuples
   Created tuple with list and tuple
   tuple_with_list.left[2] = 3 (should be 3)
   tuple_with_list.right.left = x (should be x)
+
+equal tuples: true
+unequal tuples: false
+not-equal operator: true
+not-equal on equal: false
 
 All tuple tests completed!
