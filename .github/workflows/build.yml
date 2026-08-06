@@ -239,8 +239,11 @@ jobs:
     # Push-only: it writes a cache keyed by github.sha, which on a push to main
     # is exactly the base.sha a PR opened against it asks for.
     name: Seed A/B Baseline
-    needs: detect-changes
-    if: ${{ github.event_name == 'push' && needs.detect-changes.outputs.rust == 'true' }}
+    # Every push to main, not just rust ones. A docs-only push still advances
+    # main and so becomes some PR's base.sha; skipping it would leave that key
+    # unseeded and hand the first PR based on it exactly the --release baseline
+    # build this job exists to remove.
+    if: ${{ github.event_name == 'push' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
