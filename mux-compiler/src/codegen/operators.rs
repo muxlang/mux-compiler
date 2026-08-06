@@ -955,10 +955,17 @@ impl<'a> CodeGenerator<'a> {
                     .map_err(|e| e.to_string())
                     .map(|v| v.into())
             }
+            // optional/result are heap `*mut Value` like the collections, and
+            // mux_value_equal already compares them structurally - a set
+            // de-duplicates `some(1)` against `some(1)` today. Only the
+            // operator dispatch was missing, so `some(1) == some(1)` raised an
+            // internal compiler error.
             Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
             | Type::Tuple(_, _)
+            | Type::Optional(_)
+            | Type::Result(_, _)
             | Type::EmptyList
             | Type::EmptyMap
             | Type::EmptySet => {
@@ -1051,6 +1058,8 @@ impl<'a> CodeGenerator<'a> {
             | Type::Map(_, _)
             | Type::Set(_)
             | Type::Tuple(_, _)
+            | Type::Optional(_)
+            | Type::Result(_, _)
             | Type::EmptyList
             | Type::EmptyMap
             | Type::EmptySet => {
