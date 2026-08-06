@@ -88,16 +88,13 @@ jobs:
     # per-job toolchain install is gone. 2vCPU, not 4: these jobs stay separate
     # and parallel, so wall clock is set by the slowest one, and doubling the
     # rate to shave seconds off a job nothing waits on is wasted allowance.
-    container:
-      image: ghcr.io/muxlang/mux-ci:main
-      # The package is private, so the pull needs a token. Harmless if
-      # it is later made public, and required until then.
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
-      packages: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -224,16 +221,13 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
-    container:
-      image: ghcr.io/muxlang/mux-ci:main
-      # The package is private, so the pull needs a token. Harmless if
-      # it is later made public, and required until then.
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
-      packages: read
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -269,16 +263,13 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
-    container:
-      image: ghcr.io/muxlang/mux-ci:main
-      # The package is private, so the pull needs a token. Harmless if
-      # it is later made public, and required until then.
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
-      packages: read
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -485,7 +476,6 @@ jobs:
     # cores shorten the critical path rather than a job nothing waits on.
     permissions:
       contents: read
-      packages: read
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -510,16 +500,13 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
-    container:
-      image: ghcr.io/muxlang/mux-ci:main
-      # The package is private, so the pull needs a token. Harmless if
-      # it is later made public, and required until then.
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
-      packages: read
     # Longest of the Linux jobs, so it sets the wall clock for this group. The
     # bound matters more now the runner is metered - and compiled Mux programs
     # hang rather than crash under LLVM UB, which is exactly what this job runs
@@ -572,17 +559,14 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
-    container:
-      image: ghcr.io/muxlang/mux-ci:main
-      # The package is private, so the pull needs a token. Harmless if
-      # it is later made public, and required until then.
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
     timeout-minutes: 25
     permissions:
       contents: read
-      packages: read
     # PR-blocking: runs the executable-integration suite against a mux-runtime
     # built with the `rc-leak-check` feature, which asserts at process exit that
     # every reference-counted Value block was released (see mux-runtime
