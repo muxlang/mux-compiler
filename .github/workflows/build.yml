@@ -222,7 +222,7 @@ jobs:
             --baseline-bin-dir ab-bin/baseline --pr-bin-dir ab-bin/pr 2>&1 | tee ab-bench.log
       - name: Upload the A/B report for the PR comment
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pr-comment-ab-bench
           path: ab-bench.log
@@ -388,7 +388,7 @@ jobs:
         # executed in the spawned compiler is captured.
         run: cargo llvm-cov -p mux-lang --all-features --lcov --output-path lcov.info
       - name: Upload coverage report
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-lcov
           path: lcov.info
@@ -619,7 +619,7 @@ jobs:
       - name: Upload valgrind log for PR comment
         # Raw log only; the trusted pr-comment workflow escapes and renders it.
         if: ${{ always() && github.event_name == 'pull_request' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pr-comment-valgrind
           path: valgrind.log
