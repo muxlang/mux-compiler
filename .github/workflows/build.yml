@@ -178,7 +178,7 @@ jobs:
       # rebuild; every later PR on the same base restores it in seconds.
       - name: Restore or build baseline binary
         id: baseline_cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ab-bin/baseline
           key: mux-ab-baseline-linux-${{ github.event.pull_request.base.sha }}
@@ -258,7 +258,7 @@ jobs:
         uses: ./.github/actions/setup-llvm
       - name: Restore baseline binary
         id: baseline_cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ab-bin/baseline
           key: mux-ab-baseline-linux-${{ github.sha }}
