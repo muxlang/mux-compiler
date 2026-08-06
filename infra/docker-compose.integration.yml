@@ -85,6 +85,11 @@ services:
       - "127.0.0.1:19100:11000/udp"
 
   dev:
+    # Both image and build on purpose: `image` names the tag so CI can pull
+    # the published copy instead of compiling cargo-insta and
+    # cargo-llvm-cov from source, while `build` keeps a local Dockerfile
+    # edit working. scripts/integration-up.sh picks between them.
+    image: ghcr.io/muxlang/mux-ci:main
     build:
       context: ..
       dockerfile: infra/docker/integration/Dockerfile

@@ -17,6 +17,13 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Inside a `container:`, GitHub defaults `run:` steps to `sh -e {0}`, not
+# bash - which turns `set -o pipefail` into "Illegal option" and killed the
+# valgrind job. Set it once here rather than per step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   detect-changes:
     name: Detect Changed Paths
@@ -76,17 +83,21 @@ jobs:
     name: Format
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # The CI image already carries the pinned toolchain and rustfmt, so the
+    # per-job toolchain install is gone. 2vCPU, not 4: these jobs stay separate
+    # and parallel, so wall clock is set by the slowest one, and doubling the
+    # rate to shave seconds off a job nothing waits on is wasted allowance.
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: rustfmt
       - name: Formatting check
         run: cargo fmt -- --check
 
@@ -101,12 +112,32 @@ jobs:
     # PR-only: it needs github.event.pull_request.base.sha, which does not
     # exist on a push event. Parallel to detect-changes (not behind
     # rust_checks/clippy) to stay close to the ~5 min PR-feedback target.
-    name: A/B Benchmark Gate
+    name: A/B Benchmark Report
     needs: detect-changes
     if: ${{ github.event_name == 'pull_request' && needs.detect-changes.outputs.rust == 'true' }}
-    runs-on: ubuntu-latest
+    # First job on Blacksmith, deliberately this one. It is the slowest job on
+    # a PR run (3.8-6.7m measured) and therefore the repo's critical path, so
+    # it is where a faster runner can actually shorten PR feedback - the Linux
+    # jobs all finish well inside it and would gain nothing visible.
+    #
+    # It stays a job of its own and must never be folded into a bundle: it is a
+    # benchmark, and sharing a machine with valgrind or a coverage build turns
+    # its measurements into contention noise. Dedicated hardware may also prove
+    # steadier than GitHub's shared runners, which is worth watching - the
+    # sibling gate in mux-runtime needed its threshold widened from 4% to 15%
+    # because of measurement noise, and that is the kind of thing better
+    # hardware fixes.
+    #
+    # 4vCPU because the job is dominated by two --release compiler builds,
+    # which parallelise; the benchmark phase itself is single-threaded and
+    # indifferent to core count.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
+    # Unchanged at 30m. Generous against a ~6m job, but the baseline cache miss
+    # path rebuilds a release binary from scratch, and a false timeout on a
+    # required check is worse than a slow one. Metered now, so a hang costs
+    # real allowance: 30m at the 4vCPU rate is 60 x64-2vCPU-equivalent minutes.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -173,8 +204,24 @@ jobs:
           echo "${HYPERFINE_SHA256}  ${archive}" | sha256sum -c -
           tar -xzf "$archive" "hyperfine-v${HYPERFINE_VERSION}-x86_64-unknown-linux-gnu/hyperfine"
           install -m 755 "hyperfine-v${HYPERFINE_VERSION}-x86_64-unknown-linux-gnu/hyperfine" /usr/local/bin/hyperfine
-      - name: Run A/B benchmark gate
-        run: python3 scripts/ci/ab-bench-gate.py --baseline-bin-dir ab-bin/baseline --pr-bin-dir ab-bin/pr
+      - name: Run A/B benchmark report
+        # continue-on-error: this reports, it does not gate. The comparison is
+        # informative but not trustworthy enough to block a merge - see the
+        # job comment above - so a regression verdict must reach the reviewer
+        # without turning the check red. The exit code is still recorded in the
+        # log, and the table names any benchmark past the threshold.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 scripts/ci/ab-bench-gate.py \
+            --baseline-bin-dir ab-bin/baseline --pr-bin-dir ab-bin/pr 2>&1 | tee ab-bench.log
+      - name: Upload the A/B report for the PR comment
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pr-comment-ab-bench
+          path: ab-bench.log
+          if-no-files-found: warn
 
   clippy:
     # Separated from rust_checks so a clippy failure is not buried behind
@@ -189,18 +236,17 @@ jobs:
     name: Clippy
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: clippy
-      - name: Setup LLVM 22
-        uses: ./.github/actions/setup-llvm
       - name: Cache Cargo registry and build artifacts
         # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
         # step name, target/ was never cached, so every job below did a cold
@@ -232,9 +278,15 @@ jobs:
     name: Rust Checks
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # No mux-runtime checkout: cargo builds it from the commit Cargo.lock
@@ -243,13 +295,6 @@ jobs:
       # configuration that never ships. FFI breaks against runtime `main` are
       # caught by mux-runtime's own CI, which builds this repo's `main` against
       # its source.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: rustfmt, llvm-tools-preview
-      - name: Setup LLVM 22
-        uses: ./.github/actions/setup-llvm
       - name: Cache Cargo registry and build artifacts
         # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
         # step name, target/ was never cached, so every job below did a cold
@@ -272,29 +317,17 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust checks
         run: ./scripts/run-checks.sh
-      - name: Install cargo-insta
-        # Pinned, and matched to the insta library version in mux-compiler's
-        # Cargo.lock. This step gates correctness rather than reporting, so it
-        # must not float: `--locked` pins cargo-insta's dependencies, not
-        # cargo-insta itself, and a release that changed what
-        # `--unreferenced=reject` means could stop enforcing without failing.
-        # Comparing the version rather than `command -v` so a cached ~/.cargo/bin
-        # from an earlier run cannot silently win over the pin.
-        env:
-          CARGO_INSTA_VERSION: 1.47.2
-        run: |
-          set -euo pipefail
-          if ! cargo insta --version 2>/dev/null | grep -qx "cargo-insta $CARGO_INSTA_VERSION"; then
-            cargo install cargo-insta --version "$CARGO_INSTA_VERSION" --locked --force
-          fi
+      # cargo-insta is no longer installed here. It is baked into the CI image
+      # at 1.47.2, still matched to the insta library version in Cargo.lock -
+      # the pin moved, it did not go away. See infra/docker/integration/Dockerfile.
       - name: Reject orphaned snapshots
         # test_scripts/ is auto-discovered, so deleting a script leaves its
         # snapshot behind, referenced by nothing and asserting nothing. Those
         # orphans read as coverage that does not exist - see #269. Runs here to
         # reuse the uninstrumented build from the step above.
         run: cargo insta test -p mux-lang --unreferenced=reject
-      - name: Install cargo-llvm-cov
-        run: command -v cargo-llvm-cov || cargo install cargo-llvm-cov --locked
+      # cargo-llvm-cov comes from the CI image too, pinned at 0.8.7 - it used
+      # to be installed unpinned here on every run.
       - name: Coverage
         # Re-runs the test suite under instrumentation. Integration tests shell
         # out to CARGO_BIN_EXE_mux, which llvm-cov instruments too, so codegen
@@ -449,22 +482,52 @@ jobs:
     name: Integration Checks
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Not containerised: this job drives `docker compose`, so it needs a daemon
+    # rather than to be inside one. Blacksmith runners are VMs with Docker, the
+    # same as ubuntu-latest - only the in-container jobs had that constraint.
+    #
+    # 4vCPU, unlike the other moved jobs. With the Linux jobs now at ~2.4m this
+    # is the longest thing on a PR run, so it is the one place left where more
+    # cores shorten the critical path rather than a job nothing waits on.
     permissions:
       contents: read
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Docker info
         run: docker compose version
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Service-backed checks
+        # MUX_CI_PULL_IMAGE makes integration-up.sh pull the published dev image
+        # rather than rebuild it. The Dockerfile now installs cargo-insta and
+        # cargo-llvm-cov, which compile from source and added roughly 90s to
+        # every run of this job once the image gained them.
+        env:
+          MUX_CI_PULL_IMAGE: "1"
         run: ./scripts/integration-checks.sh
   valgrind:
     name: Valgrind Memory Checks
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
     permissions:
       contents: read
+    # Longest of the Linux jobs, so it sets the wall clock for this group. The
+    # bound matters more now the runner is metered - and compiled Mux programs
+    # hang rather than crash under LLVM UB, which is exactly what this job runs
+    # hundreds of.
+    timeout-minutes: 30
     # PR-blocking: Leg A (compiled programs) fails the job on any definite or
     # indirect leak / memory error. Leg B (compiler under Valgrind) is
     # report-only inside the script and never changes the exit code.
@@ -472,15 +535,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Programs link the runtime cargo builds into target/ from the commit
       # Cargo.lock pins - the same library a release ships.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: llvm-tools-preview
-      - name: Setup LLVM 22
-        uses: ./.github/actions/setup-llvm
-      - name: Install Valgrind
-        run: sudo apt-get install -y valgrind
+      #
+      # Toolchain, LLVM 22 and valgrind itself all come from the CI image now.
       - name: Cache Cargo registry and build artifacts
         # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
         # step name, target/ was never cached, so every job below did a cold
@@ -518,7 +574,13 @@ jobs:
     name: RC Leak Check
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # No credentials: the package is public, so an anonymous pull works. That
+    # matters for fork PRs - their GITHUB_TOKEN is scoped to the fork and cannot
+    # authenticate to this org's registry, so supplying credentials would fail
+    # exactly where an anonymous pull succeeds.
+    container: ghcr.io/muxlang/mux-ci:main
+    timeout-minutes: 25
     permissions:
       contents: read
     # PR-blocking: runs the executable-integration suite against a mux-runtime
@@ -530,7 +592,12 @@ jobs:
     # leaking program exits 101 with a diagnostic, so its snapshot no longer
     # matches and the suite fails.
     env:
-      MUX_RUNTIME_SRC: ${{ github.workspace }}/mux-runtime
+      # MUX_RUNTIME_SRC and MUX_RUNTIME_LIB are NOT set here. A job-level
+      # env: value is a literal - GitHub does not shell-expand it - so
+      # "$GITHUB_WORKSPACE/mux-runtime" would stay literal, and
+      # ${{ github.workspace }} resolves to the runner's path rather than
+      # the /__w/... mount the container sees. Both are wrong. They are
+      # exported from a step below instead, where the shell expands them.
       # Built explicitly below and forced via MUX_RUNTIME_LIB, mirroring
       # scripts/leak-check.sh. `rc-leak-check` is deliberately outside `full`,
       # so it is the one runtime the compiler cannot produce on its own.
@@ -542,13 +609,7 @@ jobs:
           repository: muxlang/mux-runtime
           ref: main
           path: mux-runtime
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-          components: llvm-tools-preview
-      - name: Setup LLVM 22
-        uses: ./.github/actions/setup-llvm
+      # Toolchain and LLVM 22 both come from the CI image.
       - name: Cache Cargo registry and build artifacts
         # Was actions/cache over ~/.cargo/{registry,git,bin} only. Despite the
         # step name, target/ was never cached, so every job below did a cold
@@ -569,6 +630,13 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Resolve runtime paths for the container
+        # Written through $GITHUB_ENV so the shell expands
+        # $GITHUB_WORKSPACE to the path this container actually sees.
+        run: |
+          set -euo pipefail
+          echo "MUX_RUNTIME_SRC=$GITHUB_WORKSPACE/mux-runtime" >> "$GITHUB_ENV"
+          echo "MUX_RUNTIME_LIB=$GITHUB_WORKSPACE/mux-runtime/target/debug/libmux_runtime.a" >> "$GITHUB_ENV"
       - name: Build the rc-leak-check runtime
         run: |
           set -euo pipefail
@@ -586,8 +654,6 @@ jobs:
         # the leak-check runtime and runs the exit-time assertion. A leaked block
         # exits 101 with a diagnostic, so its snapshot no longer matches and the
         # suite fails.
-        env:
-          MUX_RUNTIME_LIB: ${{ github.workspace }}/mux-runtime/target/debug/libmux_runtime.a
         run: cargo test -p mux-lang --test executable_integration
   sonarqube:
     name: SonarQube

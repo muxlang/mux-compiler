@@ -9,6 +9,10 @@ set -euo pipefail
 
 specs=(
   "pr-comment-valgrind|valgrind.log|Valgrind Memory Checks|gated"
+  # report, not gated: the A/B comparison surfaces its table here rather than
+  # failing a check. Its job is continue-on-error, so its conclusion is always
+  # success and a "gated" kind would render a misleading PASSED.
+  "pr-comment-ab-bench|ab-bench.log|A/B Benchmark Report|report"
 )
 jobs_json="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs')"
 # When the report jobs were path-skipped there are no artifacts. Only
