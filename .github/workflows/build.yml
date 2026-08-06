@@ -151,15 +151,20 @@ jobs:
       # cache: this is the only job building --release, and sharing one key
       # across debug and release artifacts would make every job pay for
       # archive contents it does not use.
-      - name: Cache Cargo registry (release)
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      # Caches the release BUILD, not just the registry. `workspaces` is needed
+      # because this job builds into target-ab-pr rather than target/, and
+      # rust-cache only knows about ./target by default - without it the whole
+      # LLVM/inkwell tree recompiled from cold on every run.
+      #
+      # The baseline's target dir is deliberately not listed. With the seed job
+      # below populating the baseline on main, building one here is the rare
+      # path, and caching a second multi-GB release tree to speed it up would
+      # cost more cache than it saves.
+      - name: Cache Cargo registry and release build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-
+          workspaces: ". -> target-ab-pr"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build PR head (release)
         run: cargo build -p mux-runtime -p mux-lang --release --locked --target-dir target-ab-pr
       - name: Stage PR binary
@@ -222,6 +227,52 @@ jobs:
           name: pr-comment-ab-bench
           path: ab-bench.log
           if-no-files-found: warn
+
+  ab_baseline_seed:
+    # Builds the A/B baseline binary for main and stores it under the key a PR
+    # will look for, so the PR path normally hits and skips the baseline build.
+    #
+    # Before this, the exact-SHA key meant the FIRST pull request after every
+    # merge paid for a full --release build of the compiler - the single most
+    # expensive step in the job - and only later PRs on that base reused it.
+    #
+    # Push-only: it writes a cache keyed by github.sha, which on a push to main
+    # is exactly the base.sha a PR opened against it asks for.
+    name: Seed A/B Baseline
+    needs: detect-changes
+    if: ${{ github.event_name == 'push' && needs.detect-changes.outputs.rust == 'true' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
+        with:
+          toolchain: 1.93.1
+      - name: Setup LLVM 22
+        uses: ./.github/actions/setup-llvm
+      - name: Restore baseline binary
+        id: baseline_cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ab-bin/baseline
+          key: mux-ab-baseline-linux-${{ github.sha }}
+      - name: Cache Cargo registry and release build
+        if: steps.baseline_cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ". -> target-ab-baseline"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build baseline (release)
+        if: steps.baseline_cache.outputs.cache-hit != 'true'
+        run: cargo build -p mux-runtime -p mux-lang --release --locked --target-dir target-ab-baseline
+      - name: Stage baseline binary
+        if: steps.baseline_cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ab-bin/baseline
+          cp target-ab-baseline/release/mux target-ab-baseline/release/libmux_runtime.a ab-bin/baseline/
 
   clippy:
     # Separated from rust_checks so a clippy failure is not buried behind
