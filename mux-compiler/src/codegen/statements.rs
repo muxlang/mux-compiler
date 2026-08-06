@@ -1842,7 +1842,7 @@ impl<'a> CodeGenerator<'a> {
     /// struct value, so the discriminant load and payload binding operate on a
     /// real enum rather than a heap pointer (issue #309). Handles both a managed
     /// BoxedEnum and a raw Opaque via `mux_value_unbox_enum`.
-    fn unbox_enum_subject_value(
+    pub(super) fn unbox_enum_subject_value(
         &mut self,
         enum_name: &str,
         boxed: inkwell::values::PointerValue<'a>,

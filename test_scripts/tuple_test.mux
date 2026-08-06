@@ -109,6 +109,20 @@ func test_collections() returns void {
 }
 
 // Main entry point
+// `==` was supported for tuples but `!=` was not, so `a != b` raised an
+// internal compiler error while `a == b` on the same pair worked.
+func test_equality() returns void {
+    auto a = (1, 2)
+    auto b = (1, 2)
+    auto c = (1, 3)
+    print("equal tuples: " + (a == b).to_string())
+    print("unequal tuples: " + (a == c).to_string())
+    print("not-equal operator: " + (a != c).to_string())
+    print("not-equal on equal: " + (a != b).to_string())
+    return
+}
+
+
 func main() returns void {
     print("Running tuple tests...")
     print("")
@@ -129,6 +143,9 @@ func main() returns void {
     print("")
 
     test_collections()
+    print("")
+
+    test_equality()
     print("")
 
     print("All tuple tests completed!")

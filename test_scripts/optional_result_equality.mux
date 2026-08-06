@@ -1,0 +1,40 @@
+// `==` and `!=` on optional and result raised an internal compiler error:
+//
+//   codegen error: Equality comparison not supported for type: Optional(...)
+//
+// They are heap `*mut Value` like the collections, and mux_value_equal already
+// compares them structurally - a set de-duplicates `some(1)` against `some(1)`
+// today. Only the operator dispatch was missing, the same gap that left tuples
+// without `!=` and user enums without either.
+//
+// Operands are explicitly typed because a bare `none` infers optional<never>
+// and a bare `ok(1)` infers an unresolved error type, so comparing against one
+// is a (correctly reported) type error rather than anything to do with codegen.
+
+func find(int x) returns result<int, string> {
+    if x > 0 { return ok(x) }
+    return err("neg")
+}
+
+func main() returns void {
+    optional<int> a = some(1)
+    optional<int> b = some(1)
+    optional<int> c = some(2)
+    print((a == b).to_string())
+    print((a == c).to_string())
+    print((a != c).to_string())
+    print((a != b).to_string())
+
+    result<int, string> r1 = find(1)
+    result<int, string> r2 = find(1)
+    result<int, string> r3 = find(-1)
+    print((r1 == r2).to_string())
+    print((r1 == r3).to_string())
+    print((r1 != r3).to_string())
+
+    // Structural comparison already worked through collections; this pins that
+    // the operator now agrees with it.
+    auto s = {some(1), some(1), some(2)}
+    print(s.size().to_string())
+    return
+}

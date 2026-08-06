@@ -882,7 +882,7 @@ impl<'a> CodeGenerator<'a> {
     /// own compare function (following box chains at runtime, so it terminates).
     /// Memoized and declared before its body so a self-embedding enum resolves
     /// the recursive call (issue #309).
-    fn get_or_create_enum_cmp_fn(
+    pub(super) fn get_or_create_enum_cmp_fn(
         &mut self,
         enum_name: &str,
     ) -> Result<inkwell::values::FunctionValue<'a>, String> {
