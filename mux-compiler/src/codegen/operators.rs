@@ -14,6 +14,100 @@ use crate::semantics::Type;
 
 use super::CodeGenerator;
 
+/// Which direction an equality comparison runs.
+///
+/// `==` and `!=` share one dispatch (`generate_equality_op`) and differ only in
+/// what this returns. Previously they were two parallel matches, which is how
+/// `Type::Tuple` came to be handled by `==` and not by `!=` - a divergence this
+/// makes unrepresentable (issue #360).
+#[derive(Clone, Copy)]
+enum EqualityKind {
+    Equal,
+    NotEqual,
+}
+
+impl EqualityKind {
+    fn int_predicate(self) -> inkwell::IntPredicate {
+        match self {
+            Self::Equal => inkwell::IntPredicate::EQ,
+            Self::NotEqual => inkwell::IntPredicate::NE,
+        }
+    }
+
+    fn float_predicate(self) -> inkwell::FloatPredicate {
+        match self {
+            Self::Equal => inkwell::FloatPredicate::OEQ,
+            Self::NotEqual => inkwell::FloatPredicate::ONE,
+        }
+    }
+
+    fn string_runtime(self) -> &'static str {
+        match self {
+            Self::Equal => "mux_string_equal",
+            Self::NotEqual => "mux_string_not_equal",
+        }
+    }
+
+    fn value_runtime(self) -> &'static str {
+        match self {
+            Self::Equal => "mux_value_equal",
+            Self::NotEqual => "mux_value_not_equal",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Equal => "eq",
+            Self::NotEqual => "ne",
+        }
+    }
+
+    fn float_label(self) -> &'static str {
+        match self {
+            Self::Equal => "feq",
+            Self::NotEqual => "fne",
+        }
+    }
+
+    fn string_label(self) -> &'static str {
+        match self {
+            Self::Equal => "string_equal",
+            Self::NotEqual => "string_not_equal",
+        }
+    }
+
+    fn value_label(self) -> &'static str {
+        match self {
+            Self::Equal => "value_equal",
+            Self::NotEqual => "value_not_equal",
+        }
+    }
+
+    fn enum_label(self) -> &'static str {
+        match self {
+            Self::Equal => "enum_eq",
+            Self::NotEqual => "enum_ne",
+        }
+    }
+
+    /// The operator as written, for the operand-type resolution error.
+    fn operator(self) -> &'static str {
+        match self {
+            Self::Equal => "==",
+            Self::NotEqual => "!=",
+        }
+    }
+
+    /// Leading noun of the unsupported-type error, preserving the existing
+    /// "Equality/Inequality comparison not supported for type" wording.
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Equal => "Equality",
+            Self::NotEqual => "Inequality",
+        }
+    }
+}
+
 impl<'a> CodeGenerator<'a> {
     fn infer_method_return_type(&self, receiver_type: &Type, method_name: &str) -> Option<Type> {
         self.analyzer
@@ -910,106 +1004,28 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
-    fn generate_equal_op(
+    /// Emit `==` or `!=`.
+    ///
+    /// One dispatch for both, because they differ only in the predicates and
+    /// runtime functions they use. Keeping them as two parallel matches is how
+    /// `Type::Tuple` ended up supported by `==` and not by `!=`; sharing the
+    /// arms makes that divergence unrepresentable (issue #360).
+    fn generate_equality_op(
         &mut self,
         left_expr: &ExpressionNode,
         left: BasicValueEnum<'a>,
         right: BasicValueEnum<'a>,
+        kind: EqualityKind,
     ) -> Result<BasicValueEnum<'a>, String> {
         let left_type = self
             .resolve_expression_type_with_fallback(left_expr)
-            .map_err(|e| format!("Failed to get left operand type for '==': {}", e))?;
-
-        match &left_type {
-            Type::Primitive(PrimitiveType::Str) => {
-                let left_ptr = self.ensure_pointer(left);
-                let right_ptr = self.ensure_pointer(right);
-                self.call_string_comparison(left_ptr, right_ptr, "mux_string_equal", "string_equal")
-            }
-            Type::Primitive(PrimitiveType::Int) | Type::Primitive(PrimitiveType::Char) => {
-                let left_int = self.get_raw_int_value(left)?;
-                let right_int = self.get_raw_int_value(right)?;
-                self.builder
-                    .build_int_compare(inkwell::IntPredicate::EQ, left_int, right_int, "eq")
-                    .map_err(|e| e.to_string())
-                    .map(|v| v.into())
-            }
-            Type::Primitive(PrimitiveType::Bool) => {
-                let left_bool = self.get_raw_bool_value(left)?;
-                let right_bool = self.get_raw_bool_value(right)?;
-                self.builder
-                    .build_int_compare(inkwell::IntPredicate::EQ, left_bool, right_bool, "eq")
-                    .map_err(|e| e.to_string())
-                    .map(|v| v.into())
-            }
-            Type::Primitive(PrimitiveType::Float) => {
-                let left_float = self.get_raw_float_value(left)?;
-                let right_float = self.get_raw_float_value(right)?;
-                self.builder
-                    .build_float_compare(
-                        inkwell::FloatPredicate::OEQ,
-                        left_float,
-                        right_float,
-                        "feq",
-                    )
-                    .map_err(|e| e.to_string())
-                    .map(|v| v.into())
-            }
-            // optional/result are heap `*mut Value` like the collections, and
-            // mux_value_equal already compares them structurally - a set
-            // de-duplicates `some(1)` against `some(1)` today. Only the
-            // operator dispatch was missing, so `some(1) == some(1)` raised an
-            // internal compiler error.
-            Type::List(_)
-            | Type::Map(_, _)
-            | Type::Set(_)
-            | Type::Tuple(_, _)
-            | Type::Optional(_)
-            | Type::Result(_, _)
-            | Type::EmptyList
-            | Type::EmptyMap
-            | Type::EmptySet => {
-                let left_ptr = self.ensure_pointer(left);
-                let right_ptr = self.ensure_pointer(right);
-                self.call_comparison_runtime(left_ptr, right_ptr, "mux_value_equal", "value_equal")
-            }
-            // A user enum compares structurally, the same way it already does
-            // as a set member or map key. Classes also land in Type::Named, so
-            // the guard keeps this to enums.
-            // optional/result are seeded into enum_variants but are heap
-            // `*mut Value`, not inline structs, so every other consumer excludes
-            // them by name and this must too.
-            Type::Named(name, _)
-                if self.enum_variants.contains_key(name)
-                    && !matches!(name.as_str(), "optional" | "result") =>
-            {
-                let enum_name = name.clone();
-                let left_ptr = self.enum_struct_pointer(left, &enum_name)?;
-                let right_ptr = self.enum_struct_pointer(right, &enum_name)?;
-                self.call_enum_comparison(
-                    left_ptr,
-                    right_ptr,
-                    &enum_name,
-                    inkwell::IntPredicate::EQ,
-                    "enum_eq",
+            .map_err(|e| {
+                format!(
+                    "Failed to get left operand type for '{}': {}",
+                    kind.operator(),
+                    e
                 )
-            }
-            _ => Err(format!(
-                "Equality comparison not supported for type: {:?}",
-                left_type
-            )),
-        }
-    }
-
-    fn generate_not_equal_op(
-        &mut self,
-        left_expr: &ExpressionNode,
-        left: BasicValueEnum<'a>,
-        right: BasicValueEnum<'a>,
-    ) -> Result<BasicValueEnum<'a>, String> {
-        let left_type = self
-            .resolve_expression_type_with_fallback(left_expr)
-            .map_err(|e| format!("Failed to get left operand type for '!=': {}", e))?;
+            })?;
 
         match &left_type {
             Type::Primitive(PrimitiveType::Str) => {
@@ -1018,15 +1034,15 @@ impl<'a> CodeGenerator<'a> {
                 self.call_string_comparison(
                     left_ptr,
                     right_ptr,
-                    "mux_string_not_equal",
-                    "string_not_equal",
+                    kind.string_runtime(),
+                    kind.string_label(),
                 )
             }
             Type::Primitive(PrimitiveType::Int) | Type::Primitive(PrimitiveType::Char) => {
                 let left_int = self.get_raw_int_value(left)?;
                 let right_int = self.get_raw_int_value(right)?;
                 self.builder
-                    .build_int_compare(inkwell::IntPredicate::NE, left_int, right_int, "ne")
+                    .build_int_compare(kind.int_predicate(), left_int, right_int, kind.label())
                     .map_err(|e| e.to_string())
                     .map(|v| v.into())
             }
@@ -1034,7 +1050,7 @@ impl<'a> CodeGenerator<'a> {
                 let left_bool = self.get_raw_bool_value(left)?;
                 let right_bool = self.get_raw_bool_value(right)?;
                 self.builder
-                    .build_int_compare(inkwell::IntPredicate::NE, left_bool, right_bool, "ne")
+                    .build_int_compare(kind.int_predicate(), left_bool, right_bool, kind.label())
                     .map_err(|e| e.to_string())
                     .map(|v| v.into())
             }
@@ -1043,17 +1059,18 @@ impl<'a> CodeGenerator<'a> {
                 let right_float = self.get_raw_float_value(right)?;
                 self.builder
                     .build_float_compare(
-                        inkwell::FloatPredicate::ONE,
+                        kind.float_predicate(),
                         left_float,
                         right_float,
-                        "fne",
+                        kind.float_label(),
                     )
                     .map_err(|e| e.to_string())
                     .map(|v| v.into())
             }
-            // Type::Tuple is handled by the `==` arm above but was missing
-            // here, so `a == b` on tuples worked while `a != b` raised an
-            // internal compiler error from the fallback below.
+            // optional/result are heap `*mut Value` like the collections, and
+            // mux_value_equal already compares them structurally - a set
+            // de-duplicates `some(1)` against `some(1)` today. Only the
+            // operator dispatch was missing.
             Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
@@ -1068,13 +1085,16 @@ impl<'a> CodeGenerator<'a> {
                 self.call_comparison_runtime(
                     left_ptr,
                     right_ptr,
-                    "mux_value_not_equal",
-                    "value_not_equal",
+                    kind.value_runtime(),
+                    kind.value_label(),
                 )
             }
-            // optional/result are seeded into enum_variants but are heap
-            // `*mut Value`, not inline structs, so every other consumer excludes
-            // them by name and this must too.
+            // A user enum compares structurally, the same way it already does as
+            // a set member or map key. Classes also land in Type::Named, so the
+            // guard keeps this to enums - and optional/result are seeded into
+            // enum_variants but are heap `*mut Value` rather than inline
+            // structs, so they are excluded by name as every other consumer
+            // excludes them.
             Type::Named(name, _)
                 if self.enum_variants.contains_key(name)
                     && !matches!(name.as_str(), "optional" | "result") =>
@@ -1086,12 +1106,13 @@ impl<'a> CodeGenerator<'a> {
                     left_ptr,
                     right_ptr,
                     &enum_name,
-                    inkwell::IntPredicate::NE,
-                    "enum_ne",
+                    kind.int_predicate(),
+                    kind.enum_label(),
                 )
             }
             _ => Err(format!(
-                "Inequality comparison not supported for type: {:?}",
+                "{} comparison not supported for type: {:?}",
+                kind.noun(),
                 left_type
             )),
         }
@@ -1227,7 +1248,9 @@ impl<'a> CodeGenerator<'a> {
             BinaryOp::Multiply => self.generate_multiply_op(left, right),
             BinaryOp::Divide => self.generate_divide_op(left, right, Some(right_expr.span())),
             BinaryOp::Exponent => self.generate_exponent_op(left, right),
-            BinaryOp::Equal => self.generate_equal_op(left_expr, left, right),
+            BinaryOp::Equal => {
+                self.generate_equality_op(left_expr, left, right, EqualityKind::Equal)
+            }
             BinaryOp::Less => self.generate_numeric_compare(
                 left,
                 right,
@@ -1256,7 +1279,9 @@ impl<'a> CodeGenerator<'a> {
                 inkwell::FloatPredicate::OGE,
                 "ge",
             ),
-            BinaryOp::NotEqual => self.generate_not_equal_op(left_expr, left, right),
+            BinaryOp::NotEqual => {
+                self.generate_equality_op(left_expr, left, right, EqualityKind::NotEqual)
+            }
             BinaryOp::LogicalAnd | BinaryOp::LogicalOr => {
                 // These should be handled by generate_short_circuit_logical_op
                 // and should not reach here
