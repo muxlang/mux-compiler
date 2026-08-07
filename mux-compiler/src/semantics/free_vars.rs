@@ -10,7 +10,11 @@ impl SemanticAnalyzer {
         body: &[StatementNode],
         local_vars: &std::collections::HashSet<String>,
     ) -> Result<Vec<(String, Type)>, SemanticError> {
-        let mut free_vars = std::collections::HashMap::new();
+        // Ordered: the collected order becomes the closure's capture list, and
+        // so the layout of its environment struct. A HashMap here made the
+        // emitted IR differ between back-to-back builds of the same file
+        // (issue #344).
+        let mut free_vars = std::collections::BTreeMap::new();
         let mut local_vars = local_vars.clone();
 
         for stmt in body {
@@ -27,7 +31,7 @@ impl SemanticAnalyzer {
         exprs: &[ExpressionNode],
         local_vars: &std::collections::HashSet<String>,
     ) -> Result<Vec<(String, Type)>, SemanticError> {
-        let mut free_vars = std::collections::HashMap::new();
+        let mut free_vars = std::collections::BTreeMap::new();
 
         for expr in exprs {
             self.find_free_variables_in_expression(expr, local_vars, &mut free_vars)?;
@@ -40,7 +44,7 @@ impl SemanticAnalyzer {
         &self,
         stmt: &StatementNode,
         local_vars: &mut std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         match &stmt.kind {
             StatementKind::Expression(expr) | StatementKind::Return(Some(expr)) => {
@@ -83,7 +87,7 @@ impl SemanticAnalyzer {
         name: &str,
         expr: &ExpressionNode,
         local_vars: &mut std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         // First analyze the expression (uses happen before the decl is in scope)
         self.find_free_variables_in_expression(expr, local_vars, free_vars)?;
@@ -98,7 +102,7 @@ impl SemanticAnalyzer {
         then_block: &[StatementNode],
         else_block: &Option<Vec<StatementNode>>,
         local_vars: &mut std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         self.find_free_variables_in_expression(cond, local_vars, free_vars)?;
         for s in then_block {
@@ -117,7 +121,7 @@ impl SemanticAnalyzer {
         cond: &ExpressionNode,
         body: &[StatementNode],
         local_vars: &mut std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         self.find_free_variables_in_expression(cond, local_vars, free_vars)?;
         for s in body {
@@ -132,7 +136,7 @@ impl SemanticAnalyzer {
         iter: &ExpressionNode,
         body: &[StatementNode],
         local_vars: &mut std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         self.find_free_variables_in_expression(iter, local_vars, free_vars)?;
         // Iterator variable is local to the for loop
@@ -147,7 +151,7 @@ impl SemanticAnalyzer {
         &self,
         stmts: &[StatementNode],
         local_vars: &mut std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         for s in stmts {
             self.find_free_variables_in_statement(s, local_vars, free_vars)?;
@@ -159,7 +163,7 @@ impl SemanticAnalyzer {
         &self,
         expr: &ExpressionNode,
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         match &expr.kind {
             ExpressionKind::Identifier(name) => {
@@ -215,7 +219,7 @@ impl SemanticAnalyzer {
         &self,
         name: &str,
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         // Check if it's a local variable (parameter or declared in lambda body)
         if !local_vars.contains(name) {
@@ -235,7 +239,7 @@ impl SemanticAnalyzer {
         left: &ExpressionNode,
         right: &ExpressionNode,
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         self.find_free_variables_in_expression(left, local_vars, free_vars)?;
         self.find_free_variables_in_expression(right, local_vars, free_vars)?;
@@ -246,7 +250,7 @@ impl SemanticAnalyzer {
         &self,
         inner: &ExpressionNode,
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         self.find_free_variables_in_expression(inner, local_vars, free_vars)?;
         Ok(())
@@ -257,7 +261,7 @@ impl SemanticAnalyzer {
         func: &ExpressionNode,
         args: &[ExpressionNode],
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         self.find_free_variables_in_expression(func, local_vars, free_vars)?;
         for arg in args {
@@ -270,7 +274,7 @@ impl SemanticAnalyzer {
         &self,
         inner: &ExpressionNode,
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         self.find_free_variables_in_expression(inner, local_vars, free_vars)?;
         Ok(())
@@ -281,7 +285,7 @@ impl SemanticAnalyzer {
         inner: &ExpressionNode,
         index: &ExpressionNode,
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         self.find_free_variables_in_expression(inner, local_vars, free_vars)?;
         self.find_free_variables_in_expression(index, local_vars, free_vars)?;
@@ -292,7 +296,7 @@ impl SemanticAnalyzer {
         &self,
         elements: &[ExpressionNode],
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         for elem in elements {
             self.find_free_variables_in_expression(elem, local_vars, free_vars)?;
@@ -304,7 +308,7 @@ impl SemanticAnalyzer {
         &self,
         entries: &[(ExpressionNode, ExpressionNode)],
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         for (key, val) in entries {
             self.find_free_variables_in_expression(key, local_vars, free_vars)?;
@@ -317,7 +321,7 @@ impl SemanticAnalyzer {
         &self,
         elements: &[ExpressionNode],
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         for elem in elements {
             self.find_free_variables_in_expression(elem, local_vars, free_vars)?;
@@ -329,7 +333,7 @@ impl SemanticAnalyzer {
         &self,
         elements: &[ExpressionNode],
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         for elem in elements {
             self.find_free_variables_in_expression(elem, local_vars, free_vars)?;
@@ -343,7 +347,7 @@ impl SemanticAnalyzer {
         then_expr: &ExpressionNode,
         else_expr: &ExpressionNode,
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         self.find_free_variables_in_expression(cond, local_vars, free_vars)?;
         self.find_free_variables_in_expression(then_expr, local_vars, free_vars)?;
@@ -356,7 +360,7 @@ impl SemanticAnalyzer {
         params: &[Param],
         body: &[StatementNode],
         local_vars: &std::collections::HashSet<String>,
-        free_vars: &mut std::collections::HashMap<String, Type>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
     ) -> Result<(), SemanticError> {
         let mut inner_local_vars = local_vars.clone();
         for param in params {

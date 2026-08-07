@@ -74,9 +74,15 @@ pub struct SemanticAnalyzer {
     is_in_static_method: bool,
     pub current_self_type: Option<Type>,
     pub module_resolver: Option<Rc<RefCell<crate::module_resolver::ModuleResolver>>>,
+    /// Symbols exported by each imported module, keyed by module name.
+    /// Ordered: codegen walks it when resolving a class or function that came
+    /// from an import, and the order it finds them in reaches the emitted IR.
     pub imported_symbols:
-        std::collections::HashMap<String, std::collections::HashMap<String, Symbol>>,
-    pub all_module_asts: std::collections::HashMap<String, Vec<AstNode>>,
+        std::collections::BTreeMap<String, std::collections::HashMap<String, Symbol>>,
+    /// Every module's AST, keyed by module name. Ordered, because codegen
+    /// concatenates these to build the compilation unit, so this map's
+    /// iteration order is the order module code is emitted in (issue #344).
+    pub all_module_asts: std::collections::BTreeMap<String, Vec<AstNode>>,
     pub module_dependencies: Vec<String>,
     pub(super) current_file: Option<std::path::PathBuf>, // Track current file for relative imports
     pub lambda_captures: std::collections::HashMap<Span, Vec<(String, Type)>>, // Track captured variables for each lambda
@@ -130,8 +136,8 @@ impl SemanticAnalyzer {
             is_in_static_method: false,
             current_self_type: None,
             module_resolver: None,
-            imported_symbols: std::collections::HashMap::new(),
-            all_module_asts: std::collections::HashMap::new(),
+            imported_symbols: std::collections::BTreeMap::new(),
+            all_module_asts: std::collections::BTreeMap::new(),
             module_dependencies: Vec::new(),
             current_file: None,
             lambda_captures: std::collections::HashMap::new(),
@@ -268,32 +274,6 @@ impl SemanticAnalyzer {
         self.current_file = Some(file);
     }
 
-    fn new_for_module(resolver: Rc<RefCell<crate::module_resolver::ModuleResolver>>) -> Self {
-        let symbol_table = SymbolTable::new();
-        Self {
-            symbol_table,
-            current_bounds: std::collections::HashMap::new(),
-            errors: Vec::new(),
-            is_in_static_method: false,
-            current_self_type: None,
-            module_resolver: Some(resolver),
-            imported_symbols: std::collections::HashMap::new(),
-            all_module_asts: std::collections::HashMap::new(),
-            module_dependencies: Vec::new(),
-            current_file: None,
-            lambda_captures: std::collections::HashMap::new(),
-            current_return_type: None,
-            current_class_type_params: None,
-            fresh_type_var_counter: 0,
-            hoisted_import_spans: HashSet::new(),
-            class_invariants: HashMap::new(),
-            interface_preconditions: HashMap::new(),
-            inherited_preconditions: HashMap::new(),
-            function_preconditions: HashMap::new(),
-            enum_variant_preconditions: HashMap::new(),
-        }
-    }
-
     pub fn symbol_table(&self) -> &SymbolTable {
         &self.symbol_table
     }
@@ -327,11 +307,11 @@ impl SemanticAnalyzer {
 
     pub fn imported_symbols(
         &self,
-    ) -> &std::collections::HashMap<String, std::collections::HashMap<String, Symbol>> {
+    ) -> &std::collections::BTreeMap<String, std::collections::HashMap<String, Symbol>> {
         &self.imported_symbols
     }
 
-    pub fn all_module_asts(&self) -> &std::collections::HashMap<String, Vec<AstNode>> {
+    pub fn all_module_asts(&self) -> &std::collections::BTreeMap<String, Vec<AstNode>> {
         &self.all_module_asts
     }
 
