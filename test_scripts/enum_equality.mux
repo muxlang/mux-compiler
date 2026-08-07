@@ -14,9 +14,9 @@ enum IntList { Nil, Cons(int head, IntList tail) }
 
 func main() returns void {
     // Payload-less variants compare by discriminant.
-    print((Color.Red() == Color.Red()).to_string())
-    print((Color.Red() == Color.Green()).to_string())
-    print((Color.Red() != Color.Green()).to_string())
+    print((Color.Red == Color.Red).to_string())
+    print((Color.Red == Color.Green).to_string())
+    print((Color.Red != Color.Green).to_string())
 
     // Equal payloads are equal; the same variant with a different payload is not.
     print((Item.Named("x") == Item.Named("x")).to_string())
@@ -29,9 +29,9 @@ func main() returns void {
 
     // Recursive enums recurse through the box chain, as the compare glue does
     // for collections.
-    auto a = IntList.Cons(1, IntList.Cons(2, IntList.Nil()))
-    auto b = IntList.Cons(1, IntList.Cons(2, IntList.Nil()))
-    auto c = IntList.Cons(1, IntList.Cons(3, IntList.Nil()))
+    auto a = IntList.Cons(1, IntList.Cons(2, IntList.Nil))
+    auto b = IntList.Cons(1, IntList.Cons(2, IntList.Nil))
+    auto c = IntList.Cons(1, IntList.Cons(3, IntList.Nil))
     print((a == b).to_string())
     print((a == c).to_string())
 
@@ -39,10 +39,10 @@ func main() returns void {
     // BoxedEnum/Opaque pointer rather than an inline struct, so it must be
     // unboxed before the compare glue reads its discriminant - otherwise the
     // glue reads a Value header and reports equal values as different.
-    auto items = [Color.Red(), Color.Green()]
-    print((items[0] == Color.Red()).to_string())
-    print((items[0] != Color.Red()).to_string())
-    print((items[1] == Color.Red()).to_string())
+    auto items = [Color.Red, Color.Green]
+    print((items[0] == Color.Red).to_string())
+    print((items[0] != Color.Red).to_string())
+    print((items[1] == Color.Red).to_string())
     auto m = {"k": Item.Named("x")}
     print((m["k"] == Item.Named("x")).to_string())
     print((m["k"] == Item.Named("y")).to_string())

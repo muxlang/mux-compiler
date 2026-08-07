@@ -74,9 +74,15 @@ pub struct SemanticAnalyzer {
     is_in_static_method: bool,
     pub current_self_type: Option<Type>,
     pub module_resolver: Option<Rc<RefCell<crate::module_resolver::ModuleResolver>>>,
+    /// Symbols exported by each imported module, keyed by module name.
+    /// Ordered: codegen walks it when resolving a class or function that came
+    /// from an import, and the order it finds them in reaches the emitted IR.
     pub imported_symbols:
-        std::collections::HashMap<String, std::collections::HashMap<String, Symbol>>,
-    pub all_module_asts: std::collections::HashMap<String, Vec<AstNode>>,
+        std::collections::BTreeMap<String, std::collections::HashMap<String, Symbol>>,
+    /// Every module's AST, keyed by module name. Ordered, because codegen
+    /// concatenates these to build the compilation unit, so this map's
+    /// iteration order is the order module code is emitted in (issue #344).
+    pub all_module_asts: std::collections::BTreeMap<String, Vec<AstNode>>,
     pub module_dependencies: Vec<String>,
     pub(super) current_file: Option<std::path::PathBuf>, // Track current file for relative imports
     pub lambda_captures: std::collections::HashMap<Span, Vec<(String, Type)>>, // Track captured variables for each lambda
@@ -130,8 +136,8 @@ impl SemanticAnalyzer {
             is_in_static_method: false,
             current_self_type: None,
             module_resolver: None,
-            imported_symbols: std::collections::HashMap::new(),
-            all_module_asts: std::collections::HashMap::new(),
+            imported_symbols: std::collections::BTreeMap::new(),
+            all_module_asts: std::collections::BTreeMap::new(),
             module_dependencies: Vec::new(),
             current_file: None,
             lambda_captures: std::collections::HashMap::new(),
@@ -268,32 +274,6 @@ impl SemanticAnalyzer {
         self.current_file = Some(file);
     }
 
-    fn new_for_module(resolver: Rc<RefCell<crate::module_resolver::ModuleResolver>>) -> Self {
-        let symbol_table = SymbolTable::new();
-        Self {
-            symbol_table,
-            current_bounds: std::collections::HashMap::new(),
-            errors: Vec::new(),
-            is_in_static_method: false,
-            current_self_type: None,
-            module_resolver: Some(resolver),
-            imported_symbols: std::collections::HashMap::new(),
-            all_module_asts: std::collections::HashMap::new(),
-            module_dependencies: Vec::new(),
-            current_file: None,
-            lambda_captures: std::collections::HashMap::new(),
-            current_return_type: None,
-            current_class_type_params: None,
-            fresh_type_var_counter: 0,
-            hoisted_import_spans: HashSet::new(),
-            class_invariants: HashMap::new(),
-            interface_preconditions: HashMap::new(),
-            inherited_preconditions: HashMap::new(),
-            function_preconditions: HashMap::new(),
-            enum_variant_preconditions: HashMap::new(),
-        }
-    }
-
     pub fn symbol_table(&self) -> &SymbolTable {
         &self.symbol_table
     }
@@ -327,16 +307,16 @@ impl SemanticAnalyzer {
 
     pub fn imported_symbols(
         &self,
-    ) -> &std::collections::HashMap<String, std::collections::HashMap<String, Symbol>> {
+    ) -> &std::collections::BTreeMap<String, std::collections::HashMap<String, Symbol>> {
         &self.imported_symbols
     }
 
-    pub fn all_module_asts(&self) -> &std::collections::HashMap<String, Vec<AstNode>> {
+    pub fn all_module_asts(&self) -> &std::collections::BTreeMap<String, Vec<AstNode>> {
         &self.all_module_asts
     }
 
     /// Generate helpful context for binary operator type mismatches.
-    fn binary_op_help(left: &Type, right: &Type, op: &crate::ast::BinaryOp) -> String {
+    fn binary_op_help(&self, left: &Type, right: &Type, op: &crate::ast::BinaryOp) -> String {
         match (left, right) {
             (Type::Primitive(crate::ast::PrimitiveType::Str), Type::Primitive(crate::ast::PrimitiveType::Int))
             | (Type::Primitive(crate::ast::PrimitiveType::Int), Type::Primitive(crate::ast::PrimitiveType::Str)) => {
@@ -353,6 +333,14 @@ impl SemanticAnalyzer {
             (Type::Primitive(crate::ast::PrimitiveType::Str), Type::Primitive(crate::ast::PrimitiveType::Str)) => {
                 format!("The '{}' operator is not supported between two strings.", format_binary_op(op))
             }
+            // Matching types that still failed to resolve `==`/`!=`: the type
+            // has no comparison rather than the two sides disagreeing, so the
+            // "make the types match" advice below would be misleading.
+            _ if left == right
+                && matches!(op, crate::ast::BinaryOp::Equal | crate::ast::BinaryOp::NotEqual) =>
+            {
+                self.equality_op_help(left, op)
+            }
             _ => {
                 format!(
                     "Ensure both operands have compatible types. Left is {}, right is {}.",
@@ -360,6 +348,58 @@ impl SemanticAnalyzer {
                     format_type(right)
                 )
             }
+        }
+    }
+
+    /// Suggest a way forward for `==`/`!=` on a type that has no comparison,
+    /// rather than restating the two operand types the user can already see.
+    fn equality_op_help(&self, type_: &Type, op: &crate::ast::BinaryOp) -> String {
+        let op = format_binary_op(op);
+        match type_ {
+            // Only suggest dereferencing when it would actually compile. For a
+            // `&Point` it would just produce a second error, so say what is
+            // really wrong instead.
+            Type::Reference(inner) if self.resolve_equality_binary_operator(inner).is_some() => {
+                format!(
+                    "References cannot be compared with '{}'. Dereference both sides to compare the {} values they point at, as in '*a {} *b'.",
+                    op,
+                    format_type(inner),
+                    op
+                )
+            }
+            Type::Reference(inner) => format!(
+                "References cannot be compared with '{}', and neither can the {} values they point at.",
+                op,
+                format_type(inner)
+            ),
+            // A user enum declared as `optional`/`result` collides with the
+            // built-in of that name, which is a heap value rather than an inline
+            // struct, so it never gets the structural compare a user enum has.
+            // Saying "class or interface" here would be plainly wrong.
+            Type::Named(name, _) if matches!(name.as_str(), "optional" | "result") => format!(
+                "'{}' is the name of a built-in type. An enum declared with that name does not get the structural comparison user enums have; rename it.",
+                name
+            ),
+            Type::Named(name, _) => format!(
+                "'{}' is a class or an interface, and only enums compare structurally. Give '{}' a method that compares two values and call it directly, or model the type as an enum if it is a fixed set of alternatives.",
+                name, name
+            ),
+            Type::Function { .. } => {
+                format!("Functions cannot be compared with '{}'.", op)
+            }
+            Type::Void | Type::Primitive(crate::ast::PrimitiveType::Void) => format!(
+                "A call that returns void produces no value, so there is nothing for '{}' to compare.",
+                op
+            ),
+            Type::Never => format!(
+                "This expression never produces a value, so there is nothing for '{}' to compare.",
+                op
+            ),
+            _ => format!(
+                "Values of type {} cannot be compared with '{}'.",
+                format_type(type_),
+                op
+            ),
         }
     }
 
@@ -946,7 +986,66 @@ impl SemanticAnalyzer {
             return Ok(func_type);
         }
 
+        // The parenthesis rule (mux-context#39), applied only to a qualified
+        // access on the enum's own name. Keying off the base's *type* instead
+        // would also match a value of that type, so `c.Green` on a `Color c`
+        // would type-check as a construction and then fail in codegen.
+        //
+        // Not reached for the callee of a call: `resolve_call_expression_type`
+        // intercepts `Enum.Variant(...)` first, so rejecting a missing payload
+        // here does not affect a real construction.
+        if let Some((enum_name, arity)) = self.enum_variant_arity(&expr_type, field) {
+            if !self.names_a_type(expr) {
+                // Reached through a value rather than the enum's name. A variant
+                // is not a field, and matching is how you ask which one a value
+                // holds. Rejected here because the alternative is resolving to
+                // the variant's constructor and failing in codegen, where there
+                // is no span to point at.
+                return Err(SemanticError::with_help(
+                    format!(
+                        "'{}' is a variant of enum '{}', not a field on a value of it",
+                        field, enum_name
+                    ),
+                    span,
+                    format!(
+                        "Construct it from the enum name, as in {}.{}, or use 'match' to test which variant a value holds.",
+                        enum_name, field
+                    ),
+                ));
+            }
+            if arity == 0 {
+                // A payload-less variant is a value, so it has the enum's type.
+                return Ok(Type::Named(enum_name, vec![]));
+            }
+            return Err(Self::enum_variant_needs_arguments(
+                &enum_name, field, arity, span,
+            ));
+        }
+
         self.resolve_field_access_by_type(&expr_type, field, span)
+    }
+
+    /// If `field` names a variant of the user enum `expr_type`, return the enum's
+    /// name and how many payload values the variant takes.
+    ///
+    /// Variants are recorded as static methods whose parameters are the payload
+    /// types, so the arity is the parameter count: 0 for `Red`, 1 for
+    /// `Circ(float r)`. Drives the parenthesis rule in mux-context#39 - zero
+    /// means parentheses are wrong, non-zero means they are required.
+    pub(super) fn enum_variant_arity(
+        &self,
+        expr_type: &Type,
+        field: &str,
+    ) -> Option<(String, usize)> {
+        let Type::Named(name, _) = expr_type else {
+            return None;
+        };
+        let symbol = self.symbol_table.lookup(name)?;
+        if symbol.kind != SymbolKind::Enum {
+            return None;
+        }
+        let sig = symbol.methods.get(field)?;
+        Some((name.clone(), sig.params.len()))
     }
 
     fn try_stdlib_method_lookup(&self, name: &str, field: &str) -> Option<Type> {
@@ -1359,13 +1458,91 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// "This variant carries a payload, so it needs its arguments." Shared by
+    /// the value-position and call-position paths so both word it the same way.
+    fn enum_variant_needs_arguments(
+        enum_name: &str,
+        variant: &str,
+        arity: usize,
+        span: Span,
+    ) -> SemanticError {
+        let plural = if arity == 1 { "" } else { "s" };
+        SemanticError::with_help(
+            format!(
+                "Enum variant '{}.{}' carries a payload and cannot be used on its own",
+                enum_name, variant
+            ),
+            span,
+            format!(
+                "'{}.{}' takes {} argument{}. Construct a value by passing them, e.g. {}.{}(...).",
+                enum_name, variant, arity, plural, enum_name, variant
+            ),
+        )
+    }
+
+    /// The parenthesis rule for a variant in call position (mux-context#39).
+    ///
+    /// `Enum.Variant(...)` is intercepted before the callee is resolved as a
+    /// value, because `resolve_field_access_by_type` gives a payload-less
+    /// variant the enum's type rather than a callable one - which is the point,
+    /// but would otherwise surface as "Cannot call non-function type".
+    fn resolve_enum_variant_call(
+        &mut self,
+        func: &ExpressionNode,
+        expr_span: Span,
+    ) -> Option<Result<Type, SemanticError>> {
+        let ExpressionKind::FieldAccess { expr: base, field } = &func.kind else {
+            return None;
+        };
+        // Only when qualified by the enum's own name (bare or instantiated),
+        // matching the value-position rule above: `c.Green(...)` on a value is a
+        // method call that does not exist, not a construction, and must keep its
+        // normal diagnostic.
+        if !self.names_a_type(base) {
+            return None;
+        }
+        let base_type = self.get_expression_type(base).ok()?;
+        let (enum_name, arity) = self.enum_variant_arity(&base_type, field)?;
+
+        if arity == 0 {
+            return Some(Err(SemanticError::with_help(
+                format!(
+                    "Enum variant '{}.{}' carries no payload and is not called",
+                    enum_name, field
+                ),
+                expr_span,
+                format!(
+                    "Parentheses pass arguments, and '{}.{}' takes none. Write it as a value: {}.{}",
+                    enum_name, field, enum_name, field
+                ),
+            )));
+        }
+
+        // A real construction. Build the constructor signature directly rather
+        // than routing back through field-access resolution, which rejects a
+        // payload variant used without its arguments.
+        Some(Ok(Type::Function {
+            params: self
+                .symbol_table
+                .lookup(&enum_name)
+                .and_then(|s| s.methods.get(field).map(|sig| sig.params.clone()))
+                .unwrap_or_default(),
+            returns: Box::new(Type::Named(enum_name, vec![])),
+            default_count: 0,
+        }))
+    }
+
     fn resolve_call_expression_type(
         &mut self,
         func: &ExpressionNode,
         args: &[ExpressionNode],
         expr_span: Span,
     ) -> Result<Type, SemanticError> {
-        let func_type = self.resolve_called_function_type(func)?;
+        let func_type = match self.resolve_enum_variant_call(func, expr_span) {
+            Some(Err(e)) => return Err(e),
+            Some(Ok(t)) => t,
+            None => self.resolve_called_function_type(func)?,
+        };
 
         match func_type {
             Type::Function {
@@ -1752,7 +1929,7 @@ impl SemanticAnalyzer {
                     format_type(&right_type)
                 ),
                 *op_span,
-                Self::binary_op_help(&left_type, &right_type, &base_op),
+                self.binary_op_help(&left_type, &right_type, &base_op),
             ));
         }
 
@@ -1768,7 +1945,7 @@ impl SemanticAnalyzer {
                 format_type(&right_type)
             ),
             *op_span,
-            Self::binary_op_help(&left_type, &right_type, op),
+            self.binary_op_help(&left_type, &right_type, op),
         ))
     }
 
@@ -3124,7 +3301,7 @@ impl SemanticAnalyzer {
             | BinaryOp::Modulo
             | BinaryOp::Exponent => self.resolve_numeric_binary_operator(left_type),
             BinaryOp::Equal | BinaryOp::NotEqual => {
-                Some(Type::Primitive(crate::ast::PrimitiveType::Bool))
+                self.resolve_equality_binary_operator(left_type)
             }
             BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
                 self.resolve_comparison_binary_operator(left_type)
@@ -3159,6 +3336,73 @@ impl SemanticAnalyzer {
         } else {
             None
         }
+    }
+
+    /// `==` and `!=` accept exactly the types codegen knows how to compare -
+    /// see `generate_equality_op` in `codegen/operators.rs`, which this must be
+    /// kept in step with.
+    ///
+    /// Returning `Some` for everything is how comparing a class, a reference, a
+    /// function value or a `void` call used to reach codegen and be reported as
+    /// an internal compiler error, telling users to file a compiler bug about
+    /// their own program. A codegen error that describes user code is a bug in
+    /// type checking (issue #360), so the rejection belongs here, where there is
+    /// a span to point at.
+    fn resolve_equality_binary_operator(&self, left_type: &Type) -> Option<Type> {
+        let comparable = match left_type {
+            // Void and Auto are deliberately absent: neither is a value.
+            Type::Primitive(
+                PrimitiveType::Int
+                | PrimitiveType::Float
+                | PrimitiveType::Bool
+                | PrimitiveType::Char
+                | PrimitiveType::Str,
+            ) => true,
+            // Compared structurally by the runtime, which is the same
+            // comparison that already makes them usable as map keys.
+            Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::Tuple(_, _)
+            | Type::Optional(_)
+            | Type::Result(_, _)
+            | Type::EmptyList
+            | Type::EmptyMap
+            | Type::EmptySet => true,
+            // Classes and interfaces also land in Named, and only enums have
+            // the generated structural compare.
+            Type::Named(name, _) => self.is_enum_name(name),
+            // Placeholders, not types a value ever has: monomorphisation
+            // substitutes a concrete type before codegen, so the real check
+            // happens on the instantiation rather than here. Rejecting them
+            // would break every `func eq<T>(T a, T b) { return a == b }`.
+            //
+            // `Instantiated` is not among them: semantics never builds one (only
+            // codegen's substitution helpers do), and `generate_equality_op` has
+            // no arm for it, so accepting it could only ever admit an internal
+            // compiler error.
+            Type::Generic(_) | Type::Variable(_) => true,
+            _ => false,
+        };
+
+        comparable.then_some(Type::Primitive(crate::ast::PrimitiveType::Bool))
+    }
+
+    /// Whether `name` names a user enum - one with the generated structural
+    /// compare - as opposed to a class or an interface.
+    ///
+    /// `optional` and `result` are excluded even when a program declares an enum
+    /// by those names, because codegen excludes them by name too: they are
+    /// seeded into `enum_variants` but are heap `*mut Value`s rather than inline
+    /// structs. Accepting a user enum called `optional` here would let it
+    /// through to the very error this check exists to prevent.
+    fn is_enum_name(&self, name: &str) -> bool {
+        if matches!(name, "optional" | "result") {
+            return false;
+        }
+        self.symbol_table
+            .lookup(name)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Enum)
     }
 
     fn resolve_comparison_binary_operator(&self, left_type: &Type) -> Option<Type> {

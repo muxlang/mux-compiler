@@ -14,7 +14,7 @@ func sum(IntList l) returns int {
 }
 
 func main() returns void {
-    auto xs = IntList.Cons(1, IntList.Cons(2, IntList.Cons(3, IntList.Nil())))
+    auto xs = IntList.Cons(1, IntList.Cons(2, IntList.Cons(3, IntList.Nil)))
     print("sum: " + sum(xs).to_string())
 
     // Copy-binding deep-clones the whole chain, so the copy is independent.
@@ -22,7 +22,7 @@ func main() returns void {
     print("copy: " + sum(ys).to_string())
 
     // Rebinding drops the old chain before taking the new one.
-    xs = IntList.Cons(10, IntList.Nil())
+    xs = IntList.Cons(10, IntList.Nil)
     print("rebound: " + sum(xs).to_string())
     return
 }

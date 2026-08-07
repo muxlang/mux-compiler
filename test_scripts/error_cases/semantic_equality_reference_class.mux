@@ -1,0 +1,10 @@
+// Should fail: a reference to an uncomparable type does not get the "dereference
+// both sides" suggestion, because following it would just produce a second error
+class Point {
+    int x
+}
+auto p = Point.new()
+auto q = Point.new()
+auto a = &p
+auto b = &q
+print((a == b).to_string())

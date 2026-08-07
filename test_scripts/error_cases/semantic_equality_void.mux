@@ -1,0 +1,5 @@
+// Should fail: a void call produces no value to compare
+func nothing() returns void {
+    return
+}
+print((nothing() != nothing()).to_string())

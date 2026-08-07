@@ -48,15 +48,14 @@ impl SemanticAnalyzer {
                 postfix: _,
             } => self.analyze_unary_expr(expr, op, *op_span),
             ExpressionKind::Call { func, args } => self.analyze_call_expr(expr, func, args),
-            ExpressionKind::FieldAccess { expr, .. } => {
-                // A bare type name as the base of a field access is a
-                // type-qualified access (Status.Active, Math.pi, Class.method),
-                // not a value use of the type, so skip the value-position
-                // rejection in analyze_identifier_expr (issue #286). The access
-                // itself is still validated via get_expression_type below.
-                if !self.is_type_name_identifier(expr) {
-                    self.analyze_expression(expr)?;
-                }
+            ExpressionKind::FieldAccess { expr: base, .. } => {
+                self.analyze_field_access_base(base)?;
+                // Type the whole access, not just the base: this is what checks
+                // a field access used as a statement, which has no other
+                // validation before codegen.
+                //
+                // Typing it asks "is this valid as a value?". A callee is not a
+                // value, so `analyze_call_expr` does not route its callee here.
                 let _ = self.get_expression_type(expr)?;
                 Ok(())
             }
@@ -162,11 +161,40 @@ impl SemanticAnalyzer {
             .unwrap_or(false)
     }
 
+    /// Walk the base of a field access.
+    ///
+    /// A bare type name as the base is a type-qualified access
+    /// (`Status.Active`, `Math.pi`, `Class.method`), not a value use of the
+    /// type, so it skips the value-position rejection in
+    /// `analyze_identifier_expr` (issue #286).
+    fn analyze_field_access_base(&mut self, base: &ExpressionNode) -> Result<(), SemanticError> {
+        if self.is_type_name_identifier(base) {
+            return Ok(());
+        }
+        self.analyze_expression(base)
+    }
+
     /// Whether `expr` is a bare identifier naming a declared type. Lets a
     /// type-qualified field-access base (Status.Active, Class.method) bypass the
     /// value-position rejection that applies to a standalone type name (#286).
-    fn is_type_name_identifier(&self, expr: &ExpressionNode) -> bool {
+    pub(super) fn is_type_name_identifier(&self, expr: &ExpressionNode) -> bool {
         matches!(&expr.kind, ExpressionKind::Identifier(name) if self.type_name_kind(name).is_some())
+    }
+
+    /// Whether `expr` denotes a type rather than a value: a bare type name
+    /// (`Color`) or an instantiated generic one (`MyBox<int>`).
+    ///
+    /// Broader than `is_type_name_identifier`, which accepts only the bare form.
+    /// Enum-variant resolution needs both, so that `MyBox<int>.Of(5)` is treated
+    /// as a qualified construction and only a genuine value base - `c.Red` on a
+    /// `Color c` - is reported as a variant accessed through a value.
+    pub(super) fn names_a_type(&self, expr: &ExpressionNode) -> bool {
+        match &expr.kind {
+            ExpressionKind::Identifier(name) | ExpressionKind::GenericType(name, _) => {
+                self.type_name_kind(name).is_some()
+            }
+            _ => false,
+        }
     }
 
     fn analyze_self_identifier(&self, expr: &ExpressionNode) -> Result<(), SemanticError> {
@@ -366,7 +394,17 @@ impl SemanticAnalyzer {
             ));
         }
 
-        self.analyze_expression(func)?;
+        // The callee is not used as a value, so it skips the "valid as a value"
+        // check that the FieldAccess arm of analyze_expression applies:
+        // `Shape.Circ` is invalid as a value and valid as a callee. Its base is
+        // still walked, and `get_expression_type(expr)` on the whole call below
+        // checks the arity and argument types.
+        match &func.kind {
+            ExpressionKind::FieldAccess { expr: base, .. } => {
+                self.analyze_field_access_base(base)?
+            }
+            _ => self.analyze_expression(func)?,
+        }
         for arg in args {
             self.analyze_expression(arg)?;
         }

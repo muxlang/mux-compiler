@@ -1,0 +1,8 @@
+// Should fail: classes have no structural comparison, so '==' is rejected in
+// type checking rather than reaching codegen as an internal compiler error
+class Point {
+    int x
+}
+auto a = Point.new()
+auto b = Point.new()
+print((a == b).to_string())

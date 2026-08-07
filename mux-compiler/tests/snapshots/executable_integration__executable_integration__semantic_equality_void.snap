@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Operator '!=' is not supported between types void and void
+--> test_scripts/error_cases/semantic_equality_void.mux:5:29
+   |
+ 5 | print((nothing() != nothing()).to_string())
+   |                             ^
+   |
+= help: A call that returns void produces no value, so there is nothing for '!=' to compare.
