@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Operator '==' is not supported between types Point and Point
+--> test_scripts/error_cases/semantic_equality_class.mux:8:13
+   |
+ 8 | print((a == b).to_string())
+   |             ^
+   |
+= help: 'Point' is a class or an interface, and only enums compare structurally. Give 'Point' a method that compares two values and call it directly, or model the type as an enum if it is a fixed set of alternatives.

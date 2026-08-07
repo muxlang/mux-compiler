@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Operator '==' is not supported between types fn() -> int and fn() -> int
+--> test_scripts/error_cases/semantic_equality_function.mux:7:13
+   |
+ 7 | print((g == h).to_string())
+   |             ^
+   |
+= help: Functions cannot be compared with '=='.

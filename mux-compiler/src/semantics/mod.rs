@@ -353,6 +353,14 @@ impl SemanticAnalyzer {
             (Type::Primitive(crate::ast::PrimitiveType::Str), Type::Primitive(crate::ast::PrimitiveType::Str)) => {
                 format!("The '{}' operator is not supported between two strings.", format_binary_op(op))
             }
+            // Matching types that still failed to resolve `==`/`!=`: the type
+            // has no comparison rather than the two sides disagreeing, so the
+            // "make the types match" advice below would be misleading.
+            _ if left == right
+                && matches!(op, crate::ast::BinaryOp::Equal | crate::ast::BinaryOp::NotEqual) =>
+            {
+                Self::equality_op_help(left, op)
+            }
             _ => {
                 format!(
                     "Ensure both operands have compatible types. Left is {}, right is {}.",
@@ -360,6 +368,40 @@ impl SemanticAnalyzer {
                     format_type(right)
                 )
             }
+        }
+    }
+
+    /// Suggest a way forward for `==`/`!=` on a type that has no comparison,
+    /// rather than restating the two operand types the user can already see.
+    fn equality_op_help(type_: &Type, op: &crate::ast::BinaryOp) -> String {
+        let op = format_binary_op(op);
+        match type_ {
+            Type::Reference(inner) => format!(
+                "References cannot be compared with '{}'. Dereference both sides to compare the {} values they point at, as in '*a {} *b'.",
+                op,
+                format_type(inner),
+                op
+            ),
+            Type::Named(name, _) => format!(
+                "'{}' is a class or an interface, and only enums compare structurally. Give '{}' a method that compares two values and call it directly, or model the type as an enum if it is a fixed set of alternatives.",
+                name, name
+            ),
+            Type::Function { .. } => {
+                format!("Functions cannot be compared with '{}'.", op)
+            }
+            Type::Void | Type::Primitive(crate::ast::PrimitiveType::Void) => format!(
+                "A call that returns void produces no value, so there is nothing for '{}' to compare.",
+                op
+            ),
+            Type::Never => format!(
+                "This expression never produces a value, so there is nothing for '{}' to compare.",
+                op
+            ),
+            _ => format!(
+                "Values of type {} cannot be compared with '{}'.",
+                format_type(type_),
+                op
+            ),
         }
     }
 
@@ -3124,7 +3166,7 @@ impl SemanticAnalyzer {
             | BinaryOp::Modulo
             | BinaryOp::Exponent => self.resolve_numeric_binary_operator(left_type),
             BinaryOp::Equal | BinaryOp::NotEqual => {
-                Some(Type::Primitive(crate::ast::PrimitiveType::Bool))
+                self.resolve_equality_binary_operator(left_type)
             }
             BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
                 self.resolve_comparison_binary_operator(left_type)
@@ -3159,6 +3201,58 @@ impl SemanticAnalyzer {
         } else {
             None
         }
+    }
+
+    /// `==` and `!=` accept exactly the types codegen knows how to compare -
+    /// see `generate_equality_op` in `codegen/operators.rs`, which this must be
+    /// kept in step with.
+    ///
+    /// Returning `Some` for everything is how comparing a class, a reference, a
+    /// function value or a `void` call used to reach codegen and be reported as
+    /// an internal compiler error, telling users to file a compiler bug about
+    /// their own program. A codegen error that describes user code is a bug in
+    /// type checking (issue #360), so the rejection belongs here, where there is
+    /// a span to point at.
+    fn resolve_equality_binary_operator(&self, left_type: &Type) -> Option<Type> {
+        let comparable = match left_type {
+            // Void and Auto are deliberately absent: neither is a value.
+            Type::Primitive(
+                PrimitiveType::Int
+                | PrimitiveType::Float
+                | PrimitiveType::Bool
+                | PrimitiveType::Char
+                | PrimitiveType::Str,
+            ) => true,
+            // Compared structurally by the runtime, which is the same
+            // comparison that already makes them usable as map keys.
+            Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::Tuple(_, _)
+            | Type::Optional(_)
+            | Type::Result(_, _)
+            | Type::EmptyList
+            | Type::EmptyMap
+            | Type::EmptySet => true,
+            // Classes and interfaces also land in Named, and only enums have
+            // the generated structural compare.
+            Type::Named(name, _) => self.is_enum_name(name),
+            // Placeholders, not types a value ever has: monomorphisation
+            // substitutes a concrete type before codegen, so the real check
+            // happens on the instantiation rather than here. Rejecting them
+            // would break every `func eq<T>(T a, T b) { return a == b }`.
+            Type::Generic(_) | Type::Variable(_) | Type::Instantiated(_, _) => true,
+            _ => false,
+        };
+
+        comparable.then_some(Type::Primitive(crate::ast::PrimitiveType::Bool))
+    }
+
+    /// Whether `name` names an enum, as opposed to a class or an interface.
+    fn is_enum_name(&self, name: &str) -> bool {
+        self.symbol_table
+            .lookup(name)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Enum)
     }
 
     fn resolve_comparison_binary_operator(&self, left_type: &Type) -> Option<Type> {

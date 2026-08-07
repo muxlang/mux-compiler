@@ -1010,6 +1010,15 @@ impl<'a> CodeGenerator<'a> {
     /// runtime functions they use. Keeping them as two parallel matches is how
     /// `Type::Tuple` ended up supported by `==` and not by `!=`; sharing the
     /// arms makes that divergence unrepresentable (issue #360).
+    ///
+    /// The arms below must stay in step with
+    /// `resolve_equality_binary_operator` in `semantics/mod.rs`, which rejects
+    /// anything they cannot handle. Because of that, falling through to the
+    /// error now means the two have drifted apart - a real compiler bug, which
+    /// is what the internal-compiler-error wording claims. The one known way to
+    /// reach it from a valid-looking program is through a generic instantiated
+    /// with an uncomparable type, because trait bounds are not checked against
+    /// concrete type arguments (issue #361).
     fn generate_equality_op(
         &mut self,
         left_expr: &ExpressionNode,
