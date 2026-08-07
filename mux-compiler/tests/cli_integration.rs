@@ -153,8 +153,12 @@ fn build_reports_semantic_error() {
 /// differ between back-to-back builds of the same file (issue #344). Nothing
 /// asserted on IR text, so it went unnoticed.
 ///
-/// The program below exercises all three paths at once: a generic class with
-/// methods to monomorphize, and a closure with several captures.
+/// The program below exercises each path at once: a generic class with methods
+/// to monomorphize, a closure with several captures, and a class whose
+/// invariant binds several fields (their GEPs were emitted in hash order).
+///
+/// Eight builds rather than two, because the field-order case flipped a coin
+/// per build - four builds missed it often enough to be useless as a gate.
 #[test]
 fn repeated_builds_emit_identical_ir() {
     let dir = unique_tmp_dir("determinism");
@@ -176,7 +180,22 @@ class Box<T> {
     }
 }
 
+class Server {
+    string host = "localhost" where { host.length() < 64 }
+    int port = 8080 where { port > 0, port < 65535 }
+    int backlog = 16 where { backlog > 0 }
+
+    func describe() returns string {
+        return self.host + ":" + self.port.to_string()
+    }
+} where {
+    port != 22
+}
+
 func main() returns void {
+    auto s = Server.new()
+    print(s.describe())
+
     auto a = Box<int>.from(1)
     auto b = Box<string>.from("two")
     auto c = Box<bool>.from(true)
@@ -215,7 +234,7 @@ func main() returns void {
     };
 
     let first = build_once();
-    for run in 2..=4 {
+    for run in 2..=8 {
         assert!(
             build_once() == first,
             "run {run} emitted different IR than run 1; codegen order is not deterministic (issue #344)"

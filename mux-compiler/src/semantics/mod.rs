@@ -274,32 +274,6 @@ impl SemanticAnalyzer {
         self.current_file = Some(file);
     }
 
-    fn new_for_module(resolver: Rc<RefCell<crate::module_resolver::ModuleResolver>>) -> Self {
-        let symbol_table = SymbolTable::new();
-        Self {
-            symbol_table,
-            current_bounds: std::collections::HashMap::new(),
-            errors: Vec::new(),
-            is_in_static_method: false,
-            current_self_type: None,
-            module_resolver: Some(resolver),
-            imported_symbols: std::collections::BTreeMap::new(),
-            all_module_asts: std::collections::BTreeMap::new(),
-            module_dependencies: Vec::new(),
-            current_file: None,
-            lambda_captures: std::collections::HashMap::new(),
-            current_return_type: None,
-            current_class_type_params: None,
-            fresh_type_var_counter: 0,
-            hoisted_import_spans: HashSet::new(),
-            class_invariants: HashMap::new(),
-            interface_preconditions: HashMap::new(),
-            inherited_preconditions: HashMap::new(),
-            function_preconditions: HashMap::new(),
-            enum_variant_preconditions: HashMap::new(),
-        }
-    }
-
     pub fn symbol_table(&self) -> &SymbolTable {
         &self.symbol_table
     }

@@ -181,7 +181,7 @@ impl<'a> CodeGenerator<'a> {
             .get(class_name)
             .ok_or_else(|| format!("Class {} not found in field types map", class_name))?
             .clone();
-        let field_semantic_types: Vec<(String, Type)> = {
+        let mut field_semantic_types: Vec<(String, Type)> = {
             let class_symbol = self
                 .analyzer
                 .symbol_table()
@@ -193,6 +193,10 @@ impl<'a> CodeGenerator<'a> {
                 .map(|(name, (ty, _))| (name.clone(), ty.clone()))
                 .collect()
         };
+        // Bind in struct order. `fields` is a HashMap, so without this the GEPs
+        // below came out in a different order between builds of the same file
+        // (issue #344). Struct order is also what a reader of the IR expects.
+        field_semantic_types.sort_by_key(|(name, _)| field_indices.get(name).copied());
 
         for (field_name, semantic_type) in field_semantic_types {
             let Some(&index) = field_indices.get(&field_name) else {
