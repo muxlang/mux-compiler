@@ -154,18 +154,48 @@ fn build_reports_semantic_error() {
 /// asserted on IR text, so it went unnoticed.
 ///
 /// The program below exercises each path at once: a generic class with methods
-/// to monomorphize, a closure with several captures, and a class whose
-/// invariant binds several fields (their GEPs were emitted in hash order).
+/// to monomorphize, a closure with several captures, a class whose invariant
+/// binds several fields (their GEPs were emitted in hash order), and imports
+/// from two modules - without those the module maps are empty and their
+/// ordering is never tested, so a revert there would pass unnoticed.
 ///
 /// Eight builds rather than two, because the field-order case flipped a coin
 /// per build - four builds missed it often enough to be useless as a gate.
 #[test]
 fn repeated_builds_emit_identical_ir() {
     let dir = unique_tmp_dir("determinism");
+    write_file(
+        &dir,
+        "det_alpha.mux",
+        r#"
+func alpha_one(int n) returns int {
+    return n + 1
+}
+
+func alpha_two(int n) returns int {
+    return n + 2
+}
+"#,
+    );
+    write_file(
+        &dir,
+        "det_beta.mux",
+        r#"
+func beta_one(int n) returns int {
+    return n * 2
+}
+
+func beta_two(int n) returns int {
+    return n * 3
+}
+"#,
+    );
     let src = write_file(
         &dir,
         "determinism.mux",
         r#"
+import det_alpha
+import det_beta
 class Box<T> {
     T value
 
@@ -193,6 +223,11 @@ class Server {
 }
 
 func main() returns void {
+    print(det_alpha.alpha_one(1).to_string())
+    print(det_alpha.alpha_two(1).to_string())
+    print(det_beta.beta_one(2).to_string())
+    print(det_beta.beta_two(2).to_string())
+
     auto s = Server.new()
     print(s.describe())
 

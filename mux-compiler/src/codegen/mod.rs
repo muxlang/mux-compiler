@@ -686,7 +686,6 @@ impl<'a> CodeGenerator<'a> {
         type_map.insert("optional".to_string(), struct_type.into());
         type_map.insert("result".to_string(), struct_type.into());
 
-        use std::collections::BTreeMap;
         let mut ordered_variants = BTreeMap::new();
         ordered_variants.insert(
             "optional".to_string(),
@@ -701,13 +700,16 @@ impl<'a> CodeGenerator<'a> {
             enum_variants.insert(enum_name, variants);
         }
 
+        // Seed from the symbol's declared variant order, not from `methods`.
+        // Position in this vector is the discriminant (`get_variant_index`), and
+        // `methods` is a HashMap, so seeding from its keys made discriminants
+        // depend on hash order. `generate_enum_type` overwrites each entry with
+        // declaration order before anything reads it, which is why that was
+        // never observable - but it left a hash-ordered vector feeding
+        // discriminants one refactor away from mattering (issue #344).
         for (name, symbol) in analyzer.all_symbols() {
             if symbol.kind == crate::semantics::SymbolKind::Enum {
-                let mut variants = vec![];
-                for method_name in symbol.methods.keys() {
-                    variants.push(method_name.clone());
-                }
-                enum_variants.insert(name.clone(), variants);
+                enum_variants.insert(name.clone(), symbol.variants.clone().unwrap_or_default());
             }
         }
 
