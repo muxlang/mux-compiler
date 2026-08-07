@@ -143,3 +143,84 @@ fn build_reports_semantic_error() {
     assert!(!out.stderr.is_empty());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Building the same file twice must produce byte-identical LLVM IR.
+///
+/// Codegen walks several maps to decide what to emit and in what order -
+/// function nodes for monomorphization, module ASTs for the compilation unit,
+/// a lambda's captured variables for its environment layout. When those were
+/// `HashMap`s, Rust's per-process hash seed randomization made the emitted IR
+/// differ between back-to-back builds of the same file (issue #344). Nothing
+/// asserted on IR text, so it went unnoticed.
+///
+/// The program below exercises all three paths at once: a generic class with
+/// methods to monomorphize, and a closure with several captures.
+#[test]
+fn repeated_builds_emit_identical_ir() {
+    let dir = unique_tmp_dir("determinism");
+    let src = write_file(
+        &dir,
+        "determinism.mux",
+        r#"
+class Box<T> {
+    T value
+
+    common func from(T val) returns Box<T> {
+        auto b = Box<T>.new()
+        b.value = val
+        return b
+    }
+
+    func get() returns T {
+        return self.value
+    }
+}
+
+func main() returns void {
+    auto a = Box<int>.from(1)
+    auto b = Box<string>.from("two")
+    auto c = Box<bool>.from(true)
+    print(a.get().to_string())
+    print(b.get())
+    print(c.get().to_string())
+
+    auto first = 1
+    auto second = 2
+    auto third = 3
+    auto sum = func() returns int {
+        return first + second + third
+    }
+    print(sum().to_string())
+    return
+}
+"#,
+    );
+    let ir = dir.join("determinism.ll");
+
+    let build_once = || {
+        let out = mux()
+            .arg("build")
+            .arg("--intermediate")
+            .arg(&src)
+            .arg("-o")
+            .arg(dir.join("determinism_bin"))
+            .output()
+            .expect("spawn mux build");
+        assert!(
+            out.status.success(),
+            "build failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::read(&ir).expect("intermediate .ll should exist")
+    };
+
+    let first = build_once();
+    for run in 2..=4 {
+        assert!(
+            build_once() == first,
+            "run {run} emitted different IR than run 1; codegen order is not deterministic (issue #344)"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

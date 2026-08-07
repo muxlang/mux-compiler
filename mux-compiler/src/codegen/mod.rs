@@ -26,7 +26,7 @@ use inkwell::targets::{
 };
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::ast::{
     AstNode, EnumVariantField, Field, FunctionNode, ImportSpec, StatementKind, StatementNode,
@@ -104,7 +104,13 @@ pub struct CodeGenerator<'a> {
     /// or `None` for the main module (whose globals keep unqualified symbols).
     current_module_prefix: Option<String>,
     functions: HashMap<String, FunctionValue<'a>>,
-    function_nodes: HashMap<String, FunctionNode>,
+    /// Every function AST node, keyed by name. Ordered, because
+    /// `generate_specialized_methods` walks it to decide which methods to
+    /// monomorphize and emits them in the order it finds them. A `HashMap`
+    /// there made the emitted IR differ byte-for-byte between back-to-back
+    /// builds of the same file, since Rust randomizes hash iteration per
+    /// process (issue #344).
+    function_nodes: BTreeMap<String, FunctionNode>,
     current_function_name: Option<String>,
     current_function_return_type: Option<ResolvedType>,
     generic_context: Option<GenericContext>,
@@ -731,7 +737,7 @@ impl<'a> CodeGenerator<'a> {
             module_globals: HashMap::new(),
             current_module_prefix: None,
             functions: HashMap::new(),
-            function_nodes: HashMap::new(),
+            function_nodes: BTreeMap::new(),
             current_function_name: None,
             current_function_return_type: None,
             generic_context: None,
