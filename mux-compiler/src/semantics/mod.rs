@@ -336,7 +336,7 @@ impl SemanticAnalyzer {
     }
 
     /// Generate helpful context for binary operator type mismatches.
-    fn binary_op_help(left: &Type, right: &Type, op: &crate::ast::BinaryOp) -> String {
+    fn binary_op_help(&self, left: &Type, right: &Type, op: &crate::ast::BinaryOp) -> String {
         match (left, right) {
             (Type::Primitive(crate::ast::PrimitiveType::Str), Type::Primitive(crate::ast::PrimitiveType::Int))
             | (Type::Primitive(crate::ast::PrimitiveType::Int), Type::Primitive(crate::ast::PrimitiveType::Str)) => {
@@ -359,7 +359,7 @@ impl SemanticAnalyzer {
             _ if left == right
                 && matches!(op, crate::ast::BinaryOp::Equal | crate::ast::BinaryOp::NotEqual) =>
             {
-                Self::equality_op_help(left, op)
+                self.equality_op_help(left, op)
             }
             _ => {
                 format!(
@@ -373,14 +373,32 @@ impl SemanticAnalyzer {
 
     /// Suggest a way forward for `==`/`!=` on a type that has no comparison,
     /// rather than restating the two operand types the user can already see.
-    fn equality_op_help(type_: &Type, op: &crate::ast::BinaryOp) -> String {
+    fn equality_op_help(&self, type_: &Type, op: &crate::ast::BinaryOp) -> String {
         let op = format_binary_op(op);
         match type_ {
+            // Only suggest dereferencing when it would actually compile. For a
+            // `&Point` it would just produce a second error, so say what is
+            // really wrong instead.
+            Type::Reference(inner) if self.resolve_equality_binary_operator(inner).is_some() => {
+                format!(
+                    "References cannot be compared with '{}'. Dereference both sides to compare the {} values they point at, as in '*a {} *b'.",
+                    op,
+                    format_type(inner),
+                    op
+                )
+            }
             Type::Reference(inner) => format!(
-                "References cannot be compared with '{}'. Dereference both sides to compare the {} values they point at, as in '*a {} *b'.",
+                "References cannot be compared with '{}', and neither can the {} values they point at.",
                 op,
-                format_type(inner),
-                op
+                format_type(inner)
+            ),
+            // A user enum declared as `optional`/`result` collides with the
+            // built-in of that name, which is a heap value rather than an inline
+            // struct, so it never gets the structural compare a user enum has.
+            // Saying "class or interface" here would be plainly wrong.
+            Type::Named(name, _) if matches!(name.as_str(), "optional" | "result") => format!(
+                "'{}' is the name of a built-in type. An enum declared with that name does not get the structural comparison user enums have; rename it.",
+                name
             ),
             Type::Named(name, _) => format!(
                 "'{}' is a class or an interface, and only enums compare structurally. Give '{}' a method that compares two values and call it directly, or model the type as an enum if it is a fixed set of alternatives.",
@@ -1794,7 +1812,7 @@ impl SemanticAnalyzer {
                     format_type(&right_type)
                 ),
                 *op_span,
-                Self::binary_op_help(&left_type, &right_type, &base_op),
+                self.binary_op_help(&left_type, &right_type, &base_op),
             ));
         }
 
@@ -1810,7 +1828,7 @@ impl SemanticAnalyzer {
                 format_type(&right_type)
             ),
             *op_span,
-            Self::binary_op_help(&left_type, &right_type, op),
+            self.binary_op_help(&left_type, &right_type, op),
         ))
     }
 
@@ -3241,15 +3259,30 @@ impl SemanticAnalyzer {
             // substitutes a concrete type before codegen, so the real check
             // happens on the instantiation rather than here. Rejecting them
             // would break every `func eq<T>(T a, T b) { return a == b }`.
-            Type::Generic(_) | Type::Variable(_) | Type::Instantiated(_, _) => true,
+            //
+            // `Instantiated` is not among them: semantics never builds one (only
+            // codegen's substitution helpers do), and `generate_equality_op` has
+            // no arm for it, so accepting it could only ever admit an internal
+            // compiler error.
+            Type::Generic(_) | Type::Variable(_) => true,
             _ => false,
         };
 
         comparable.then_some(Type::Primitive(crate::ast::PrimitiveType::Bool))
     }
 
-    /// Whether `name` names an enum, as opposed to a class or an interface.
+    /// Whether `name` names a user enum - one with the generated structural
+    /// compare - as opposed to a class or an interface.
+    ///
+    /// `optional` and `result` are excluded even when a program declares an enum
+    /// by those names, because codegen excludes them by name too: they are
+    /// seeded into `enum_variants` but are heap `*mut Value`s rather than inline
+    /// structs. Accepting a user enum called `optional` here would let it
+    /// through to the very error this check exists to prevent.
     fn is_enum_name(&self, name: &str) -> bool {
+        if matches!(name, "optional" | "result") {
+            return false;
+        }
         self.symbol_table
             .lookup(name)
             .is_some_and(|symbol| symbol.kind == SymbolKind::Enum)
