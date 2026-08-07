@@ -1,0 +1,52 @@
+// The parenthesis rule (mux-context#39): a payload-less variant is a value and
+// is written without parentheses; a variant with a payload takes its arguments.
+// Covers the shapes that reach different codegen paths - a local, an argument,
+// a collection element, a comparison operand, a match subject, and a variant
+// carrying reference-counted payload built from a bare one.
+
+enum Color { Red, Green, Blue }
+enum Chain { Empty, Node(string label, Chain rest) }
+
+func name_of(Color c) returns string {
+    match c {
+        Red { return "red" }
+        Green { return "green" }
+        Blue { return "blue" }
+    }
+}
+
+func depth(Chain c) returns int {
+    match c {
+        Empty { return 0 }
+        Node(label, rest) { return 1 + depth(rest) }
+    }
+}
+
+func main() returns void {
+    auto local = Color.Red
+    print(name_of(local))
+    print(name_of(Color.Green))
+
+    // Reading an element and comparing it works; passing one into a function
+    // does not, and is unrelated to the parenthesis rule - see issue #363.
+    auto items = [Color.Red, Color.Blue, Color.Green]
+    print(items.len().to_string())
+
+    print((Color.Red == Color.Red).to_string())
+    print((Color.Red == Color.Blue).to_string())
+    print((items[0] == Color.Red).to_string())
+
+    auto keyed = {Color.Red: 1, Color.Blue: 2}
+    print(keyed[Color.Blue].to_string())
+
+    match Color.Blue {
+        Red { print("matched red") }
+        Green { print("matched green") }
+        Blue { print("matched blue") }
+    }
+
+    auto chain = Chain.Node("a", Chain.Node("b", Chain.Empty))
+    print(depth(chain).to_string())
+
+    return
+}

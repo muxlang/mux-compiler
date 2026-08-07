@@ -926,7 +926,66 @@ impl SemanticAnalyzer {
             return Ok(func_type);
         }
 
+        // The parenthesis rule (mux-context#39), applied only to a qualified
+        // access on the enum's own name. Keying off the base's *type* instead
+        // would also match a value of that type, so `c.Green` on a `Color c`
+        // would type-check as a construction and then fail in codegen.
+        //
+        // Not reached for the callee of a call: `resolve_call_expression_type`
+        // intercepts `Enum.Variant(...)` first, so rejecting a missing payload
+        // here does not affect a real construction.
+        if let Some((enum_name, arity)) = self.enum_variant_arity(&expr_type, field) {
+            if !self.names_a_type(expr) {
+                // Reached through a value rather than the enum's name. A variant
+                // is not a field, and matching is how you ask which one a value
+                // holds. Rejected here because the alternative is resolving to
+                // the variant's constructor and failing in codegen, where there
+                // is no span to point at.
+                return Err(SemanticError::with_help(
+                    format!(
+                        "'{}' is a variant of enum '{}', not a field on a value of it",
+                        field, enum_name
+                    ),
+                    span,
+                    format!(
+                        "Construct it from the enum name, as in {}.{}, or use 'match' to test which variant a value holds.",
+                        enum_name, field
+                    ),
+                ));
+            }
+            if arity == 0 {
+                // A payload-less variant is a value, so it has the enum's type.
+                return Ok(Type::Named(enum_name, vec![]));
+            }
+            return Err(Self::enum_variant_needs_arguments(
+                &enum_name, field, arity, span,
+            ));
+        }
+
         self.resolve_field_access_by_type(&expr_type, field, span)
+    }
+
+    /// If `field` names a variant of the user enum `expr_type`, return the enum's
+    /// name and how many payload values the variant takes.
+    ///
+    /// Variants are recorded as static methods whose parameters are the payload
+    /// types, so the arity is the parameter count: 0 for `Red`, 1 for
+    /// `Circ(float r)`. Drives the parenthesis rule in mux-context#39 - zero
+    /// means parentheses are wrong, non-zero means they are required.
+    pub(super) fn enum_variant_arity(
+        &self,
+        expr_type: &Type,
+        field: &str,
+    ) -> Option<(String, usize)> {
+        let Type::Named(name, _) = expr_type else {
+            return None;
+        };
+        let symbol = self.symbol_table.lookup(name)?;
+        if symbol.kind != SymbolKind::Enum {
+            return None;
+        }
+        let sig = symbol.methods.get(field)?;
+        Some((name.clone(), sig.params.len()))
     }
 
     fn try_stdlib_method_lookup(&self, name: &str, field: &str) -> Option<Type> {
@@ -1339,13 +1398,91 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// "This variant carries a payload, so it needs its arguments." Shared by
+    /// the value-position and call-position paths so both word it the same way.
+    fn enum_variant_needs_arguments(
+        enum_name: &str,
+        variant: &str,
+        arity: usize,
+        span: Span,
+    ) -> SemanticError {
+        let plural = if arity == 1 { "" } else { "s" };
+        SemanticError::with_help(
+            format!(
+                "Enum variant '{}.{}' carries a payload and cannot be used on its own",
+                enum_name, variant
+            ),
+            span,
+            format!(
+                "'{}.{}' takes {} argument{}. Construct a value by passing them, e.g. {}.{}(...).",
+                enum_name, variant, arity, plural, enum_name, variant
+            ),
+        )
+    }
+
+    /// The parenthesis rule for a variant in call position (mux-context#39).
+    ///
+    /// `Enum.Variant(...)` is intercepted before the callee is resolved as a
+    /// value, because `resolve_field_access_by_type` gives a payload-less
+    /// variant the enum's type rather than a callable one - which is the point,
+    /// but would otherwise surface as "Cannot call non-function type".
+    fn resolve_enum_variant_call(
+        &mut self,
+        func: &ExpressionNode,
+        expr_span: Span,
+    ) -> Option<Result<Type, SemanticError>> {
+        let ExpressionKind::FieldAccess { expr: base, field } = &func.kind else {
+            return None;
+        };
+        // Only when qualified by the enum's own name (bare or instantiated),
+        // matching the value-position rule above: `c.Green(...)` on a value is a
+        // method call that does not exist, not a construction, and must keep its
+        // normal diagnostic.
+        if !self.names_a_type(base) {
+            return None;
+        }
+        let base_type = self.get_expression_type(base).ok()?;
+        let (enum_name, arity) = self.enum_variant_arity(&base_type, field)?;
+
+        if arity == 0 {
+            return Some(Err(SemanticError::with_help(
+                format!(
+                    "Enum variant '{}.{}' carries no payload and is not called",
+                    enum_name, field
+                ),
+                expr_span,
+                format!(
+                    "Parentheses pass arguments, and '{}.{}' takes none. Write it as a value: {}.{}",
+                    enum_name, field, enum_name, field
+                ),
+            )));
+        }
+
+        // A real construction. Build the constructor signature directly rather
+        // than routing back through field-access resolution, which rejects a
+        // payload variant used without its arguments.
+        Some(Ok(Type::Function {
+            params: self
+                .symbol_table
+                .lookup(&enum_name)
+                .and_then(|s| s.methods.get(field).map(|sig| sig.params.clone()))
+                .unwrap_or_default(),
+            returns: Box::new(Type::Named(enum_name, vec![])),
+            default_count: 0,
+        }))
+    }
+
     fn resolve_call_expression_type(
         &mut self,
         func: &ExpressionNode,
         args: &[ExpressionNode],
         expr_span: Span,
     ) -> Result<Type, SemanticError> {
-        let func_type = self.resolve_called_function_type(func)?;
+        let func_type = match self.resolve_enum_variant_call(func, expr_span) {
+            Some(Err(e)) => return Err(e),
+            Some(Ok(t)) => t,
+            None => self.resolve_called_function_type(func)?,
+        };
 
         match func_type {
             Type::Function {
