@@ -1,0 +1,4 @@
+// Should fail: a variant carrying a payload cannot be mentioned on its own
+enum Shape { Circ(float r), Rect(float w, float h) }
+auto a = Shape.Rect
+print("unreachable")

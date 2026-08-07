@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Enum variant 'Shape.Circ' carries a payload and cannot be used on its own
+--> test_scripts/error_cases/semantic_enum_variant_statement.mux:7:5
+   |
+ 7 |     Shape.Circ
+   |     ^^^^^
+   |
+= help: 'Shape.Circ' takes 1 argument. Construct a value by passing them, e.g. Shape.Circ(...).

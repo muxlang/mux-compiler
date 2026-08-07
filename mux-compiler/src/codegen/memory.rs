@@ -203,6 +203,14 @@ impl<'a> CodeGenerator<'a> {
     /// mixed-ownership ternary (issue #298 review). Every other form (identifier,
     /// field or index load) is treated as borrowed and deep-cloned, which is
     /// always safe.
+    ///
+    /// `FieldAccess` is deliberately in that borrowed group even though a bare
+    /// variant (`Color.Red`, mux-context#39) is a construction and therefore
+    /// owned. Treating it as borrowed costs a deep clone that does nothing: a
+    /// variant written without parentheses has no payload by definition, so
+    /// `emit_enum_payload_op` skips it as scalar-only. Widening this to include
+    /// FieldAccess would be an optimization, not a fix, and would need to
+    /// distinguish a variant construction from an ordinary field load first.
     pub(super) fn rhs_produces_owned_enum(kind: &crate::ast::ExpressionKind) -> bool {
         matches!(
             kind,

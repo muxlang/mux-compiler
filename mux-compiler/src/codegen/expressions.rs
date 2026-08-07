@@ -3491,6 +3491,13 @@ impl<'a> CodeGenerator<'a> {
         expr: &ExpressionNode,
         field: &str,
     ) -> Result<BasicValueEnum<'a>, String> {
+        // `Color.Red` constructs the variant (mux-context#39). Checked first
+        // because the paths below evaluate `expr` as a value, and an enum name
+        // is not one - which is how this used to surface as the internal error
+        // "Enums cannot be used as values: Color".
+        if let Some(value) = self.try_generate_enum_variant_field_access(expr, field)? {
+            return Ok(value);
+        }
         if let Some(value) = self.try_generate_stdlib_constant_field_access(expr, field)? {
             return Ok(value);
         }
@@ -3513,6 +3520,32 @@ impl<'a> CodeGenerator<'a> {
             "Field access not supported for expression type {:?}",
             expr.kind
         ))
+    }
+
+    /// Construct a payload-less enum variant written without parentheses.
+    ///
+    /// `Color.Red` is a value, so it goes through the same generated
+    /// constructor as `Shape.Circ(5.0)` does, just with no arguments. Type
+    /// checking has already established the variant exists and takes no
+    /// payload; anything else here is a mismatch between the two phases.
+    fn try_generate_enum_variant_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let ExpressionKind::Identifier(enum_name) = &expr.kind else {
+            return Ok(None);
+        };
+        let is_enum = self
+            .analyzer
+            .symbol_table()
+            .lookup(enum_name)
+            .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum);
+        if !is_enum {
+            return Ok(None);
+        }
+        let enum_name = enum_name.clone();
+        self.generate_enum_symbol_method_call(&enum_name, field, &[])
     }
 
     /// If `expr.field` names a constant imported from a module, return the module

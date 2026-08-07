@@ -1,0 +1,5 @@
+// Should fail: parentheses pass arguments, and a payload-less variant takes
+// none, so Color.Red() is rejected in favour of Color.Red (mux-context#39)
+enum Color { Red, Green }
+auto a = Color.Red()
+print("unreachable")

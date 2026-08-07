@@ -26,7 +26,7 @@ use inkwell::targets::{
 };
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::ast::{
     AstNode, EnumVariantField, Field, FunctionNode, ImportSpec, StatementKind, StatementNode,
@@ -104,7 +104,13 @@ pub struct CodeGenerator<'a> {
     /// or `None` for the main module (whose globals keep unqualified symbols).
     current_module_prefix: Option<String>,
     functions: HashMap<String, FunctionValue<'a>>,
-    function_nodes: HashMap<String, FunctionNode>,
+    /// Every function AST node, keyed by name. Ordered, because
+    /// `generate_specialized_methods` walks it to decide which methods to
+    /// monomorphize and emits them in the order it finds them. A `HashMap`
+    /// there made the emitted IR differ byte-for-byte between back-to-back
+    /// builds of the same file, since Rust randomizes hash iteration per
+    /// process (issue #344).
+    function_nodes: BTreeMap<String, FunctionNode>,
     current_function_name: Option<String>,
     current_function_return_type: Option<ResolvedType>,
     generic_context: Option<GenericContext>,
@@ -680,7 +686,6 @@ impl<'a> CodeGenerator<'a> {
         type_map.insert("optional".to_string(), struct_type.into());
         type_map.insert("result".to_string(), struct_type.into());
 
-        use std::collections::BTreeMap;
         let mut ordered_variants = BTreeMap::new();
         ordered_variants.insert(
             "optional".to_string(),
@@ -695,13 +700,16 @@ impl<'a> CodeGenerator<'a> {
             enum_variants.insert(enum_name, variants);
         }
 
+        // Seed from the symbol's declared variant order, not from `methods`.
+        // Position in this vector is the discriminant (`get_variant_index`), and
+        // `methods` is a HashMap, so seeding from its keys made discriminants
+        // depend on hash order. `generate_enum_type` overwrites each entry with
+        // declaration order before anything reads it, which is why that was
+        // never observable - but it left a hash-ordered vector feeding
+        // discriminants one refactor away from mattering (issue #344).
         for (name, symbol) in analyzer.all_symbols() {
             if symbol.kind == crate::semantics::SymbolKind::Enum {
-                let mut variants = vec![];
-                for method_name in symbol.methods.keys() {
-                    variants.push(method_name.clone());
-                }
-                enum_variants.insert(name.clone(), variants);
+                enum_variants.insert(name.clone(), symbol.variants.clone().unwrap_or_default());
             }
         }
 
@@ -731,7 +739,7 @@ impl<'a> CodeGenerator<'a> {
             module_globals: HashMap::new(),
             current_module_prefix: None,
             functions: HashMap::new(),
-            function_nodes: HashMap::new(),
+            function_nodes: BTreeMap::new(),
             current_function_name: None,
             current_function_return_type: None,
             generic_context: None,

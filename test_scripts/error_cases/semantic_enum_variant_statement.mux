@@ -1,0 +1,10 @@
+// Should fail: a payload variant on its own line is still a value use, and is
+// missing its arguments. Statement position used to skip type checking entirely
+// and reach codegen, where it built a zero-argument call to a one-argument
+// constructor and failed LLVM verification.
+enum Shape { Unit, Circ(float r) }
+func main() returns void {
+    Shape.Circ
+    print("unreachable")
+    return
+}
