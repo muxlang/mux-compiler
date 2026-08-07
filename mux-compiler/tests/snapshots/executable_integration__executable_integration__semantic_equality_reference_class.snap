@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Operator '==' is not supported between types &Point and &Point
+--> test_scripts/error_cases/semantic_equality_reference_class.mux:10:13
+   |
+10 | print((a == b).to_string())
+   |             ^
+   |
+= help: References cannot be compared with '==', and neither can the Point values they point at.

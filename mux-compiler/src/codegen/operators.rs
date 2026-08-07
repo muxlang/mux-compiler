@@ -1010,6 +1010,27 @@ impl<'a> CodeGenerator<'a> {
     /// runtime functions they use. Keeping them as two parallel matches is how
     /// `Type::Tuple` ended up supported by `==` and not by `!=`; sharing the
     /// arms makes that divergence unrepresentable (issue #360).
+    ///
+    /// The arms below must stay in step with
+    /// `resolve_equality_binary_operator` in `semantics/mod.rs`, which rejects
+    /// anything they cannot handle. Because of that, falling through to the
+    /// error now means the two have drifted apart - a real compiler bug, which
+    /// is what the internal-compiler-error wording claims.
+    ///
+    /// The one known way to reach it from a valid-looking program is a generic
+    /// instantiated with an uncomparable type:
+    ///
+    /// ```mux
+    /// func same<T>(T a, T b) returns bool { return a == b }
+    /// same(Point.new(), Point.new())
+    /// ```
+    ///
+    /// `T` is a placeholder that semantics has to accept, and monomorphisation
+    /// substitutes the concrete type only here. Note this is NOT the same gap as
+    /// issue #361 (declared trait bounds are never checked against concrete type
+    /// arguments): the function above declares no bound at all, so checking
+    /// declared bounds cannot reject it. Closing it needs the operator in the
+    /// body to impose a bound on `T`, or a re-check at monomorphisation.
     fn generate_equality_op(
         &mut self,
         left_expr: &ExpressionNode,

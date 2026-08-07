@@ -1,0 +1,7 @@
+// Should fail: function values are not comparable
+func f() returns int {
+    return 1
+}
+auto g = f
+auto h = f
+print((g == h).to_string())

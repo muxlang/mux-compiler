@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Operator '==' is not supported between types &int and &int
+--> test_scripts/error_cases/semantic_equality_reference.mux:6:13
+   |
+ 6 | print((a == b).to_string())
+   |             ^
+   |
+= help: References cannot be compared with '=='. Dereference both sides to compare the int values they point at, as in '*a == *b'.
