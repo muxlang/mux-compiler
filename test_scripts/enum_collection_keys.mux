@@ -23,7 +23,7 @@ func main() returns void {
     print("key present: " + (Item.Count(2) in m).to_string())
 
     // Recursive enum as a key: structural comparison recurses through the box.
-    auto rm = {IntList.Cons(1, IntList.Nil()): 10}
-    print("rec key: " + rm[IntList.Cons(1, IntList.Nil())].to_string())
+    auto rm = {IntList.Cons(1, IntList.Nil): 10}
+    print("rec key: " + rm[IntList.Cons(1, IntList.Nil)].to_string())
     return
 }

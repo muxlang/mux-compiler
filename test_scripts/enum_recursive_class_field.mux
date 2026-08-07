@@ -28,11 +28,11 @@ class Holder {
 
 func main() returns void {
     auto a = Holder.new()
-    a.set(IntList.Cons(5, IntList.Cons(7, IntList.Nil())))
+    a.set(IntList.Cons(5, IntList.Cons(7, IntList.Nil)))
 
     // By-value copy must be independent: mutating a must not affect b.
     auto b = a
-    a.set(IntList.Cons(100, IntList.Nil()))
+    a.set(IntList.Cons(100, IntList.Nil))
 
     print("a: " + a.total().to_string())
     print("b: " + b.total().to_string())
