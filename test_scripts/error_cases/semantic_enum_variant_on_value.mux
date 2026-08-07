@@ -1,0 +1,9 @@
+// Should fail: a variant is reached through the enum's name, not through a
+// value of it. Matching is how you ask which variant a value holds.
+enum Color { Red, Green }
+func main() returns void {
+    auto c = Color.Red
+    auto d = c.Green
+    print("unreachable")
+    return
+}

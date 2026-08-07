@@ -946,6 +946,42 @@ impl SemanticAnalyzer {
             return Ok(func_type);
         }
 
+        // The parenthesis rule (mux-context#39), applied only to a qualified
+        // access on the enum's own name. Keying off the base's *type* instead
+        // would also match a value of that type, so `c.Green` on a `Color c`
+        // would type-check as a construction and then fail in codegen.
+        //
+        // Not reached for the callee of a call: `resolve_call_expression_type`
+        // intercepts `Enum.Variant(...)` first, so rejecting a missing payload
+        // here does not affect a real construction.
+        if let Some((enum_name, arity)) = self.enum_variant_arity(&expr_type, field) {
+            if !self.names_a_type(expr) {
+                // Reached through a value rather than the enum's name. A variant
+                // is not a field, and matching is how you ask which one a value
+                // holds. Rejected here because the alternative is resolving to
+                // the variant's constructor and failing in codegen, where there
+                // is no span to point at.
+                return Err(SemanticError::with_help(
+                    format!(
+                        "'{}' is a variant of enum '{}', not a field on a value of it",
+                        field, enum_name
+                    ),
+                    span,
+                    format!(
+                        "Construct it from the enum name, as in {}.{}, or use 'match' to test which variant a value holds.",
+                        enum_name, field
+                    ),
+                ));
+            }
+            if arity == 0 {
+                // A payload-less variant is a value, so it has the enum's type.
+                return Ok(Type::Named(enum_name, vec![]));
+            }
+            return Err(Self::enum_variant_needs_arguments(
+                &enum_name, field, arity, span,
+            ));
+        }
+
         self.resolve_field_access_by_type(&expr_type, field, span)
     }
 
@@ -1022,23 +1058,6 @@ impl SemanticAnalyzer {
         if let Type::Reference(inner) = expr_type {
             let inner_type = (*inner).clone();
             return self.resolve_reference_field(&inner_type, field, span);
-        }
-        // The parenthesis rule (mux-context#39). Both cases are checked ahead of
-        // the method lookup below, which would otherwise hand back the variant's
-        // constructor signature and make a bare variant a function reference.
-        //
-        // Note this is reached only for a variant mentioned as a value. The
-        // callee of a call never gets here - `resolve_call_expression_type`
-        // intercepts `Enum.Variant(...)` first - so rejecting a missing payload
-        // here does not affect a real construction.
-        if let Some((enum_name, arity)) = self.enum_variant_arity(expr_type, field) {
-            if arity == 0 {
-                // A payload-less variant is a value, so it has the enum's type.
-                return Ok(Type::Named(enum_name, vec![]));
-            }
-            return Err(Self::enum_variant_needs_arguments(
-                &enum_name, field, arity, span,
-            ));
         }
         if let Some(method_sig) = self.get_method_sig(expr_type, field) {
             return Ok(Type::Function {
@@ -1435,6 +1454,13 @@ impl SemanticAnalyzer {
         let ExpressionKind::FieldAccess { expr: base, field } = &func.kind else {
             return None;
         };
+        // Only when qualified by the enum's own name (bare or instantiated),
+        // matching the value-position rule above: `c.Green(...)` on a value is a
+        // method call that does not exist, not a construction, and must keep its
+        // normal diagnostic.
+        if !self.names_a_type(base) {
+            return None;
+        }
         let base_type = self.get_expression_type(base).ok()?;
         let (enum_name, arity) = self.enum_variant_arity(&base_type, field)?;
 
