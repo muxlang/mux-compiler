@@ -193,7 +193,30 @@ impl SemanticAnalyzer {
             ExpressionKind::Identifier(name) | ExpressionKind::GenericType(name, _) => {
                 self.type_name_kind(name).is_some()
             }
+            // `palette.Shape` - a type reached through a module namespace. It is
+            // still a type, so a variant qualified by it is a construction and
+            // not a field access on a value (issue #368).
+            ExpressionKind::FieldAccess { expr: base, field } => {
+                self.module_member_kind(base, field).is_some()
+            }
             _ => false,
+        }
+    }
+
+    /// If `base.field` names a type exported by an imported module, return a
+    /// human word for it. `base` must be an identifier bound to an import.
+    fn module_member_kind(&self, base: &ExpressionNode, field: &str) -> Option<&'static str> {
+        let ExpressionKind::Identifier(module) = &base.kind else {
+            return None;
+        };
+        if self.symbol_table.lookup(module)?.kind != SymbolKind::Import {
+            return None;
+        }
+        match self.imported_symbols.get(module)?.get(field)?.kind {
+            SymbolKind::Class => Some("class"),
+            SymbolKind::Enum => Some("enum"),
+            SymbolKind::Interface => Some("interface"),
+            _ => None,
         }
     }
 

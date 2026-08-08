@@ -305,6 +305,16 @@ impl<'a> CodeGenerator<'a> {
             None => return Ok(None),
         };
 
+        // An imported enum reaches its variants the same way a class reaches a
+        // static method, and imported enums are registered under their bare name,
+        // so the construction is the ordinary one from here (issue #368).
+        if class_symbol.kind == crate::semantics::SymbolKind::Enum {
+            if !class_symbol.methods.contains_key(method_name) {
+                return Ok(None);
+            }
+            return self.generate_enum_symbol_method_call(class_name, method_name, args);
+        }
+
         if class_symbol.kind != crate::semantics::SymbolKind::Class {
             return Ok(None);
         }
@@ -3551,19 +3561,41 @@ impl<'a> CodeGenerator<'a> {
         expr: &ExpressionNode,
         field: &str,
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        let ExpressionKind::Identifier(enum_name) = &expr.kind else {
+        let Some(enum_name) = self.enum_name_from_type_reference(expr) else {
             return Ok(None);
         };
-        let is_enum = self
-            .analyzer
-            .symbol_table()
-            .lookup(enum_name)
-            .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum);
-        if !is_enum {
-            return Ok(None);
-        }
-        let enum_name = enum_name.clone();
         self.generate_enum_symbol_method_call(&enum_name, field, &[])
+    }
+
+    /// The enum named by a type reference: a bare name (`Color`) or one reached
+    /// through a module namespace (`palette.Color`). Imported enums are
+    /// registered under their bare name, so both forms yield the same key
+    /// (issue #368).
+    fn enum_name_from_type_reference(&self, expr: &ExpressionNode) -> Option<String> {
+        match &expr.kind {
+            ExpressionKind::Identifier(name) => self
+                .analyzer
+                .symbol_table()
+                .lookup(name)
+                .filter(|s| s.kind == crate::semantics::SymbolKind::Enum)
+                .map(|_| name.clone()),
+            ExpressionKind::FieldAccess { expr: base, field } => {
+                let ExpressionKind::Identifier(module) = &base.kind else {
+                    return None;
+                };
+                let module_sym = self.analyzer.symbol_table().lookup(module)?;
+                if module_sym.kind != crate::semantics::SymbolKind::Import {
+                    return None;
+                }
+                self.analyzer
+                    .imported_symbols()
+                    .get(module)?
+                    .get(field)
+                    .filter(|s| s.kind == crate::semantics::SymbolKind::Enum)
+                    .map(|_| field.clone())
+            }
+            _ => None,
+        }
     }
 
     /// If `expr.field` names a constant imported from a module, return the module
