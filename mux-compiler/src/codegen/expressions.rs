@@ -1442,6 +1442,27 @@ impl<'a> CodeGenerator<'a> {
         Ok(result)
     }
 
+    /// Box a payload that a `_value` wrapper constructor takes as a
+    /// `*mut Value`.
+    ///
+    /// `optional` and `result` are heap values, so `some(x)` on anything the
+    /// runtime stores generically wants a boxed argument. An enum is stored
+    /// inline, so `some(Color.Red)` was handing an inline struct to a function
+    /// expecting a pointer. `box_enum_or_value` is used rather than `box_value`
+    /// because an enum with a reference-counted payload has to become a managed
+    /// `BoxedEnum` for its clone and drop glue to run (issue #309).
+    fn box_wrapper_payload(
+        &mut self,
+        constructor: &str,
+        value: BasicValueEnum<'a>,
+        value_type: &Type,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if !constructor.ends_with("_value") || value.is_pointer_value() {
+            return Ok(value);
+        }
+        Ok(self.box_enum_or_value(value, value_type)?.into())
+    }
+
     fn generate_ok_builtin_call(
         &mut self,
         args: &[ExpressionNode],
@@ -1453,9 +1474,10 @@ impl<'a> CodeGenerator<'a> {
         let arg_type = self
             .get_resolved_expression_type(arg_expr)
             .map_err(|e| format!("Type inference failed: {}", e))?;
-        let arg_val = self.generate_expression(arg_expr)?;
         let func_name = Self::ok_builtin_constructor_name(&arg_type)
             .ok_or_else(|| format!("Ok() not supported for type {:?}", arg_type))?;
+        let arg_val = self.generate_expression(arg_expr)?;
+        let arg_val = self.box_wrapper_payload(func_name, arg_val, &arg_type)?;
         self.call_single_arg_builtin(func_name, arg_val, "ok_call")
     }
 
@@ -1482,9 +1504,10 @@ impl<'a> CodeGenerator<'a> {
                 }
             }
         };
-        let arg_val = self.generate_expression(arg_expr)?;
         let func_name = Self::some_builtin_constructor_name(&arg_type)
             .ok_or_else(|| format!("Some() not supported for type {:?}", arg_type))?;
+        let arg_val = self.generate_expression(arg_expr)?;
+        let arg_val = self.box_wrapper_payload(func_name, arg_val, &arg_type)?;
         self.call_single_arg_builtin(func_name, arg_val, "some_call")
     }
 

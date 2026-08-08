@@ -1,0 +1,34 @@
+// An enum wrapped in optional or result. Those are boxed heap values while an
+// enum is stored inline, so the payload has to be boxed on the way in -
+// `some(Color.Red)` used to hand an inline struct to a function expecting a
+// pointer. Tagged carries a string so the reference-counted path is covered,
+// where a wrong conversion leaks or double frees rather than failing loudly.
+
+enum Color { Red, Green, Blue }
+enum Tagged { None_, Note(string text) }
+
+func name_of(Color c) returns string {
+    match c { Red { return "red" } Green { return "green" } Blue { return "blue" } }
+}
+
+func find(int k) returns optional<Color> {
+    if k == 1 { return some(Color.Red) }
+    return none
+}
+
+func check(int k) returns result<Tagged, string> {
+    if k == 1 { return ok(Tagged.Note("hi")) }
+    return err("nope")
+}
+
+func main() returns void {
+    auto a = find(1)
+    match a { some(c) { print(name_of(c)) } none { print("none") } }
+    auto b = find(2)
+    match b { some(c) { print(name_of(c)) } none { print("none") } }
+    auto r = check(1)
+    match r { ok(t) { match t { None_ { print("none_") } Note(s) { print(s) } } } err(e) { print(e) } }
+    auto r2 = check(2)
+    match r2 { ok(t) { print("ok") } err(e) { print(e) } }
+    return
+}
