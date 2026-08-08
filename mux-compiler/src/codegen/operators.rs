@@ -124,6 +124,70 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
+    /// Emit `<`, `>`, `<=` or `>=`: a class that declares `is Comparable` orders
+    /// through its own `cmp`, everything else through the numeric path.
+    fn generate_ordering_op(
+        &mut self,
+        left_expr: &ExpressionNode,
+        left: BasicValueEnum<'a>,
+        right: BasicValueEnum<'a>,
+        int_pred: inkwell::IntPredicate,
+        float_pred: inkwell::FloatPredicate,
+        label: &str,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if let Some(result) =
+            self.try_generate_comparable_class_compare(left_expr, left, right, int_pred, label)?
+        {
+            return Ok(result);
+        }
+        self.generate_numeric_compare(left, right, int_pred, float_pred, label)
+    }
+
+    /// Order two values of a class that declares `is Comparable`, by calling its
+    /// `cmp` method and testing the result against zero.
+    ///
+    /// `cmp` returns negative, zero or positive like C's `strcmp`, so every
+    /// ordering operator is the same call with a different predicate. Returns
+    /// `None` when the operands are not such a class, leaving the numeric path
+    /// to handle them.
+    fn try_generate_comparable_class_compare(
+        &mut self,
+        left_expr: &ExpressionNode,
+        left: BasicValueEnum<'a>,
+        right: BasicValueEnum<'a>,
+        predicate: inkwell::IntPredicate,
+        label: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let Ok(Type::Named(class_name, _)) = self.resolve_expression_type_with_fallback(left_expr)
+        else {
+            return Ok(None);
+        };
+        if !self
+            .analyzer
+            .type_implements_named_interface(&class_name, "Comparable")
+        {
+            return Ok(None);
+        }
+        let func_name = format!("{}.cmp", class_name);
+        let func = self
+            .module
+            .get_function(&func_name)
+            .ok_or_else(|| format!("{} not found for Comparable", func_name))?;
+        let ordering = self
+            .builder
+            .build_call(func, &[left.into(), right.into()], "cmp_call")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| format!("{} should return a value", func_name))?;
+        let ordering = self.get_raw_int_value(ordering)?;
+        let zero = ordering.get_type().const_zero();
+        self.builder
+            .build_int_compare(predicate, ordering, zero, label)
+            .map_err(|e| e.to_string())
+            .map(|v| Some(v.into()))
+    }
+
     /// Generate a numeric comparison (int or float) with the given predicates.
     fn generate_numeric_compare(
         &mut self,
@@ -1136,6 +1200,35 @@ impl<'a> CodeGenerator<'a> {
                     kind.enum_label(),
                 )
             }
+            // A class that declares `is Equatable` compares through its own `eq`.
+            Type::Named(class_name, _)
+                if self
+                    .analyzer
+                    .type_implements_named_interface(class_name, "Equatable") =>
+            {
+                let func_name = format!("{}.eq", class_name);
+                let func = self
+                    .module
+                    .get_function(&func_name)
+                    .ok_or_else(|| format!("{} not found for Equatable", func_name))?;
+                let equal = self
+                    .builder
+                    .build_call(func, &[left.into(), right.into()], "eq_call")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| format!("{} should return a value", func_name))?;
+                let equal = self.get_raw_bool_value(equal)?;
+                // `eq` answers equality, so `!=` is its negation rather than a
+                // second method the class has to write.
+                let expected = equal
+                    .get_type()
+                    .const_int(u64::from(matches!(kind, EqualityKind::Equal)), false);
+                self.builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, equal, expected, kind.label())
+                    .map_err(|e| e.to_string())
+                    .map(|v| v.into())
+            }
             _ => Err(format!(
                 "{} comparison not supported for type: {:?}",
                 kind.noun(),
@@ -1277,28 +1370,32 @@ impl<'a> CodeGenerator<'a> {
             BinaryOp::Equal => {
                 self.generate_equality_op(left_expr, left, right, EqualityKind::Equal)
             }
-            BinaryOp::Less => self.generate_numeric_compare(
+            BinaryOp::Less => self.generate_ordering_op(
+                left_expr,
                 left,
                 right,
                 inkwell::IntPredicate::SLT,
                 inkwell::FloatPredicate::OLT,
                 "lt",
             ),
-            BinaryOp::Greater => self.generate_numeric_compare(
+            BinaryOp::Greater => self.generate_ordering_op(
+                left_expr,
                 left,
                 right,
                 inkwell::IntPredicate::SGT,
                 inkwell::FloatPredicate::OGT,
                 "gt",
             ),
-            BinaryOp::LessEqual => self.generate_numeric_compare(
+            BinaryOp::LessEqual => self.generate_ordering_op(
+                left_expr,
                 left,
                 right,
                 inkwell::IntPredicate::SLE,
                 inkwell::FloatPredicate::OLE,
                 "le",
             ),
-            BinaryOp::GreaterEqual => self.generate_numeric_compare(
+            BinaryOp::GreaterEqual => self.generate_ordering_op(
+                left_expr,
                 left,
                 right,
                 inkwell::IntPredicate::SGE,

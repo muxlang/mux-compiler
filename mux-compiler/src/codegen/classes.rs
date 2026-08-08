@@ -453,6 +453,18 @@ impl<'a> CodeGenerator<'a> {
         }
 
         for (interface_name, (_, interface_methods)) in interfaces {
+            // The built-in capabilities are not declared interfaces, so no
+            // vtable type was ever registered for them. Skipped for the same
+            // reason as a generic class above: the vtable field is never read,
+            // since interfaces dispatch statically.
+            if !self.vtable_type_map.contains_key(interface_name)
+                && matches!(
+                    interface_name.as_str(),
+                    "Stringable" | "Equatable" | "Comparable" | "Hashable"
+                )
+            {
+                continue;
+            }
             let mut vtable_values = Vec::new();
             for method_name in interface_methods.keys() {
                 let class_method_name = format!("{}.{}", class_name, method_name);

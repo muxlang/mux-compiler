@@ -190,7 +190,7 @@ impl SemanticAnalyzer {
         if let Some(e) = Self::reject_builtin_type_name(name, "a class", span) {
             return Err(e);
         }
-        let implemented_interfaces = self.resolve_implemented_interfaces(traits, span)?;
+        let implemented_interfaces = self.resolve_implemented_interfaces(name, traits, span)?;
         let type_param_bounds = self.register_type_param_symbols(type_params, span);
 
         let (fields_map, _) = self.collect_class_fields(name, fields, span)?;
@@ -225,13 +225,60 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
+    /// The method a built-in capability requires of a class that declares
+    /// `is Stringable` / `is Equatable` / `is Comparable` / `is Hashable`.
+    ///
+    /// `None` for anything else, including a user-declared interface that
+    /// happens to share the name - a real declaration always wins.
+    fn builtin_interface_methods(
+        &self,
+        name: &str,
+        implementor: &str,
+    ) -> Option<HashMap<String, MethodSig>> {
+        if self.symbol_table.lookup(name).is_some() {
+            return None;
+        }
+        let method = match name {
+            "Stringable" => "to_string",
+            "Equatable" => "eq",
+            "Comparable" => "cmp",
+            "Hashable" => "hash",
+            _ => return None,
+        };
+        let sig = self.get_builtin_interface_method(name, method)?;
+        // The built-in signatures are written against `Self`, so `eq` and `cmp`
+        // take the implementing type rather than a type literally named Self.
+        let own_type = Type::Named(implementor.to_string(), Vec::new());
+        let substitute = |t: &Type| match t {
+            Type::Generic(n) if n == "Self" => own_type.clone(),
+            other => other.clone(),
+        };
+        Some(HashMap::from([(
+            method.to_string(),
+            MethodSig {
+                params: sig.params.iter().map(&substitute).collect(),
+                return_type: substitute(&sig.return_type),
+                is_static: sig.is_static,
+            },
+        )]))
+    }
+
     fn resolve_implemented_interfaces(
         &self,
+        class_name: &str,
         traits: &[TraitRef],
         _span: &Span,
     ) -> Result<HashMap<String, ResolvedInterface>, SemanticError> {
         let mut implemented_interfaces = std::collections::HashMap::new();
         for trait_ref in traits {
+            // The built-in capabilities are not declared symbols - they are
+            // answered structurally for primitives and collections - so a class
+            // saying `is Comparable` registered nothing at all, and then failed
+            // to satisfy a bound it had genuinely implemented.
+            if let Some(methods) = self.builtin_interface_methods(&trait_ref.name, class_name) {
+                implemented_interfaces.insert(trait_ref.name.clone(), (Vec::new(), methods));
+                continue;
+            }
             if let Some(interface_symbol) = self.symbol_table.lookup(&trait_ref.name)
                 && let Some((_, interface_methods)) =
                     interface_symbol.interfaces.get(&trait_ref.name)

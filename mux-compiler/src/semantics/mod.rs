@@ -2786,6 +2786,13 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// Whether the named class or enum declares `interface_name`. Exposed for
+    /// codegen, which needs it to decide whether an operator dispatches to a
+    /// user method.
+    pub fn type_implements_named_interface(&self, name: &str, interface_name: &str) -> bool {
+        self.type_implements_interface_with_named(name, interface_name, &[])
+    }
+
     fn type_implements_interface_with_named(
         &self,
         name: &str,
@@ -3536,9 +3543,12 @@ impl SemanticAnalyzer {
             | Type::EmptyList
             | Type::EmptyMap
             | Type::EmptySet => true,
-            // Classes and interfaces also land in Named, and only enums have
-            // the generated structural compare.
-            Type::Named(name, _) => self.is_enum_name(name),
+            // Classes and interfaces also land in Named. Only enums have the
+            // generated structural compare, but a class may opt in by declaring
+            // `is Equatable` and writing `eq`.
+            Type::Named(name, _) => {
+                self.is_enum_name(name) || self.type_implements_named_interface(name, "Equatable")
+            }
             // A type parameter must declare `Equatable` to be compared. Using
             // the operator imposes the bound rather than inferring it, so the
             // error lands on the declaration the reader can fix instead of on

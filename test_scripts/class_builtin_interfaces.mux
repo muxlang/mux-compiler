@@ -1,0 +1,67 @@
+// A class can implement the built-in capabilities, and the operators dispatch
+// to its methods. Declaring `is Comparable` used to register nothing at all,
+// because the built-ins are not declared symbols - so the class failed to
+// satisfy a bound it had genuinely implemented, and '<' fell through to the
+// numeric path and produced a wrong answer.
+
+class Money is Comparable, Equatable, Stringable {
+    int cents
+
+    common func of(int c) returns Money {
+        auto m = Money.new()
+        m.cents = c
+        return m
+    }
+
+    // Negative, zero or positive, like strcmp - every ordering operator is this
+    // one call with a different test against zero.
+    func cmp(Money other) returns int {
+        return self.cents - other.cents
+    }
+
+    func eq(Money other) returns bool {
+        return self.cents == other.cents
+    }
+
+    func to_string() returns string {
+        return self.cents.to_string() + "c"
+    }
+}
+
+func biggest<T is Comparable>(T a, T b) returns T {
+    if a > b { return a }
+    return b
+}
+
+func same<T is Equatable>(T a, T b) returns bool {
+    return a == b
+}
+
+func show<T is Stringable>(T v) returns string {
+    return v.to_string()
+}
+
+func main() returns void {
+    auto low = Money.of(1)
+    auto high = Money.of(9)
+    auto also_low = Money.of(1)
+
+    // Ordering, through cmp.
+    print((low < high).to_string())
+    print((high < low).to_string())
+    print((low <= also_low).to_string())
+    print((high >= low).to_string())
+
+    // Equality, through eq. '!=' is the negation, so a class writes one method.
+    print((low == also_low).to_string())
+    print((low == high).to_string())
+    print((low != high).to_string())
+    print((low != also_low).to_string())
+
+    // The same capabilities as generic bounds.
+    print(biggest(low, high).to_string())
+    print(same(low, also_low).to_string())
+    print(show(high))
+
+    return
+}
