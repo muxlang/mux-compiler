@@ -137,7 +137,7 @@ impl<'a> CodeGenerator<'a> {
             TypeKind::Primitive(PrimitiveType::Bool) => Ok(self.context.bool_type().into()),
             TypeKind::Primitive(PrimitiveType::Str) => Ok(self.ptr_type()),
             TypeKind::Primitive(PrimitiveType::Char) => Ok(self.context.i64_type().into()),
-            TypeKind::Named(name, _) => {
+            TypeKind::Named(name, args) => {
                 if let Some(concrete) = self.resolve_generic_param(name) {
                     return self.llvm_type_from_resolved_type(&concrete.clone());
                 }
@@ -145,10 +145,15 @@ impl<'a> CodeGenerator<'a> {
                     if name == "optional" || name == "result" {
                         Ok(self.ptr_type())
                     } else {
-                        let struct_type = self
-                            .type_map
-                            .get(name)
-                            .ok_or_else(|| format!("Enum type {} not found in type map", name))?;
+                        // A generic enum resolves to its instantiation, so
+                        // `Tree<int>` is `Tree$int` and not the differently
+                        // shaped uninstantiated `Tree` (issue #359).
+                        let arg_types: Vec<Type> =
+                            args.iter().map(|a| self.type_node_to_type(a)).collect();
+                        let resolved = self.mangled_enum_name(name, &arg_types);
+                        let struct_type = self.type_map.get(&resolved).ok_or_else(|| {
+                            format!("Enum type {} not found in type map", resolved)
+                        })?;
                         Ok(*struct_type)
                     }
                 } else {

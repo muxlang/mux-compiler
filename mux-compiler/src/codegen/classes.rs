@@ -45,6 +45,9 @@ impl<'a> CodeGenerator<'a> {
         // once every enum type exists.
         for &idx in &self.enum_generation_order(nodes) {
             if let AstNode::Enum { name, variants, .. } = &nodes[idx] {
+                // Retained so a generic enum can be stamped out per
+                // instantiation later, when the type arguments are known.
+                self.enum_asts.insert(name.clone(), variants.clone());
                 self.generate_enum_type(name, variants)?;
             }
         }

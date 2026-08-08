@@ -1202,7 +1202,9 @@ impl<'a> CodeGenerator<'a> {
         unknown_type_msg: &str,
     ) -> Result<String, String> {
         match value_type {
-            Type::Named(n, _) => Ok(n.clone()),
+            // A generic enum's codegen name carries its type arguments, so
+            // `Box<int>` resolves to the `Box$int` instantiation (issue #359).
+            Type::Named(n, args) => Ok(self.mangled_enum_name(n, args)),
             Type::Optional(_) => Ok("optional".to_string()),
             Type::Result(_, _) => Ok("result".to_string()),
             _ => Err(unknown_type_msg.to_string()),
@@ -1883,6 +1885,13 @@ impl<'a> CodeGenerator<'a> {
         let enum_name = self.resolve_enum_match_name(match_expr).or_else(|_| {
             self.enum_name_from_type(match_expr_type, "Match expression must be an enum type")
         })?;
+        // Matching a generic enum needs its instantiation to exist, since the
+        // subject may have been constructed in another function (issue #359).
+        if let Type::Named(base, args) = match_expr_type
+            && !args.is_empty()
+        {
+            self.ensure_enum_instantiated(base, args)?;
+        }
         // A user-enum subject is normally an inline struct value. When it arrives
         // as a pointer it is a boxed enum (a managed BoxedEnum or Opaque from a
         // collection element, e.g. `match items[i] { ... }`), so unbox it to the

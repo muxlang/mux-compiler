@@ -29,8 +29,8 @@ use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use std::collections::{BTreeMap, HashMap};
 
 use crate::ast::{
-    AstNode, EnumVariantField, Field, FunctionNode, ImportSpec, StatementKind, StatementNode,
-    TraitBound, TypeNode,
+    AstNode, EnumVariant, EnumVariantField, Field, FunctionNode, ImportSpec, StatementKind,
+    StatementNode, TraitBound, TypeNode,
 };
 use crate::semantics::{GenericContext, SemanticAnalyzer, Type, Type as ResolvedType};
 
@@ -73,6 +73,11 @@ pub struct CodeGenerator<'a> {
     class_copy_fns: HashMap<String, PointerValue<'a>>,
     class_destructor_fns: HashMap<String, PointerValue<'a>>,
     enum_variants: HashMap<String, Vec<String>>,
+    /// Each enum's declared variants, kept so a generic enum can be stamped out
+    /// per instantiation on demand (`ensure_enum_instantiated`, issue #359).
+    /// Ordered, so the instances an ordered walk creates stay deterministic
+    /// (issue #344).
+    enum_asts: BTreeMap<String, Vec<EnumVariant>>,
     enum_variant_fields: EnumVariantFieldMap,
     field_map: HashMap<String, HashMap<String, usize>>,
     field_types_map: HashMap<String, Vec<BasicTypeEnum<'a>>>,
@@ -725,6 +730,7 @@ impl<'a> CodeGenerator<'a> {
             class_copy_fns: HashMap::new(),
             class_destructor_fns: HashMap::new(),
             enum_variants,
+            enum_asts: BTreeMap::new(),
             enum_variant_fields: HashMap::new(),
             field_map: HashMap::new(),
             field_types_map: HashMap::new(),

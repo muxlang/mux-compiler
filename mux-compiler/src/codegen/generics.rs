@@ -18,6 +18,238 @@ use crate::lexer::Span;
 use crate::semantics::{Type, infer_missing_type_params_from_bounds};
 
 impl<'a> CodeGenerator<'a> {
+    /// Stamp out every concrete generic enum a type annotation mentions.
+    ///
+    /// Function signatures are declared before any body runs, so a parameter
+    /// typed `Tree<int>` needs its instantiation to exist before the first
+    /// `Tree<int>.Leaf` is ever generated (issue #359).
+    pub(super) fn instantiate_generic_enums_in_type_node(
+        &mut self,
+        type_node: &TypeNode,
+    ) -> Result<(), String> {
+        match &type_node.kind {
+            TypeKind::Named(name, args) => {
+                for arg in args {
+                    self.instantiate_generic_enums_in_type_node(arg)?;
+                }
+                if self.enum_asts.contains_key(name) {
+                    let arg_types: Vec<Type> =
+                        args.iter().map(|a| self.type_node_to_type(a)).collect();
+                    if self.mangled_enum_name(name, &arg_types) != *name {
+                        self.ensure_enum_instantiated(name, &arg_types)?;
+                    }
+                }
+            }
+            TypeKind::List(inner)
+            | TypeKind::Set(inner)
+            | TypeKind::Reference(inner)
+            | TypeKind::TraitObject(inner) => {
+                self.instantiate_generic_enums_in_type_node(inner)?;
+            }
+            TypeKind::Map(k, v) | TypeKind::Tuple(k, v) => {
+                self.instantiate_generic_enums_in_type_node(k)?;
+                self.instantiate_generic_enums_in_type_node(v)?;
+            }
+            TypeKind::Function { params, returns } => {
+                for param in params {
+                    self.instantiate_generic_enums_in_type_node(param)?;
+                }
+                self.instantiate_generic_enums_in_type_node(returns)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Reject a generic enum that embeds itself with *different* type
+    /// arguments, which cannot be monomorphised.
+    ///
+    /// Ordinary recursion is fine, because the type argument stays the same and
+    /// one instantiation covers every level:
+    ///
+    /// ```mux
+    /// enum Tree<T> { Leaf, Node(T value, Tree<T> rest) }   // Tree<int> embeds Tree<int>
+    /// ```
+    ///
+    /// Growing recursion is not, because each level needs a new instantiation
+    /// and the sequence never repeats:
+    ///
+    /// ```mux
+    /// enum Nest<T> { Leaf(T v), N(Nest<list<T>> inner) }
+    /// // Nest<int> -> Nest<list<int>> -> Nest<list<list<int>>> -> ...
+    /// ```
+    ///
+    /// Rust rejects the same shape, reporting an overflow while expanding
+    /// `Vec<Vec<Vec<...>>>`. Caught here, before expanding, so the compiler says
+    /// what is wrong instead of failing to find a type it never built.
+    fn reject_growing_recursion(
+        &self,
+        enum_name: &str,
+        key: &str,
+        substituted: &[crate::ast::EnumVariant],
+    ) -> Result<(), String> {
+        for variant in substituted {
+            for (_, type_node) in variant.data.iter().flatten() {
+                let TypeKind::Named(nested, nested_args) = &type_node.kind else {
+                    continue;
+                };
+                if nested != enum_name {
+                    continue;
+                }
+                let nested_types: Vec<Type> = nested_args
+                    .iter()
+                    .map(|a| self.type_node_to_type(a))
+                    .collect();
+                let nested_key = self.mangled_enum_name(nested, &nested_types);
+                if nested_key != key {
+                    return Err(format!(
+                        "enum '{}' cannot be built: variant '{}' contains '{}', so each level needs a new type. Recursion is allowed when the type argument stays the same, as in Tree<T> holding Tree<T>",
+                        key, variant.name, nested_key
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The codegen name of a generic enum instantiation: `Box` with `[int]`
+    /// becomes `Box$int`. A non-generic enum keeps its own name.
+    ///
+    /// Pure, so the many places that map a `Type` to an enum name can use it
+    /// without needing to generate anything.
+    pub(super) fn mangled_enum_name(&self, enum_name: &str, type_args: &[Type]) -> String {
+        // Only a fully concrete instantiation has its own stamped-out type. The
+        // enum's own declaration still refers to itself as `Tree<T>`, and that
+        // must keep meaning `Tree` rather than a `Tree$T` that never exists.
+        if type_args.is_empty() || !type_args.iter().all(|arg| self.is_concrete_type_arg(arg)) {
+            return enum_name.to_string();
+        }
+        self.build_variant_key(enum_name, type_args)
+    }
+
+    /// Whether a type argument names a real type rather than a type parameter.
+    ///
+    /// A parameter reaches codegen as `Type::Named("T", [])` - indistinguishable
+    /// from a class or enum called `T` by shape alone - so the symbol table is
+    /// what separates them.
+    fn is_concrete_type_arg(&self, arg: &Type) -> bool {
+        match arg {
+            Type::Generic(_) | Type::Variable(_) => false,
+            Type::Named(name, args) => {
+                let names_a_type =
+                    self.analyzer
+                        .symbol_table()
+                        .lookup(name)
+                        .is_some_and(|symbol| {
+                            matches!(
+                                symbol.kind,
+                                crate::semantics::SymbolKind::Class
+                                    | crate::semantics::SymbolKind::Enum
+                                    | crate::semantics::SymbolKind::Interface
+                            )
+                        });
+                names_a_type && args.iter().all(|a| self.is_concrete_type_arg(a))
+            }
+            Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => {
+                self.is_concrete_type_arg(inner)
+            }
+            Type::Map(k, v) | Type::Tuple(k, v) | Type::Result(k, v) => {
+                self.is_concrete_type_arg(k) && self.is_concrete_type_arg(v)
+            }
+            _ => true,
+        }
+    }
+
+    /// Stamp out a generic enum for one set of type arguments, if it does not
+    /// exist yet, and return the instantiation's name.
+    ///
+    /// Enums are monomorphised rather than type-erased: `Box<int>` gets its own
+    /// struct holding a real `i64`, its own constructors, and its own RC glue.
+    /// Unlike a class, none of that needs the runtime - an enum is an inline
+    /// tagged struct with compiler-generated glue and no object registration -
+    /// so this is entirely a compile-time expansion (issue #359).
+    pub(super) fn ensure_enum_instantiated(
+        &mut self,
+        enum_name: &str,
+        type_args: &[Type],
+    ) -> Result<String, String> {
+        if type_args.is_empty() {
+            return Ok(enum_name.to_string());
+        }
+        let key = self.build_variant_key(enum_name, type_args);
+        if self.type_map.contains_key(&key) {
+            return Ok(key);
+        }
+
+        let Some(variants) = self.enum_asts.get(enum_name).cloned() else {
+            // Not a generic enum we have an AST for; leave the name alone.
+            return Ok(enum_name.to_string());
+        };
+        let param_names: Vec<String> = self
+            .analyzer
+            .symbol_table()
+            .lookup(enum_name)
+            .map(|symbol| {
+                symbol
+                    .type_params
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if param_names.len() != type_args.len() {
+            return Err(format!(
+                "Enum {} takes {} type argument(s), got {}",
+                enum_name,
+                param_names.len(),
+                type_args.len()
+            ));
+        }
+        let substitution: std::collections::HashMap<String, Type> = param_names
+            .into_iter()
+            .zip(type_args.iter().cloned())
+            .collect();
+
+        let substituted: Vec<crate::ast::EnumVariant> = variants
+            .iter()
+            .map(|variant| crate::ast::EnumVariant {
+                name: variant.name.clone(),
+                data: variant.data.as_ref().map(|fields| {
+                    fields
+                        .iter()
+                        .map(|(field_name, type_node)| {
+                            (
+                                field_name.clone(),
+                                self.substitute_types_in_type_node(type_node, &substitution),
+                            )
+                        })
+                        .collect()
+                }),
+                where_clause: variant.where_clause.clone(),
+            })
+            .collect();
+
+        self.reject_growing_recursion(enum_name, &key, &substituted)?;
+
+        // Registered before generating, so a variant that embeds the same
+        // instantiation - `Tree<int>` inside `Tree<int>` - resolves to this one
+        // rather than expanding again.
+        self.enum_asts.insert(key.clone(), substituted.clone());
+        // Generating constructors moves the builder into their bodies, and this
+        // runs mid-expression from a construction or match site, so the caller's
+        // insertion point has to be put back - the same reason
+        // `generate_specialized_methods` saves it.
+        let saved_block = self.builder.get_insert_block();
+        let result = self
+            .generate_enum_type(&key, &substituted)
+            .and_then(|()| self.generate_enum_constructors(&key, &substituted));
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+        result?;
+        Ok(key)
+    }
+
     fn build_variant_key(&self, class_name: &str, type_args: &[Type]) -> String {
         let variant_suffix = type_args
             .iter()

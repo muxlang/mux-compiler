@@ -222,13 +222,17 @@ impl<'a> CodeGenerator<'a> {
     /// which are boxed `*mut Value`s rather than inline structs), return its
     /// name. Used to decide whether a struct-valued local needs enum drop-glue.
     pub(super) fn user_enum_type_name(&self, ty: &Type) -> Option<String> {
-        let Type::Named(name, _) = ty else {
+        let Type::Named(name, args) = ty else {
             return None;
         };
         if name == "optional" || name == "result" {
             return None;
         }
-        self.enum_variants.contains_key(name).then(|| name.clone())
+        // A generic enum answers under its instantiation name, so callers get
+        // `Box$int` and reach the stamped-out struct and glue (issue #359).
+        self.enum_variants
+            .contains_key(name)
+            .then(|| self.mangled_enum_name(name, args))
     }
 
     /// Convert a user-enum value to the inline struct every consumer expects.
@@ -272,7 +276,23 @@ impl<'a> CodeGenerator<'a> {
         if name == "optional" || name == "result" {
             return None;
         }
-        self.enum_variants.contains_key(name).then(|| name.clone())
+        if !self.enum_variants.contains_key(name) {
+            return None;
+        }
+        // A nested generic payload names the instantiation, so `Tree<int>`
+        // inside `Tree$int` embeds `Tree$int` and not the uninstantiated
+        // `Tree`, whose layout is a different shape (issue #359).
+        let args = self.type_node_args_as_types(type_node);
+        Some(self.mangled_enum_name(name, &args))
+    }
+
+    /// The type arguments of a named `TypeNode`, resolved to semantic types.
+    /// Empty for a non-generic reference.
+    fn type_node_args_as_types(&self, type_node: &crate::ast::TypeNode) -> Vec<Type> {
+        let crate::ast::TypeKind::Named(_, args) = &type_node.kind else {
+            return Vec::new();
+        };
+        args.iter().map(|arg| self.type_node_to_type(arg)).collect()
     }
 
     /// Whether `from` embeds `target` as a nested user-enum payload, directly or

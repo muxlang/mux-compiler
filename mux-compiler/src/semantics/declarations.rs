@@ -521,6 +521,72 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// Reject an enum that contains itself with different type arguments.
+    ///
+    /// Ordinary recursion is fine - the type argument stays the same, so one
+    /// instantiation covers every level:
+    ///
+    /// ```text
+    /// enum Tree<T> { Leaf, Node(T value, Tree<T> rest) }
+    /// ```
+    ///
+    /// Growing recursion cannot be built, because each level needs a new type
+    /// and the sequence never repeats:
+    ///
+    /// ```text
+    /// enum Nest<T> { Leaf(T v), N(Nest<list<T>> inner) }
+    /// Nest<int> -> Nest<list<int>> -> Nest<list<list<int>>> -> ...
+    /// ```
+    ///
+    /// Rust rejects the same shape while expanding `Vec<Vec<Vec<...>>>`. Caught
+    /// at the declaration rather than at a use, so the error names the line that
+    /// is actually wrong and appears even if nobody instantiates the enum.
+    fn reject_growing_self_reference(
+        &mut self,
+        enum_name: &str,
+        type_params: &[(String, Vec<TraitBound>)],
+        variant: &EnumVariant,
+    ) {
+        if type_params.is_empty() {
+            return;
+        }
+        for (_, type_node) in variant.data.iter().flatten() {
+            let TypeKind::Named(nested, nested_args) = &type_node.kind else {
+                continue;
+            };
+            if nested != enum_name {
+                continue;
+            }
+            // Self-reference is only safe when every argument is the enum's own
+            // parameter, in the same position.
+            let unchanged = nested_args.len() == type_params.len()
+                && nested_args.iter().zip(type_params).all(|(arg, (param, _))| {
+                    matches!(&arg.kind, TypeKind::Named(n, a) if n == param && a.is_empty())
+                });
+            if unchanged {
+                continue;
+            }
+            self.errors.push(SemanticError::with_help(
+                format!(
+                    "Enum '{}' contains itself with different type arguments",
+                    enum_name
+                ),
+                type_node.span,
+                format!(
+                    "Each level would need a new type, so '{}' can never be built. Recursion is allowed when the argument stays the same, as in '{}<{}>'.",
+                    enum_name,
+                    enum_name,
+                    type_params
+                        .iter()
+                        .map(|(p, _)| p.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+            return;
+        }
+    }
+
     fn collect_enum_symbol(
         &mut self,
         name: &str,
@@ -545,6 +611,7 @@ impl SemanticAnalyzer {
         let mut variant_names = Vec::new();
         for variant in variants {
             self.reject_unnamed_payload_fields(name, variant);
+            self.reject_growing_self_reference(name, type_params, variant);
             variant_names.push(variant.name.clone());
             let params = variant
                 .data

@@ -1080,8 +1080,14 @@ impl SemanticAnalyzer {
                 ));
             }
             if arity == 0 {
-                // A payload-less variant is a value, so it has the enum's type.
-                return Ok(Type::Named(enum_name, vec![]));
+                // A payload-less variant is a value, so it has the enum's type -
+                // including its type arguments, so `Tree<int>.Leaf` is a
+                // `Tree<int>` and not a bare `Tree` (issue #359).
+                let type_args = match &expr_type {
+                    Type::Named(_, args) | Type::Instantiated(_, args) => args.clone(),
+                    _ => Vec::new(),
+                };
+                return Ok(Type::Named(enum_name, type_args));
             }
             return Err(Self::enum_variant_needs_arguments(
                 &enum_name, field, arity, span,

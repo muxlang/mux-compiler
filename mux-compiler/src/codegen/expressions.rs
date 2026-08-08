@@ -3117,7 +3117,12 @@ impl<'a> CodeGenerator<'a> {
         // never exists - which is the "Method 'Box.Full' not found" in issue
         // #359.
         if class_symbol.kind == crate::semantics::SymbolKind::Enum {
-            return self.generate_enum_symbol_method_call(&resolved_class_name, field, args);
+            let concrete: Vec<Type> = resolved_type_args
+                .iter()
+                .map(|arg| self.resolve_type(arg))
+                .collect::<Result<Vec<_>, _>>()?;
+            let instance = self.ensure_enum_instantiated(&resolved_class_name, &concrete)?;
+            return self.generate_enum_symbol_method_call(&instance, field, args);
         }
         let Some(method) = class_symbol.methods.get(field) else {
             return Err(format!(
@@ -3583,6 +3588,20 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
         let Some(enum_name) = self.enum_name_from_type_reference(expr) else {
             return Ok(None);
+        };
+        // `Tree<int>.Leaf` must build the instantiation's constructor, not the
+        // uninstantiated one, or the value carries the wrong layout (issue #359).
+        let enum_name = if let ExpressionKind::GenericType(_, type_args) = &expr.kind {
+            let concrete = type_args
+                .iter()
+                .map(|arg| {
+                    let ty = self.type_node_to_type(arg);
+                    self.resolve_type(&ty)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.ensure_enum_instantiated(&enum_name, &concrete)?
+        } else {
+            enum_name
         };
         self.generate_enum_symbol_method_call(&enum_name, field, &[])
     }
