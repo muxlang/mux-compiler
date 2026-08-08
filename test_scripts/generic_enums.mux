@@ -79,5 +79,22 @@ func main() returns void {
     optional<Box<int>> wrapped = some(Box<int>.Full(6))
     print("wrapped ok")
 
+    // A set, which orders through the instantiation's compare glue.
+    auto unique = {Box<int>.Full(1), Box<int>.Full(2), Box<int>.Full(1)}
+    print(unique.size().to_string())
+
+    // A type argument that is itself a collection.
+    auto nested = Box<list<int>>.Full([1, 2, 3])
+    match nested {
+        Empty { print("empty") }
+        Full(v) { print(v.len().to_string()) }
+    }
+
+    // Two instantiations that differ only by parameter order.
+    auto ab = Pair<int, string>.Both(1, "x")
+    auto ba = Pair<string, int>.Both("y", 2)
+    match ab { Both(l, r) { print(l.to_string() + r) } }
+    match ba { Both(l, r) { print(l + r.to_string()) } }
+
     return
 }

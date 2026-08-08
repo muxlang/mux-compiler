@@ -48,6 +48,15 @@ impl<'a> CodeGenerator<'a> {
                 // Retained so a generic enum can be stamped out per
                 // instantiation later, when the type arguments are known.
                 self.enum_asts.insert(name.clone(), variants.clone());
+                // A variant payload may name an instantiation of another
+                // generic enum, and this enum's layout needs it to exist first.
+                // `enum_generation_order` already puts the embedded enum ahead
+                // of this one, so its AST is available to stamp from.
+                for variant in variants {
+                    for (_, type_node) in variant.data.iter().flatten() {
+                        self.instantiate_generic_enums_in_type_node(type_node)?;
+                    }
+                }
                 self.generate_enum_type(name, variants)?;
             }
         }

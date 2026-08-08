@@ -1,0 +1,38 @@
+// An enum whose variant payload is an instantiation of another generic enum.
+// The embedded instantiation has to exist before this enum's layout is built,
+// which is a third place instantiation is driven from - alongside function
+// signatures and class fields (issue #359).
+
+enum Box<T> { Empty, Full(T value) }
+
+enum Wrap {
+    None_,
+    Counted(Box<int> counted),
+    Named(Box<string> named)
+}
+
+func show(Wrap w) returns string {
+    match w {
+        None_ { return "none" }
+        Counted(b) {
+            match b {
+                Empty { return "counted empty" }
+                Full(v) { return "counted " + v.to_string() }
+            }
+        }
+        Named(b) {
+            match b {
+                Empty { return "named empty" }
+                Full(v) { return "named " + v }
+            }
+        }
+    }
+}
+
+func main() returns void {
+    print(show(Wrap.Counted(Box<int>.Full(5))))
+    print(show(Wrap.Named(Box<string>.Full("deep"))))
+    print(show(Wrap.Counted(Box<int>.Empty)))
+    print(show(Wrap.None_))
+    return
+}
