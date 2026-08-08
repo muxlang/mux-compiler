@@ -1,0 +1,65 @@
+// Bounds are checked against the concrete type at the call, and using an
+// operator on a type parameter requires the matching bound (issue #361).
+//
+// Two implications hold: Comparable and Hashable each grant Equatable, because
+// ordering and keying both already rest on being able to tell values apart.
+// Without them a search tree would have to declare <T is Comparable & Equatable>
+// to order on '<' and stop on '=='.
+
+func same<T is Equatable>(T a, T b) returns bool {
+    return a == b
+}
+
+func differs<T is Equatable>(T a, T b) returns bool {
+    return a != b
+}
+
+// Comparable alone, and the body uses both '<' and '=='.
+func clamp_low<T is Comparable>(T value, T floor) returns T {
+    if value == floor { return floor }
+    if value < floor { return floor }
+    return value
+}
+
+// Hashable alone, and the body uses '=='.
+func seen_before<T is Hashable>(list<T> seen, T candidate) returns bool {
+    int i = 0
+    while i < seen.len() {
+        if seen[i] == candidate { return true }
+        i = i + 1
+    }
+    return false
+}
+
+enum Color { Red, Green }
+
+func main() returns void {
+    print(same(1, 1).to_string())
+    print(differs("a", "b").to_string())
+
+    // Collections satisfy Equatable, which the bound table has to agree with
+    // since '==' compares them structurally.
+    list<int> p = [1, 2]
+    list<int> q = [1, 2]
+    print(same(p, q).to_string())
+
+    auto t1 = (1, "x")
+    auto t2 = (1, "x")
+    print(same(t1, t2).to_string())
+
+    optional<int> o1 = some(3)
+    optional<int> o2 = some(3)
+    print(same(o1, o2).to_string())
+
+    // A user enum is Equatable and Hashable, but deliberately not Stringable.
+    // Going through `same` after the tuple and optional calls above also covers
+    // the instantiation naming: those three types used to share one mangled
+    // name (issue #371).
+    print(same(Color.Red, Color.Red).to_string())
+    print(seen_before([Color.Red, Color.Green], Color.Green).to_string())
+
+    print(clamp_low(5, 2).to_string())
+    print(clamp_low(1, 2).to_string())
+
+    return
+}

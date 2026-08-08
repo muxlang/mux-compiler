@@ -1,0 +1,16 @@
+// Should fail: an unsatisfied Comparable bound used to compile and produce a
+// nonsense answer, which is worse than the internal error the others gave.
+class Point {
+    int x
+}
+
+func biggest<T is Comparable>(T a, T b) returns T {
+    if a > b { return a }
+    return b
+}
+
+func main() returns void {
+    auto r = biggest(Point.new(), Point.new())
+    print("unreachable")
+    return
+}

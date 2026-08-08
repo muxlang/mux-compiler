@@ -384,6 +384,10 @@ impl SemanticAnalyzer {
                 "'{}' is a class or an interface, and only enums compare structurally. Give '{}' a method that compares two values and call it directly, or model the type as an enum if it is a fixed set of alternatives.",
                 name, name
             ),
+            Type::Generic(name) | Type::Variable(name) => format!(
+                "'{}' is a type parameter with no 'Equatable' bound, so '{}' is not available on it. Declare the bound, as in <{} is Equatable>.",
+                name, op, name
+            ),
             Type::Function { .. } => {
                 format!("Functions cannot be compared with '{}'.", op)
             }
@@ -607,26 +611,88 @@ impl SemanticAnalyzer {
         func_name: &str,
         substitutions: &mut std::collections::HashMap<String, Type>,
     ) {
-        let mut func_node_opt = None;
-        for module_nodes in self.all_module_asts.values() {
-            for node in module_nodes {
-                if let AstNode::Function(func) = node
-                    && func.name == func_name
-                {
-                    func_node_opt = Some(func);
-                    break;
-                }
-            }
-            if func_node_opt.is_some() {
-                break;
-            }
-        }
-
-        let Some(func_node) = func_node_opt else {
+        let Some(func_node) = self.function_node_by_name(func_name) else {
             return;
         };
 
         infer_missing_type_params_from_bounds(&func_node.type_params, substitutions);
+    }
+
+    /// The AST node of a top-level function by name, across every loaded module.
+    fn function_node_by_name(&self, func_name: &str) -> Option<&crate::ast::FunctionNode> {
+        self.all_module_asts
+            .values()
+            .flatten()
+            .find_map(|node| match node {
+                AstNode::Function(func) if func.name == func_name => Some(func),
+                _ => None,
+            })
+    }
+
+    /// Check each inferred type argument against the bounds its parameter
+    /// declares.
+    ///
+    /// Nothing did this before: `<T is Stringable>` accepted any type at all and
+    /// the missing capability surfaced in codegen as an internal error, or - for
+    /// `Comparable` - as code that compiled and produced a nonsense answer
+    /// (issue #361).
+    fn check_declared_bounds(
+        &self,
+        func_name: &str,
+        substitutions: &std::collections::HashMap<String, Type>,
+        span: Span,
+    ) -> Result<(), SemanticError> {
+        // Read the bounds off the function symbol rather than the AST: the AST
+        // map holds imported modules only, so a generic declared in the file
+        // being compiled would never be found.
+        let Some(symbol) = self.symbol_table.lookup(func_name) else {
+            return Ok(());
+        };
+        if symbol.kind != SymbolKind::Function {
+            return Ok(());
+        }
+        for (param_name, bound_names) in &symbol.type_params {
+            let Some(concrete) = substitutions.get(param_name) else {
+                continue;
+            };
+            // A parameter still standing for a type variable is not yet known;
+            // the check belongs to whatever instantiation resolves it.
+            if matches!(concrete, Type::Generic(_) | Type::Variable(_)) {
+                continue;
+            }
+            for bound in bound_names {
+                if self.type_implements_interface(concrete, bound) {
+                    continue;
+                }
+                return Err(SemanticError::with_help(
+                    format!("'{}' does not satisfy '{}'", format_type(concrete), bound),
+                    span,
+                    Self::unsatisfied_bound_help(bound, concrete, param_name),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Say what the type is missing, for the four built-in capabilities where
+    /// that is knowable, rather than only restating the bound.
+    fn unsatisfied_bound_help(bound: &str, concrete: &Type, param_name: &str) -> String {
+        let detail = match bound {
+            "Stringable" => "has no 'to_string' method",
+            "Equatable" => "cannot be compared with '=='",
+            "Comparable" => "cannot be ordered with '<'",
+            "Hashable" => "cannot be used as a map key or set member",
+            _ => {
+                return format!("'{}' is required to satisfy '{}' here.", param_name, bound);
+            }
+        };
+        format!(
+            "'{}' is bound by '{}', but {} {}.",
+            param_name,
+            bound,
+            format_type(concrete),
+            detail
+        )
     }
 
     pub(super) fn get_builtin_sig(&self, name: &str) -> Option<&BuiltInSig> {
@@ -1668,6 +1734,8 @@ impl SemanticAnalyzer {
                 &mut substitutions_by_original_name,
             );
 
+            self.check_declared_bounds(func_name, &substitutions_by_original_name, expr_span)?;
+
             for (original, ty) in substitutions_by_original_name {
                 let fresh = rename_map.get(&original).cloned().unwrap_or(original);
                 unifier.substitutions.entry(fresh).or_insert(ty);
@@ -2612,12 +2680,70 @@ impl SemanticAnalyzer {
         self.type_implements_interface_with_args(type_, interface_name, &[])
     }
 
+    /// Whether `type_` has one of the built-in capabilities, or `None` if
+    /// `interface_name` is not one of them.
+    ///
+    /// Each answer delegates to the check that governs the operation itself, so
+    /// a bound cannot promise something the operator then refuses. Without this
+    /// the bounds answered only for primitives and for named symbols with a
+    /// declared `interfaces` entry, so `<T is Equatable>` would have rejected a
+    /// `list<int>` that `==` compares perfectly well (issue #361).
+    fn satisfies_builtin_capability(&self, type_: &Type, interface_name: &str) -> Option<bool> {
+        match interface_name {
+            // Exactly what `==` accepts. A type parameter is deliberately not
+            // answered here: it falls through to the declared bounds in
+            // `current_bounds`, which is also what stops this recursing, since
+            // `resolve_equality_binary_operator` asks this question back for one.
+            "Equatable" => match type_ {
+                Type::Generic(_) | Type::Variable(_) => None,
+                _ => Some(self.resolve_equality_binary_operator(type_).is_some()),
+            },
+            // Exactly what may be a map key or set member.
+            "Hashable" => Some(self.is_hashable_type(type_)),
+            // Exactly what `<` accepts. Not delegated, because
+            // `resolve_comparison_binary_operator` asks this question back.
+            "Comparable" => match type_ {
+                Type::Primitive(PrimitiveType::Int | PrimitiveType::Float | PrimitiveType::Str) => {
+                    Some(true)
+                }
+                Type::Named(_, _) | Type::Variable(_) | Type::Generic(_) => None,
+                _ => Some(false),
+            },
+            // Collections, tuples and the built-in wrappers render themselves.
+            // User enums deliberately do not - only the author knows whether
+            // HTTPCode.Ok should print as "Ok" or "200" - so they fall through
+            // to the declared-interface check like any other named type.
+            "Stringable" => match type_ {
+                Type::List(_)
+                | Type::Map(_, _)
+                | Type::Set(_)
+                | Type::Tuple(_, _)
+                | Type::Optional(_)
+                | Type::Result(_, _)
+                | Type::EmptyList
+                | Type::EmptyMap
+                | Type::EmptySet => Some(true),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn type_implements_interface_with_args(
         &self,
         type_: &Type,
         interface_name: &str,
         interface_args: &[Type],
     ) -> bool {
+        // The four built-in capability interfaces answer for every type that
+        // actually has the capability, not only for symbols with a declared
+        // `interfaces` entry. Consulted first, and only when no interface
+        // arguments were supplied, since none of them are generic.
+        if interface_args.is_empty()
+            && let Some(answer) = self.satisfies_builtin_capability(type_, interface_name)
+        {
+            return answer;
+        }
         match type_ {
             Type::Named(name, _) => {
                 self.type_implements_interface_with_named(name, interface_name, interface_args)
@@ -2715,12 +2841,35 @@ impl SemanticAnalyzer {
     ) -> bool {
         if let Some(bounds) = self.current_bounds.get(var) {
             bounds.iter().any(|(bound_name, bound_args)| {
-                bound_name == interface_name
+                Self::bound_grants(bound_name, interface_name)
                     && (interface_args.is_empty() || bound_args == interface_args)
             })
         } else {
             false
         }
+    }
+
+    /// Whether declaring `declared` also grants `wanted`.
+    ///
+    /// Two implications hold, and both are true by construction rather than
+    /// convention:
+    ///
+    /// - `Comparable` grants `Equatable`. A type whose values can be ordered can
+    ///   be told apart, and every type `<` accepts is one `==` accepts.
+    /// - `Hashable` grants `Equatable`. A map lookup compares keys, so a type
+    ///   usable as a key already supports equality - and `is_hashable_type`
+    ///   admits exactly primitives and user enums, all of which `==` accepts.
+    ///
+    /// Without these, every ordered or keyed generic would have to spell out
+    /// `<T is Comparable & Equatable>` to use both operators, which is what the
+    /// standard library's own containers would have needed: a search tree orders
+    /// on `<` and stops on `==`, and a graph keys on `T` and compares it
+    /// (issue #361).
+    fn bound_grants(declared: &str, wanted: &str) -> bool {
+        if declared == wanted {
+            return true;
+        }
+        wanted == "Equatable" && matches!(declared, "Comparable" | "Hashable")
     }
 
     fn get_builtin_interface_method(
@@ -3372,16 +3521,21 @@ impl SemanticAnalyzer {
             // Classes and interfaces also land in Named, and only enums have
             // the generated structural compare.
             Type::Named(name, _) => self.is_enum_name(name),
-            // Placeholders, not types a value ever has: monomorphisation
-            // substitutes a concrete type before codegen, so the real check
-            // happens on the instantiation rather than here. Rejecting them
-            // would break every `func eq<T>(T a, T b) { return a == b }`.
+            // A type parameter must declare `Equatable` to be compared. Using
+            // the operator imposes the bound rather than inferring it, so the
+            // error lands on the declaration the reader can fix instead of on
+            // each instantiation. `<` already works this way via
+            // `resolve_comparison_binary_operator`, and a method call already
+            // imposes its own bound, so this makes `==` consistent with both
+            // (issue #361).
             //
-            // `Instantiated` is not among them: semantics never builds one (only
+            // `Instantiated` is absent: semantics never builds one (only
             // codegen's substitution helpers do), and `generate_equality_op` has
             // no arm for it, so accepting it could only ever admit an internal
             // compiler error.
-            Type::Generic(_) | Type::Variable(_) => true,
+            Type::Generic(_) | Type::Variable(_) => {
+                self.type_implements_interface(left_type, "Equatable")
+            }
             _ => false,
         };
 

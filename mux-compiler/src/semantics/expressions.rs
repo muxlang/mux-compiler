@@ -579,11 +579,7 @@ impl SemanticAnalyzer {
         key_expr: &ExpressionNode,
         key_type: &Type,
     ) -> Result<(), SemanticError> {
-        // A primitive, or a user enum (which orders structurally via its compare
-        // glue, issue #309), can key a map.
-        let is_hashable =
-            matches!(key_type, Type::Primitive(_)) || self.is_user_enum_type(key_type);
-        if !is_hashable {
+        if !self.is_hashable_type(key_type) {
             return Err(SemanticError::with_help(
                 format!(
                     "Map keys must be a hashable type, found '{}'",
@@ -594,6 +590,15 @@ impl SemanticAnalyzer {
             ));
         }
         Ok(())
+    }
+
+    /// Whether `ty` can key a map or be a set member: a primitive, or a user
+    /// enum, which orders structurally through its compare glue (issue #309).
+    ///
+    /// Shared with the `Hashable` bound so the bound cannot promise something
+    /// a map literal then rejects (issue #361).
+    pub(super) fn is_hashable_type(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Primitive(_)) || self.is_user_enum_type(ty)
     }
 
     /// Whether `ty` is a user-declared enum (a `Named` type resolving to an enum
