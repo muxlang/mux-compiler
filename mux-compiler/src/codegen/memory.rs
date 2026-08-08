@@ -40,6 +40,10 @@ enum FieldGlue {
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
+/// Every NaN hashes to this, because the comparison glue reports two NaNs as
+/// equal while their bit patterns can differ.
+const NAN_HASH: u64 = 0x7fff_ffff_ffff_ffff;
+
 enum CompareKind<'a> {
     /// An inline scalar (int/bool/char/float): compared directly on its bits.
     Scalar(BasicTypeEnum<'a>),
@@ -1182,6 +1186,49 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    /// Hash a float by its bits, after canonicalizing the two cases where equal
+    /// values have different bit patterns.
+    ///
+    /// The comparison glue uses float semantics, so `0.0 == -0.0` and two NaNs
+    /// come out equal (neither `OLT` nor `OGT` holds, so the three-way result is
+    /// zero). Their bit patterns differ, so hashing the bits directly breaks the
+    /// rule that equal values hash equally - a set built from `M.At(0.0)` and
+    /// `M.At(-0.0)` ended up holding both.
+    ///
+    /// Adding zero collapses `-0.0` to `+0.0` and leaves every other value
+    /// alone, and NaN takes a fixed hash so all NaNs agree.
+    fn hash_float_canonically(
+        &mut self,
+        value: inkwell::values::FloatValue<'a>,
+    ) -> Result<inkwell::values::IntValue<'a>, String> {
+        let i64_type = self.context.i64_type();
+        let float_type = value.get_type();
+        let normalized = self
+            .builder
+            .build_float_add(value, float_type.const_zero(), "hash_fnorm")
+            .map_err(|e| e.to_string())?;
+        let bits = self
+            .builder
+            .build_bit_cast(normalized, i64_type, "hash_fbits")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        // `UNO` is true when either operand is NaN, and both are this value.
+        let is_nan = self
+            .builder
+            .build_float_compare(inkwell::FloatPredicate::UNO, value, value, "hash_fisnan")
+            .map_err(|e| e.to_string())?;
+        Ok(self
+            .builder
+            .build_select(
+                is_nan,
+                i64_type.const_int(NAN_HASH, false),
+                bits,
+                "hash_fcanon",
+            )
+            .map_err(|e| e.to_string())?
+            .into_int_value())
+    }
+
     /// Hash one payload field to `u64`, by the same four cases the comparison
     /// uses, so the two stay in step.
     fn emit_hash_field(
@@ -1203,13 +1250,7 @@ impl<'a> CodeGenerator<'a> {
                     .build_load(*ty, gep, "hash_la")
                     .map_err(|e| e.to_string())?;
                 if loaded.is_float_value() {
-                    // Hash a float by its bits, which matches comparing it by
-                    // value for every value Mux can produce here.
-                    return self
-                        .builder
-                        .build_bit_cast(loaded.into_float_value(), i64_type, "hash_fbits")
-                        .map_err(|e| e.to_string())
-                        .map(|v| v.into_int_value());
+                    return self.hash_float_canonically(loaded.into_float_value());
                 }
                 let as_int = loaded.into_int_value();
                 if as_int.get_type().get_bit_width() < 64 {
