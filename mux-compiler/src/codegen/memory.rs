@@ -812,8 +812,16 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<PointerValue<'a>, String> {
         if value.is_struct_value()
             && let Some(enum_name) = self.user_enum_type_name(elem_type)
-            && self.enum_has_rc_payload(&enum_name)
         {
+            // Every user enum, not only one with a reference-counted payload.
+            // A plain `box_value` makes an `Opaque`, which the runtime compares
+            // and hashes byte for byte - correct only because constructors
+            // zero-initialize the struct, so the padding and the unused bytes
+            // of the union slot happen to match. That invariant lived in codegen
+            // and was depended on by the runtime, with neither side saying so,
+            // and deleting the "redundant" zero-store would have silently broken
+            // enum map keys. A managed box carries the compare and hash glue, so
+            // equality rests on the enum's fields rather than on its bytes.
             return self.box_enum_managed(value.into_struct_value(), &enum_name);
         }
         Ok(self.box_value(value))

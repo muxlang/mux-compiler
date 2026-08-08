@@ -279,9 +279,10 @@ impl<'a> CodeGenerator<'a> {
     /// globals (see `register_enum_object_types`).
     fn generate_all_enum_object_support(&mut self, nodes: &[AstNode]) -> Result<(), String> {
         for node in nodes {
-            if let AstNode::Enum { name, .. } = node
-                && self.enum_has_rc_payload(name)
-            {
+            if let AstNode::Enum { name, .. } = node {
+                // Every enum, because every enum can now be boxed as a managed
+                // value and needs its compare and hash glue. The drop and clone
+                // glue for one without a reference-counted payload are trivial.
                 self.generate_enum_object_support(name)?;
             }
         }
