@@ -35,6 +35,11 @@ enum FieldGlue {
 
 /// How a variant payload field is compared for structural ordering (issue
 /// #309). Unlike `FieldGlue` this covers every field, including inline scalars.
+/// FNV-1a constants, used to combine an enum's discriminant and payload field
+/// hashes into one value.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
 enum CompareKind<'a> {
     /// An inline scalar (int/bool/char/float): compared directly on its bits.
     Scalar(BasicTypeEnum<'a>),
@@ -783,6 +788,9 @@ impl<'a> CodeGenerator<'a> {
         // as a map key or set member. Built up front for the same reason as the
         // RC glue: a lazy build mid-body would corrupt the insertion point.
         self.get_or_create_enum_cmp_fn(enum_name)?;
+        // Hash glue for the same reason: map and set are hash tables, so a
+        // payload-carrying enum needs a hash that agrees with its comparison.
+        self.get_or_create_enum_hash_fn(enum_name)?;
         Ok(())
     }
 
@@ -826,6 +834,7 @@ impl<'a> CodeGenerator<'a> {
             .get(&(enum_name.to_string(), EnumPayloadOp::Drop.label()))
             .ok_or_else(|| format!("Enum {} drop glue missing", enum_name))?;
         let cmp_glue = self.get_or_create_enum_cmp_fn(enum_name)?;
+        let hash_glue = self.get_or_create_enum_hash_fn(enum_name)?;
         let struct_type = struct_val.get_type();
         let temp = self
             .builder
@@ -850,6 +859,7 @@ impl<'a> CodeGenerator<'a> {
                     clone_glue.as_global_value().as_pointer_value().into(),
                     drop_glue.as_global_value().as_pointer_value().into(),
                     cmp_glue.as_global_value().as_pointer_value().into(),
+                    hash_glue.as_global_value().as_pointer_value().into(),
                 ],
                 "managed_enum_box",
             )
@@ -1040,6 +1050,232 @@ impl<'a> CodeGenerator<'a> {
             .build_load(self.context.i32_type(), disc_ptr, "cmp_disc")
             .map_err(|e| e.to_string())?
             .into_int_value())
+    }
+
+    /// Return (building it on first use) the structural hash function for an
+    /// enum: `u64 @mux_enum_hash_<Enum>(ptr a)`.
+    ///
+    /// Mirrors `get_or_create_enum_cmp_fn` field for field, and has to: the
+    /// runtime's map and set are hash tables, so two values `cmp_glue` calls
+    /// equal must hash equally. Hashing the raw bytes would not do - the inline
+    /// struct has padding between the discriminant and the payload, and that
+    /// padding is not guaranteed equal for two otherwise equal values.
+    ///
+    /// Combines with FNV-1a, which is deterministic and needs no state.
+    pub(super) fn get_or_create_enum_hash_fn(
+        &mut self,
+        enum_name: &str,
+    ) -> Result<inkwell::values::FunctionValue<'a>, String> {
+        let key = (enum_name.to_string(), "hash");
+        if let Some(existing) = self.enum_glue_fns.get(&key) {
+            return Ok(*existing);
+        }
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i64_type = self.context.i64_type();
+        let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
+        let function =
+            self.module
+                .add_function(&format!("mux_enum_hash_{}", enum_name), fn_type, None);
+        // Memoized before the body is built, so a self-embedding enum resolves
+        // the recursive call rather than expanding forever (issue #309).
+        self.enum_glue_fns.insert(key, function);
+
+        let struct_type = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(st)) => *st,
+            _ => return Err(format!("Enum {} is not a struct type", enum_name)),
+        };
+        let saved_block = self.builder.get_insert_block();
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let a = function
+            .get_nth_param(0)
+            .ok_or("enum hash function missing its parameter")?
+            .into_pointer_value();
+
+        let acc = self
+            .builder
+            .build_alloca(i64_type, "hash_acc")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(acc, i64_type.const_int(FNV_OFFSET_BASIS, false))
+            .map_err(|e| e.to_string())?;
+
+        // The discriminant always contributes, so two variants with the same
+        // payload bits still hash differently.
+        let disc = self.load_enum_discriminant_i32(struct_type, a)?;
+        let disc_wide = self
+            .builder
+            .build_int_z_extend(disc, i64_type, "hash_disc")
+            .map_err(|e| e.to_string())?;
+        self.mix_into_hash(acc, disc_wide)?;
+
+        let merge = self.context.append_basic_block(function, "hash_merge");
+        let variants = self
+            .enum_variants
+            .get(enum_name)
+            .cloned()
+            .ok_or_else(|| format!("Enum {} has no variant list", enum_name))?;
+        let mut cases = Vec::new();
+        for variant in &variants {
+            let fields = self.variant_compare_fields(enum_name, variant)?;
+            if fields.is_empty() {
+                continue;
+            }
+            let index = self.get_variant_index(enum_name, variant)?;
+            let case_block = self
+                .context
+                .append_basic_block(function, &format!("hash_{enum_name}_{variant}"));
+            self.builder.position_at_end(case_block);
+            for (idx, kind) in &fields {
+                let field_hash = self.emit_hash_field(struct_type, a, *idx, kind)?;
+                self.mix_into_hash(acc, field_hash)?;
+            }
+            self.builder
+                .build_unconditional_branch(merge)
+                .map_err(|e| e.to_string())?;
+            cases.push((
+                self.context.i32_type().const_int(index as u64, false),
+                case_block,
+            ));
+        }
+        self.builder.position_at_end(entry);
+        self.builder
+            .build_switch(disc, merge, &cases)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(merge);
+        let final_hash = self
+            .builder
+            .build_load(i64_type, acc, "hash_final")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_return(Some(&final_hash))
+            .map_err(|e| e.to_string())?;
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+        Ok(function)
+    }
+
+    /// `acc = (acc XOR value) * FNV_PRIME`, the FNV-1a step.
+    fn mix_into_hash(
+        &mut self,
+        acc: PointerValue<'a>,
+        value: inkwell::values::IntValue<'a>,
+    ) -> Result<(), String> {
+        let i64_type = self.context.i64_type();
+        let current = self
+            .builder
+            .build_load(i64_type, acc, "hash_cur")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let xored = self
+            .builder
+            .build_xor(current, value, "hash_xor")
+            .map_err(|e| e.to_string())?;
+        let mixed = self
+            .builder
+            .build_int_mul(xored, i64_type.const_int(FNV_PRIME, false), "hash_mul")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(acc, mixed)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Hash one payload field to `u64`, by the same four cases the comparison
+    /// uses, so the two stay in step.
+    fn emit_hash_field(
+        &mut self,
+        struct_type: inkwell::types::StructType<'a>,
+        a: PointerValue<'a>,
+        idx: usize,
+        kind: &CompareKind<'a>,
+    ) -> Result<inkwell::values::IntValue<'a>, String> {
+        let i64_type = self.context.i64_type();
+        let gep = self
+            .builder
+            .build_struct_gep(struct_type, a, (idx + 1) as u32, "hash_fa")
+            .map_err(|e| e.to_string())?;
+        match kind {
+            CompareKind::Scalar(ty) => {
+                let loaded = self
+                    .builder
+                    .build_load(*ty, gep, "hash_la")
+                    .map_err(|e| e.to_string())?;
+                if loaded.is_float_value() {
+                    // Hash a float by its bits, which matches comparing it by
+                    // value for every value Mux can produce here.
+                    return self
+                        .builder
+                        .build_bit_cast(loaded.into_float_value(), i64_type, "hash_fbits")
+                        .map_err(|e| e.to_string())
+                        .map(|v| v.into_int_value());
+                }
+                let as_int = loaded.into_int_value();
+                if as_int.get_type().get_bit_width() < 64 {
+                    return self
+                        .builder
+                        .build_int_z_extend(as_int, i64_type, "hash_widen")
+                        .map_err(|e| e.to_string());
+                }
+                Ok(as_int)
+            }
+            CompareKind::Pointer => {
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let loaded = self
+                    .builder
+                    .build_load(ptr_type, gep, "hash_pa")
+                    .map_err(|e| e.to_string())?;
+                let hash_fn = self
+                    .runtime_function("mux_value_hash")
+                    .ok_or("mux_value_hash not found")?;
+                Ok(self
+                    .builder
+                    .build_call(hash_fn, &[loaded.into()], "hash_value_call")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("mux_value_hash returned no value")?
+                    .into_int_value())
+            }
+            CompareKind::InlineEnum(inner) => {
+                let inner_hash = self.get_or_create_enum_hash_fn(inner)?;
+                Ok(self
+                    .builder
+                    .build_call(inner_hash, &[gep.into()], "hash_inline")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("nested enum hash returned no value")?
+                    .into_int_value())
+            }
+            CompareKind::BoxedEnum(inner) => {
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let unbox = self
+                    .runtime_function("mux_value_unbox_enum")
+                    .ok_or("mux_value_unbox_enum not found")?;
+                let boxed = self
+                    .builder
+                    .build_load(ptr_type, gep, "hash_ba")
+                    .map_err(|e| e.to_string())?;
+                let unboxed = self
+                    .builder
+                    .build_call(unbox, &[boxed.into()], "hash_ua")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("unbox returned no value")?;
+                let inner_hash = self.get_or_create_enum_hash_fn(inner)?;
+                Ok(self
+                    .builder
+                    .build_call(inner_hash, &[unboxed.into()], "hash_boxed")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("boxed enum hash returned no value")?
+                    .into_int_value())
+            }
+        }
     }
 
     /// Emit the guarded, in-order field comparisons for one variant's case

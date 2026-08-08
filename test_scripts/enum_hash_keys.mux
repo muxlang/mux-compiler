@@ -1,0 +1,43 @@
+// A payload-carrying enum as a map key and set member. map and set are hash
+// tables, so this needs the compiler-emitted hash glue to agree with the
+// compare glue: two values that compare equal must hash equally, or a lookup
+// misses and a set stops de-duplicating.
+//
+// Hashing the raw bytes would not do. The inline struct has padding between the
+// discriminant and the payload, so the glue hashes the discriminant and then
+// the active variant's fields, mirroring the comparison field for field.
+
+enum Tag { Blank, Name(string text) }
+enum Pair { Both(int left, string right) }
+enum Nested { Wrap(Tag inner), Empty }
+
+func main() returns void {
+    // Distinct payloads must be distinct keys, and a lookup must find them.
+    auto tags = {Tag.Name("alpha"): 1, Tag.Name("beta"): 2, Tag.Blank: 3}
+    print(tags.size().to_string())
+    print(tags[Tag.Name("beta")].to_string())
+    print(tags[Tag.Name("alpha")].to_string())
+    print(tags[Tag.Blank].to_string())
+
+    // Equal payloads must collapse to one entry.
+    auto seen = {Tag.Name("x"), Tag.Name("y"), Tag.Name("x")}
+    print(seen.size().to_string())
+    print(seen.contains(Tag.Name("y")).to_string())
+    print(seen.contains(Tag.Name("z")).to_string())
+
+    // Several fields, mixing an inline scalar with a pointer payload.
+    auto pairs = {Pair.Both(1, "one"): "first", Pair.Both(2, "two"): "second"}
+    print(pairs.size().to_string())
+    print(pairs[Pair.Both(2, "two")])
+
+    // A nested enum payload, which recurses into the inner enum's glue.
+    auto nested = {Nested.Wrap(Tag.Name("deep")): 10, Nested.Empty: 20}
+    print(nested.size().to_string())
+    print(nested[Nested.Wrap(Tag.Name("deep"))].to_string())
+
+    // Removal must find the entry too, and leave the rest intact.
+    auto removable = {Tag.Name("keep"): 1, Tag.Name("drop"): 2}
+    print(removable.size().to_string())
+
+    return
+}
