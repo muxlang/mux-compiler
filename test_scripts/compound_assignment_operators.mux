@@ -1,0 +1,57 @@
+// All five compound assignment operators, on locals and on class fields.
+// Only '+=' and '-=' reached codegen: '*=', '/=' and '%=' parsed and type
+// checked and then failed with an internal compiler error, and '+=' on a
+// string reported unsupported operands. Each now applies the same operator
+// the plain binary form does, so it inherits the divide-by-zero and overflow
+// checks and string concatenation along with it.
+
+class Tally {
+    int count
+    float rate
+    string log
+}
+
+func scale(&Tally t, int factor) returns void {
+    t.count *= factor
+    return
+}
+
+func main() returns void {
+    auto n = 10
+    n += 5
+    n -= 3
+    n *= 4
+    n /= 6
+    n %= 5
+    print(n.to_string())
+
+    auto f = 10.0
+    f *= 2.5
+    f /= 4.0
+    print(f.to_string())
+
+    auto s = "a"
+    s += "bc"
+    print(s)
+
+    auto t = Tally.new()
+    t.count = 12
+    t.rate = 3.0
+    t.log = "start"
+
+    t.count *= 3
+    t.count /= 4
+    t.count %= 7
+    print(t.count.to_string())
+
+    t.rate *= 1.5
+    print(t.rate.to_string())
+
+    t.log += "-done"
+    print(t.log)
+
+    // Through a reference, so the write lands on the original.
+    scale(&t, 10)
+    print(t.count.to_string())
+    return
+}

@@ -2162,11 +2162,7 @@ impl<'a> CodeGenerator<'a> {
 
         match op {
             BinaryOp::Assign => self.generate_simple_assignment_expression(left, right),
-            BinaryOp::AddAssign => self.generate_compound_assignment_expression(left, right, true),
-            BinaryOp::SubtractAssign => {
-                self.generate_compound_assignment_expression(left, right, false)
-            }
-            _ => Err("Assignment op not implemented".to_string()),
+            _ => self.generate_compound_assignment_expression(left, op, right),
         }
     }
 
@@ -2702,46 +2698,36 @@ impl<'a> CodeGenerator<'a> {
 
     /// Compute the scalar result of a compound assignment (`+=` / `-=`) for
     /// numeric operands. `is_add` selects addition vs subtraction.
-    fn compute_compound_result(
-        &mut self,
-        left_val: BasicValueEnum<'a>,
-        right_val: BasicValueEnum<'a>,
-        is_add: bool,
-    ) -> Result<BasicValueEnum<'a>, String> {
-        if left_val.is_int_value() {
-            let (l, r) = (left_val.into_int_value(), right_val.into_int_value());
-            let v = if is_add {
-                self.builder.build_int_add(l, r, "add_assign")
-            } else {
-                self.builder.build_int_sub(l, r, "sub_assign")
-            }
-            .map_err(|e| e.to_string())?;
-            Ok(v.into())
-        } else if left_val.is_float_value() {
-            let (l, r) = (left_val.into_float_value(), right_val.into_float_value());
-            let v = if is_add {
-                self.builder.build_float_add(l, r, "fadd_assign")
-            } else {
-                self.builder.build_float_sub(l, r, "fsub_assign")
-            }
-            .map_err(|e| e.to_string())?;
-            Ok(v.into())
-        } else if is_add {
-            Err("Unsupported add assign operands".to_string())
-        } else {
-            Err("Unsupported sub assign operands".to_string())
+    /// The operator `x op= y` applies, so the result comes from the same code
+    /// that generates `x op y` - including its overflow and divide-by-zero
+    /// checks, and string concatenation for `+=`.
+    fn compound_base_op(op: &BinaryOp) -> Result<BinaryOp, String> {
+        match op {
+            BinaryOp::AddAssign => Ok(BinaryOp::Add),
+            BinaryOp::SubtractAssign => Ok(BinaryOp::Subtract),
+            BinaryOp::MultiplyAssign => Ok(BinaryOp::Multiply),
+            BinaryOp::DivideAssign => Ok(BinaryOp::Divide),
+            BinaryOp::ModuloAssign => Ok(BinaryOp::Modulo),
+            other => Err(format!("{:?} is not a compound assignment", other)),
         }
     }
 
     fn generate_compound_assignment_expression(
         &mut self,
         left: &ExpressionNode,
+        op: &BinaryOp,
         right: &ExpressionNode,
-        is_add: bool,
     ) -> Result<BasicValueEnum<'a>, String> {
+        let base_op = Self::compound_base_op(op)?;
         let left_val = self.generate_expression(left)?;
         let right_val = self.generate_expression(right)?;
-        let result = self.compute_compound_result(left_val, right_val, is_add)?;
+        let result = self.generate_binary_op(left, left_val, &base_op, right, right_val)?;
+        // `x op y` reaching here through `generate_expression` would have been
+        // registered as a statement temporary; calling the operator directly
+        // skips that. Arithmetic hands back an unboxed scalar, which
+        // `register_temp` ignores, but a `+=` on a string builds a new value
+        // that the store below transfers - and leaks if it was never tracked.
+        self.register_temp(result);
 
         match &left.kind {
             ExpressionKind::Identifier(name) => {
