@@ -2716,8 +2716,13 @@ impl SemanticAnalyzer {
                 Type::Generic(_) | Type::Variable(_) => None,
                 _ => Some(self.resolve_equality_binary_operator(type_).is_some()),
             },
-            // Exactly what may be a map key or set member.
-            "Hashable" => Some(self.is_hashable_type(type_)),
+            // Exactly what may be a map key or set member. A type parameter
+            // is deliberately not answered here, for the same reason as
+            // `Equatable` above: it falls through to its declared bounds.
+            "Hashable" => match type_ {
+                Type::Generic(_) | Type::Variable(_) => None,
+                _ => Some(self.is_hashable_type(type_)),
+            },
             // Exactly what `<` accepts. Not delegated, because
             // `resolve_comparison_binary_operator` asks this question back.
             "Comparable" => match type_ {

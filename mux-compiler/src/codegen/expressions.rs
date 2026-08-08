@@ -2759,7 +2759,12 @@ impl<'a> CodeGenerator<'a> {
                 if let Some(t) = target_type {
                     self.overwrite_slot_with_owned(ptr, result, &t)?;
                 } else {
+                    // The referenced type could not be resolved, so the slot
+                    // takes the value as-is. Ownership still transfers into it:
+                    // leaving the value tracked would have the statement
+                    // boundary free what the slot now points at.
                     let boxed = self.box_value(result);
+                    self.untrack_temp(boxed.into());
                     self.store_boxed_into_slot(ptr, boxed)?;
                 }
                 Ok(result)

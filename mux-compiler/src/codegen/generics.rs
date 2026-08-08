@@ -176,7 +176,15 @@ impl<'a> CodeGenerator<'a> {
         if type_args.is_empty() {
             return Ok(enum_name.to_string());
         }
-        let key = self.build_variant_key(enum_name, type_args);
+        // Stamp out only what a reader will ask for. Every lookup goes through
+        // `mangled_enum_name`, which keeps the bare name whenever an argument
+        // is still a type parameter, so instantiating on the key alone built a
+        // whole `Box$T` - type, constructors and glue - under a name nothing
+        // would ever resolve to.
+        let key = self.mangled_enum_name(enum_name, type_args);
+        if key == enum_name {
+            return Ok(key);
+        }
         if self.type_map.contains_key(&key) {
             return Ok(key);
         }

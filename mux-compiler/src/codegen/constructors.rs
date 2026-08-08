@@ -355,22 +355,26 @@ impl<'a> CodeGenerator<'a> {
         name: &str,
         type_id_val: IntValue<'a>,
     ) -> Result<(), String> {
-        for (interface, method, register) in [
-            ("Equatable", "eq_glue", "mux_register_object_equals"),
-            ("Comparable", "cmp_glue", "mux_register_object_compare"),
+        for (method, register) in [
+            ("eq_glue", "mux_register_object_equals"),
+            ("cmp_glue", "mux_register_object_compare"),
             // `hash` returns an `int`, already the 64-bit value the runtime
-            // wants, so it is registered without a wrapper. It is still gated
-            // on the declaration, or a class with a `hash` method of its own
-            // would be registered as if it had promised the capability.
-            ("Hashable", "hash", "mux_register_object_hash"),
+            // wants, so it is registered without a wrapper. Its gate lives in
+            // `class_capability_method`, so a class with a `hash` method of its
+            // own is not registered as if it had promised the capability.
+            ("hash", "mux_register_object_hash"),
         ] {
-            if !self
-                .analyzer
-                .type_implements_named_interface(name, interface)
-            {
-                continue;
-            }
-            let Some(func) = self.module.get_function(&format!("{}.{}", name, method)) else {
+            // The glue exists only when the capability was both declared and
+            // implemented, so its presence is the gate for the two wrappers.
+            let func = if let Some(base) = method.strip_suffix("_glue") {
+                match self.class_capability_method(name, base) {
+                    Some(_) => self.module.get_function(&format!("{}.{}", name, method)),
+                    None => None,
+                }
+            } else {
+                self.class_capability_method(name, method)
+            };
+            let Some(func) = func else {
                 continue;
             };
             let register_func = self

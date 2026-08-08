@@ -214,17 +214,20 @@ a git dependency pinned by `Cargo.lock`; see the mux-runtime section of
   - A **generic enum** is fully monomorphized. `Box<int>` gets its own struct
     holding a real `i64`, its own constructors and its own glue. Verify with
     `mux build --intermediate`: `define { i32, i64 } @"Box$int!Full"(i64)`.
-  - A **generic class** specializes its method bodies (`Box$int.from`) over a
-    layout that is still boxed. Every class field is a `*mut Value`, generic or
-    concrete - `class Point { int x; float y; string label }` lays out as
-    `{ ptr, ptr, ptr }` - and one copy/destructor is shared across
-    instantiations.
+  - A **generic class** specializes its method bodies (`Box$int.from`) over one
+    shared layout, and one copy/destructor is shared across instantiations. A
+    field of a **type parameter** is a `*mut Value`; a concrete `int`, `float`,
+    `bool` or `char` field is stored inline, so
+    `class Point { int x; float y; string label }` lays out as
+    `{ i64, double, ptr }`. `string` stays a pointer - it is a primitive to the
+    language but a reference-counted value at runtime.
 
   The difference is not arbitrary: an enum is an inline tagged struct with
   compiler-generated glue and no runtime object registration, so it can be
   stamped out at compile time alone. A class registers with
-  `mux_register_object_type` and hands the runtime copy/destructor pointers, so
-  per-instantiation layouts would be a coupled compiler+runtime change.
+  `mux_register_object_type` and hands the runtime its copy, destructor,
+  equality, ordering and hash, so per-instantiation layouts would be a coupled
+  compiler+runtime change.
 
   **Check the emitted IR before claiming either does something.** The wrong
   version of this line ("all generics monomorphize") nearly caused generic enums

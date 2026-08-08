@@ -9,7 +9,7 @@ use crate::ast::{
 use crate::semantics::{MethodSig, Type};
 use inkwell::AddressSpace;
 use inkwell::types::{BasicType, BasicTypeEnum};
-use inkwell::values::{BasicValueEnum, IntValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use std::collections::HashMap;
 
 impl<'a> CodeGenerator<'a> {
@@ -303,15 +303,41 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    /// The suffix of the glue this capability is registered through, and the
-    /// class method it wraps.
+    /// The method each glue wraps, and the suffix it is emitted under.
     ///
     /// `Hashable` needs no glue: its `hash` returns an `int`, which is already
     /// the 64-bit value the runtime wants, so the method is registered as is.
-    const CAPABILITY_GLUE: [(&'static str, &'static str, &'static str); 2] = [
-        ("Equatable", "eq", "eq_glue"),
-        ("Comparable", "cmp", "cmp_glue"),
-    ];
+    const CAPABILITY_GLUE: [(&'static str, &'static str); 2] =
+        [("eq", "eq_glue"), ("cmp", "cmp_glue")];
+
+    /// Whether the class both declares a capability that needs `method` and
+    /// actually defines it.
+    ///
+    /// Equality is not gated on a literal `is Equatable`: `Comparable` and
+    /// `Hashable` grant it too, and `Hashable` requires the class to write
+    /// `eq`. Gating on the declaration alone left a `Hashable` class hashing
+    /// by field and matching by address, so a key never found its own entry.
+    pub(super) fn class_capability_method(
+        &self,
+        name: &str,
+        method: &str,
+    ) -> Option<FunctionValue<'a>> {
+        let declared = match method {
+            "eq" => self.analyzer.class_supports_equality(name),
+            "cmp" => self
+                .analyzer
+                .type_implements_named_interface(name, "Comparable"),
+            _ => self
+                .analyzer
+                .type_implements_named_interface(name, "Hashable"),
+        };
+        if !declared {
+            return None;
+        }
+        // A generic class only ever emits monomorphized method bodies, so the
+        // unspecialized name has nothing to call.
+        self.module.get_function(&format!("{}.{}", name, method))
+    }
 
     /// Generate the wrappers that let the runtime call a class's `eq` and `cmp`
     /// when it needs to match or order an instance - as a map key, a set member
@@ -322,20 +348,13 @@ impl<'a> CodeGenerator<'a> {
     /// to -1, 0 or 1. Truncating the `int` instead would turn a difference of
     /// exactly 2^32 into "equal".
     pub(super) fn generate_class_capability_glue(&mut self, name: &str) -> Result<(), String> {
-        for (interface, method, suffix) in Self::CAPABILITY_GLUE {
-            if !self
-                .analyzer
-                .type_implements_named_interface(name, interface)
-            {
-                continue;
-            }
-            // A generic class only ever emits monomorphized method bodies, so
-            // the unspecialized name has nothing to call.
-            let Some(target) = self.module.get_function(&format!("{}.{}", name, method)) else {
+        for (method, suffix) in Self::CAPABILITY_GLUE {
+            let Some(target) = self.class_capability_method(name, method) else {
                 continue;
             };
+            let is_equality = method == "eq";
             let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let return_type = if interface == "Equatable" {
+            let return_type = if is_equality {
                 self.context.i8_type()
             } else {
                 self.context.i32_type()
@@ -357,7 +376,7 @@ impl<'a> CodeGenerator<'a> {
                 .basic()
                 .ok_or_else(|| format!("{}.{} should return a value", name, method))?
                 .into_int_value();
-            let narrowed = if interface == "Equatable" {
+            let narrowed = if is_equality {
                 self.builder
                     .build_int_z_extend(result, return_type, "equal")
                     .map_err(|e| e.to_string())?
