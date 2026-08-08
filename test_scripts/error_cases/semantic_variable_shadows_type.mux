@@ -1,0 +1,20 @@
+// Should fail: a variable cannot take a declared type's name. The flat symbol
+// index is last-write-wins and lookup never consults the scope chain, so this
+// used to replace the enum program-wide rather than shadow it locally - the
+// enum then failed from functions that never mentioned the variable.
+enum Color { Red, Green }
+
+class Box {
+    int v
+}
+
+func unrelated() returns void {
+    auto Color = Box.new()
+    return
+}
+
+func main() returns void {
+    auto c = Color.Red
+    print("unreachable")
+    return
+}
