@@ -3391,11 +3391,11 @@ impl SemanticAnalyzer {
     /// Whether `name` names a user enum - one with the generated structural
     /// compare - as opposed to a class or an interface.
     ///
-    /// `optional` and `result` are excluded even when a program declares an enum
-    /// by those names, because codegen excludes them by name too: they are
-    /// seeded into `enum_variants` but are heap `*mut Value`s rather than inline
-    /// structs. Accepting a user enum called `optional` here would let it
-    /// through to the very error this check exists to prevent.
+    /// `optional` and `result` are excluded to mirror codegen, which excludes
+    /// them by name because they are heap `*mut Value`s rather than inline
+    /// structs despite being seeded into `enum_variants`. Declaring a type under
+    /// either name is now rejected outright (issue #369), so this is defence in
+    /// depth against the two sides drifting rather than a reachable case.
     fn is_enum_name(&self, name: &str) -> bool {
         if matches!(name, "optional" | "result") {
             return false;

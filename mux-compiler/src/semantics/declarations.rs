@@ -157,6 +157,27 @@ impl SemanticAnalyzer {
         Self::type_param_bounds(type_params)
     }
 
+    /// Reject a declaration that reuses a built-in type name.
+    ///
+    /// `optional` and `result` are types the compiler and runtime implement
+    /// together: they are boxed heap values with their own construction,
+    /// discriminant and payload calls, not inline structs. A user declaration
+    /// under either name is accepted by the symbol table and then overwrites the
+    /// built-in registration in codegen, so the program gets a type that looks
+    /// like its own and behaves like neither (issue #369).
+    ///
+    /// Rejecting the name is consistent with `none` already being a keyword.
+    fn reject_builtin_type_name(name: &str, kind: &str, span: &Span) -> Option<SemanticError> {
+        if !matches!(name, "optional" | "result") {
+            return None;
+        }
+        Some(SemanticError::with_help(
+            format!("Cannot declare {} named '{}'", kind, name),
+            *span,
+            format!("'{}' is a built-in type. Choose another name.", name),
+        ))
+    }
+
     fn collect_class_symbol(
         &mut self,
         name: &str,
@@ -166,6 +187,9 @@ impl SemanticAnalyzer {
         type_params: &[(String, Vec<TraitBound>)],
         span: &Span,
     ) -> Result<(), SemanticError> {
+        if let Some(e) = Self::reject_builtin_type_name(name, "a class", span) {
+            return Err(e);
+        }
         let implemented_interfaces = self.resolve_implemented_interfaces(traits, span)?;
         let type_param_bounds = self.register_type_param_symbols(type_params, span);
 
@@ -473,6 +497,10 @@ impl SemanticAnalyzer {
         // payload referencing one resolves leniently (as before), and this avoids
         // leaking the name into the global namespace where an unrelated later
         // annotation could pick it up.
+        if let Some(e) = Self::reject_builtin_type_name(name, "an enum", span) {
+            self.errors.push(e);
+            return;
+        }
         let type_param_bounds = Self::type_param_bounds(type_params);
 
         let mut methods = std::collections::HashMap::new();
@@ -524,6 +552,10 @@ impl SemanticAnalyzer {
         methods: &[FunctionNode],
         span: &Span,
     ) {
+        if let Some(e) = Self::reject_builtin_type_name(name, "an interface", span) {
+            self.errors.push(e);
+            return;
+        }
         let mut interface_methods = std::collections::HashMap::new();
         for method in methods {
             let param_types = method
