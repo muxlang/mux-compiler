@@ -3,8 +3,8 @@
 // matching, inner-payload extraction, copy bindings, and reassignment must all
 // work and leave no reference-counted payload leaked.
 
-enum Inner { Word(string), Number(int) }
-enum Outer { Wrap(Inner), Empty(Inner) }
+enum Inner { Word(string text), Number(int value) }
+enum Outer { Wrap(Inner inner), Empty(Inner inner) }
 
 func describe(Outer o) returns void {
     match o {

@@ -3,7 +3,7 @@
 // Covers an owned result (a constructor) and a borrowed one (returning a bound
 // parameter), both of which must hand the caller an independent, leak-free value.
 
-enum Status { Active(string), Inactive(int) }
+enum Status { Active(string reason), Inactive(int code) }
 
 func make(string label) returns Status {
     return Status.Active(label)

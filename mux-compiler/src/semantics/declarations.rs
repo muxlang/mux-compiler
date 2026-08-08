@@ -483,6 +483,44 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// Require a name on every payload field.
+    ///
+    /// Both `Code(int)` and `Code(int value)` used to be legal, and most
+    /// declarations skipped the name, so a reader could not tell what
+    /// `Cons(int, IntList)` held (mux-context#39, issue #370).
+    ///
+    /// The reason is readability, and parity with function parameters, which are
+    /// always named even though calls are positional. It is NOT about access:
+    /// a payload is read through the pattern, which binds positionally, so
+    /// `match s { Circ(radius) { .. } }` works either way. There is deliberately
+    /// no field access on an enum payload - the field does not exist on the
+    /// other variants - so naming is for the reader, not the compiler.
+    fn reject_unnamed_payload_fields(&mut self, enum_name: &str, variant: &EnumVariant) {
+        let Some(fields) = &variant.data else {
+            return;
+        };
+        for (field_name, type_node) in fields {
+            if field_name.is_some() {
+                continue;
+            }
+            self.errors.push(SemanticError::with_help(
+                format!(
+                    "Payload field of '{}.{}' needs a name",
+                    enum_name, variant.name
+                ),
+                type_node.span,
+                match self.resolve_type(type_node) {
+                    Ok(ty) => format!(
+                        "Write it as '{} <name>'. Every payload field is named, so a reader can tell what a variant holds.",
+                        format_type(&ty)
+                    ),
+                    Err(_) => "Give the field a name, so a reader can tell what the variant holds."
+                        .to_string(),
+                },
+            ));
+        }
+    }
+
     fn collect_enum_symbol(
         &mut self,
         name: &str,
@@ -506,6 +544,7 @@ impl SemanticAnalyzer {
         let mut methods = std::collections::HashMap::new();
         let mut variant_names = Vec::new();
         for variant in variants {
+            self.reject_unnamed_payload_fields(name, variant);
             variant_names.push(variant.name.clone());
             let params = variant
                 .data

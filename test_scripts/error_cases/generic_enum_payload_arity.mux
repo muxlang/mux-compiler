@@ -1,6 +1,6 @@
 // mux-compiler#289 / #299 review: a generic type with the wrong arity in an
 // enum variant payload must be rejected, including a forward reference.
-enum Wrapper { Of(Pair<int>) }
+enum Wrapper { Of(Pair<int> pair) }
 
 class Pair<A, B> {}
 

@@ -3,7 +3,7 @@
 // recursive drop/clone glue releases both the string and the box at every node,
 // and that a deep-cloned copy owns independent strings and boxes.
 
-enum Chain { Empty, Node(string, Chain) }
+enum Chain { Empty, Node(string label, Chain rest) }
 
 func describe(Chain c) returns void {
     match c {

@@ -3,8 +3,8 @@
 // de-duplicate in a set, look up the same map entry, and answer membership -
 // including recursive enums, whose comparison recurses through the box chain.
 
-enum Item { Named(string), Count(int) }
-enum IntList { Nil, Cons(int, IntList) }
+enum Item { Named(string name), Count(int total) }
+enum IntList { Nil, Cons(int head, IntList tail) }
 
 func main() returns void {
     // Set de-duplicates equal enums; membership is by value.

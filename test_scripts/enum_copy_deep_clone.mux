@@ -4,7 +4,7 @@
 // blocks at exit; the prints confirm the copy is independent of later changes to
 // the source.
 
-enum Status { Active(string), Inactive(int) }
+enum Status { Active(string reason), Inactive(int code) }
 
 auto s = Status.Active("first")
 

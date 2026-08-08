@@ -4,7 +4,7 @@
 print("=== Testing Basic Mixed Primitives ===")
 
 // Test 1: Enum with different primitive types per variant
-enum Status { Active(string), Inactive(int), Pending(bool), Code(char) }
+enum Status { Active(string reason), Inactive(int code), Pending(bool urgent), Code(char letter) }
 
 auto status1 = Status.Active("running")
 match status1 {
@@ -42,7 +42,7 @@ print("")
 print("=== Testing Collections as Enum Fields ===")
 
 // Test 2: Enum with collection types
-enum DataContainer { Names(list<string>), Scores(map<string, int>), Tags(set<string>) }
+enum DataContainer { Names(list<string> names), Scores(map<string, int> scores), Tags(set<string> tags) }
 
 auto data1 = DataContainer.Names(["Alice", "Bob", "Charlie"])
 match data1 {
@@ -71,7 +71,7 @@ print("")
 print("=== Testing Multiple Fields of Different Types ===")
 
 // Test 3: Enum with variants having different numbers and types of fields
-enum ComplexVariant { Simple(string), Detailed(string, int, bool), Numeric(int, float) }
+enum ComplexVariant { Simple(string label), Detailed(string label, int count, bool active), Numeric(int whole, float fraction) }
 
 auto var1 = ComplexVariant.Simple("just a message")
 match var1 {
@@ -107,7 +107,7 @@ print("")
 print("=== Testing Type-Specific Operations ===")
 
 // Test 4: Verify extracted values work correctly in operations
-enum Value { Text(string), Number(int) }
+enum Value { Text(string text), Number(int value) }
 
 auto val1 = Value.Text("Hello")
 auto val2 = Value.Text(" World")

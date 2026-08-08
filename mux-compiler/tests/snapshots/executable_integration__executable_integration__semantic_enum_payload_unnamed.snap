@@ -1,0 +1,21 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: 2 errors found
+
+error: Payload field of 'IntList.Cons' needs a name
+--> test_scripts/error_cases/semantic_enum_payload_unnamed.mux:6:10
+   |
+ 6 |     Cons(int, IntList)
+   |          ^^^
+   |
+= help: Write it as 'int <name>'. Every payload field is named, so a reader can tell what a variant holds.
+
+error: Payload field of 'IntList.Cons' needs a name
+--> test_scripts/error_cases/semantic_enum_payload_unnamed.mux:6:15
+   |
+ 6 |     Cons(int, IntList)
+   |               ^^^^^^^
+   |
+= help: Write it as 'IntList <name>'. Every payload field is named, so a reader can tell what a variant holds.

@@ -2,7 +2,7 @@
 // owned - each arm is normalized (borrowed arms deep-cloned) so a mixed
 // owned/borrowed ternary neither leaks the owned arm nor aliases the borrowed
 // one. The rc-leak-check CI leg asserts zero live blocks at exit.
-enum Status { Active(string), Inactive(int) }
+enum Status { Active(string reason), Inactive(int code) }
 
 auto other = Status.Active("shared")
 

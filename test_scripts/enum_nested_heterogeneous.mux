@@ -4,8 +4,8 @@
 // largest payload, and each variant reads/writes it through its own type, so all
 // variants construct, match, extract, reassign, and free correctly.
 
-enum Inner { W(string), Z(int) }
-enum Mix { Nested(Inner), Number(int), Text(string) }
+enum Inner { W(string text), Z(int value) }
+enum Mix { Nested(Inner inner), Number(int value), Text(string text) }
 
 func show(Mix m) returns void {
     match m {

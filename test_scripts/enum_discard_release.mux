@@ -3,7 +3,7 @@
 // released, or its constructor-retained payload leaks. Owned enum temporaries
 // are tracked and dropped on every exit path (fall-through and early return).
 // rc-leak-check asserts zero live blocks at exit.
-enum Status { Active(string), Inactive(int) }
+enum Status { Active(string reason), Inactive(int code) }
 
 // A callee borrows its enum parameter, so an owned enum argument must be
 // released by the caller after the call.
