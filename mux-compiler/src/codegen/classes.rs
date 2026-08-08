@@ -13,16 +13,33 @@ use inkwell::values::{BasicValueEnum, IntValue};
 use std::collections::HashMap;
 
 impl<'a> CodeGenerator<'a> {
+    /// The LLVM type of a field the class stores inline as a scalar, or `None`
+    /// when the slot holds a `*mut Value`.
+    ///
+    /// `string` is absent on purpose: it is a primitive to the language but a
+    /// heap value at runtime, so the field holds a pointer to it like any other
+    /// reference-counted value.
+    pub(super) fn scalar_field_type(&self, type_node: &TypeNode) -> Option<BasicTypeEnum<'a>> {
+        match type_node.kind {
+            TypeKind::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
+                Some(self.context.i64_type().into())
+            }
+            TypeKind::Primitive(PrimitiveType::Float) => Some(self.context.f64_type().into()),
+            TypeKind::Primitive(PrimitiveType::Bool) => Some(self.context.bool_type().into()),
+            _ => None,
+        }
+    }
+
     fn class_field_llvm_type(
         &self,
         class_type_param_names: &std::collections::HashSet<String>,
         field: &Field,
     ) -> Result<BasicTypeEnum<'a>, String> {
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-
-        if matches!(field.type_.kind, TypeKind::Primitive(_)) {
-            return Ok(ptr_type.into());
+        if let Some(scalar) = self.scalar_field_type(&field.type_) {
+            return Ok(scalar);
         }
+
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
 
         if let TypeNode {
             kind: TypeKind::Named(type_name, _),

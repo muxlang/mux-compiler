@@ -1900,7 +1900,7 @@ impl<'a> CodeGenerator<'a> {
                 self.generate_named_identifier_from_binding(name, ptr, var_type, type_name)
             }
             Type::Primitive(prim) => {
-                self.generate_primitive_identifier_from_binding(name, ptr, prim)
+                self.generate_primitive_identifier_from_binding(name, ptr, var_type, prim)
             }
             Type::Function { .. } => self.load_boxed_ptr_from_alloca(ptr, name).map(|v| v.into()),
             _ => self.load_boxed_ptr_from_alloca(ptr, name).map(|v| v.into()),
@@ -1964,8 +1964,18 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         name: &str,
         ptr: PointerValue<'a>,
+        var_type: BasicTypeEnum<'a>,
         prim: &PrimitiveType,
     ) -> Result<BasicValueEnum<'a>, String> {
+        // A local holds a boxed value, but a binding may point straight at a
+        // slot that holds the scalar itself - a class field bound by name for a
+        // where clause is one. The recorded type says which.
+        if !var_type.is_pointer_type() {
+            return self
+                .builder
+                .build_load(var_type, ptr, &format!("load_{}", name))
+                .map_err(|e| e.to_string());
+        }
         let boxed_ptr = self.load_boxed_ptr_from_alloca(ptr, name)?;
         match prim {
             PrimitiveType::Int => self.get_raw_int_value(boxed_ptr.into()).map(|v| v.into()),
@@ -2253,6 +2263,37 @@ impl<'a> CodeGenerator<'a> {
     /// copy and its previous payload released, via `store_struct_value` (issues
     /// #290/#298). Retain/clone happens before the release so `self.x = self.x`
     /// stays safe. Other inline structs own nothing here and are stored directly.
+    /// The LLVM type of `field` when the class stores it inline as a scalar,
+    /// or `None` when the slot holds a `*mut Value` or an inline enum struct.
+    pub(super) fn class_field_scalar_type(
+        &self,
+        class_name: &str,
+        field: &str,
+    ) -> Option<BasicTypeEnum<'a>> {
+        let index = *self.field_map.get(class_name)?.get(field)?;
+        let field_type = *self.field_types_map.get(class_name)?.get(index)?;
+        match field_type {
+            BasicTypeEnum::IntType(_) | BasicTypeEnum::FloatType(_) => Some(field_type),
+            _ => None,
+        }
+    }
+
+    /// Narrow a value to a scalar slot, extracting it from its box when the
+    /// expression that produced it handed back a `*mut Value`.
+    pub(super) fn coerce_to_scalar(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        scalar: BasicTypeEnum<'a>,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        match scalar {
+            BasicTypeEnum::FloatType(_) => Ok(self.get_raw_float_value(value)?.into()),
+            BasicTypeEnum::IntType(int_type) if int_type.get_bit_width() == 1 => {
+                Ok(self.get_raw_bool_value(value)?.into())
+            }
+            _ => Ok(self.get_raw_int_value(value)?.into()),
+        }
+    }
+
     fn store_class_field(
         &mut self,
         class_name: &str,
@@ -2266,6 +2307,17 @@ impl<'a> CodeGenerator<'a> {
                 let field_type = Type::Named(enum_name, Vec::new());
                 return self.store_struct_value(field_ptr, value, &field_type, rhs_owned, true);
             }
+            return self
+                .builder
+                .build_store(field_ptr, value)
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
+        // A scalar field holds the value itself, not a pointer to it, so the
+        // reference counting below has nothing to count and the incoming value
+        // has to be narrowed to what the slot holds.
+        if let Some(scalar) = self.class_field_scalar_type(class_name, field) {
+            let value = self.coerce_to_scalar(value, scalar)?;
             return self
                 .builder
                 .build_store(field_ptr, value)
@@ -2526,6 +2578,12 @@ impl<'a> CodeGenerator<'a> {
         let field_type = field.type_.clone();
         let is_generic_param = field.is_generic_param;
 
+        // A scalar field holds the value itself, so hand the store the raw
+        // value. Boxing here and unboxing at the store would allocate and free
+        // a `*mut Value` for every assignment to an `int` field.
+        if let Some(scalar) = self.scalar_field_type(&field_type) {
+            return self.coerce_to_scalar(right_val, scalar);
+        }
         if is_generic_param {
             return Ok(self.compute_generic_field_store_value(&field_type, right_val));
         }
@@ -3887,17 +3945,6 @@ impl<'a> CodeGenerator<'a> {
                 .build_load(struct_type, field_ptr, field)
                 .map_err(|e| e.to_string());
         }
-        if field_type == self.context.i64_type().into() {
-            return self
-                .builder
-                .build_load(
-                    self.context.ptr_type(AddressSpace::default()),
-                    field_ptr,
-                    field,
-                )
-                .map_err(|e| e.to_string());
-        }
-
         let field_def = self
             .classes
             .get(class_name)

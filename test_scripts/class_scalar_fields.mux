@@ -1,0 +1,72 @@
+// A class stores int, float, bool and char fields inline rather than as a
+// pointer to a heap value, so `class Point { int x; float y; string label }`
+// lays out as { i64, double, ptr } and `p.x = 7` is a plain store with no
+// allocation. A string field still holds a pointer: it is a primitive to the
+// language but a reference-counted value at runtime.
+//
+// This exercises the paths that had to learn the difference: zero-init at
+// construction, a declared default, assignment, reads, value-semantics copies,
+// assignment through a reference, and a where clause that reads a field.
+
+class Reading {
+    int count
+    float value
+    bool valid
+    char grade
+    string label
+    int scale = 10 where { scale > 0 }
+}
+
+class Account {
+    float balance where { balance >= 0.0 }
+
+    common func open(float initial) returns Account {
+        auto a = Account.new()
+        a.balance = initial
+        return a
+    }
+}
+
+func bump(&Account a, float amount) returns void {
+    a.balance += amount
+    return
+}
+
+func main() returns void {
+    // Every scalar field zero-initializes; the string field is a real empty
+    // string and the defaulted field keeps its declared value.
+    auto r = Reading.new()
+    print(r.count.to_string() + " " + r.value.to_string() + " " + r.valid.to_string())
+    print("[" + r.label + "] " + r.scale.to_string())
+
+    r.count = 42
+    r.value = 1.5
+    r.valid = true
+    r.grade = 'A'
+    r.label = "sample"
+    print(r.count.to_string() + " " + r.value.to_string() + " " + r.valid.to_string())
+    print(r.grade.to_string() + " " + r.label)
+
+    // A copy owns its own scalars; writing through it leaves the original.
+    auto copy = r
+    copy.count = 7
+    copy.label = "other"
+    print(r.count.to_string() + " " + copy.count.to_string())
+    print(r.label + " " + copy.label)
+
+    // Compound assignment, in place and through a reference.
+    r.count += 8
+    r.count--
+    print(r.count.to_string())
+
+    auto a = Account.open(100.0)
+    a.balance += 50.5
+    bump(&a, 10.0)
+    print(a.balance.to_string())
+
+    // A scalar field read flows into a call, an operator and a collection.
+    list<int> counts = [r.count, copy.count]
+    print(counts.to_string())
+    print((r.count > copy.count).to_string())
+    return
+}

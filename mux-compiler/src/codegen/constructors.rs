@@ -42,10 +42,15 @@ impl<'a> CodeGenerator<'a> {
         let temp_mark = self.temp_mark();
         if let Some(default_expr) = &field.default_value {
             let value = self.generate_expression(default_expr)?;
-            let stored_val = if matches!(field.type_.kind, TypeKind::Primitive(_)) {
-                self.box_value(value).into()
-            } else {
-                value
+            let scalar = self.scalar_field_type(&field.type_);
+            let stored_val = match scalar {
+                // A scalar slot holds the value itself; the box the default
+                // expression produced is a temporary like any other.
+                Some(scalar) => self.coerce_to_scalar(value, scalar)?,
+                None if matches!(field.type_.kind, TypeKind::Primitive(_)) => {
+                    self.box_value(value).into()
+                }
+                None => value,
             };
             self.builder
                 .build_store(field_ptr, stored_val)
@@ -557,31 +562,26 @@ impl<'a> CodeGenerator<'a> {
         let resolved_type = self.resolve_type(field_type)?;
 
         match resolved_type {
-            // Primitive fields are stored boxed (a `*mut Value` pointer), matching
-            // how explicitly-defaulted fields and later assignments store them.
-            // Storing the raw scalar instead would leave the upper bytes of the
-            // pointer-sized slot uninitialized, so a later boxed-pointer read
-            // (e.g. `mux_value_get_bool`) would dereference garbage whenever the
-            // object landed on non-zero reclaimed heap memory.
+            // A scalar field holds the value itself, so zero the slot directly.
+            // Its width is exactly the scalar's, unlike the pointer-sized slot
+            // this used to be, where a raw store would have left the upper bytes
+            // uninitialized for a later boxed read to dereference.
             Type::Primitive(PrimitiveType::Bool) => {
                 let false_val = self.context.bool_type().const_int(0, false);
-                let boxed = self.box_value(false_val.into());
                 self.builder
-                    .build_store(field_ptr, boxed)
+                    .build_store(field_ptr, false_val)
                     .map_err(|e| e.to_string())?;
             }
-            Type::Primitive(PrimitiveType::Int) => {
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
                 let zero_val = self.context.i64_type().const_int(0, false);
-                let boxed = self.box_value(zero_val.into());
                 self.builder
-                    .build_store(field_ptr, boxed)
+                    .build_store(field_ptr, zero_val)
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Float) => {
                 let zero_val = self.context.f64_type().const_float(0.0);
-                let boxed = self.box_value(zero_val.into());
                 self.builder
-                    .build_store(field_ptr, boxed)
+                    .build_store(field_ptr, zero_val)
                     .map_err(|e| e.to_string())?;
             }
             Type::Primitive(PrimitiveType::Str) => {
