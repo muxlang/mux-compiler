@@ -8,7 +8,9 @@
 
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 
-use crate::ast::{BinaryOp, ExpressionKind, ExpressionNode, LiteralNode, PrimitiveType, Spanned};
+use crate::ast::{
+    BinaryOp, ExpressionKind, ExpressionNode, LiteralNode, PrimitiveType, Spanned, UnaryOp,
+};
 use crate::lexer::Span;
 use crate::semantics::Type;
 
@@ -158,7 +160,8 @@ impl<'a> CodeGenerator<'a> {
         predicate: inkwell::IntPredicate,
         label: &str,
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        let Ok(Type::Named(class_name, _)) = self.resolve_expression_type_with_fallback(left_expr)
+        let Ok(Type::Named(class_name, type_args)) =
+            self.resolve_expression_type_with_fallback(left_expr)
         else {
             return Ok(None);
         };
@@ -168,7 +171,10 @@ impl<'a> CodeGenerator<'a> {
         {
             return Ok(None);
         }
-        let func_name = format!("{}.cmp", class_name);
+        // A generic class only ever emits monomorphized bodies, so the method
+        // for `Ranked<string>` is `Ranked$string.cmp`; the unspecialized name
+        // is a declaration that never gets one and fails at link time.
+        let func_name = self.create_specialized_method_name(&class_name, &type_args, "cmp");
         let func = self
             .module
             .get_function(&func_name)
@@ -394,6 +400,21 @@ impl<'a> CodeGenerator<'a> {
             ExpressionKind::FieldAccess { expr: inner, field } => {
                 self.resolve_field_access_type_with_fallback(inner, field, expr)
             }
+            // A dereference is the referenced type, resolved through codegen's
+            // own tracking for the same reason as a field access above. Asking
+            // the analyzer instead read a program-wide symbol index where the
+            // last function to declare a parameter name wins, so `*r + 5` in a
+            // function taking `&int` was generated as string concatenation
+            // because another function had an `&string` parameter also named
+            // `r`.
+            ExpressionKind::Unary {
+                op: UnaryOp::Deref,
+                expr: inner,
+                ..
+            } => match self.resolve_expression_type_with_fallback(inner)? {
+                Type::Reference(referenced) => Ok(*referenced),
+                other => Ok(other),
+            },
             _ => self.get_resolved_expression_type(expr),
         }
     }
@@ -1202,8 +1223,10 @@ impl<'a> CodeGenerator<'a> {
             }
             // A class compares through the method its capability gives it: its
             // own `eq`, or `cmp` tested against zero when it only orders itself.
-            Type::Named(class_name, _) if self.analyzer.class_supports_equality(class_name) => {
-                let equal = self.call_class_equality(class_name, left, right)?;
+            Type::Named(class_name, type_args)
+                if self.analyzer.class_supports_equality(class_name) =>
+            {
+                let equal = self.call_class_equality(class_name, type_args, left, right)?;
                 // `eq` answers equality, so `!=` is its negation rather than a
                 // second method the class has to write.
                 let expected = equal
@@ -1230,10 +1253,11 @@ impl<'a> CodeGenerator<'a> {
     fn call_class_equality(
         &mut self,
         class_name: &str,
+        type_args: &[Type],
         left: BasicValueEnum<'a>,
         right: BasicValueEnum<'a>,
     ) -> Result<IntValue<'a>, String> {
-        let eq_name = format!("{}.eq", class_name);
+        let eq_name = self.create_specialized_method_name(class_name, type_args, "eq");
         if let Some(func) = self.module.get_function(&eq_name) {
             let equal = self
                 .builder
@@ -1244,7 +1268,7 @@ impl<'a> CodeGenerator<'a> {
                 .ok_or_else(|| format!("{} should return a value", eq_name))?;
             return self.get_raw_bool_value(equal);
         }
-        let cmp_name = format!("{}.cmp", class_name);
+        let cmp_name = self.create_specialized_method_name(class_name, type_args, "cmp");
         let func = self
             .module
             .get_function(&cmp_name)

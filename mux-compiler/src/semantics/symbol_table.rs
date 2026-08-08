@@ -154,11 +154,17 @@ impl SymbolTable {
             .unwrap_or_default()
     }
 
+    /// Resolve `name`, preferring whatever is actually in scope.
+    ///
+    /// `all_symbols` is a flat, program-wide, last-write-wins index. Reading it
+    /// first meant the last function to declare a name won everywhere, so two
+    /// functions with a parameter of the same name and different types resolved
+    /// to each other's. The scope chain answers correctly whenever the name is
+    /// live; the flat index remains the fallback for everything looked up after
+    /// its scope was popped, which is how codegen reads declarations.
     pub fn lookup(&self, name: &str) -> Option<Symbol> {
-        if let Some(symbol) = self.all_symbols.get(name) {
-            return Some(symbol.clone());
-        }
-        None
+        self.get_cloned(name)
+            .or_else(|| self.all_symbols.get(name).cloned())
     }
 
     pub fn get_cloned(&self, name: &str) -> Option<Symbol> {

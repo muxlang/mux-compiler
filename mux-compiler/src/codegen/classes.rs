@@ -335,7 +335,20 @@ impl<'a> CodeGenerator<'a> {
             return None;
         }
         // A generic class only ever emits monomorphized method bodies, so the
-        // unspecialized name has nothing to call.
+        // unspecialized name is a declaration that never gets one - calling it
+        // fails at link time. The operators reach such a class through its
+        // instantiation instead; the runtime callbacks, which are registered
+        // once per class, have no instantiation to name and are skipped. The
+        // body is not emitted yet when this runs, so genericity is the test,
+        // not whether the function has one - the same test the vtables use.
+        let is_generic = self
+            .analyzer
+            .all_symbols()
+            .get(name)
+            .is_some_and(|symbol| !symbol.type_params.is_empty());
+        if is_generic {
+            return None;
+        }
         self.module.get_function(&format!("{}.{}", name, method))
     }
 

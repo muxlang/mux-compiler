@@ -899,7 +899,32 @@ impl SemanticAnalyzer {
             self.validate_type_argument_count(name, &symbol, type_args, span)?;
         }
 
-        // Named types are otherwise assumed to be classes, enums, or interfaces.
+        // An interface names a capability, not a value. Mux dispatches
+        // interfaces statically, so an interface-typed slot has no way to find
+        // the method body for whatever it happens to hold - the vtable each
+        // object carries is never read. Taking the interface as a bound
+        // monomorphizes the call instead, which is the form that works.
+        //
+        // Rejecting here rather than at the call keeps the error on the
+        // declaration the reader can fix: it used to be accepted and then fail
+        // with "Type mismatch: expected Shape, got Rect" at every caller.
+        if let Some(symbol) = self.symbol_table.lookup(name)
+            && matches!(symbol.kind, SymbolKind::Interface)
+        {
+            return Err(SemanticError::with_help(
+                format!(
+                    "'{}' is an interface and cannot be used as a value type",
+                    name
+                ),
+                span,
+                format!(
+                    "Take it as a bound instead, e.g. 'func f<T is {}>(T value)'. A class still implements it with 'is {}'.",
+                    name, name
+                ),
+            ));
+        }
+
+        // Named types are otherwise assumed to be classes or enums.
         let resolved_args = type_args
             .iter()
             .map(|arg| self.resolve_type(arg))

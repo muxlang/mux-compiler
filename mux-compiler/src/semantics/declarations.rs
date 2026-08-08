@@ -190,7 +190,8 @@ impl SemanticAnalyzer {
         if let Some(e) = Self::reject_builtin_type_name(name, "a class", span) {
             return Err(e);
         }
-        let implemented_interfaces = self.resolve_implemented_interfaces(name, traits, span)?;
+        let implemented_interfaces =
+            self.resolve_implemented_interfaces(name, type_params, traits, span)?;
         let type_param_bounds = self.register_type_param_symbols(type_params, span);
 
         let (fields_map, _) = self.collect_class_fields(name, fields, span)?;
@@ -240,6 +241,7 @@ impl SemanticAnalyzer {
         &self,
         name: &str,
         implementor: &str,
+        implementor_type_params: &[(String, Vec<TraitBound>)],
     ) -> Option<HashMap<String, MethodSig>> {
         if self.symbol_table.lookup(name).is_some() {
             return None;
@@ -253,7 +255,17 @@ impl SemanticAnalyzer {
         };
         // The built-in signatures are written against `Self`, so `eq` and `cmp`
         // take the implementing type rather than a type literally named Self.
-        let own_type = Type::Named(implementor.to_string(), Vec::new());
+        // A generic class's own type includes its parameters: substituting the
+        // bare name asked `class Ranked<T> is Comparable` for `cmp(Ranked)`,
+        // which then failed as a generic type missing its type argument, so no
+        // generic class could implement a built-in capability at all.
+        let own_type = Type::Named(
+            implementor.to_string(),
+            implementor_type_params
+                .iter()
+                .map(|(param, _)| Type::Generic(param.clone()))
+                .collect(),
+        );
         let substitute = |t: &Type| match t {
             Type::Generic(n) if n == "Self" => own_type.clone(),
             other => other.clone(),
@@ -278,6 +290,7 @@ impl SemanticAnalyzer {
     fn resolve_implemented_interfaces(
         &self,
         class_name: &str,
+        class_type_params: &[(String, Vec<TraitBound>)],
         traits: &[TraitRef],
         _span: &Span,
     ) -> Result<HashMap<String, ResolvedInterface>, SemanticError> {
@@ -287,7 +300,9 @@ impl SemanticAnalyzer {
             // answered structurally for primitives and collections - so a class
             // saying `is Comparable` registered nothing at all, and then failed
             // to satisfy a bound it had genuinely implemented.
-            if let Some(methods) = self.builtin_interface_methods(&trait_ref.name, class_name) {
+            if let Some(methods) =
+                self.builtin_interface_methods(&trait_ref.name, class_name, class_type_params)
+            {
                 implemented_interfaces.insert(trait_ref.name.clone(), (Vec::new(), methods));
                 continue;
             }

@@ -1,0 +1,69 @@
+// A generic class can implement the built-in capabilities. The interface
+// signatures are written against Self, and substituting the bare class name
+// asked 'class Ranked<T> is Comparable' for 'cmp(Ranked)', which then failed as
+// a generic type missing its type argument - so no generic class could declare
+// one at all, whichever way the method was spelled.
+//
+// The operators reach the method through the instantiation ('Ranked$string.cmp'),
+// because a generic class only ever emits monomorphized bodies; the
+// unspecialized name is a declaration that never gets one.
+
+class Ranked<T> is Comparable {
+    int rank
+    T payload
+
+    common func of(int r, T p) returns Ranked<T> {
+        auto x = Ranked<T>.new()
+        x.rank = r
+        x.payload = p
+        return x
+    }
+
+    func cmp(Ranked<T> other) returns int {
+        return self.rank - other.rank
+    }
+
+    func get() returns T {
+        return self.payload
+    }
+}
+
+class Labelled<T> is Stringable {
+    T value
+
+    common func of(T v) returns Labelled<T> {
+        auto l = Labelled<T>.new()
+        l.value = v
+        return l
+    }
+
+    func to_string() returns string {
+        return "labelled"
+    }
+}
+
+func main() returns void {
+    auto low = Ranked<string>.of(1, "low")
+    auto high = Ranked<string>.of(5, "high")
+
+    // Ordering runs the instantiation's own cmp.
+    print((low < high).to_string())
+    print((high < low).to_string())
+    print((low <= low).to_string())
+
+    // Comparable grants equality, through cmp against zero.
+    print((low == high).to_string())
+    print((low != high).to_string())
+
+    // The payload still round-trips.
+    print(low.get())
+
+    // A second instantiation is independent.
+    auto a = Ranked<int>.of(9, 100)
+    auto b = Ranked<int>.of(2, 200)
+    print((a > b).to_string())
+    print(a.get().to_string())
+
+    print(Labelled<int>.of(7).to_string())
+    return
+}

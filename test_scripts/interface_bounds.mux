@@ -1,0 +1,47 @@
+// An interface is used through a generic bound, which is how Mux's static
+// dispatch works: the call is monomorphized per concrete type, so each class
+// runs its own method body. Using the interface as a value type instead is
+// rejected at the declaration (see error_cases).
+
+interface Shape {
+    func area() returns float
+}
+
+class Rect is Shape {
+    float w
+
+    common func of(float a) returns Rect {
+        auto r = Rect.new()
+        r.w = a
+        return r
+    }
+
+    func area() returns float {
+        return self.w * 2.0
+    }
+}
+
+class Circle is Shape {
+    float radius
+
+    common func of(float a) returns Circle {
+        auto c = Circle.new()
+        c.radius = a
+        return c
+    }
+
+    func area() returns float {
+        return self.radius * 3.0
+    }
+}
+
+func describe<T is Shape>(T s) returns float {
+    return s.area()
+}
+
+func main() returns void {
+    // Each call resolves to the concrete class's own body.
+    print(describe(Rect.of(10.0)).to_string())
+    print(describe(Circle.of(1.0)).to_string())
+    return
+}
