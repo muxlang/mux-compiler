@@ -2890,6 +2890,16 @@ impl SemanticAnalyzer {
     /// standard library's own containers would have needed: a search tree orders
     /// on `<` and stops on `==`, and a graph keys on `T` and compares it
     /// (issue #361).
+    /// Whether a class can answer `==`, through any capability that implies
+    /// equality. This is `bound_grants` applied to a declaration rather than to
+    /// a type parameter's bound: a class that orders itself can say whether two
+    /// instances are the same one, and one that hashes itself has to.
+    pub fn class_supports_equality(&self, name: &str) -> bool {
+        ["Equatable", "Comparable", "Hashable"]
+            .iter()
+            .any(|declared| self.type_implements_named_interface(name, declared))
+    }
+
     fn bound_grants(declared: &str, wanted: &str) -> bool {
         if declared == wanted {
             return true;
@@ -3546,9 +3556,7 @@ impl SemanticAnalyzer {
             // Classes and interfaces also land in Named. Only enums have the
             // generated structural compare, but a class may opt in by declaring
             // `is Equatable` and writing `eq`.
-            Type::Named(name, _) => {
-                self.is_enum_name(name) || self.type_implements_named_interface(name, "Equatable")
-            }
+            Type::Named(name, _) => self.is_enum_name(name) || self.class_supports_equality(name),
             // A type parameter must declare `Equatable` to be compared. Using
             // the operator imposes the bound rather than inferring it, so the
             // error lands on the declaration the reader can fix instead of on

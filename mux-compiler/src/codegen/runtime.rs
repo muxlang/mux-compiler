@@ -277,6 +277,21 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        // The equality, ordering and hash a class declares. Unlike the copy and
+        // destructor callbacks above, these take the boxed object rather than
+        // its data buffer, because they are the class's own methods.
+        for name in [
+            "mux_register_object_equals",
+            "mux_register_object_compare",
+            "mux_register_object_hash",
+        ] {
+            module.add_function(
+                name,
+                void_type.fn_type(&[i32_type.into(), i8_ptr.into()], false),
+                None,
+            );
+        }
+
         module.add_function(
             "mux_alloc_object",
             i8_ptr.fn_type(&[i32_type.into()], false),

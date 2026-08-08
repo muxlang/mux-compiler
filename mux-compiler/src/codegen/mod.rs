@@ -323,6 +323,7 @@ impl<'a> CodeGenerator<'a> {
                     // module level, so the order only affects the lookup
                     // in `class_copy_fns` / `class_destructor_fns`.
                     self.generate_class_copy_and_destructor(name, fields)?;
+                    self.generate_class_capability_glue(name)?;
                     self.generate_class_constructors(name, fields, &interfaces)?;
                 }
                 _ => {}

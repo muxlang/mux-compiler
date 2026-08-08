@@ -231,12 +231,58 @@ impl<'a> CodeGenerator<'a> {
         self.cleanup_temps_to(temp_mark)
     }
 
+    /// Register the class with the runtime the first time an instance is built,
+    /// and return its type id.
+    ///
+    /// The runtime hands out a fresh id per call, so registering on every
+    /// construction gave each instance a type of its own - two instances of one
+    /// class never shared a type id, and the registry grew without bound. A
+    /// per-class global holds the id after the first construction; zero means
+    /// "not registered yet", which no id ever is.
     fn register_class_type(
         &mut self,
         name: &str,
         type_name_global: PointerValue<'a>,
         type_size: IntValue<'a>,
     ) -> Result<IntValue<'a>, String> {
+        let i32_type = self.context.i32_type();
+        let slot_name = format!("{}.type_id", name);
+        let slot = match self.module.get_global(&slot_name) {
+            Some(existing) => existing,
+            None => {
+                let global = self.module.add_global(i32_type, None, &slot_name);
+                global.set_initializer(&i32_type.const_zero());
+                global
+            }
+        };
+        let slot = slot.as_pointer_value();
+
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or("register_class_type needs an enclosing function")?;
+        let register_block = self.context.append_basic_block(function, "register_type");
+        let registered_block = self.context.append_basic_block(function, "type_registered");
+        let existing = self
+            .builder
+            .build_load(i32_type, slot, "existing_type_id")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let unregistered = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                existing,
+                i32_type.const_zero(),
+                "unregistered",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(unregistered, register_block, registered_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(register_block);
         let register_func = self
             .runtime_function("mux_register_object_type")
             .ok_or("mux_register_object_type not found")?;
@@ -280,7 +326,63 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
 
-        Ok(type_id_val)
+        self.register_class_capabilities(name, type_id_val)?;
+        self.builder
+            .build_store(slot, type_id_val)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(registered_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(registered_block);
+        self.builder
+            .build_load(i32_type, slot, "class_type_id")
+            .map_err(|e| e.to_string())
+            .map(|value| value.into_int_value())
+    }
+
+    /// Hand the runtime the class's own equality, ordering and hash, so a map,
+    /// a set or `contains` matches instances the way the operators do instead
+    /// of comparing addresses. A capability the class did not declare is left
+    /// unregistered, and such an instance keeps identity semantics.
+    fn register_class_capabilities(
+        &mut self,
+        name: &str,
+        type_id_val: IntValue<'a>,
+    ) -> Result<(), String> {
+        for (interface, method, register) in [
+            ("Equatable", "eq_glue", "mux_register_object_equals"),
+            ("Comparable", "cmp_glue", "mux_register_object_compare"),
+            // `hash` returns an `int`, already the 64-bit value the runtime
+            // wants, so it is registered without a wrapper. It is still gated
+            // on the declaration, or a class with a `hash` method of its own
+            // would be registered as if it had promised the capability.
+            ("Hashable", "hash", "mux_register_object_hash"),
+        ] {
+            if !self
+                .analyzer
+                .type_implements_named_interface(name, interface)
+            {
+                continue;
+            }
+            let Some(func) = self.module.get_function(&format!("{}.{}", name, method)) else {
+                continue;
+            };
+            let register_func = self
+                .runtime_function(register)
+                .ok_or_else(|| format!("{} not found", register))?;
+            self.builder
+                .build_call(
+                    register_func,
+                    &[
+                        type_id_val.into(),
+                        func.as_global_value().as_pointer_value().into(),
+                    ],
+                    register,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn allocate_class_object(

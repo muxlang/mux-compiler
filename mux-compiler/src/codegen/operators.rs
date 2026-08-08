@@ -1200,25 +1200,10 @@ impl<'a> CodeGenerator<'a> {
                     kind.enum_label(),
                 )
             }
-            // A class that declares `is Equatable` compares through its own `eq`.
-            Type::Named(class_name, _)
-                if self
-                    .analyzer
-                    .type_implements_named_interface(class_name, "Equatable") =>
-            {
-                let func_name = format!("{}.eq", class_name);
-                let func = self
-                    .module
-                    .get_function(&func_name)
-                    .ok_or_else(|| format!("{} not found for Equatable", func_name))?;
-                let equal = self
-                    .builder
-                    .build_call(func, &[left.into(), right.into()], "eq_call")
-                    .map_err(|e| e.to_string())?
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| format!("{} should return a value", func_name))?;
-                let equal = self.get_raw_bool_value(equal)?;
+            // A class compares through the method its capability gives it: its
+            // own `eq`, or `cmp` tested against zero when it only orders itself.
+            Type::Named(class_name, _) if self.analyzer.class_supports_equality(class_name) => {
+                let equal = self.call_class_equality(class_name, left, right)?;
                 // `eq` answers equality, so `!=` is its negation rather than a
                 // second method the class has to write.
                 let expected = equal
@@ -1235,6 +1220,47 @@ impl<'a> CodeGenerator<'a> {
                 left_type
             )),
         }
+    }
+
+    /// Ask a class whether two instances are equal, as a single `i1`.
+    ///
+    /// A class that wrote `eq` answers directly. One that only declared
+    /// `Comparable` answers through `cmp`, so declaring an order is enough to
+    /// get `==` and the class does not write the same test twice.
+    fn call_class_equality(
+        &mut self,
+        class_name: &str,
+        left: BasicValueEnum<'a>,
+        right: BasicValueEnum<'a>,
+    ) -> Result<IntValue<'a>, String> {
+        let eq_name = format!("{}.eq", class_name);
+        if let Some(func) = self.module.get_function(&eq_name) {
+            let equal = self
+                .builder
+                .build_call(func, &[left.into(), right.into()], "eq_call")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| format!("{} should return a value", eq_name))?;
+            return self.get_raw_bool_value(equal);
+        }
+        let cmp_name = format!("{}.cmp", class_name);
+        let func = self
+            .module
+            .get_function(&cmp_name)
+            .ok_or_else(|| format!("neither {} nor {} found", eq_name, cmp_name))?;
+        let ordering = self
+            .builder
+            .build_call(func, &[left.into(), right.into()], "cmp_call")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| format!("{} should return a value", cmp_name))?;
+        let ordering = self.get_raw_int_value(ordering)?;
+        let zero = ordering.get_type().const_zero();
+        self.builder
+            .build_int_compare(inkwell::IntPredicate::EQ, ordering, zero, "cmp_equal")
+            .map_err(|e| e.to_string())
     }
 
     fn generate_in_op(

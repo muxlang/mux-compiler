@@ -1,0 +1,17 @@
+// Should fail: a class that declares Hashable must supply equality too. A hash
+// alone cannot answer whether two keys landing in the same bucket are the same
+// key, so Hashable requires both 'hash' and 'eq' - what Rust spells as the
+// 'Hash + Eq' a map key needs.
+class K is Hashable {
+    int n
+
+    func hash() returns int {
+        return self.n
+    }
+}
+
+func main() returns void {
+    auto k = K.new()
+    print(k.hash().to_string())
+    return
+}

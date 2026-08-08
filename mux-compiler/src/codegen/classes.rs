@@ -286,6 +286,102 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    /// The suffix of the glue this capability is registered through, and the
+    /// class method it wraps.
+    ///
+    /// `Hashable` needs no glue: its `hash` returns an `int`, which is already
+    /// the 64-bit value the runtime wants, so the method is registered as is.
+    const CAPABILITY_GLUE: [(&'static str, &'static str, &'static str); 2] = [
+        ("Equatable", "eq", "eq_glue"),
+        ("Comparable", "cmp", "cmp_glue"),
+    ];
+
+    /// Generate the wrappers that let the runtime call a class's `eq` and `cmp`
+    /// when it needs to match or order an instance - as a map key, a set member
+    /// or a list element.
+    ///
+    /// Both wrappers exist to narrow the method's return value to what the
+    /// runtime expects: `eq`'s `i1` to a byte holding 0 or 1, and `cmp`'s `int`
+    /// to -1, 0 or 1. Truncating the `int` instead would turn a difference of
+    /// exactly 2^32 into "equal".
+    pub(super) fn generate_class_capability_glue(&mut self, name: &str) -> Result<(), String> {
+        for (interface, method, suffix) in Self::CAPABILITY_GLUE {
+            if !self
+                .analyzer
+                .type_implements_named_interface(name, interface)
+            {
+                continue;
+            }
+            // A generic class only ever emits monomorphized method bodies, so
+            // the unspecialized name has nothing to call.
+            let Some(target) = self.module.get_function(&format!("{}.{}", name, method)) else {
+                continue;
+            };
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let return_type = if interface == "Equatable" {
+                self.context.i8_type()
+            } else {
+                self.context.i32_type()
+            };
+            let glue = self.module.add_function(
+                &format!("{}.{}", name, suffix),
+                return_type.fn_type(&[ptr_type.into(), ptr_type.into()], false),
+                Some(inkwell::module::Linkage::External),
+            );
+            let entry = self.context.append_basic_block(glue, "entry");
+            self.builder.position_at_end(entry);
+            let left = glue.get_nth_param(0).expect("glue takes two objects");
+            let right = glue.get_nth_param(1).expect("glue takes two objects");
+            let result = self
+                .builder
+                .build_call(target, &[left.into(), right.into()], "capability_call")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| format!("{}.{} should return a value", name, method))?
+                .into_int_value();
+            let narrowed = if interface == "Equatable" {
+                self.builder
+                    .build_int_z_extend(result, return_type, "equal")
+                    .map_err(|e| e.to_string())?
+            } else {
+                self.narrow_ordering_to_sign(result, return_type)?
+            };
+            self.builder
+                .build_return(Some(&narrowed))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Reduce a `cmp` result to -1, 0 or 1 as `(value > 0) - (value < 0)`.
+    fn narrow_ordering_to_sign(
+        &mut self,
+        value: IntValue<'a>,
+        result_type: inkwell::types::IntType<'a>,
+    ) -> Result<IntValue<'a>, String> {
+        let zero = value.get_type().const_zero();
+        let greater = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SGT, value, zero, "greater")
+            .map_err(|e| e.to_string())?;
+        let less = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SLT, value, zero, "less")
+            .map_err(|e| e.to_string())?;
+        let greater = self
+            .builder
+            .build_int_z_extend(greater, result_type, "greater_bit")
+            .map_err(|e| e.to_string())?;
+        let less = self
+            .builder
+            .build_int_z_extend(less, result_type, "less_bit")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_int_sub(greater, less, "sign")
+            .map_err(|e| e.to_string())
+    }
+
     fn generate_class_copy_body(
         &mut self,
         name: &str,

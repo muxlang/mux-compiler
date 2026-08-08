@@ -225,8 +225,14 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    /// The method a built-in capability requires of a class that declares
+    /// The methods a built-in capability requires of a class that declares
     /// `is Stringable` / `is Equatable` / `is Comparable` / `is Hashable`.
+    ///
+    /// `Hashable` requires equality as well as `hash`, the way Rust spells a
+    /// map key as `Hash + Eq`: a hash alone cannot answer whether two keys in
+    /// the same bucket are the same key. It is also what makes `Hashable`
+    /// honestly satisfy an `Equatable` bound, which the bound system already
+    /// promises it does.
     ///
     /// `None` for anything else, including a user-declared interface that
     /// happens to share the name - a real declaration always wins.
@@ -238,14 +244,13 @@ impl SemanticAnalyzer {
         if self.symbol_table.lookup(name).is_some() {
             return None;
         }
-        let method = match name {
-            "Stringable" => "to_string",
-            "Equatable" => "eq",
-            "Comparable" => "cmp",
-            "Hashable" => "hash",
+        let methods: &[&str] = match name {
+            "Stringable" => &["to_string"],
+            "Equatable" => &["eq"],
+            "Comparable" => &["cmp"],
+            "Hashable" => &["hash", "eq"],
             _ => return None,
         };
-        let sig = self.get_builtin_interface_method(name, method)?;
         // The built-in signatures are written against `Self`, so `eq` and `cmp`
         // take the implementing type rather than a type literally named Self.
         let own_type = Type::Named(implementor.to_string(), Vec::new());
@@ -253,14 +258,21 @@ impl SemanticAnalyzer {
             Type::Generic(n) if n == "Self" => own_type.clone(),
             other => other.clone(),
         };
-        Some(HashMap::from([(
-            method.to_string(),
-            MethodSig {
-                params: sig.params.iter().map(&substitute).collect(),
-                return_type: substitute(&sig.return_type),
-                is_static: sig.is_static,
-            },
-        )]))
+        let mut required = HashMap::new();
+        for method in methods {
+            // `eq` belongs to Equatable, whichever capability asked for it.
+            let owner = if *method == "eq" { "Equatable" } else { name };
+            let sig = self.get_builtin_interface_method(owner, method)?;
+            required.insert(
+                (*method).to_string(),
+                MethodSig {
+                    params: sig.params.iter().map(&substitute).collect(),
+                    return_type: substitute(&sig.return_type),
+                    is_static: sig.is_static,
+                },
+            );
+        }
+        Some(required)
     }
 
     fn resolve_implemented_interfaces(

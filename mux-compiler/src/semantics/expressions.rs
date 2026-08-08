@@ -598,7 +598,13 @@ impl SemanticAnalyzer {
     /// Shared with the `Hashable` bound so the bound cannot promise something
     /// a map literal then rejects (issue #361).
     pub(super) fn is_hashable_type(&self, ty: &Type) -> bool {
-        matches!(ty, Type::Primitive(_)) || self.is_user_enum_type(ty)
+        matches!(ty, Type::Primitive(_))
+            || self.is_user_enum_type(ty)
+            // A class that declares `is Hashable` supplies both the hash and
+            // the equality a key needs, and the runtime calls those methods
+            // rather than comparing addresses.
+            || matches!(ty, Type::Named(name, _) if
+                self.type_implements_named_interface(name, "Hashable"))
     }
 
     /// Whether `ty` is a user-declared enum (a `Named` type resolving to an enum
