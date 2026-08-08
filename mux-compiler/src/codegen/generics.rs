@@ -242,7 +242,13 @@ impl<'a> CodeGenerator<'a> {
         let saved_block = self.builder.get_insert_block();
         let result = self
             .generate_enum_type(&key, &substituted)
-            .and_then(|()| self.generate_enum_constructors(&key, &substituted));
+            .and_then(|()| self.generate_enum_constructors(&key, &substituted))
+            // An instantiation needs its own drop, deep-clone, retain and
+            // compare glue, exactly as a declared enum does. Without it a
+            // `Box<string>` in a collection fails with "deep-clone glue
+            // missing", and comparing two of them reads the payload as the
+            // wrong representation.
+            .and_then(|()| self.generate_enum_object_support(&key));
         if let Some(block) = saved_block {
             self.builder.position_at_end(block);
         }

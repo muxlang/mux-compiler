@@ -59,5 +59,25 @@ func main() returns void {
     print(describe_text(names))
     print(describe_text(Box<string>.Empty))
 
+    // Each of these reaches the instantiation through a different route, and
+    // each one used the base enum's layout or glue at some point: comparison
+    // needs the instantiation's compare glue, a collection element needs its
+    // deep-clone glue, a class field needs its type instantiated before the
+    // class is built, and a match on that field must carry the arguments.
+    print((Box<int>.Full(1) == Box<int>.Full(1)).to_string())
+    print((Box<int>.Full(1) == Box<int>.Empty).to_string())
+
+    auto boxes = [Box<string>.Full("in a list")]
+    match boxes[0] {
+        Empty { print("empty") }
+        Full(v) { print(v) }
+    }
+
+    auto keyed = {7: Box<int>.Full(8)}
+    print(keyed.size().to_string())
+
+    optional<Box<int>> wrapped = some(Box<int>.Full(6))
+    print("wrapped ok")
+
     return
 }

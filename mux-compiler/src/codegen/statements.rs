@@ -1312,8 +1312,12 @@ impl<'a> CodeGenerator<'a> {
             .iter()
             .find(|f| f.name == field)
             .ok_or_else(|| format!("Field {} not found in class {}", field, class_name))?;
-        if let TypeKind::Named(n, _) = &field_info.type_.kind {
-            return Ok(n.clone());
+        if let TypeKind::Named(n, args) = &field_info.type_.kind {
+            // Carry the field's type arguments, so matching a `Box<int>` field
+            // binds against the `Box$int` instantiation and not the base enum,
+            // whose payload is still the type parameter (issue #359).
+            let arg_types: Vec<Type> = args.iter().map(|a| self.type_node_to_type(a)).collect();
+            return Ok(self.mangled_enum_name(n, &arg_types));
         }
         Err("Match field must be enum type".to_string())
     }

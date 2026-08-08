@@ -171,6 +171,12 @@ impl<'a> CodeGenerator<'a> {
         fields: &[Field],
         interfaces: &HashMap<String, (Vec<Type>, HashMap<String, MethodSig>)>,
     ) -> Result<(), String> {
+        // A field may be the first mention of a generic enum instantiation, and
+        // class types are built before any body that could construct one.
+        for field in fields {
+            self.instantiate_generic_enums_in_type_node(&field.type_)?;
+        }
+
         let mut field_types = Vec::new();
         let mut field_indices = HashMap::new();
 

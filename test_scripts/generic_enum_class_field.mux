@@ -1,0 +1,29 @@
+// A generic enum as a class field. The field's type has to be instantiated
+// before the class type is built, and a match on the field has to carry the
+// type arguments - without them the payload binds as the type parameter and
+// resolution fails looking for a class named T (issue #359).
+
+enum Box<T> { Empty, Full(T value) }
+
+class Holder {
+    Box<int> counted
+    Box<string> named
+}
+
+func main() returns void {
+    auto h = Holder.new()
+
+    h.counted = Box<int>.Full(9)
+    match h.counted {
+        Empty { print("empty") }
+        Full(v) { print(v.to_string()) }
+    }
+
+    h.named = Box<string>.Full("stored")
+    match h.named {
+        Empty { print("empty") }
+        Full(v) { print(v) }
+    }
+
+    return
+}

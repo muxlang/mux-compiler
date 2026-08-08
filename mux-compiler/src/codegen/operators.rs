@@ -1116,11 +1116,16 @@ impl<'a> CodeGenerator<'a> {
             // enum_variants but are heap `*mut Value` rather than inline
             // structs, so they are excluded by name as every other consumer
             // excludes them.
-            Type::Named(name, _)
+            Type::Named(name, type_args)
                 if self.enum_variants.contains_key(name)
                     && !matches!(name.as_str(), "optional" | "result") =>
             {
-                let enum_name = name.clone();
+                // A generic enum compares through its instantiation's glue.
+                // Using the base enum's would read `Box<int>`'s inline i64
+                // payload as the pointer the uninstantiated layout expects,
+                // which faults at runtime rather than failing to build
+                // (issue #359).
+                let enum_name = self.mangled_enum_name(name, type_args);
                 let left_ptr = self.enum_struct_pointer(left, &enum_name)?;
                 let right_ptr = self.enum_struct_pointer(right, &enum_name)?;
                 self.call_enum_comparison(
