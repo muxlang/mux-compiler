@@ -889,6 +889,9 @@ impl<'a> CodeGenerator<'a> {
 
         let value = self.generate_expression(expr)?;
         if let Some(return_type) = self.current_function_return_type.clone() {
+            // Returning an enum read out of a collection hands back the boxed
+            // pointer where the signature says inline struct (issue #363).
+            let value = self.coerce_boxed_enum_to_inline(value, &return_type)?;
             let rhs_owned = Self::rhs_produces_owned_enum(&expr.kind);
             return self.generate_typed_return(return_type, value, rhs_owned);
         }

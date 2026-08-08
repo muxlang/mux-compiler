@@ -231,6 +231,35 @@ impl<'a> CodeGenerator<'a> {
         self.enum_variants.contains_key(name).then(|| name.clone())
     }
 
+    /// Convert a user-enum value to the inline struct every consumer expects.
+    ///
+    /// A user enum is normally an inline `{ i32 tag, fields... }` struct. When
+    /// one arrives as a POINTER it is boxed - a managed BoxedEnum, or an Opaque
+    /// read out of a collection (`items[0]`, `m[k]`) - and the struct has to be
+    /// loaded back out before anything can use it.
+    ///
+    /// Matching and comparison already did this, via `generate_enum_match` and
+    /// `enum_struct_pointer`. The paths that did not are why `match items[0]`
+    /// worked while passing the same element to a function raised an internal
+    /// error, and assigning it to a class field compiled and then segfaulted
+    /// (issue #363). Anything consuming an enum by value must go through here.
+    ///
+    /// `optional`/`result` are excluded by `user_enum_type_name`: they are heap
+    /// values by design and their own runtime calls operate on the pointer.
+    pub(super) fn coerce_boxed_enum_to_inline(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        ty: &Type,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if !value.is_pointer_value() {
+            return Ok(value);
+        }
+        let Some(enum_name) = self.user_enum_type_name(ty) else {
+            return Ok(value);
+        };
+        self.unbox_enum_subject_value(&enum_name, value.into_pointer_value())
+    }
+
     /// If the enum-variant field `type_node` denotes a user-declared enum stored
     /// inline (not the built-in `optional`/`result`, which are boxed `*mut Value`),
     /// return that enum's name. A nested user enum is laid out inline in the

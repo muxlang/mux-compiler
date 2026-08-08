@@ -403,7 +403,14 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<Vec<BasicMetadataValueEnum<'a>>, String> {
         let mut call_args = vec![];
         for arg in args {
-            call_args.push(self.generate_expression(arg)?.into());
+            let value = self.generate_expression(arg)?;
+            // An enum read out of a collection arrives boxed, but a function
+            // taking one by value expects the inline struct (issue #363).
+            let value = match self.resolve_expression_type_with_fallback(arg) {
+                Ok(ty) => self.coerce_boxed_enum_to_inline(value, &ty)?,
+                Err(_) => value,
+            };
+            call_args.push(value.into());
         }
         Ok(call_args)
     }
@@ -1546,7 +1553,11 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(copied_ptr.into());
                 call_args.push(copied_ptr.into());
             } else {
-                call_args.push(self.generate_expression(arg)?.into());
+                let value = self.generate_expression(arg)?;
+                // An enum read out of a collection arrives boxed; a function
+                // taking one by value expects the inline struct (issue #363).
+                let value = self.coerce_boxed_enum_to_inline(value, &arg_type)?;
+                call_args.push(value.into());
             }
         }
         Ok(call_args)
@@ -2497,7 +2508,11 @@ impl<'a> CodeGenerator<'a> {
                 .map(|s| s.kind == crate::semantics::SymbolKind::Enum)
                 .unwrap_or(false);
             if is_enum {
-                return Ok(right_val);
+                // The field slot is an inline struct. An enum read out of a
+                // collection arrives boxed, and storing the pointer into that
+                // slot compiles and then segfaults on the next read (#363).
+                let field_semantic_type = Type::Named(field_type_name.clone(), vec![]);
+                return self.coerce_boxed_enum_to_inline(right_val, &field_semantic_type);
             }
         }
         Ok(self.box_value(right_val).into())
@@ -3351,7 +3366,10 @@ impl<'a> CodeGenerator<'a> {
                 // An owned inline enum argument was tracked as an enum temporary
                 // when produced; the callee borrows its parameter, so statement
                 // cleanup releases the argument (issue #298 review).
-                self.generate_expression(arg)?
+                let value = self.generate_expression(arg)?;
+                // An enum read out of a collection arrives boxed, and the
+                // parameter is an inline struct (issue #363).
+                self.coerce_boxed_enum_to_inline(value, &arg_type)?
             };
 
             let coerced = if let Some(expected) = llvm_param_types.get(idx) {
