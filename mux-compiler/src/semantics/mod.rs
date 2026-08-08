@@ -1587,13 +1587,25 @@ impl SemanticAnalyzer {
         // A real construction. Build the constructor signature directly rather
         // than routing back through field-access resolution, which rejects a
         // payload variant used without its arguments.
+        //
+        // The base's type arguments are substituted into the variant's declared
+        // payload types, so `Box<int>.Full(5)` checks 5 against int rather than
+        // against T (issue #359). They are also carried on the result, so the
+        // constructed value is a `Box<int>` and not a bare `Box`.
+        let type_args = match &base_type {
+            Type::Named(_, args) | Type::Instantiated(_, args) => args.clone(),
+            _ => Vec::new(),
+        };
+        let symbol = self.symbol_table.lookup(&enum_name)?;
+        let sig = symbol.methods.get(field)?;
+        let sig = if type_args.is_empty() {
+            sig.clone()
+        } else {
+            self.substitute_method_sig(sig, &symbol.type_params, &type_args)
+        };
         Some(Ok(Type::Function {
-            params: self
-                .symbol_table
-                .lookup(&enum_name)
-                .and_then(|s| s.methods.get(field).map(|sig| sig.params.clone()))
-                .unwrap_or_default(),
-            returns: Box::new(Type::Named(enum_name, vec![])),
+            params: sig.params,
+            returns: Box::new(Type::Named(enum_name, type_args)),
             default_count: 0,
         }))
     }

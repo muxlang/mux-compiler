@@ -3039,7 +3039,20 @@ impl<'a> CodeGenerator<'a> {
                 variant, enum_name
             ));
         };
-        let call_args = self.build_call_args_from_expressions(args)?;
+        let mut call_args = self.build_call_args_from_expressions(args)?;
+        // A payload declared as a type parameter has a pointer slot, since the
+        // layout cannot know what T is. A primitive argument therefore has to be
+        // boxed to reach it - `Box<int>.Full(5)` passes an i64 into a ptr slot
+        // otherwise (issue #359).
+        let param_types = constructor_func.get_type().get_param_types();
+        for (arg, expected) in call_args.iter_mut().zip(param_types.iter()) {
+            if expected.is_pointer_type()
+                && let Ok(value) = BasicValueEnum::try_from(*arg)
+                && !value.is_pointer_value()
+            {
+                *arg = self.box_value(value).into();
+            }
+        }
         let call = self
             .builder
             .build_call(
@@ -3099,6 +3112,13 @@ impl<'a> CodeGenerator<'a> {
                 field, class_name
             ));
         };
+        // `Box<int>.Full(5)`. A variant constructor is named `Box!Full`, not
+        // `Box.Full`, so the class path below would look for a function that
+        // never exists - which is the "Method 'Box.Full' not found" in issue
+        // #359.
+        if class_symbol.kind == crate::semantics::SymbolKind::Enum {
+            return self.generate_enum_symbol_method_call(&resolved_class_name, field, args);
+        }
         let Some(method) = class_symbol.methods.get(field) else {
             return Err(format!(
                 "Method {} not found on class {}",
@@ -3573,6 +3593,14 @@ impl<'a> CodeGenerator<'a> {
     /// (issue #368).
     fn enum_name_from_type_reference(&self, expr: &ExpressionNode) -> Option<String> {
         match &expr.kind {
+            // `Box<int>.Empty` - the instantiation is carried by the value's
+            // type, not by the constructor's name.
+            ExpressionKind::GenericType(name, _) => self
+                .analyzer
+                .symbol_table()
+                .lookup(name)
+                .filter(|s| s.kind == crate::semantics::SymbolKind::Enum)
+                .map(|_| name.clone()),
             ExpressionKind::Identifier(name) => self
                 .analyzer
                 .symbol_table()
