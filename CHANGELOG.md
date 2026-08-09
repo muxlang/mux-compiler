@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collections previously satisfied no interface at all, so passing one failed
   with a confusing "Undefined variable 'items'". `list` gains `len()`,
   `contains()`, and `to_list()`; `set` and `map` gain `len()`. Closes #277.
+- **An identifier can begin with an underscore.** `_x`, `_123` and `__` are
+  ordinary names; previously the lexer emitted `_` as its own token in every
+  position, so `auto _x = 5` failed to parse. A leading underscore is the
+  conventional way to mark something deliberately unused or private, and Rust,
+  Python, Go, C and JavaScript all allow it. A bare `_` is unchanged: it is
+  still the match wildcard and the unused-parameter marker, so the grammar is
+  `[a-zA-Z][a-zA-Z0-9_]* | _[a-zA-Z0-9_]+`. Closes muxlang/mux-context#46.
 
 ### Changed
 - **BREAKING: an interface cannot be used as a value type.** `func f(Shape s)`
@@ -88,6 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   job already ran on the host and adding roughly 180s to every PR and push.
 
 ### Fixed
+- **A signature can take more than one `_` parameter.** `func f(int _, string _)`
+  reported "Duplicate declaration of '_'". A bare `_` is a hole rather than a
+  name - nothing can refer to it, since `_` is not an expression - so it no
+  longer enters the symbol table at all.
 - **An enum read out of a collection no longer segfaults** when assigned to a
   class field, passed as an argument or returned. Everything that worked
   unboxed it; the remaining boundaries never got the conversion, so the code

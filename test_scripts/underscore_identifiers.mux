@@ -1,0 +1,124 @@
+// An identifier may begin with an underscore, which is how a name is
+// conventionally marked as deliberately unused or private. A BARE '_' keeps its
+// two existing jobs - the unused-parameter marker and the match wildcard - so
+// the grammar is '[a-zA-Z][a-zA-Z0-9_]* | _[a-zA-Z0-9_]+': a leading underscore
+// needs at least one character after it to become a name.
+
+// A bare '_' parameter: the value is accepted and deliberately ignored.
+func second(int _, string kept) returns string {
+    return kept
+}
+
+// '_' is a hole rather than a name, so a signature may carry several of them.
+func constant(int _, string _, bool _) returns int {
+    return 7
+}
+
+// A leading-underscore parameter is an ordinary name and can be used.
+func scale(int _factor, int value) returns int {
+    return _factor * value
+}
+
+// Every declaration position takes the name too, not just variables: an enum,
+// its variants, a class, a static method and an instance method.
+enum _State {
+    _Idle,
+    _Busy(int level)
+}
+
+class _Box {
+    int _v
+
+    common func _make(int v) returns _Box {
+        auto b = _Box.new()
+        b._v = v
+        return b
+    }
+
+    func _get() returns int {
+        return self._v
+    }
+}
+
+func _describe(_State s) returns string {
+    match s {
+        _Idle { return "idle" }
+        _Busy(lvl) { return "busy " + lvl.to_string() }
+    }
+}
+
+class Counter {
+    int _count
+
+    common func start() returns Counter {
+        auto c = Counter.new()
+        c._count = 0
+        return c
+    }
+
+    func bump() returns void {
+        self._count = self._count + 1
+        return
+    }
+
+    func total() returns int {
+        return self._count
+    }
+}
+
+// A bare '_' as the match wildcard, alongside a leading-underscore binding.
+func classify(int n) returns string {
+    match n {
+        0 { return "zero" }
+        1 { return "one" }
+        _ { return "many" }
+    }
+}
+
+func bind_anything(int n) returns string {
+    match n {
+        0 { return "zero" }
+        _rest { return "nonzero " + _rest.to_string() }
+    }
+}
+
+func main() returns void {
+    auto _x = 5
+    auto _123 = 10
+    auto __ = _x + _123
+
+    print(_x.to_string())
+    print(_123.to_string())
+    print(__.to_string())
+
+    print(second(1, "kept"))
+    print(constant(1, "a", true).to_string())
+    print(scale(3, 4).to_string())
+
+    print(_Box._make(9)._get().to_string())
+    print(_describe(_State._Idle))
+    print(_describe(_State._Busy(3)))
+
+    print(classify(0))
+    print(classify(7))
+    print(bind_anything(0))
+    print(bind_anything(42))
+
+    auto c = Counter.start()
+    c.bump()
+    c.bump()
+    print(c.total().to_string())
+
+    // A leading underscore works everywhere a name does, including as a loop
+    // variable and inside a collection.
+    auto _total = 0
+    for int _i in range(1, 4) {
+        _total = _total + _i
+    }
+    print(_total.to_string())
+
+    map<string, int> _counts = {"_a": 1, "_b": 2}
+    print(_counts["_a"].to_string())
+
+    return
+}
