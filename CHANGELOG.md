@@ -102,6 +102,10 @@ breaking; read the Changed section before upgrading.
   job already ran on the host and adding roughly 180s to every PR and push.
 
 ### Fixed
+- **A diagnostic naming a tuple prints a type you can write.** Type mismatches
+  reported `list<(string, int)>`, but the parser only accepts a tuple spelled
+  `tuple<A, B>`, so copying the reported type into an annotation failed. Every
+  other composite already printed its parseable form; `tuple` was the exception.
 - **A signature can take more than one `_` parameter.** `func f(int _, string _)`
   reported "Duplicate declaration of '_'". A bare `_` is a hole rather than a
   name - nothing can refer to it, since `_` is not an expression - so it no
