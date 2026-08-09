@@ -428,6 +428,17 @@ impl<'a> CodeGenerator<'a> {
                 }
                 Ok(())
             }
+            // `optional<T>` and `result<T, E>` are written as named types with
+            // arguments but carried as their own structural variants, so the
+            // Named arm above never matches them and a generic parameter of
+            // either kind could not be inferred.
+            Type::Optional(inner) if name == "optional" && type_args.len() == 1 => {
+                self.infer_types_from_signature(&type_args[0], inner, type_map)
+            }
+            Type::Result(ok, err) if name == "result" && type_args.len() == 2 => {
+                self.infer_types_from_signature(&type_args[0], ok, type_map)?;
+                self.infer_types_from_signature(&type_args[1], err, type_map)
+            }
             _ => Err(format!("Expected named type with args, got {:?}", arg_type)),
         }
     }
