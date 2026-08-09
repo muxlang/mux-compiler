@@ -4,7 +4,7 @@
 // object dies, and a by-value class copy must deep-clone the whole chain so the
 // two objects share no boxes.
 
-enum IntList { Nil, Cons(int, IntList) }
+enum IntList { Nil, Cons(int head, IntList tail) }
 
 class Holder {
     IntList items

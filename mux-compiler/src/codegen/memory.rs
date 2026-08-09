@@ -35,6 +35,15 @@ enum FieldGlue {
 
 /// How a variant payload field is compared for structural ordering (issue
 /// #309). Unlike `FieldGlue` this covers every field, including inline scalars.
+/// FNV-1a constants, used to combine an enum's discriminant and payload field
+/// hashes into one value.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Every NaN hashes to this, because the comparison glue reports two NaNs as
+/// equal while their bit patterns can differ.
+const NAN_HASH: u64 = 0x7fff_ffff_ffff_ffff;
+
 enum CompareKind<'a> {
     /// An inline scalar (int/bool/char/float): compared directly on its bits.
     Scalar(BasicTypeEnum<'a>),
@@ -222,13 +231,46 @@ impl<'a> CodeGenerator<'a> {
     /// which are boxed `*mut Value`s rather than inline structs), return its
     /// name. Used to decide whether a struct-valued local needs enum drop-glue.
     pub(super) fn user_enum_type_name(&self, ty: &Type) -> Option<String> {
-        let Type::Named(name, _) = ty else {
+        let Type::Named(name, args) = ty else {
             return None;
         };
         if name == "optional" || name == "result" {
             return None;
         }
-        self.enum_variants.contains_key(name).then(|| name.clone())
+        // A generic enum answers under its instantiation name, so callers get
+        // `Box$int` and reach the stamped-out struct and glue (issue #359).
+        self.enum_variants
+            .contains_key(name)
+            .then(|| self.mangled_enum_name(name, args))
+    }
+
+    /// Convert a user-enum value to the inline struct every consumer expects.
+    ///
+    /// A user enum is normally an inline `{ i32 tag, fields... }` struct. When
+    /// one arrives as a POINTER it is boxed - a managed BoxedEnum, or an Opaque
+    /// read out of a collection (`items[0]`, `m[k]`) - and the struct has to be
+    /// loaded back out before anything can use it.
+    ///
+    /// Matching and comparison already did this, via `generate_enum_match` and
+    /// `enum_struct_pointer`. The paths that did not are why `match items[0]`
+    /// worked while passing the same element to a function raised an internal
+    /// error, and assigning it to a class field compiled and then segfaulted
+    /// (issue #363). Anything consuming an enum by value must go through here.
+    ///
+    /// `optional`/`result` are excluded by `user_enum_type_name`: they are heap
+    /// values by design and their own runtime calls operate on the pointer.
+    pub(super) fn coerce_boxed_enum_to_inline(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        ty: &Type,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if !value.is_pointer_value() {
+            return Ok(value);
+        }
+        let Some(enum_name) = self.user_enum_type_name(ty) else {
+            return Ok(value);
+        };
+        self.unbox_enum_subject_value(&enum_name, value.into_pointer_value())
     }
 
     /// If the enum-variant field `type_node` denotes a user-declared enum stored
@@ -243,7 +285,23 @@ impl<'a> CodeGenerator<'a> {
         if name == "optional" || name == "result" {
             return None;
         }
-        self.enum_variants.contains_key(name).then(|| name.clone())
+        if !self.enum_variants.contains_key(name) {
+            return None;
+        }
+        // A nested generic payload names the instantiation, so `Tree<int>`
+        // inside `Tree$int` embeds `Tree$int` and not the uninstantiated
+        // `Tree`, whose layout is a different shape (issue #359).
+        let args = self.type_node_args_as_types(type_node);
+        Some(self.mangled_enum_name(name, &args))
+    }
+
+    /// The type arguments of a named `TypeNode`, resolved to semantic types.
+    /// Empty for a non-generic reference.
+    fn type_node_args_as_types(&self, type_node: &crate::ast::TypeNode) -> Vec<Type> {
+        let crate::ast::TypeKind::Named(_, args) = &type_node.kind else {
+            return Vec::new();
+        };
+        args.iter().map(|arg| self.type_node_to_type(arg)).collect()
     }
 
     /// Whether `from` embeds `target` as a nested user-enum payload, directly or
@@ -734,6 +792,9 @@ impl<'a> CodeGenerator<'a> {
         // as a map key or set member. Built up front for the same reason as the
         // RC glue: a lazy build mid-body would corrupt the insertion point.
         self.get_or_create_enum_cmp_fn(enum_name)?;
+        // Hash glue for the same reason: map and set are hash tables, so a
+        // payload-carrying enum needs a hash that agrees with its comparison.
+        self.get_or_create_enum_hash_fn(enum_name)?;
         Ok(())
     }
 
@@ -751,8 +812,16 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<PointerValue<'a>, String> {
         if value.is_struct_value()
             && let Some(enum_name) = self.user_enum_type_name(elem_type)
-            && self.enum_has_rc_payload(&enum_name)
         {
+            // Every user enum, not only one with a reference-counted payload.
+            // A plain `box_value` makes an `Opaque`, which the runtime compares
+            // and hashes byte for byte - correct only because constructors
+            // zero-initialize the struct, so the padding and the unused bytes
+            // of the union slot happen to match. That invariant lived in codegen
+            // and was depended on by the runtime, with neither side saying so,
+            // and deleting the "redundant" zero-store would have silently broken
+            // enum map keys. A managed box carries the compare and hash glue, so
+            // equality rests on the enum's fields rather than on its bytes.
             return self.box_enum_managed(value.into_struct_value(), &enum_name);
         }
         Ok(self.box_value(value))
@@ -777,6 +846,7 @@ impl<'a> CodeGenerator<'a> {
             .get(&(enum_name.to_string(), EnumPayloadOp::Drop.label()))
             .ok_or_else(|| format!("Enum {} drop glue missing", enum_name))?;
         let cmp_glue = self.get_or_create_enum_cmp_fn(enum_name)?;
+        let hash_glue = self.get_or_create_enum_hash_fn(enum_name)?;
         let struct_type = struct_val.get_type();
         let temp = self
             .builder
@@ -801,6 +871,7 @@ impl<'a> CodeGenerator<'a> {
                     clone_glue.as_global_value().as_pointer_value().into(),
                     drop_glue.as_global_value().as_pointer_value().into(),
                     cmp_glue.as_global_value().as_pointer_value().into(),
+                    hash_glue.as_global_value().as_pointer_value().into(),
                 ],
                 "managed_enum_box",
             )
@@ -991,6 +1062,269 @@ impl<'a> CodeGenerator<'a> {
             .build_load(self.context.i32_type(), disc_ptr, "cmp_disc")
             .map_err(|e| e.to_string())?
             .into_int_value())
+    }
+
+    /// Return (building it on first use) the structural hash function for an
+    /// enum: `u64 @mux_enum_hash_<Enum>(ptr a)`.
+    ///
+    /// Mirrors `get_or_create_enum_cmp_fn` field for field, and has to: the
+    /// runtime's map and set are hash tables, so two values `cmp_glue` calls
+    /// equal must hash equally. Hashing the raw bytes would not do - the inline
+    /// struct has padding between the discriminant and the payload, and that
+    /// padding is not guaranteed equal for two otherwise equal values.
+    ///
+    /// Combines with FNV-1a, which is deterministic and needs no state.
+    pub(super) fn get_or_create_enum_hash_fn(
+        &mut self,
+        enum_name: &str,
+    ) -> Result<inkwell::values::FunctionValue<'a>, String> {
+        let key = (enum_name.to_string(), "hash");
+        if let Some(existing) = self.enum_glue_fns.get(&key) {
+            return Ok(*existing);
+        }
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i64_type = self.context.i64_type();
+        let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
+        let function =
+            self.module
+                .add_function(&format!("mux_enum_hash_{}", enum_name), fn_type, None);
+        // Memoized before the body is built, so a self-embedding enum resolves
+        // the recursive call rather than expanding forever (issue #309).
+        self.enum_glue_fns.insert(key, function);
+
+        let struct_type = match self.type_map.get(enum_name) {
+            Some(BasicTypeEnum::StructType(st)) => *st,
+            _ => return Err(format!("Enum {} is not a struct type", enum_name)),
+        };
+        let saved_block = self.builder.get_insert_block();
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let a = function
+            .get_nth_param(0)
+            .ok_or("enum hash function missing its parameter")?
+            .into_pointer_value();
+
+        let acc = self
+            .builder
+            .build_alloca(i64_type, "hash_acc")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(acc, i64_type.const_int(FNV_OFFSET_BASIS, false))
+            .map_err(|e| e.to_string())?;
+
+        // The discriminant always contributes, so two variants with the same
+        // payload bits still hash differently.
+        let disc = self.load_enum_discriminant_i32(struct_type, a)?;
+        let disc_wide = self
+            .builder
+            .build_int_z_extend(disc, i64_type, "hash_disc")
+            .map_err(|e| e.to_string())?;
+        self.mix_into_hash(acc, disc_wide)?;
+
+        let merge = self.context.append_basic_block(function, "hash_merge");
+        let variants = self
+            .enum_variants
+            .get(enum_name)
+            .cloned()
+            .ok_or_else(|| format!("Enum {} has no variant list", enum_name))?;
+        let mut cases = Vec::new();
+        for variant in &variants {
+            let fields = self.variant_compare_fields(enum_name, variant)?;
+            if fields.is_empty() {
+                continue;
+            }
+            let index = self.get_variant_index(enum_name, variant)?;
+            let case_block = self
+                .context
+                .append_basic_block(function, &format!("hash_{enum_name}_{variant}"));
+            self.builder.position_at_end(case_block);
+            for (idx, kind) in &fields {
+                let field_hash = self.emit_hash_field(struct_type, a, *idx, kind)?;
+                self.mix_into_hash(acc, field_hash)?;
+            }
+            self.builder
+                .build_unconditional_branch(merge)
+                .map_err(|e| e.to_string())?;
+            cases.push((
+                self.context.i32_type().const_int(index as u64, false),
+                case_block,
+            ));
+        }
+        self.builder.position_at_end(entry);
+        self.builder
+            .build_switch(disc, merge, &cases)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(merge);
+        let final_hash = self
+            .builder
+            .build_load(i64_type, acc, "hash_final")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_return(Some(&final_hash))
+            .map_err(|e| e.to_string())?;
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+        Ok(function)
+    }
+
+    /// `acc = (acc XOR value) * FNV_PRIME`, the FNV-1a step.
+    fn mix_into_hash(
+        &mut self,
+        acc: PointerValue<'a>,
+        value: inkwell::values::IntValue<'a>,
+    ) -> Result<(), String> {
+        let i64_type = self.context.i64_type();
+        let current = self
+            .builder
+            .build_load(i64_type, acc, "hash_cur")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let xored = self
+            .builder
+            .build_xor(current, value, "hash_xor")
+            .map_err(|e| e.to_string())?;
+        let mixed = self
+            .builder
+            .build_int_mul(xored, i64_type.const_int(FNV_PRIME, false), "hash_mul")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(acc, mixed)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Hash a float by its bits, after canonicalizing the two cases where equal
+    /// values have different bit patterns.
+    ///
+    /// The comparison glue uses float semantics, so `0.0 == -0.0` and two NaNs
+    /// come out equal (neither `OLT` nor `OGT` holds, so the three-way result is
+    /// zero). Their bit patterns differ, so hashing the bits directly breaks the
+    /// rule that equal values hash equally - a set built from `M.At(0.0)` and
+    /// `M.At(-0.0)` ended up holding both.
+    ///
+    /// Adding zero collapses `-0.0` to `+0.0` and leaves every other value
+    /// alone, and NaN takes a fixed hash so all NaNs agree.
+    fn hash_float_canonically(
+        &mut self,
+        value: inkwell::values::FloatValue<'a>,
+    ) -> Result<inkwell::values::IntValue<'a>, String> {
+        let i64_type = self.context.i64_type();
+        let float_type = value.get_type();
+        let normalized = self
+            .builder
+            .build_float_add(value, float_type.const_zero(), "hash_fnorm")
+            .map_err(|e| e.to_string())?;
+        let bits = self
+            .builder
+            .build_bit_cast(normalized, i64_type, "hash_fbits")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        // `UNO` is true when either operand is NaN, and both are this value.
+        let is_nan = self
+            .builder
+            .build_float_compare(inkwell::FloatPredicate::UNO, value, value, "hash_fisnan")
+            .map_err(|e| e.to_string())?;
+        Ok(self
+            .builder
+            .build_select(
+                is_nan,
+                i64_type.const_int(NAN_HASH, false),
+                bits,
+                "hash_fcanon",
+            )
+            .map_err(|e| e.to_string())?
+            .into_int_value())
+    }
+
+    /// Hash one payload field to `u64`, by the same four cases the comparison
+    /// uses, so the two stay in step.
+    fn emit_hash_field(
+        &mut self,
+        struct_type: inkwell::types::StructType<'a>,
+        a: PointerValue<'a>,
+        idx: usize,
+        kind: &CompareKind<'a>,
+    ) -> Result<inkwell::values::IntValue<'a>, String> {
+        let i64_type = self.context.i64_type();
+        let gep = self
+            .builder
+            .build_struct_gep(struct_type, a, (idx + 1) as u32, "hash_fa")
+            .map_err(|e| e.to_string())?;
+        match kind {
+            CompareKind::Scalar(ty) => {
+                let loaded = self
+                    .builder
+                    .build_load(*ty, gep, "hash_la")
+                    .map_err(|e| e.to_string())?;
+                if loaded.is_float_value() {
+                    return self.hash_float_canonically(loaded.into_float_value());
+                }
+                let as_int = loaded.into_int_value();
+                if as_int.get_type().get_bit_width() < 64 {
+                    return self
+                        .builder
+                        .build_int_z_extend(as_int, i64_type, "hash_widen")
+                        .map_err(|e| e.to_string());
+                }
+                Ok(as_int)
+            }
+            CompareKind::Pointer => {
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let loaded = self
+                    .builder
+                    .build_load(ptr_type, gep, "hash_pa")
+                    .map_err(|e| e.to_string())?;
+                let hash_fn = self
+                    .runtime_function("mux_value_hash")
+                    .ok_or("mux_value_hash not found")?;
+                Ok(self
+                    .builder
+                    .build_call(hash_fn, &[loaded.into()], "hash_value_call")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("mux_value_hash returned no value")?
+                    .into_int_value())
+            }
+            CompareKind::InlineEnum(inner) => {
+                let inner_hash = self.get_or_create_enum_hash_fn(inner)?;
+                Ok(self
+                    .builder
+                    .build_call(inner_hash, &[gep.into()], "hash_inline")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("nested enum hash returned no value")?
+                    .into_int_value())
+            }
+            CompareKind::BoxedEnum(inner) => {
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let unbox = self
+                    .runtime_function("mux_value_unbox_enum")
+                    .ok_or("mux_value_unbox_enum not found")?;
+                let boxed = self
+                    .builder
+                    .build_load(ptr_type, gep, "hash_ba")
+                    .map_err(|e| e.to_string())?;
+                let unboxed = self
+                    .builder
+                    .build_call(unbox, &[boxed.into()], "hash_ua")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("unbox returned no value")?;
+                let inner_hash = self.get_or_create_enum_hash_fn(inner)?;
+                Ok(self
+                    .builder
+                    .build_call(inner_hash, &[unboxed.into()], "hash_boxed")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("boxed enum hash returned no value")?
+                    .into_int_value())
+            }
+        }
     }
 
     /// Emit the guarded, in-order field comparisons for one variant's case

@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Operator '==' is not supported between types T and T
+--> test_scripts/error_cases/semantic_generic_unbounded_equality.mux:5:17
+   |
+ 5 |     return a == b
+   |                 ^
+   |
+= help: 'T' is a type parameter with no 'Equatable' bound, so '==' is not available on it. Declare the bound, as in <T is Equatable>.

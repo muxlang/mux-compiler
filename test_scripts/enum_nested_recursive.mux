@@ -4,7 +4,7 @@
 // deep-cloning all recurse through the box; boxes stay unshared (refcount 1) so
 // the recursive drop frees every node exactly once.
 
-enum IntList { Nil, Cons(int, IntList) }
+enum IntList { Nil, Cons(int head, IntList tail) }
 
 func sum(IntList l) returns int {
     match l {

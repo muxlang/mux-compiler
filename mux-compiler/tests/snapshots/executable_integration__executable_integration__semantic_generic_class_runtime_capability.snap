@@ -1,0 +1,27 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: 3 errors found
+
+error: Generic class 'Ranked' cannot implement 'Comparable'
+--> test_scripts/error_cases/semantic_generic_class_runtime_capability.mux:11:20
+   |
+11 | class Ranked<T> is Comparable {
+   |                    ^^^^^^^^^^
+   |
+= help: 'Comparable' is registered with the runtime per class, and a generic class shares one                  registration across every instantiation. Drop the type parameter, or compare                  through a method you call directly.
+
+error: Undefined method 'rank' on type 'Ranked<T>'
+--> test_scripts/error_cases/semantic_generic_class_runtime_capability.mux:16:16
+   |
+16 |         return self.rank - other.rank
+   |                ^^^^
+
+error: Undefined type 'Ranked'
+--> test_scripts/error_cases/semantic_generic_class_runtime_capability.mux:21:14
+   |
+21 |     auto r = Ranked<int>.new()
+   |              ^^^^^^^^^^^
+   |
+= help: Did you mean 'range'?

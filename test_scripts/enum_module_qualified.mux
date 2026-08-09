@@ -1,0 +1,27 @@
+// An enum reached through its module namespace, in both construction forms
+// (issue #368). The unqualified import forms already worked; the qualified one
+// was unsupported in codegen while semantics accepted it.
+
+import shapes_lib
+
+func main() returns void {
+    auto c = shapes_lib.Shape.Circ(1.5)
+    match c {
+        Unit { print("unit") }
+        Circ(r) { print("circ " + r.to_string()) }
+    }
+
+    auto u = shapes_lib.Shape.Unit
+    match u {
+        Unit { print("unit") }
+        Circ(r) { print("circ") }
+    }
+
+    auto t = shapes_lib.Tint.Warm
+    match t {
+        Warm { print("warm") }
+        Cool { print("cool") }
+    }
+
+    return
+}

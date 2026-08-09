@@ -305,6 +305,16 @@ impl<'a> CodeGenerator<'a> {
             None => return Ok(None),
         };
 
+        // An imported enum reaches its variants the same way a class reaches a
+        // static method, and imported enums are registered under their bare name,
+        // so the construction is the ordinary one from here (issue #368).
+        if class_symbol.kind == crate::semantics::SymbolKind::Enum {
+            if !class_symbol.methods.contains_key(method_name) {
+                return Ok(None);
+            }
+            return self.generate_enum_symbol_method_call(class_name, method_name, args);
+        }
+
         if class_symbol.kind != crate::semantics::SymbolKind::Class {
             return Ok(None);
         }
@@ -403,7 +413,14 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<Vec<BasicMetadataValueEnum<'a>>, String> {
         let mut call_args = vec![];
         for arg in args {
-            call_args.push(self.generate_expression(arg)?.into());
+            let value = self.generate_expression(arg)?;
+            // An enum read out of a collection arrives boxed, but a function
+            // taking one by value expects the inline struct (issue #363).
+            let value = match self.resolve_expression_type_with_fallback(arg) {
+                Ok(ty) => self.coerce_boxed_enum_to_inline(value, &ty)?,
+                Err(_) => value,
+            };
+            call_args.push(value.into());
         }
         Ok(call_args)
     }
@@ -1425,6 +1442,27 @@ impl<'a> CodeGenerator<'a> {
         Ok(result)
     }
 
+    /// Box a payload that a `_value` wrapper constructor takes as a
+    /// `*mut Value`.
+    ///
+    /// `optional` and `result` are heap values, so `some(x)` on anything the
+    /// runtime stores generically wants a boxed argument. An enum is stored
+    /// inline, so `some(Color.Red)` was handing an inline struct to a function
+    /// expecting a pointer. `box_enum_or_value` is used rather than `box_value`
+    /// because an enum with a reference-counted payload has to become a managed
+    /// `BoxedEnum` for its clone and drop glue to run (issue #309).
+    fn box_wrapper_payload(
+        &mut self,
+        constructor: &str,
+        value: BasicValueEnum<'a>,
+        value_type: &Type,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if !constructor.ends_with("_value") || value.is_pointer_value() {
+            return Ok(value);
+        }
+        Ok(self.box_enum_or_value(value, value_type)?.into())
+    }
+
     fn generate_ok_builtin_call(
         &mut self,
         args: &[ExpressionNode],
@@ -1436,9 +1474,10 @@ impl<'a> CodeGenerator<'a> {
         let arg_type = self
             .get_resolved_expression_type(arg_expr)
             .map_err(|e| format!("Type inference failed: {}", e))?;
-        let arg_val = self.generate_expression(arg_expr)?;
         let func_name = Self::ok_builtin_constructor_name(&arg_type)
             .ok_or_else(|| format!("Ok() not supported for type {:?}", arg_type))?;
+        let arg_val = self.generate_expression(arg_expr)?;
+        let arg_val = self.box_wrapper_payload(func_name, arg_val, &arg_type)?;
         self.call_single_arg_builtin(func_name, arg_val, "ok_call")
     }
 
@@ -1465,9 +1504,10 @@ impl<'a> CodeGenerator<'a> {
                 }
             }
         };
-        let arg_val = self.generate_expression(arg_expr)?;
         let func_name = Self::some_builtin_constructor_name(&arg_type)
             .ok_or_else(|| format!("Some() not supported for type {:?}", arg_type))?;
+        let arg_val = self.generate_expression(arg_expr)?;
+        let arg_val = self.box_wrapper_payload(func_name, arg_val, &arg_type)?;
         self.call_single_arg_builtin(func_name, arg_val, "some_call")
     }
 
@@ -1546,7 +1586,11 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(copied_ptr.into());
                 call_args.push(copied_ptr.into());
             } else {
-                call_args.push(self.generate_expression(arg)?.into());
+                let value = self.generate_expression(arg)?;
+                // An enum read out of a collection arrives boxed; a function
+                // taking one by value expects the inline struct (issue #363).
+                let value = self.coerce_boxed_enum_to_inline(value, &arg_type)?;
+                call_args.push(value.into());
             }
         }
         Ok(call_args)
@@ -1856,7 +1900,7 @@ impl<'a> CodeGenerator<'a> {
                 self.generate_named_identifier_from_binding(name, ptr, var_type, type_name)
             }
             Type::Primitive(prim) => {
-                self.generate_primitive_identifier_from_binding(name, ptr, prim)
+                self.generate_primitive_identifier_from_binding(name, ptr, var_type, prim)
             }
             Type::Function { .. } => self.load_boxed_ptr_from_alloca(ptr, name).map(|v| v.into()),
             _ => self.load_boxed_ptr_from_alloca(ptr, name).map(|v| v.into()),
@@ -1920,8 +1964,18 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         name: &str,
         ptr: PointerValue<'a>,
+        var_type: BasicTypeEnum<'a>,
         prim: &PrimitiveType,
     ) -> Result<BasicValueEnum<'a>, String> {
+        // A local holds a boxed value, but a binding may point straight at a
+        // slot that holds the scalar itself - a class field bound by name for a
+        // where clause is one. The recorded type says which.
+        if !var_type.is_pointer_type() {
+            return self
+                .builder
+                .build_load(var_type, ptr, &format!("load_{}", name))
+                .map_err(|e| e.to_string());
+        }
         let boxed_ptr = self.load_boxed_ptr_from_alloca(ptr, name)?;
         match prim {
             PrimitiveType::Int => self.get_raw_int_value(boxed_ptr.into()).map(|v| v.into()),
@@ -2108,11 +2162,7 @@ impl<'a> CodeGenerator<'a> {
 
         match op {
             BinaryOp::Assign => self.generate_simple_assignment_expression(left, right),
-            BinaryOp::AddAssign => self.generate_compound_assignment_expression(left, right, true),
-            BinaryOp::SubtractAssign => {
-                self.generate_compound_assignment_expression(left, right, false)
-            }
-            _ => Err("Assignment op not implemented".to_string()),
+            _ => self.generate_compound_assignment_expression(left, op, right),
         }
     }
 
@@ -2209,6 +2259,37 @@ impl<'a> CodeGenerator<'a> {
     /// copy and its previous payload released, via `store_struct_value` (issues
     /// #290/#298). Retain/clone happens before the release so `self.x = self.x`
     /// stays safe. Other inline structs own nothing here and are stored directly.
+    /// The LLVM type of `field` when the class stores it inline as a scalar,
+    /// or `None` when the slot holds a `*mut Value` or an inline enum struct.
+    pub(super) fn class_field_scalar_type(
+        &self,
+        class_name: &str,
+        field: &str,
+    ) -> Option<BasicTypeEnum<'a>> {
+        let index = *self.field_map.get(class_name)?.get(field)?;
+        let field_type = *self.field_types_map.get(class_name)?.get(index)?;
+        match field_type {
+            BasicTypeEnum::IntType(_) | BasicTypeEnum::FloatType(_) => Some(field_type),
+            _ => None,
+        }
+    }
+
+    /// Narrow a value to a scalar slot, extracting it from its box when the
+    /// expression that produced it handed back a `*mut Value`.
+    pub(super) fn coerce_to_scalar(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        scalar: BasicTypeEnum<'a>,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        match scalar {
+            BasicTypeEnum::FloatType(_) => Ok(self.get_raw_float_value(value)?.into()),
+            BasicTypeEnum::IntType(int_type) if int_type.get_bit_width() == 1 => {
+                Ok(self.get_raw_bool_value(value)?.into())
+            }
+            _ => Ok(self.get_raw_int_value(value)?.into()),
+        }
+    }
+
     fn store_class_field(
         &mut self,
         class_name: &str,
@@ -2222,6 +2303,17 @@ impl<'a> CodeGenerator<'a> {
                 let field_type = Type::Named(enum_name, Vec::new());
                 return self.store_struct_value(field_ptr, value, &field_type, rhs_owned, true);
             }
+            return self
+                .builder
+                .build_store(field_ptr, value)
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
+        // A scalar field holds the value itself, not a pointer to it, so the
+        // reference counting below has nothing to count and the incoming value
+        // has to be narrowed to what the slot holds.
+        if let Some(scalar) = self.class_field_scalar_type(class_name, field) {
+            let value = self.coerce_to_scalar(value, scalar)?;
             return self
                 .builder
                 .build_store(field_ptr, value)
@@ -2482,6 +2574,12 @@ impl<'a> CodeGenerator<'a> {
         let field_type = field.type_.clone();
         let is_generic_param = field.is_generic_param;
 
+        // A scalar field holds the value itself, so hand the store the raw
+        // value. Boxing here and unboxing at the store would allocate and free
+        // a `*mut Value` for every assignment to an `int` field.
+        if let Some(scalar) = self.scalar_field_type(&field_type) {
+            return self.coerce_to_scalar(right_val, scalar);
+        }
         if is_generic_param {
             return Ok(self.compute_generic_field_store_value(&field_type, right_val));
         }
@@ -2497,7 +2595,11 @@ impl<'a> CodeGenerator<'a> {
                 .map(|s| s.kind == crate::semantics::SymbolKind::Enum)
                 .unwrap_or(false);
             if is_enum {
-                return Ok(right_val);
+                // The field slot is an inline struct. An enum read out of a
+                // collection arrives boxed, and storing the pointer into that
+                // slot compiles and then segfaults on the next read (#363).
+                let field_semantic_type = Type::Named(field_type_name.clone(), vec![]);
+                return self.coerce_boxed_enum_to_inline(right_val, &field_semantic_type);
             }
         }
         Ok(self.box_value(right_val).into())
@@ -2596,46 +2698,36 @@ impl<'a> CodeGenerator<'a> {
 
     /// Compute the scalar result of a compound assignment (`+=` / `-=`) for
     /// numeric operands. `is_add` selects addition vs subtraction.
-    fn compute_compound_result(
-        &mut self,
-        left_val: BasicValueEnum<'a>,
-        right_val: BasicValueEnum<'a>,
-        is_add: bool,
-    ) -> Result<BasicValueEnum<'a>, String> {
-        if left_val.is_int_value() {
-            let (l, r) = (left_val.into_int_value(), right_val.into_int_value());
-            let v = if is_add {
-                self.builder.build_int_add(l, r, "add_assign")
-            } else {
-                self.builder.build_int_sub(l, r, "sub_assign")
-            }
-            .map_err(|e| e.to_string())?;
-            Ok(v.into())
-        } else if left_val.is_float_value() {
-            let (l, r) = (left_val.into_float_value(), right_val.into_float_value());
-            let v = if is_add {
-                self.builder.build_float_add(l, r, "fadd_assign")
-            } else {
-                self.builder.build_float_sub(l, r, "fsub_assign")
-            }
-            .map_err(|e| e.to_string())?;
-            Ok(v.into())
-        } else if is_add {
-            Err("Unsupported add assign operands".to_string())
-        } else {
-            Err("Unsupported sub assign operands".to_string())
+    /// The operator `x op= y` applies, so the result comes from the same code
+    /// that generates `x op y` - including its overflow and divide-by-zero
+    /// checks, and string concatenation for `+=`.
+    fn compound_base_op(op: &BinaryOp) -> Result<BinaryOp, String> {
+        match op {
+            BinaryOp::AddAssign => Ok(BinaryOp::Add),
+            BinaryOp::SubtractAssign => Ok(BinaryOp::Subtract),
+            BinaryOp::MultiplyAssign => Ok(BinaryOp::Multiply),
+            BinaryOp::DivideAssign => Ok(BinaryOp::Divide),
+            BinaryOp::ModuloAssign => Ok(BinaryOp::Modulo),
+            other => Err(format!("{:?} is not a compound assignment", other)),
         }
     }
 
     fn generate_compound_assignment_expression(
         &mut self,
         left: &ExpressionNode,
+        op: &BinaryOp,
         right: &ExpressionNode,
-        is_add: bool,
     ) -> Result<BasicValueEnum<'a>, String> {
+        let base_op = Self::compound_base_op(op)?;
         let left_val = self.generate_expression(left)?;
         let right_val = self.generate_expression(right)?;
-        let result = self.compute_compound_result(left_val, right_val, is_add)?;
+        let result = self.generate_binary_op(left, left_val, &base_op, right, right_val)?;
+        // `x op y` reaching here through `generate_expression` would have been
+        // registered as a statement temporary; calling the operator directly
+        // skips that. Arithmetic hands back an unboxed scalar, which
+        // `register_temp` ignores, but a `+=` on a string builds a new value
+        // that the store below transfers - and leaks if it was never tracked.
+        self.register_temp(result);
 
         match &left.kind {
             ExpressionKind::Identifier(name) => {
@@ -2667,6 +2759,10 @@ impl<'a> CodeGenerator<'a> {
                 if let Some(t) = target_type {
                     self.overwrite_slot_with_owned(ptr, result, &t)?;
                 } else {
+                    // The referenced type could not be resolved, so the slot
+                    // takes the value as-is. `store_boxed_into_slot` untracks it,
+                    // transferring ownership, so the statement boundary does not
+                    // free what the slot now points at.
                     let boxed = self.box_value(result);
                     self.store_boxed_into_slot(ptr, boxed)?;
                 }
@@ -3014,7 +3110,20 @@ impl<'a> CodeGenerator<'a> {
                 variant, enum_name
             ));
         };
-        let call_args = self.build_call_args_from_expressions(args)?;
+        let mut call_args = self.build_call_args_from_expressions(args)?;
+        // A payload declared as a type parameter has a pointer slot, since the
+        // layout cannot know what T is. A primitive argument therefore has to be
+        // boxed to reach it - `Box<int>.Full(5)` passes an i64 into a ptr slot
+        // otherwise (issue #359).
+        let param_types = constructor_func.get_type().get_param_types();
+        for (arg, expected) in call_args.iter_mut().zip(param_types.iter()) {
+            if expected.is_pointer_type()
+                && let Ok(value) = BasicValueEnum::try_from(*arg)
+                && !value.is_pointer_value()
+            {
+                *arg = self.box_value(value).into();
+            }
+        }
         let call = self
             .builder
             .build_call(
@@ -3074,6 +3183,18 @@ impl<'a> CodeGenerator<'a> {
                 field, class_name
             ));
         };
+        // `Box<int>.Full(5)`. A variant constructor is named `Box!Full`, not
+        // `Box.Full`, so the class path below would look for a function that
+        // never exists - which is the "Method 'Box.Full' not found" in issue
+        // #359.
+        if class_symbol.kind == crate::semantics::SymbolKind::Enum {
+            let concrete: Vec<Type> = resolved_type_args
+                .iter()
+                .map(|arg| self.resolve_type(arg))
+                .collect::<Result<Vec<_>, _>>()?;
+            let instance = self.ensure_enum_instantiated(&resolved_class_name, &concrete)?;
+            return self.generate_enum_symbol_method_call(&instance, field, args);
+        }
         let Some(method) = class_symbol.methods.get(field) else {
             return Err(format!(
                 "Method {} not found on class {}",
@@ -3351,7 +3472,10 @@ impl<'a> CodeGenerator<'a> {
                 // An owned inline enum argument was tracked as an enum temporary
                 // when produced; the callee borrows its parameter, so statement
                 // cleanup releases the argument (issue #298 review).
-                self.generate_expression(arg)?
+                let value = self.generate_expression(arg)?;
+                // An enum read out of a collection arrives boxed, and the
+                // parameter is an inline struct (issue #363).
+                self.coerce_boxed_enum_to_inline(value, &arg_type)?
             };
 
             let coerced = if let Some(expected) = llvm_param_types.get(idx) {
@@ -3533,19 +3657,63 @@ impl<'a> CodeGenerator<'a> {
         expr: &ExpressionNode,
         field: &str,
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        let ExpressionKind::Identifier(enum_name) = &expr.kind else {
+        let Some(enum_name) = self.enum_name_from_type_reference(expr) else {
             return Ok(None);
         };
-        let is_enum = self
-            .analyzer
-            .symbol_table()
-            .lookup(enum_name)
-            .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum);
-        if !is_enum {
-            return Ok(None);
-        }
-        let enum_name = enum_name.clone();
+        // `Tree<int>.Leaf` must build the instantiation's constructor, not the
+        // uninstantiated one, or the value carries the wrong layout (issue #359).
+        let enum_name = if let ExpressionKind::GenericType(_, type_args) = &expr.kind {
+            let concrete = type_args
+                .iter()
+                .map(|arg| {
+                    let ty = self.type_node_to_type(arg);
+                    self.resolve_type(&ty)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.ensure_enum_instantiated(&enum_name, &concrete)?
+        } else {
+            enum_name
+        };
         self.generate_enum_symbol_method_call(&enum_name, field, &[])
+    }
+
+    /// The enum named by a type reference: a bare name (`Color`) or one reached
+    /// through a module namespace (`palette.Color`). Imported enums are
+    /// registered under their bare name, so both forms yield the same key
+    /// (issue #368).
+    fn enum_name_from_type_reference(&self, expr: &ExpressionNode) -> Option<String> {
+        match &expr.kind {
+            // `Box<int>.Empty` - the instantiation is carried by the value's
+            // type, not by the constructor's name.
+            ExpressionKind::GenericType(name, _) => self
+                .analyzer
+                .symbol_table()
+                .lookup(name)
+                .filter(|s| s.kind == crate::semantics::SymbolKind::Enum)
+                .map(|_| name.clone()),
+            ExpressionKind::Identifier(name) => self
+                .analyzer
+                .symbol_table()
+                .lookup(name)
+                .filter(|s| s.kind == crate::semantics::SymbolKind::Enum)
+                .map(|_| name.clone()),
+            ExpressionKind::FieldAccess { expr: base, field } => {
+                let ExpressionKind::Identifier(module) = &base.kind else {
+                    return None;
+                };
+                let module_sym = self.analyzer.symbol_table().lookup(module)?;
+                if module_sym.kind != crate::semantics::SymbolKind::Import {
+                    return None;
+                }
+                self.analyzer
+                    .imported_symbols()
+                    .get(module)?
+                    .get(field)
+                    .filter(|s| s.kind == crate::semantics::SymbolKind::Enum)
+                    .map(|_| field.clone())
+            }
+            _ => None,
+        }
     }
 
     /// If `expr.field` names a constant imported from a module, return the module
@@ -3767,17 +3935,6 @@ impl<'a> CodeGenerator<'a> {
                 .build_load(struct_type, field_ptr, field)
                 .map_err(|e| e.to_string());
         }
-        if field_type == self.context.i64_type().into() {
-            return self
-                .builder
-                .build_load(
-                    self.context.ptr_type(AddressSpace::default()),
-                    field_ptr,
-                    field,
-                )
-                .map_err(|e| e.to_string());
-        }
-
         let field_def = self
             .classes
             .get(class_name)

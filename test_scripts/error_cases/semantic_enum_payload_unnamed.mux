@@ -1,0 +1,12 @@
+// Should fail: every payload field is named. Both Cons(int, IntList) and
+// Cons(int head, IntList tail) used to be legal, and a reader could not tell
+// what the bare form held.
+enum IntList {
+    Nil,
+    Cons(int, IntList)
+}
+
+func main() returns void {
+    print("unreachable")
+    return
+}

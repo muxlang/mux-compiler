@@ -1,0 +1,63 @@
+// An enum read out of a collection is a boxed value. Every consumer that wants
+// it by value has to unbox first (issue #363): passing it to a function,
+// storing it in a class field, and returning it all used to fail, while a local
+// binding, a match and a comparison worked. Payload-carrying variants are
+// included because those are the ones that can leak or double free.
+
+enum Color { Red, Green, Blue }
+enum Tagged { None_, Note(string text) }
+
+class Holder {
+    Color c
+}
+
+func name_of(Color c) returns string {
+    match c {
+        Red { return "red" }
+        Green { return "green" }
+        Blue { return "blue" }
+    }
+}
+
+func text_of(Tagged t) returns string {
+    match t {
+        None_ { return "none" }
+        Note(s) { return s }
+    }
+}
+
+func first_color(list<Color> xs) returns Color {
+    return xs[0]
+}
+
+func first_tagged(list<Tagged> xs) returns Tagged {
+    return xs[0]
+}
+
+func main() returns void {
+    auto colors = [Color.Red, Color.Green, Color.Blue]
+
+    print(name_of(colors[2]))
+    print(name_of(first_color(colors)))
+
+    auto by_key = {1: Color.Green, 2: Color.Blue}
+    print(name_of(by_key[2]))
+
+    auto h = Holder.new()
+    h.c = colors[0]
+    print(name_of(h.c))
+
+    // Same paths with a reference-counted payload.
+    auto notes = [Tagged.Note("alpha"), Tagged.None_]
+    print(text_of(notes[0]))
+    print(text_of(first_tagged(notes)))
+
+    auto note_map = {"k": Tagged.Note("beta")}
+    print(text_of(note_map["k"]))
+
+    // Reading the same element twice must not disturb the collection.
+    print(text_of(notes[0]))
+    print(name_of(colors[1]))
+
+    return
+}

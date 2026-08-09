@@ -1,0 +1,50 @@
+// Two functions may use the same parameter name for different types. The
+// symbol table keeps a flat, program-wide index beside its scope chain, and
+// lookups read the flat one first, so the last function to declare a name won
+// everywhere: '*r + 5' inside a function taking '&int' was generated as string
+// concatenation because another function had an '&string' parameter also
+// called 'r', and the caller silently got 0 back.
+
+func use_int(&int r) returns int {
+    *r = *r + 5
+    *r += 2
+    return *r * 2
+}
+
+func use_string(&string r) returns string {
+    *r = *r + "x"
+    *r += "y"
+    return *r
+}
+
+func use_float(&float r) returns float {
+    *r += 0.5
+    return *r
+}
+
+class Holder {
+    int n
+}
+
+func use_class(&Holder r) returns int {
+    return (*r).n
+}
+
+func main() returns void {
+    auto n = 1
+    print(use_int(&n).to_string())
+    // The write landed on the caller's variable, not a stray copy.
+    print(n.to_string())
+
+    auto s = "a"
+    print(use_string(&s))
+    print(s)
+
+    auto f = 1.0
+    print(use_float(&f).to_string())
+
+    auto h = Holder.new()
+    h.n = 42
+    print(use_class(&h).to_string())
+    return
+}

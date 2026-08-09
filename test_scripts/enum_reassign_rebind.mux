@@ -4,7 +4,7 @@
 // blocks at exit; this script also prints the final values to confirm the
 // overwrites keep working.
 
-enum Status { Active(string), Inactive(int) }
+enum Status { Active(string reason), Inactive(int code) }
 
 // Direct reassignment: "first" then "second" must be released, not leaked.
 auto s = Status.Active("first")

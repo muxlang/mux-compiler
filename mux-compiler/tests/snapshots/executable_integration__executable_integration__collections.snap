@@ -1,6 +1,6 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
 ========================================
 LIST OPERATIONS
@@ -94,10 +94,10 @@ remove(99) (not in set) returned: false
 Set still: {1, 2, 4, 5, 6}
 
 String set:
-Initial: {important, urgent}
+Initial: {urgent, important}
 tags.contains("urgent"): true
 tags.contains("review"): false
-After add("review"): {important, review, urgent}
+After add("review"): {urgent, important, review}
 
 Set union: {1,2,3} + {3,4,5} = {1, 2, 3, 4, 5}
 

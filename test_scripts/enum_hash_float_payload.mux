@@ -1,0 +1,29 @@
+// Equal values must hash equally, and a float payload is where that is easy to
+// get wrong. The comparison glue uses float semantics, so 0.0 equals -0.0 and
+// two NaNs come out equal, while their bit patterns differ - hashing the bits
+// directly put two equal values in a set as separate entries.
+
+enum Point { At(float x, string label), Origin }
+
+func main() returns void {
+    auto positive = Point.At(0.0, "z")
+    auto negative = Point.At(-0.0, "z")
+
+    // Equal by comparison...
+    print((positive == negative).to_string())
+
+    // ...so they must collapse to one entry, not two.
+    auto seen = {positive, negative}
+    print(seen.size().to_string())
+
+    // And a lookup keyed by one must find the other.
+    auto keyed = {positive: "found"}
+    print(keyed[negative])
+
+    // Ordinary float payloads still separate normally.
+    auto spread = {Point.At(1.5, "a"), Point.At(2.5, "a"), Point.At(1.5, "b")}
+    print(spread.size().to_string())
+    print(spread.contains(Point.At(2.5, "a")).to_string())
+
+    return
+}

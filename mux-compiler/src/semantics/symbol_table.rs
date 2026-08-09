@@ -1,6 +1,6 @@
 use crate::lexer::Span;
 use crate::semantics::error::SemanticError;
-use crate::semantics::types::Symbol;
+use crate::semantics::types::{Symbol, SymbolKind};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -73,6 +73,10 @@ impl SymbolTable {
             });
         }
 
+        if let Some(err) = self.reject_type_name_collision(name, &symbol) {
+            return Err(err);
+        }
+
         let current = self
             .scopes
             .last()
@@ -95,6 +99,41 @@ impl SymbolTable {
         Ok(())
     }
 
+    /// Reject a variable whose name is already a declared class, enum or
+    /// interface.
+    ///
+    /// `all_symbols` is a flat, program-wide, last-write-wins index, and
+    /// `lookup` reads only from it - the scope chain beside it is not consulted.
+    /// So a local named `Color` did not shadow the enum `Color`, it replaced it
+    /// everywhere, and the enum then dropped out of codegen's registry and
+    /// failed from functions that never mentioned the local (issue #367).
+    ///
+    /// Rejecting the collision removes that silently destructive case without
+    /// auditing the 45 call sites that read the flat index. It is a mitigation,
+    /// not the full fix: shadowing between two values is still unchecked, and
+    /// `lookup` is still scope-blind. If types and values are given separate
+    /// namespaces later, this simply stops firing.
+    fn reject_type_name_collision(&self, name: &str, symbol: &Symbol) -> Option<SemanticError> {
+        if symbol.kind != SymbolKind::Variable {
+            return None;
+        }
+        let existing = self.all_symbols.get(name)?;
+        let kind = match existing.kind {
+            SymbolKind::Class => "a class",
+            SymbolKind::Enum => "an enum",
+            SymbolKind::Interface => "an interface",
+            _ => return None,
+        };
+        Some(SemanticError::with_help(
+            format!("Cannot declare a variable named '{}'", name),
+            symbol.span,
+            format!(
+                "'{}' already names {}. Rename the variable; a type name and a value cannot share a name.",
+                name, kind
+            ),
+        ))
+    }
+
     pub fn add_symbol(&mut self, name: &str, symbol: Symbol) -> Result<(), SemanticError> {
         self.add_symbol_to_current_scope(name, symbol)
     }
@@ -115,11 +154,17 @@ impl SymbolTable {
             .unwrap_or_default()
     }
 
+    /// Resolve `name`, preferring whatever is actually in scope.
+    ///
+    /// `all_symbols` is a flat, program-wide, last-write-wins index. Reading it
+    /// first meant the last function to declare a name won everywhere, so two
+    /// functions with a parameter of the same name and different types resolved
+    /// to each other's. The scope chain answers correctly whenever the name is
+    /// live; the flat index remains the fallback for everything looked up after
+    /// its scope was popped, which is how codegen reads declarations.
     pub fn lookup(&self, name: &str) -> Option<Symbol> {
-        if let Some(symbol) = self.all_symbols.get(name) {
-            return Some(symbol.clone());
-        }
-        None
+        self.get_cloned(name)
+            .or_else(|| self.all_symbols.get(name).cloned())
     }
 
     pub fn get_cloned(&self, name: &str) -> Option<Symbol> {

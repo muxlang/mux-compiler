@@ -1,0 +1,14 @@
+// Should fail: the concrete type argument must satisfy the declared bound.
+// Nothing checked this, so the missing method surfaced in codegen instead.
+class Point {
+    int x
+}
+
+func show<T is Stringable>(T v) returns string {
+    return v.to_string()
+}
+
+func main() returns void {
+    print(show(Point.new()))
+    return
+}

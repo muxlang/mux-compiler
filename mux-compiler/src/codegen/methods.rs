@@ -334,7 +334,7 @@ impl<'a> CodeGenerator<'a> {
     }
 
     fn resolve_method_func_name(
-        &self,
+        &mut self,
         class_name: &str,
         type_args: &[Type],
         method_name: &str,
@@ -348,6 +348,17 @@ impl<'a> CodeGenerator<'a> {
             if self.module.get_function(&contextual_name).is_some() {
                 return Ok(contextual_name);
             }
+        }
+
+        // Stamp out the instantiation before looking for it. Bodies are emitted
+        // in source order, so a function reaching a generic class's method
+        // before any construction site found no `Pair$int.describe` and fell
+        // back to `Pair.describe` - a declaration that never gets a body, which
+        // fails at link time rather than at the call. Generating on demand is
+        // what the enum path and the generic static-method path already do, and
+        // it is idempotent per instantiation.
+        if !type_args.is_empty() {
+            self.generate_specialized_methods(class_name, type_args)?;
         }
 
         let specialized_method_name =

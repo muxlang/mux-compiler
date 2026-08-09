@@ -9,20 +9,37 @@ use crate::ast::{
 use crate::semantics::{MethodSig, Type};
 use inkwell::AddressSpace;
 use inkwell::types::{BasicType, BasicTypeEnum};
-use inkwell::values::{BasicValueEnum, IntValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use std::collections::HashMap;
 
 impl<'a> CodeGenerator<'a> {
+    /// The LLVM type of a field the class stores inline as a scalar, or `None`
+    /// when the slot holds a `*mut Value`.
+    ///
+    /// `string` is absent on purpose: it is a primitive to the language but a
+    /// heap value at runtime, so the field holds a pointer to it like any other
+    /// reference-counted value.
+    pub(super) fn scalar_field_type(&self, type_node: &TypeNode) -> Option<BasicTypeEnum<'a>> {
+        match type_node.kind {
+            TypeKind::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
+                Some(self.context.i64_type().into())
+            }
+            TypeKind::Primitive(PrimitiveType::Float) => Some(self.context.f64_type().into()),
+            TypeKind::Primitive(PrimitiveType::Bool) => Some(self.context.bool_type().into()),
+            _ => None,
+        }
+    }
+
     fn class_field_llvm_type(
         &self,
         class_type_param_names: &std::collections::HashSet<String>,
         field: &Field,
     ) -> Result<BasicTypeEnum<'a>, String> {
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-
-        if matches!(field.type_.kind, TypeKind::Primitive(_)) {
-            return Ok(ptr_type.into());
+        if let Some(scalar) = self.scalar_field_type(&field.type_) {
+            return Ok(scalar);
         }
+
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
 
         if let TypeNode {
             kind: TypeKind::Named(type_name, _),
@@ -45,6 +62,18 @@ impl<'a> CodeGenerator<'a> {
         // once every enum type exists.
         for &idx in &self.enum_generation_order(nodes) {
             if let AstNode::Enum { name, variants, .. } = &nodes[idx] {
+                // Retained so a generic enum can be stamped out per
+                // instantiation later, when the type arguments are known.
+                self.enum_asts.insert(name.clone(), variants.clone());
+                // A variant payload may name an instantiation of another
+                // generic enum, and this enum's layout needs it to exist first.
+                // `enum_generation_order` already puts the embedded enum ahead
+                // of this one, so its AST is available to stamp from.
+                for variant in variants {
+                    for (_, type_node) in variant.data.iter().flatten() {
+                        self.instantiate_generic_enums_in_type_node(type_node)?;
+                    }
+                }
                 self.generate_enum_type(name, variants)?;
             }
         }
@@ -168,6 +197,12 @@ impl<'a> CodeGenerator<'a> {
         fields: &[Field],
         interfaces: &HashMap<String, (Vec<Type>, HashMap<String, MethodSig>)>,
     ) -> Result<(), String> {
+        // A field may be the first mention of a generic enum instantiation, and
+        // class types are built before any body that could construct one.
+        for field in fields {
+            self.instantiate_generic_enums_in_type_node(&field.type_)?;
+        }
+
         let mut field_types = Vec::new();
         let mut field_indices = HashMap::new();
 
@@ -266,6 +301,134 @@ impl<'a> CodeGenerator<'a> {
         self.builder.build_return(None).map_err(|e| e.to_string())?;
 
         Ok(())
+    }
+
+    /// The method each glue wraps, and the suffix it is emitted under.
+    ///
+    /// `Hashable` needs no glue: its `hash` returns an `int`, which is already
+    /// the 64-bit value the runtime wants, so the method is registered as is.
+    const CAPABILITY_GLUE: [(&'static str, &'static str); 2] =
+        [("eq", "eq_glue"), ("cmp", "cmp_glue")];
+
+    /// Whether the class both declares a capability that needs `method` and
+    /// actually defines it.
+    ///
+    /// Equality is not gated on a literal `is Equatable`: `Comparable` and
+    /// `Hashable` grant it too, and `Hashable` requires the class to write
+    /// `eq`. Gating on the declaration alone left a `Hashable` class hashing
+    /// by field and matching by address, so a key never found its own entry.
+    pub(super) fn class_capability_method(
+        &self,
+        name: &str,
+        method: &str,
+    ) -> Option<FunctionValue<'a>> {
+        let declared = match method {
+            "eq" => self.analyzer.class_declares_equality_method(name),
+            "cmp" => self
+                .analyzer
+                .type_implements_named_interface(name, "Comparable"),
+            _ => self
+                .analyzer
+                .type_implements_named_interface(name, "Hashable"),
+        };
+        if !declared {
+            return None;
+        }
+        // A generic class only ever emits monomorphized method bodies, so the
+        // unspecialized name is a declaration that never gets one - calling it
+        // fails at link time. The operators reach such a class through its
+        // instantiation instead; the runtime callbacks, which are registered
+        // once per class, have no instantiation to name and are skipped. The
+        // body is not emitted yet when this runs, so genericity is the test,
+        // not whether the function has one - the same test the vtables use.
+        let is_generic = self
+            .analyzer
+            .all_symbols()
+            .get(name)
+            .is_some_and(|symbol| !symbol.type_params.is_empty());
+        if is_generic {
+            return None;
+        }
+        self.module.get_function(&format!("{}.{}", name, method))
+    }
+
+    /// Generate the wrappers that let the runtime call a class's `eq` and `cmp`
+    /// when it needs to match or order an instance - as a map key, a set member
+    /// or a list element.
+    ///
+    /// Both wrappers exist to narrow the method's return value to what the
+    /// runtime expects: `eq`'s `i1` to a byte holding 0 or 1, and `cmp`'s `int`
+    /// to -1, 0 or 1. Truncating the `int` instead would turn a difference of
+    /// exactly 2^32 into "equal".
+    pub(super) fn generate_class_capability_glue(&mut self, name: &str) -> Result<(), String> {
+        for (method, suffix) in Self::CAPABILITY_GLUE {
+            let Some(target) = self.class_capability_method(name, method) else {
+                continue;
+            };
+            let is_equality = method == "eq";
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let return_type = if is_equality {
+                self.context.i8_type()
+            } else {
+                self.context.i32_type()
+            };
+            let glue = self.module.add_function(
+                &format!("{}.{}", name, suffix),
+                return_type.fn_type(&[ptr_type.into(), ptr_type.into()], false),
+                Some(inkwell::module::Linkage::External),
+            );
+            let entry = self.context.append_basic_block(glue, "entry");
+            self.builder.position_at_end(entry);
+            let left = glue.get_nth_param(0).expect("glue takes two objects");
+            let right = glue.get_nth_param(1).expect("glue takes two objects");
+            let result = self
+                .builder
+                .build_call(target, &[left.into(), right.into()], "capability_call")
+                .map_err(|e| e.to_string())?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| format!("{}.{} should return a value", name, method))?
+                .into_int_value();
+            let narrowed = if is_equality {
+                self.builder
+                    .build_int_z_extend(result, return_type, "equal")
+                    .map_err(|e| e.to_string())?
+            } else {
+                self.narrow_ordering_to_sign(result, return_type)?
+            };
+            self.builder
+                .build_return(Some(&narrowed))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Reduce a `cmp` result to -1, 0 or 1 as `(value > 0) - (value < 0)`.
+    fn narrow_ordering_to_sign(
+        &mut self,
+        value: IntValue<'a>,
+        result_type: inkwell::types::IntType<'a>,
+    ) -> Result<IntValue<'a>, String> {
+        let zero = value.get_type().const_zero();
+        let greater = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SGT, value, zero, "greater")
+            .map_err(|e| e.to_string())?;
+        let less = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SLT, value, zero, "less")
+            .map_err(|e| e.to_string())?;
+        let greater = self
+            .builder
+            .build_int_z_extend(greater, result_type, "greater_bit")
+            .map_err(|e| e.to_string())?;
+        let less = self
+            .builder
+            .build_int_z_extend(less, result_type, "less_bit")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_int_sub(greater, less, "sign")
+            .map_err(|e| e.to_string())
     }
 
     fn generate_class_copy_body(
@@ -435,6 +598,18 @@ impl<'a> CodeGenerator<'a> {
         }
 
         for (interface_name, (_, interface_methods)) in interfaces {
+            // The built-in capabilities are not declared interfaces, so no
+            // vtable type was ever registered for them. Skipped for the same
+            // reason as a generic class above: the vtable field is never read,
+            // since interfaces dispatch statically.
+            if !self.vtable_type_map.contains_key(interface_name)
+                && matches!(
+                    interface_name.as_str(),
+                    "Stringable" | "Equatable" | "Comparable" | "Hashable" | "Error"
+                )
+            {
+                continue;
+            }
             let mut vtable_values = Vec::new();
             for method_name in interface_methods.keys() {
                 let class_method_name = format!("{}.{}", class_name, method_name);

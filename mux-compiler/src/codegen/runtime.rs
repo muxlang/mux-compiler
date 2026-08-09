@@ -277,6 +277,21 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        // The equality, ordering and hash a class declares. Unlike the copy and
+        // destructor callbacks above, these take the boxed object rather than
+        // its data buffer, because they are the class's own methods.
+        for name in [
+            "mux_register_object_equals",
+            "mux_register_object_compare",
+            "mux_register_object_hash",
+        ] {
+            module.add_function(
+                name,
+                void_type.fn_type(&[i32_type.into(), i8_ptr.into()], false),
+                None,
+            );
+        }
+
         module.add_function(
             "mux_alloc_object",
             i8_ptr.fn_type(&[i32_type.into()], false),
@@ -298,13 +313,15 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
-        // mux_box_enum_managed(bytes, size, clone_glue, drop_glue, cmp_glue) -> *mut Value
+        // mux_box_enum_managed(bytes, size, clone_glue, drop_glue, cmp_glue,
+        //                      hash_glue) -> *mut Value
         module.add_function(
             "mux_box_enum_managed",
             i8_ptr.fn_type(
                 &[
                     i8_ptr.into(),
                     i64_type.into(),
+                    i8_ptr.into(),
                     i8_ptr.into(),
                     i8_ptr.into(),
                     i8_ptr.into(),
@@ -324,6 +341,13 @@ impl<'a> CodeGenerator<'a> {
         module.add_function(
             "mux_value_unbox_enum",
             i8_ptr.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+
+        // mux_value_hash(value) -> u64, for a pointer payload inside enum hash glue
+        module.add_function(
+            "mux_value_hash",
+            i64_type.fn_type(&[i8_ptr.into()], false),
             None,
         );
 

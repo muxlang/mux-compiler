@@ -157,6 +157,27 @@ impl SemanticAnalyzer {
         Self::type_param_bounds(type_params)
     }
 
+    /// Reject a declaration that reuses a built-in type name.
+    ///
+    /// `optional` and `result` are types the compiler and runtime implement
+    /// together: they are boxed heap values with their own construction,
+    /// discriminant and payload calls, not inline structs. A user declaration
+    /// under either name is accepted by the symbol table and then overwrites the
+    /// built-in registration in codegen, so the program gets a type that looks
+    /// like its own and behaves like neither (issue #369).
+    ///
+    /// Rejecting the name is consistent with `none` already being a keyword.
+    fn reject_builtin_type_name(name: &str, kind: &str, span: &Span) -> Option<SemanticError> {
+        if !matches!(name, "optional" | "result") {
+            return None;
+        }
+        Some(SemanticError::with_help(
+            format!("Cannot declare {} named '{}'", kind, name),
+            *span,
+            format!("'{}' is a built-in type. Choose another name.", name),
+        ))
+    }
+
     fn collect_class_symbol(
         &mut self,
         name: &str,
@@ -166,7 +187,11 @@ impl SemanticAnalyzer {
         type_params: &[(String, Vec<TraitBound>)],
         span: &Span,
     ) -> Result<(), SemanticError> {
-        let implemented_interfaces = self.resolve_implemented_interfaces(traits, span)?;
+        if let Some(e) = Self::reject_builtin_type_name(name, "a class", span) {
+            return Err(e);
+        }
+        let implemented_interfaces =
+            self.resolve_implemented_interfaces(name, type_params, traits, span)?;
         let type_param_bounds = self.register_type_param_symbols(type_params, span);
 
         let (fields_map, _) = self.collect_class_fields(name, fields, span)?;
@@ -201,13 +226,136 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
+    /// The methods a built-in capability requires of a class that declares
+    /// `is Stringable` / `is Equatable` / `is Comparable` / `is Hashable`.
+    ///
+    /// `Hashable` requires equality as well as `hash`, the way Rust spells a
+    /// map key as `Hash + Eq`: a hash alone cannot answer whether two keys in
+    /// the same bucket are the same key. It is also what makes `Hashable`
+    /// honestly satisfy an `Equatable` bound, which the bound system already
+    /// promises it does.
+    ///
+    /// `None` for anything else, including a user-declared interface that
+    /// happens to share the name - a real declaration always wins.
+    fn builtin_interface_methods(
+        &self,
+        name: &str,
+        implementor: &str,
+        implementor_type_params: &[(String, Vec<TraitBound>)],
+    ) -> Option<HashMap<String, MethodSig>> {
+        if self.symbol_table.lookup(name).is_some() {
+            return None;
+        }
+        let methods: &[&str] = match name {
+            "Stringable" => &["to_string"],
+            "Equatable" => &["eq"],
+            "Comparable" => &["cmp"],
+            "Hashable" => &["hash", "eq"],
+            // Absent, a class implementing Error registered nothing, so
+            // `result<int, MyErr>` rejected its own error type and only a
+            // `string` error ever worked.
+            "Error" => &["message"],
+            _ => return None,
+        };
+        // The built-in signatures are written against `Self`, so `eq` and `cmp`
+        // take the implementing type rather than a type literally named Self.
+        // A generic class's own type includes its parameters: substituting the
+        // bare name asked `class Ranked<T> is Comparable` for `cmp(Ranked)`,
+        // which then failed as a generic type missing its type argument, so no
+        // generic class could implement a built-in capability at all.
+        let own_type = Type::Named(
+            implementor.to_string(),
+            implementor_type_params
+                .iter()
+                .map(|(param, _)| Type::Generic(param.clone()))
+                .collect(),
+        );
+        let substitute = |t: &Type| match t {
+            Type::Generic(n) if n == "Self" => own_type.clone(),
+            other => other.clone(),
+        };
+        let mut required = HashMap::new();
+        for method in methods {
+            // `eq` belongs to Equatable, whichever capability asked for it.
+            let owner = if *method == "eq" { "Equatable" } else { name };
+            let sig = self.get_builtin_interface_method(owner, method)?;
+            required.insert(
+                (*method).to_string(),
+                MethodSig {
+                    params: sig.params.iter().map(&substitute).collect(),
+                    return_type: substitute(&sig.return_type),
+                    is_static: sig.is_static,
+                },
+            );
+        }
+        Some(required)
+    }
+
+    /// Reject `Equatable`, `Comparable` or `Hashable` on a generic class.
+    ///
+    /// Those three are handed to the runtime as callbacks on the class's object
+    /// type, and a generic class registers one object type shared by every
+    /// instantiation - one layout, one copy, one destructor. There is no
+    /// per-instantiation type to hang `Ranked$int.cmp` on, and registering it
+    /// against the shared type would hand `Ranked<string>` the `int` version.
+    ///
+    /// Without this the operators worked (they monomorphize) while every
+    /// collection silently fell back to comparing addresses, so a generic
+    /// `Hashable` key never found its own entry and `contains` answered false.
+    ///
+    /// `Stringable` is unaffected: it registers nothing and `to_string` is
+    /// resolved statically like any other method.
+    fn reject_runtime_capability_on_generic_class(
+        interface: &str,
+        class_name: &str,
+        class_type_params: &[(String, Vec<TraitBound>)],
+        span: Span,
+    ) -> Option<SemanticError> {
+        if class_type_params.is_empty()
+            || !matches!(interface, "Equatable" | "Comparable" | "Hashable")
+        {
+            return None;
+        }
+        Some(SemanticError::with_help(
+            format!(
+                "Generic class '{}' cannot implement '{}'",
+                class_name, interface
+            ),
+            span,
+            format!(
+                "'{}' is registered with the runtime per class, and a generic class shares one                  registration across every instantiation. Drop the type parameter, or compare                  through a method you call directly.",
+                interface
+            ),
+        ))
+    }
+
     fn resolve_implemented_interfaces(
         &self,
+        class_name: &str,
+        class_type_params: &[(String, Vec<TraitBound>)],
         traits: &[TraitRef],
         _span: &Span,
     ) -> Result<HashMap<String, ResolvedInterface>, SemanticError> {
         let mut implemented_interfaces = std::collections::HashMap::new();
         for trait_ref in traits {
+            // The built-in capabilities are not declared symbols - they are
+            // answered structurally for primitives and collections - so a class
+            // saying `is Comparable` registered nothing at all, and then failed
+            // to satisfy a bound it had genuinely implemented.
+            if let Some(error) = Self::reject_runtime_capability_on_generic_class(
+                &trait_ref.name,
+                class_name,
+                class_type_params,
+                trait_ref.span,
+            ) {
+                return Err(error);
+            }
+            if let Some(methods) =
+                self.builtin_interface_methods(&trait_ref.name, class_name, class_type_params)
+            {
+                implemented_interfaces.insert(trait_ref.name.clone(), (Vec::new(), methods));
+                continue;
+            }
             if let Some(interface_symbol) = self.symbol_table.lookup(&trait_ref.name)
                 && let Some((_, interface_methods)) =
                     interface_symbol.interfaces.get(&trait_ref.name)
@@ -459,6 +607,110 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// Require a name on every payload field.
+    ///
+    /// Both `Code(int)` and `Code(int value)` used to be legal, and most
+    /// declarations skipped the name, so a reader could not tell what
+    /// `Cons(int, IntList)` held (mux-context#39, issue #370).
+    ///
+    /// The reason is readability, and parity with function parameters, which are
+    /// always named even though calls are positional. It is NOT about access:
+    /// a payload is read through the pattern, which binds positionally, so
+    /// `match s { Circ(radius) { .. } }` works either way. There is deliberately
+    /// no field access on an enum payload - the field does not exist on the
+    /// other variants - so naming is for the reader, not the compiler.
+    fn reject_unnamed_payload_fields(&mut self, enum_name: &str, variant: &EnumVariant) {
+        let Some(fields) = &variant.data else {
+            return;
+        };
+        for (field_name, type_node) in fields {
+            if field_name.is_some() {
+                continue;
+            }
+            self.errors.push(SemanticError::with_help(
+                format!(
+                    "Payload field of '{}.{}' needs a name",
+                    enum_name, variant.name
+                ),
+                type_node.span,
+                match self.resolve_type(type_node) {
+                    Ok(ty) => format!(
+                        "Write it as '{} <name>'. Every payload field is named, so a reader can tell what a variant holds.",
+                        format_type(&ty)
+                    ),
+                    Err(_) => "Give the field a name, so a reader can tell what the variant holds."
+                        .to_string(),
+                },
+            ));
+        }
+    }
+
+    /// Reject an enum that contains itself with different type arguments.
+    ///
+    /// Ordinary recursion is fine - the type argument stays the same, so one
+    /// instantiation covers every level:
+    ///
+    /// ```text
+    /// enum Tree<T> { Leaf, Node(T value, Tree<T> rest) }
+    /// ```
+    ///
+    /// Growing recursion cannot be built, because each level needs a new type
+    /// and the sequence never repeats:
+    ///
+    /// ```text
+    /// enum Nest<T> { Leaf(T v), N(Nest<list<T>> inner) }
+    /// Nest<int> -> Nest<list<int>> -> Nest<list<list<int>>> -> ...
+    /// ```
+    ///
+    /// Rust rejects the same shape while expanding `Vec<Vec<Vec<...>>>`. Caught
+    /// at the declaration rather than at a use, so the error names the line that
+    /// is actually wrong and appears even if nobody instantiates the enum.
+    fn reject_growing_self_reference(
+        &mut self,
+        enum_name: &str,
+        type_params: &[(String, Vec<TraitBound>)],
+        variant: &EnumVariant,
+    ) {
+        if type_params.is_empty() {
+            return;
+        }
+        for (_, type_node) in variant.data.iter().flatten() {
+            let TypeKind::Named(nested, nested_args) = &type_node.kind else {
+                continue;
+            };
+            if nested != enum_name {
+                continue;
+            }
+            // Self-reference is only safe when every argument is the enum's own
+            // parameter, in the same position.
+            let unchanged = nested_args.len() == type_params.len()
+                && nested_args.iter().zip(type_params).all(|(arg, (param, _))| {
+                    matches!(&arg.kind, TypeKind::Named(n, a) if n == param && a.is_empty())
+                });
+            if unchanged {
+                continue;
+            }
+            self.errors.push(SemanticError::with_help(
+                format!(
+                    "Enum '{}' contains itself with different type arguments",
+                    enum_name
+                ),
+                type_node.span,
+                format!(
+                    "Each level would need a new type, so '{}' can never be built. Recursion is allowed when the argument stays the same, as in '{}<{}>'.",
+                    enum_name,
+                    enum_name,
+                    type_params
+                        .iter()
+                        .map(|(p, _)| p.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+            return;
+        }
+    }
+
     fn collect_enum_symbol(
         &mut self,
         name: &str,
@@ -473,11 +725,17 @@ impl SemanticAnalyzer {
         // payload referencing one resolves leniently (as before), and this avoids
         // leaking the name into the global namespace where an unrelated later
         // annotation could pick it up.
+        if let Some(e) = Self::reject_builtin_type_name(name, "an enum", span) {
+            self.errors.push(e);
+            return;
+        }
         let type_param_bounds = Self::type_param_bounds(type_params);
 
         let mut methods = std::collections::HashMap::new();
         let mut variant_names = Vec::new();
         for variant in variants {
+            self.reject_unnamed_payload_fields(name, variant);
+            self.reject_growing_self_reference(name, type_params, variant);
             variant_names.push(variant.name.clone());
             let params = variant
                 .data
@@ -524,6 +782,10 @@ impl SemanticAnalyzer {
         methods: &[FunctionNode],
         span: &Span,
     ) {
+        if let Some(e) = Self::reject_builtin_type_name(name, "an interface", span) {
+            self.errors.push(e);
+            return;
+        }
         let mut interface_methods = std::collections::HashMap::new();
         for method in methods {
             let param_types = method

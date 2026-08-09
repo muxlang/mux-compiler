@@ -1,0 +1,31 @@
+// A whole-number float keeps its '.0' wherever it is printed. Only the bare
+// value did: inside a list, map, set, tuple or optional it printed through the
+// runtime's Display, which used a plain format and rendered 6.0 as "6" - so a
+// list of floats was indistinguishable from a list of ints.
+
+func main() returns void {
+    print(6.0.to_string())
+    print((-3.0).to_string())
+    print(10.5.to_string())
+
+    list<float> values = [6.0, 10.5, 0.0, -3.0]
+    print(values.to_string())
+
+    map<string, float> rates = {"whole": 1.0, "part": 0.25}
+    print(rates.to_string())
+
+    set<float> seen = {2.0}
+    print(seen.to_string())
+
+    print((1.0, 2.5).to_string())
+
+    optional<float> maybe = some(4.0)
+    print(maybe.to_string())
+
+    result<float, string> ok_value = ok(7.0)
+    print(ok_value.to_string())
+
+    list<list<float>> nested = [[1.0], [2.0, 3.5]]
+    print(nested.to_string())
+    return
+}

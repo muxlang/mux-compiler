@@ -1,0 +1,100 @@
+// Generic enums are monomorphised: each instantiation gets its own struct, so
+// Box<int> holds a real int rather than a boxed pointer (issue #359). Unlike a
+// generic class, none of this needs the runtime - an enum is an inline tagged
+// struct with compiler-generated glue - so it is a pure compile-time expansion.
+
+enum Box<T> { Empty, Full(T value) }
+enum Pair<A, B> { Both(A left, B right) }
+enum Tree<T> { Leaf, Node(T value, Tree<T> rest) }
+
+func describe_int(Box<int> b) returns string {
+    match b {
+        Empty { return "empty" }
+        Full(v) { return "full " + v.to_string() }
+    }
+}
+
+func describe_text(Box<string> b) returns string {
+    match b {
+        Empty { return "empty" }
+        Full(v) { return "full " + v }
+    }
+}
+
+// Recursion is fine while the type argument stays the same.
+func depth(Tree<int> t) returns int {
+    match t {
+        Leaf { return 0 }
+        Node(v, rest) { return 1 + depth(rest) }
+    }
+}
+
+func sum(Tree<int> t) returns int {
+    match t {
+        Leaf { return 0 }
+        Node(v, rest) { return v + sum(rest) }
+    }
+}
+
+func main() returns void {
+    // Two instantiations of one enum coexist, each with its own layout.
+    print(describe_int(Box<int>.Full(5)))
+    print(describe_int(Box<int>.Empty))
+    print(describe_text(Box<string>.Full("hi")))
+
+    // Several type parameters.
+    auto p = Pair<int, string>.Both(1, "one")
+    match p {
+        Both(l, r) { print(l.to_string() + " " + r) }
+    }
+
+    // A recursive generic, built and consumed.
+    auto t = Tree<int>.Node(3, Tree<int>.Node(4, Tree<int>.Leaf))
+    print(depth(t).to_string())
+    print(sum(t).to_string())
+
+    // A reference-counted payload, which is where a wrong representation shows
+    // up as a leak or a double free rather than a wrong answer.
+    auto names = Box<string>.Full("alpha")
+    print(describe_text(names))
+    print(describe_text(Box<string>.Empty))
+
+    // Each of these reaches the instantiation through a different route, and
+    // each one used the base enum's layout or glue at some point: comparison
+    // needs the instantiation's compare glue, a collection element needs its
+    // deep-clone glue, a class field needs its type instantiated before the
+    // class is built, and a match on that field must carry the arguments.
+    print((Box<int>.Full(1) == Box<int>.Full(1)).to_string())
+    print((Box<int>.Full(1) == Box<int>.Empty).to_string())
+
+    auto boxes = [Box<string>.Full("in a list")]
+    match boxes[0] {
+        Empty { print("empty") }
+        Full(v) { print(v) }
+    }
+
+    auto keyed = {7: Box<int>.Full(8)}
+    print(keyed.size().to_string())
+
+    optional<Box<int>> wrapped = some(Box<int>.Full(6))
+    print("wrapped ok")
+
+    // A set, which orders through the instantiation's compare glue.
+    auto unique = {Box<int>.Full(1), Box<int>.Full(2), Box<int>.Full(1)}
+    print(unique.size().to_string())
+
+    // A type argument that is itself a collection.
+    auto nested = Box<list<int>>.Full([1, 2, 3])
+    match nested {
+        Empty { print("empty") }
+        Full(v) { print(v.len().to_string()) }
+    }
+
+    // Two instantiations that differ only by parameter order.
+    auto ab = Pair<int, string>.Both(1, "x")
+    auto ba = Pair<string, int>.Both("y", 2)
+    match ab { Both(l, r) { print(l.to_string() + r) } }
+    match ba { Both(l, r) { print(l + r.to_string()) } }
+
+    return
+}

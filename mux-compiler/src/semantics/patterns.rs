@@ -82,12 +82,12 @@ impl SemanticAnalyzer {
             Type::Result(ok_type, err_type) => {
                 self.match_result_variant(name, args, ok_type, err_type, span)
             }
-            Type::Named(enum_name, _) => {
+            Type::Named(enum_name, type_args) => {
                 let symbol = self
                     .symbol_table
                     .lookup(enum_name)
                     .ok_or_else(|| self.undefined_symbol_error("type", enum_name, span))?;
-                self.match_enum_variant(name, args, enum_name, &symbol, span)
+                self.match_enum_variant(name, args, enum_name, &symbol, type_args, span)
             }
             _ => Err(SemanticError::with_help(
                 format!(
@@ -208,6 +208,7 @@ impl SemanticAnalyzer {
         args: &[PatternNode],
         enum_name: &str,
         symbol: &Symbol,
+        type_args: &[Type],
         span: Span,
     ) -> Result<(), SemanticError> {
         let sig = symbol.methods.get(name).ok_or_else(|| {
@@ -249,6 +250,14 @@ impl SemanticAnalyzer {
                 ),
             ));
         }
+        // Substitute the subject's type arguments into the variant's declared
+        // payload types, so matching a `Box<int>` binds an int rather than the
+        // parameter T (issue #359).
+        let sig = if type_args.is_empty() {
+            sig.clone()
+        } else {
+            self.substitute_method_sig(sig, &symbol.type_params, type_args)
+        };
         for (arg, param_type) in args.iter().zip(&sig.params) {
             self.set_pattern_types(arg, param_type, span)?;
         }

@@ -137,7 +137,7 @@ impl<'a> CodeGenerator<'a> {
             TypeKind::Primitive(PrimitiveType::Bool) => Ok(self.context.bool_type().into()),
             TypeKind::Primitive(PrimitiveType::Str) => Ok(self.ptr_type()),
             TypeKind::Primitive(PrimitiveType::Char) => Ok(self.context.i64_type().into()),
-            TypeKind::Named(name, _) => {
+            TypeKind::Named(name, args) => {
                 if let Some(concrete) = self.resolve_generic_param(name) {
                     return self.llvm_type_from_resolved_type(&concrete.clone());
                 }
@@ -145,10 +145,15 @@ impl<'a> CodeGenerator<'a> {
                     if name == "optional" || name == "result" {
                         Ok(self.ptr_type())
                     } else {
-                        let struct_type = self
-                            .type_map
-                            .get(name)
-                            .ok_or_else(|| format!("Enum type {} not found in type map", name))?;
+                        // A generic enum resolves to its instantiation, so
+                        // `Tree<int>` is `Tree$int` and not the differently
+                        // shaped uninstantiated `Tree` (issue #359).
+                        let arg_types: Vec<Type> =
+                            args.iter().map(|a| self.type_node_to_type(a)).collect();
+                        let resolved = self.mangled_enum_name(name, &arg_types);
+                        let struct_type = self.type_map.get(&resolved).ok_or_else(|| {
+                            format!("Enum type {} not found in type map", resolved)
+                        })?;
                         Ok(*struct_type)
                     }
                 } else {
@@ -458,6 +463,17 @@ impl<'a> CodeGenerator<'a> {
         .unwrap_or_else(|_| type_.clone())
     }
 
+    /// A distinct name per type, used to key a generic function's
+    /// monomorphised instances (`ensure_generic_function_instantiated`), which
+    /// is its only caller.
+    ///
+    /// It must be injective. Every type outside a handful of cases used to
+    /// collapse to "unknown", so a generic instantiated with, say, a tuple and
+    /// then an enum produced one function under one name: the first
+    /// instantiation defined the signature and the second called it with the
+    /// wrong argument type. That surfaced as a failed LLVM verification, but the
+    /// same collision between two boxed types would have quietly shared one body
+    /// instead (issue #371).
     #[allow(clippy::only_used_in_recursion)]
     pub(super) fn type_to_string(&self, type_: &Type) -> String {
         match type_ {
@@ -465,8 +481,57 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Float) => "float".to_string(),
             Type::Primitive(PrimitiveType::Bool) => "bool".to_string(),
             Type::Primitive(PrimitiveType::Str) => "string".to_string(),
+            Type::Primitive(PrimitiveType::Char) => "char".to_string(),
+            Type::Primitive(PrimitiveType::Void) | Type::Void => "void".to_string(),
+            Type::Primitive(PrimitiveType::Auto) => "auto".to_string(),
             Type::List(inner) => format!("list_{}", self.type_to_string(inner)),
-            _ => "unknown".to_string(),
+            Type::Set(inner) => format!("set_{}", self.type_to_string(inner)),
+            Type::Map(key, value) => format!(
+                "map_{}_{}",
+                self.type_to_string(key),
+                self.type_to_string(value)
+            ),
+            Type::Tuple(left, right) => format!(
+                "tuple_{}_{}",
+                self.type_to_string(left),
+                self.type_to_string(right)
+            ),
+            Type::Optional(inner) => format!("optional_{}", self.type_to_string(inner)),
+            Type::Result(ok, err) => format!(
+                "result_{}_{}",
+                self.type_to_string(ok),
+                self.type_to_string(err)
+            ),
+            Type::Reference(inner) => format!("ref_{}", self.type_to_string(inner)),
+            Type::EmptyList => "empty_list".to_string(),
+            Type::EmptyMap => "empty_map".to_string(),
+            Type::EmptySet => "empty_set".to_string(),
+            // Classes and enums, and their generic instantiations.
+            Type::Named(name, args) | Type::Instantiated(name, args) => {
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    let rendered: Vec<String> =
+                        args.iter().map(|a| self.type_to_string(a)).collect();
+                    format!("{}_{}", name, rendered.join("_"))
+                }
+            }
+            Type::Function {
+                params, returns, ..
+            } => {
+                let rendered: Vec<String> = params.iter().map(|p| self.type_to_string(p)).collect();
+                format!(
+                    "fn_{}_to_{}",
+                    rendered.join("_"),
+                    self.type_to_string(returns)
+                )
+            }
+            // A type parameter reaching here means monomorphisation did not
+            // substitute, which is a bug elsewhere; keep the name distinct so
+            // two of them do not merge on top of it.
+            Type::Generic(name) | Type::Variable(name) => format!("generic_{}", name),
+            Type::Never => "never".to_string(),
+            Type::Module(name) => format!("module_{}", name),
         }
     }
 }

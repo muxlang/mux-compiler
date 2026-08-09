@@ -1,0 +1,98 @@
+// A class that declares Hashable can key a map or join a set, and instances
+// match by their fields rather than by address. The runtime calls the class's
+// own hash and eq (or cmp) through the object type registry, so a key built
+// from fresh data finds the entry an equal key inserted.
+//
+// Tally declares Hashable alone, which is the shape that has to work on its
+// own: Hashable requires eq, and gating the equality callback on a literal
+// `is Equatable` left such a class hashing by field and matching by address,
+// so a key never found its own entry. Point declaring Comparable as well hid
+// that, so both are exercised here.
+
+class Point is Hashable, Comparable {
+    int x
+    int y
+
+    common func at(int a, int b) returns Point {
+        auto p = Point.new()
+        p.x = a
+        p.y = b
+        return p
+    }
+
+    func hash() returns int {
+        return self.x * 31 + self.y
+    }
+
+    func eq(Point other) returns bool {
+        return self.x == other.x && self.y == other.y
+    }
+
+    func cmp(Point other) returns int {
+        if self.x != other.x {
+            return self.x - other.x
+        }
+        return self.y - other.y
+    }
+}
+
+class Tally is Hashable {
+    int n
+
+    common func of(int v) returns Tally {
+        auto t = Tally.new()
+        t.n = v
+        return t
+    }
+
+    func hash() returns int {
+        return self.n
+    }
+
+    func eq(Tally other) returns bool {
+        return self.n == other.n
+    }
+}
+
+func main() returns void {
+    auto a = Point.at(1, 2)
+    auto b = Point.at(1, 2)
+    auto c = Point.at(3, 4)
+
+    map<Point, string> names = {:}
+    names[a] = "near"
+    names[c] = "far"
+
+    // A separate instance holding the same fields finds the entry 'a' inserted.
+    print(names[b])
+    print(names.size().to_string())
+    print(names.contains(b).to_string())
+
+    // Re-keying an equal point overwrites rather than adding a second entry.
+    names[b] = "still near"
+    print(names[a])
+    print(names.size().to_string())
+
+    set<Point> seen = {a, b, c}
+    print(seen.size().to_string())
+    print(seen.contains(Point.at(3, 4)).to_string())
+    print(seen.contains(Point.at(9, 9)).to_string())
+
+    // The operators agree with what the collections just did.
+    print((a == b).to_string())
+    print((a < c).to_string())
+
+    // Hashable on its own, with no order declared.
+    map<Tally, string> counts = {:}
+    counts[Tally.of(1)] = "first"
+    print(counts.contains(Tally.of(1)).to_string())
+    print(counts.contains(Tally.of(2)).to_string())
+    counts[Tally.of(1)] = "again"
+    print(counts.size().to_string())
+    print(counts[Tally.of(1)])
+    print((Tally.of(1) == Tally.of(1)).to_string())
+
+    set<Tally> tallies = {Tally.of(3), Tally.of(3), Tally.of(4)}
+    print(tallies.size().to_string())
+    return
+}

@@ -1,0 +1,9 @@
+// Should fail: optional and result are implemented by the compiler and runtime
+// together as boxed heap values. A user declaration under either name used to be
+// accepted and then overwrite the built-in registration in codegen.
+enum optional { A, B }
+
+func main() returns void {
+    print("unreachable")
+    return
+}

@@ -1,0 +1,75 @@
+// A generic class may implement Stringable, which registers nothing with the
+// runtime - `to_string` resolves statically like any other method, and the
+// specialized body is what runs.
+//
+// It may not implement Equatable, Comparable or Hashable: those are registered
+// with the runtime per class, and a generic class shares one registration
+// across every instantiation, so there is no per-instantiation type to hang
+// `Ranked$int.cmp` on. See error_cases/semantic_generic_class_runtime_capability.
+
+interface Described {
+    func describe() returns string
+}
+
+class Labelled<T> is Stringable {
+    T value
+
+    common func of(T v) returns Labelled<T> {
+        auto l = Labelled<T>.new()
+        l.value = v
+        return l
+    }
+
+    func to_string() returns string {
+        return "labelled"
+    }
+
+    func get() returns T {
+        return self.value
+    }
+}
+
+// A user-declared interface on a generic class registers nothing either, and
+// dispatches statically whether it is called directly or reached through a
+// bound. The bound form used to link against the unspecialized 'Pair.describe',
+// because the specialization is stamped out on demand and a function reaching
+// the method before any construction site found nothing to call.
+class Pair<A> is Described {
+    A first
+
+    common func of(A a) returns Pair<A> {
+        auto p = Pair<A>.new()
+        p.first = a
+        return p
+    }
+
+    func describe() returns string {
+        return "pair"
+    }
+}
+
+func show<T is Stringable>(T v) returns string {
+    return v.to_string()
+}
+
+func tell<T is Described>(T v) returns string {
+    return v.describe()
+}
+
+func main() returns void {
+    auto li = Labelled<int>.of(7)
+    auto ls = Labelled<string>.of("x")
+
+    print(li.to_string())
+    print(show(li))
+    print(show(ls))
+
+    // Each instantiation keeps its own payload type.
+    print(li.get().to_string())
+    print(ls.get())
+
+    print(Pair<int>.of(1).describe())
+    print(tell(Pair<int>.of(1)))
+    print(tell(Pair<string>.of("s")))
+    return
+}

@@ -186,7 +186,7 @@ func sort_by<T>(list<T> items, func(T, T) returns int cmp) returns list<T> {
     return out
 }
 
-func index_of<T, E is Collection<T>>(E collection, T target) returns int {
+func index_of<T is Equatable, E is Collection<T>>(E collection, T target) returns int {
     auto values = collection.to_list()
 
     int i = 0
@@ -200,7 +200,7 @@ func index_of<T, E is Collection<T>>(E collection, T target) returns int {
     return -1
 }
 
-func unique<T, E is Collection<T>>(E collection) returns list<T> {
+func unique<T is Equatable, E is Collection<T>>(E collection) returns list<T> {
     auto values = collection.to_list()
     list<T> out = []
 

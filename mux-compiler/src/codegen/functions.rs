@@ -217,6 +217,13 @@ impl<'a> CodeGenerator<'a> {
         func: &FunctionNode,
         llvm_name: &str,
     ) -> Result<(), String> {
+        // A signature may be the first mention of a generic enum instantiation,
+        // and it is declared before any body that could construct one.
+        for param in &func.params {
+            self.instantiate_generic_enums_in_type_node(&param.type_)?;
+        }
+        self.instantiate_generic_enums_in_type_node(&func.return_type)?;
+
         let mut param_types: Vec<BasicMetadataTypeEnum> = func
             .params
             .iter()

@@ -1,0 +1,12 @@
+// Should fail: the enum contains itself with a different type argument, so each
+// level needs a new type and it can never be built. Recursion is allowed when
+// the argument stays the same, as in Tree<T> holding Tree<T>.
+enum Nest<T> {
+    Leaf(T value),
+    N(Nest<list<T>> inner)
+}
+
+func main() returns void {
+    print("unreachable")
+    return
+}

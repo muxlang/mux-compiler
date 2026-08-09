@@ -4,7 +4,7 @@
 // a managed value whose clone/drop glue keeps the payloads correct - otherwise
 // reading an element back dangles a freed payload.
 
-enum Item { Named(string), Count(int) }
+enum Item { Named(string name), Count(int total) }
 
 func label(Item it) returns string {
     match it {

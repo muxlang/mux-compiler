@@ -3,8 +3,8 @@
 // least one side; the out-of-line recursive glue follows the box chain across
 // both enums when dropping and cloning.
 
-enum Expr { Lit(int), Neg(Term) }
-enum Term { Value(Expr), Zero }
+enum Expr { Lit(int value), Neg(Term term) }
+enum Term { Value(Expr expr), Zero }
 
 func eval_expr(Expr e) returns int {
     match e {

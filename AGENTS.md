@@ -102,6 +102,13 @@ The user will run `cargo test` and insta snapshot tests separately. Do not manua
   that, a leaky program links a plain runtime and falsely exits 0. rc-leak-check
   itself is not broken - the trap is linking the wrong runtime. (Valgrind is the
   other leak gate; `scripts/valgrind-checks.sh`.)
+- **Generic enum instantiation is ordered**: `ensure_enum_instantiated` stamps
+  out `Box$int` on demand, and it runs from three places - a construction site,
+  a match site, and a function signature. The signature case is not optional:
+  signatures are declared before any body, so `func f(Tree<int> t)` needs the
+  instantiation before the first `Tree<int>.Leaf` is ever generated. It also
+  saves and restores the builder's insertion point, because it runs
+  mid-expression and generating constructors moves the builder.
 - **Test-script auto-discovery**: every `test_scripts/*.mux` file is picked up by the
   lexer, parser, and executable integration suites (insta snapshots); files under
   `test_scripts/error_cases/` only by the executable suite. Adding a script requires
@@ -202,7 +209,29 @@ a git dependency pinned by `Cargo.lock`; see the mux-runtime section of
 - No dynamic typing.
 - No implicit type conversions.
 - No runtime reflection.
-- All generics monomorphize at compile time.
+- Generics monomorphize at compile time, but read that precisely - it is true of
+  code, and only partly true of data:
+  - A **generic enum** is fully monomorphized. `Box<int>` gets its own struct
+    holding a real `i64`, its own constructors and its own glue. Verify with
+    `mux build --intermediate`: `define { i32, i64 } @"Box$int!Full"(i64)`.
+  - A **generic class** specializes its method bodies (`Box$int.from`) over one
+    shared layout, and one copy/destructor is shared across instantiations. A
+    field of a **type parameter** is a `*mut Value`; a concrete `int`, `float`,
+    `bool` or `char` field is stored inline, so
+    `class Point { int x; float y; string label }` lays out as
+    `{ i64, double, ptr }`. `string` stays a pointer - it is a primitive to the
+    language but a reference-counted value at runtime.
+
+  The difference is not arbitrary: an enum is an inline tagged struct with
+  compiler-generated glue and no runtime object registration, so it can be
+  stamped out at compile time alone. A class registers with
+  `mux_register_object_type` and hands the runtime its copy, destructor,
+  equality, ordering and hash, so per-instantiation layouts would be a coupled
+  compiler+runtime change.
+
+  **Check the emitted IR before claiming either does something.** The wrong
+  version of this line ("all generics monomorphize") nearly caused generic enums
+  to be built the wrong way round.
 - Interfaces use static dispatch (no vtables).
 
 ## Codegen Module Architecture
@@ -210,7 +239,13 @@ a git dependency pinned by `Cargo.lock`; see the mux-runtime section of
 - Visibility: `pub(super)` for submodule functions, `fn` for private helpers.
 - Memory management uses reference counting (see `memory.rs`).
 - Expressions vs. statements: expressions return values; statements perform actions.
-- Boxing/unboxing: all primitive values are boxed into `*mut Value` pointers.
+- Boxing/unboxing: primitives are boxed into `*mut Value` pointers in most
+  positions - class fields, collection elements, `optional`/`result`. **Enum
+  payloads are the exception**: they are stored inline, so `E.A(7)` puts a real
+  `i64` in the struct. A value crossing between the two representations has to
+  be converted, and forgetting to is how an enum read out of a collection
+  segfaulted when assigned to a class field (issue #363,
+  `coerce_boxed_enum_to_inline`).
 - Three type representations: AST (`TypeNode`), semantic (`Type`), LLVM (`BasicTypeEnum`).
 
 ## When to Ask for Clarification

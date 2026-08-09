@@ -1,0 +1,11 @@
+// Should fail: using '==' on a type parameter requires the Equatable bound.
+// The error lands on the declaration, which is where the fix goes, rather than
+// on each instantiation.
+func same<T>(T a, T b) returns bool {
+    return a == b
+}
+
+func main() returns void {
+    print(same(1, 2).to_string())
+    return
+}

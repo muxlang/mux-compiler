@@ -889,6 +889,9 @@ impl<'a> CodeGenerator<'a> {
 
         let value = self.generate_expression(expr)?;
         if let Some(return_type) = self.current_function_return_type.clone() {
+            // Returning an enum read out of a collection hands back the boxed
+            // pointer where the signature says inline struct (issue #363).
+            let value = self.coerce_boxed_enum_to_inline(value, &return_type)?;
             let rhs_owned = Self::rhs_produces_owned_enum(&expr.kind);
             return self.generate_typed_return(return_type, value, rhs_owned);
         }
@@ -1199,7 +1202,9 @@ impl<'a> CodeGenerator<'a> {
         unknown_type_msg: &str,
     ) -> Result<String, String> {
         match value_type {
-            Type::Named(n, _) => Ok(n.clone()),
+            // A generic enum's codegen name carries its type arguments, so
+            // `Box<int>` resolves to the `Box$int` instantiation (issue #359).
+            Type::Named(n, args) => Ok(self.mangled_enum_name(n, args)),
             Type::Optional(_) => Ok("optional".to_string()),
             Type::Result(_, _) => Ok("result".to_string()),
             _ => Err(unknown_type_msg.to_string()),
@@ -1307,8 +1312,12 @@ impl<'a> CodeGenerator<'a> {
             .iter()
             .find(|f| f.name == field)
             .ok_or_else(|| format!("Field {} not found in class {}", field, class_name))?;
-        if let TypeKind::Named(n, _) = &field_info.type_.kind {
-            return Ok(n.clone());
+        if let TypeKind::Named(n, args) = &field_info.type_.kind {
+            // Carry the field's type arguments, so matching a `Box<int>` field
+            // binds against the `Box$int` instantiation and not the base enum,
+            // whose payload is still the type parameter (issue #359).
+            let arg_types: Vec<Type> = args.iter().map(|a| self.type_node_to_type(a)).collect();
+            return Ok(self.mangled_enum_name(n, &arg_types));
         }
         Err("Match field must be enum type".to_string())
     }
@@ -1880,6 +1889,13 @@ impl<'a> CodeGenerator<'a> {
         let enum_name = self.resolve_enum_match_name(match_expr).or_else(|_| {
             self.enum_name_from_type(match_expr_type, "Match expression must be an enum type")
         })?;
+        // Matching a generic enum needs its instantiation to exist, since the
+        // subject may have been constructed in another function (issue #359).
+        if let Type::Named(base, args) = match_expr_type
+            && !args.is_empty()
+        {
+            self.ensure_enum_instantiated(base, args)?;
+        }
         // A user-enum subject is normally an inline struct value. When it arrives
         // as a pointer it is a boxed enum (a managed BoxedEnum or Opaque from a
         // collection element, e.g. `match items[i] { ... }`), so unbox it to the

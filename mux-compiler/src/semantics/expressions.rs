@@ -193,7 +193,30 @@ impl SemanticAnalyzer {
             ExpressionKind::Identifier(name) | ExpressionKind::GenericType(name, _) => {
                 self.type_name_kind(name).is_some()
             }
+            // `palette.Shape` - a type reached through a module namespace. It is
+            // still a type, so a variant qualified by it is a construction and
+            // not a field access on a value (issue #368).
+            ExpressionKind::FieldAccess { expr: base, field } => {
+                self.module_member_kind(base, field).is_some()
+            }
             _ => false,
+        }
+    }
+
+    /// If `base.field` names a type exported by an imported module, return a
+    /// human word for it. `base` must be an identifier bound to an import.
+    fn module_member_kind(&self, base: &ExpressionNode, field: &str) -> Option<&'static str> {
+        let ExpressionKind::Identifier(module) = &base.kind else {
+            return None;
+        };
+        if self.symbol_table.lookup(module)?.kind != SymbolKind::Import {
+            return None;
+        }
+        match self.imported_symbols.get(module)?.get(field)?.kind {
+            SymbolKind::Class => Some("class"),
+            SymbolKind::Enum => Some("enum"),
+            SymbolKind::Interface => Some("interface"),
+            _ => None,
         }
     }
 
@@ -556,11 +579,7 @@ impl SemanticAnalyzer {
         key_expr: &ExpressionNode,
         key_type: &Type,
     ) -> Result<(), SemanticError> {
-        // A primitive, or a user enum (which orders structurally via its compare
-        // glue, issue #309), can key a map.
-        let is_hashable =
-            matches!(key_type, Type::Primitive(_)) || self.is_user_enum_type(key_type);
-        if !is_hashable {
+        if !self.is_hashable_type(key_type) {
             return Err(SemanticError::with_help(
                 format!(
                     "Map keys must be a hashable type, found '{}'",
@@ -571,6 +590,28 @@ impl SemanticAnalyzer {
             ));
         }
         Ok(())
+    }
+
+    /// Whether `ty` can key a map or be a set member: a primitive, or a user
+    /// enum, which orders structurally through its compare glue (issue #309).
+    ///
+    /// Shared with the `Hashable` bound so the bound cannot promise something
+    /// a map literal then rejects (issue #361).
+    pub(super) fn is_hashable_type(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Primitive(_) => true,
+            // A class that declares `is Hashable` supplies both the hash and
+            // the equality a key needs, and the runtime calls those methods
+            // rather than comparing addresses.
+            Type::Named(name, _) => {
+                self.is_user_enum_type(ty) || self.type_implements_named_interface(name, "Hashable")
+            }
+            // A type parameter is a key exactly when its bounds say so, which
+            // is the promise `<T is Hashable>` makes. Answering from the shape
+            // alone would reject the bound the caller already had to satisfy.
+            Type::Generic(_) | Type::Variable(_) => self.type_implements_interface(ty, "Hashable"),
+            _ => false,
+        }
     }
 
     /// Whether `ty` is a user-declared enum (a `Named` type resolving to an enum

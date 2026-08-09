@@ -1,0 +1,43 @@
+// A class implementing Error can be a result's error type. Error was missing
+// from the built-in capability list, and it is not a declared symbol either, so
+// 'class MyErr is Error' registered nothing and 'result<int, MyErr>' rejected
+// its own error type - only a string error ever worked.
+
+class ParseError is Error {
+    string detail
+
+    common func of(string d) returns ParseError {
+        auto e = ParseError.new()
+        e.detail = d
+        return e
+    }
+
+    func message() returns string {
+        return "parse failed: " + self.detail
+    }
+}
+
+func parse(string input) returns result<int, ParseError> {
+    if input == "7" {
+        return ok(7)
+    }
+    return err(ParseError.of(input))
+}
+
+func main() returns void {
+    auto good = parse("7")
+    print(good.is_ok().to_string())
+    match good {
+        ok(v) { print("parsed " + v.to_string()) }
+        err(e) { print("unexpected: " + e.message()) }
+    }
+
+    auto bad = parse("nope")
+    print(bad.is_err().to_string())
+    match bad {
+        ok(v) { print("unexpected " + v.to_string()) }
+        // The error is the class, so its own method answers.
+        err(e) { print(e.message()) }
+    }
+    return
+}

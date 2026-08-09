@@ -1,0 +1,29 @@
+// Should fail: an interface names a capability, not a value. Mux dispatches
+// interfaces statically, so an interface-typed slot has no way to find the
+// method body for whatever it happens to hold - the vtable each object carries
+// is never read. Taking the interface as a bound monomorphizes the call, which
+// is the form that works, so the error points there.
+//
+// This used to be accepted at the declaration and then fail at every caller
+// with "Type mismatch: expected Shape, got Rect".
+interface Shape {
+    func area() returns float
+}
+
+class Rect is Shape {
+    float w
+
+    func area() returns float {
+        return self.w * 2.0
+    }
+}
+
+func takes(Shape s) returns float {
+    return s.area()
+}
+
+func main() returns void {
+    auto r = Rect.new()
+    print(takes(r).to_string())
+    return
+}
