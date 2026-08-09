@@ -51,6 +51,15 @@ if [[ "$found_lib" -eq 0 ]]; then
   exit 1
 fi
 
+# The macOS binary picks up whatever dylibs Homebrew's LLVM drags in, by
+# absolute path. Bundling them here is what makes this a test of a package that
+# could actually be installed elsewhere - without it the staged layout only
+# works because the build machine happens to have Homebrew (issue #378). The
+# script asserts self-containment, so this is also where that regresses loudly.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  "$(dirname "$0")/bundle-macos-dylibs.sh" "$dist/bin/mux" "$dist/lib"
+fi
+
 # mux.exe loads LLVM dynamically on Windows, so a real install ships those DLLs
 # beside it. Copying them here keeps this a test of the packaged layout rather
 # than of whatever happens to be on PATH.
