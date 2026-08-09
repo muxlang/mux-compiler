@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-09
+
+The enum and generics release. Generic enums work end to end, a class can
+implement the built-in capabilities and key a map, and `map`/`set` are
+hash-backed with insertion-order iteration. Five of the entries below are
+breaking; read the Changed section before upgrading.
+
 ### Added
 - **Generic enums**: `enum Box<T> { Full(T value), Empty }` now works end to
   end - declaration, construction, matching, and use as a field, a parameter or

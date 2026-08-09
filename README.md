@@ -6,7 +6,7 @@
 
 **The Programming Language For Everyone**
 
-[![Version](https://img.shields.io/badge/version-0.6.0-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
+[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-online-blue.svg?style=flat-square)](https://mux-lang.dev)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg?style=flat-square)]()
@@ -82,9 +82,11 @@ Choose the method that works best for you:
 ### Option 1: Prebuilt Binaries (Recommended)
 
 The fastest way to get started. No Rust and no LLVM development libraries
-required - but you do need **clang** matching the linked LLVM major (22), since
-Mux calls it to link every program it compiles. The installer runs `mux doctor`
-when it finishes and names anything missing.
+required - but you do need a **C compiler** (any recent `clang` or `gcc`), since
+Mux calls it to link every program it compiles. The version does not have to
+match the linked LLVM: the compiler emits an object file rather than textual IR,
+so `apt-get install clang` or `pacman -S clang` is enough. The installer runs
+`mux doctor` when it finishes and names anything missing.
 
 **Linux & macOS:**
 ```bash
@@ -165,14 +167,16 @@ func main() returns void {
 ## How it works
 
 ```
-.mux --> lexer --> parser --> semantics --> LLVM codegen --> .ll --> clang --> native binary
-                                                                   (links libmux_runtime)
+.mux --> lexer --> parser --> semantics --> LLVM codegen --> .o --> cc --> native binary
+                                                                 (links libmux_runtime)
 ```
 
-The compiler emits LLVM IR and invokes `clang` to produce a native binary that
-links the [runtime](https://github.com/muxlang/mux-runtime) (reference counting,
-strings, collections, stdlib). Use `mux run -i <file.mux>` to view the generated
-IR. The deeper design notes (value representation, monomorphization, the object
+The compiler emits an **object file** and invokes a C compiler to link it
+against the [runtime](https://github.com/muxlang/mux-runtime) (reference
+counting, strings, collections, stdlib). Emitting an object rather than textual
+IR is what frees the install from needing a version-matched clang - the linker
+never parses IR, so `clang`, `cc` or `gcc` all work. Use
+`mux run -i <file.mux>` to view the generated IR. The deeper design notes (value representation, monomorphization, the object
 system, memory model) live in [muxlang/mux-context](https://github.com/muxlang/mux-context/tree/main/docs/design).
 
 ---
@@ -195,7 +199,7 @@ Profiling is done with external tools so it stays decoupled from the compiler an
 
 ⚠️ **Alpha Stage**: Mux is actively being developed. Expect breaking changes and incomplete features as we work toward a stable release.
 
-- **Current Version:** 0.6.0
+- **Current Version:** 0.7.0
 
 ## Versioning
 
