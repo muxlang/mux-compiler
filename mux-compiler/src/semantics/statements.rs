@@ -755,10 +755,17 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         let has_catch_all = arms.iter().any(|arm| {
             arm.guard.is_none()
-                && matches!(
-                    arm.pattern,
-                    PatternNode::Wildcard | PatternNode::Identifier(_)
-                )
+                && match &arm.pattern {
+                    PatternNode::Wildcard => true,
+                    // A bare name binds only when it is not already something.
+                    // `match x { MAX { .. } }` against `const int MAX` is an
+                    // equality test, which `handle_identifier_pattern` and
+                    // codegen both treat as one - counting it as a catch-all
+                    // made the match "exhaustive" and every other value take
+                    // that arm.
+                    PatternNode::Identifier(name) => !self.names_a_constant(name),
+                    _ => false,
+                }
         });
         if has_catch_all || Self::bool_literals_are_exhaustive(arms, expr_type) {
             return Ok(());
@@ -768,6 +775,14 @@ impl SemanticAnalyzer {
             expr_span,
             "End the match with an unguarded '_' arm, or a bare name that binds the value; a guarded arm can fail its guard at runtime",
         ))
+    }
+
+    /// Whether `name` resolves to a constant, in which case a pattern spelling
+    /// it is a test against that constant rather than a binding.
+    fn names_a_constant(&self, name: &str) -> bool {
+        self.symbol_table
+            .lookup(name)
+            .is_some_and(|s| s.kind == SymbolKind::Constant)
     }
 
     /// Whether this is a `bool` match covering both `true` and `false`

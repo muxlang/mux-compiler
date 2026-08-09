@@ -86,16 +86,16 @@ impl SymbolTable {
         if current_borrow.symbols.contains_key(name) {
             // A built-in occupies the global scope, so a module-level
             // declaration taking its name reads as a duplicate of something the
-            // author never wrote. Name it. (Inside a function the same
-            // declaration is fine - it shadows in an inner scope.)
-            if crate::semantics::stdlib::BUILT_IN_FUNCTIONS.contains_key(name) {
+            // author never wrote. Name it instead - but only at that scope: in
+            // any inner scope the clash really is with another declaration the
+            // author can see, and calling it a built-in would send them looking
+            // for the wrong thing.
+            let is_global_scope = self.scopes.len() == 1;
+            if is_global_scope && crate::semantics::stdlib::BUILT_IN_FUNCTIONS.contains_key(name) {
                 return Err(SemanticError::with_help(
                     format!("'{}' is a built-in function", name),
                     symbol.span,
-                    format!(
-                        "Rename this, or move it inside a function where it shadows '{}' locally.",
-                        name
-                    ),
+                    format!("Rename this; '{}' is taken at module scope.", name),
                 ));
             }
             return Err(SemanticError {

@@ -17,11 +17,26 @@ func greet(string who) returns string {
     }
 }
 
+// A name that is already a constant is a TEST against it, not a binding, so it
+// does not close the match. Treating it as one made every other value take
+// that arm.
+const int LIMIT = 10
+
+func at_limit(int x) returns string {
+    match x {
+        LIMIT { return "at limit" }
+        other { return "other: " + other.to_string() }
+    }
+}
+
 func main() returns void {
     print(describe(200))
     print(describe(500))
     print(greet("admin"))
     print(greet("ana"))
+
+    print(at_limit(10))
+    print(at_limit(3))
 
     auto flag = true
     match flag {

@@ -23,6 +23,15 @@ func left_of<A, B>(tuple<A, B> pair, A fallback) returns A {
     return fallback
 }
 
+// Indexing a generic collection resolves the element type through the
+// specialization, which used to fail while the .get() form worked.
+func at_or<K, V>(map<K, V> data, K key, V fallback) returns V {
+    if data.contains(key) {
+        return data[key]
+    }
+    return fallback
+}
+
 func or_else<T>(optional<T> maybe, T fallback) returns T {
     match maybe {
         some(v) { return v }
@@ -53,6 +62,9 @@ func main() returns void {
 
     print(head([9, 8], 0).to_string())
     print(head(["x"], "none"))
+
+    print(at_or(scores, "bo", 0).to_string())
+    print(at_or(scores, "zed", -1).to_string())
 
     tuple<int, string> pair = (1, "one")
     print(left_of(pair, 0).to_string())

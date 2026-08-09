@@ -25,7 +25,7 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Resolve a generic type parameter name via the current generic context.
-    fn resolve_generic_param(&self, name: &str) -> Option<&Type> {
+    pub(super) fn resolve_generic_param(&self, name: &str) -> Option<&Type> {
         self.generic_context
             .as_ref()
             .and_then(|ctx| ctx.type_params.get(name))

@@ -91,12 +91,24 @@ impl SemanticAnalyzer {
                 "The 'common' modifier creates a static method. Move this function inside a class definition, or remove the 'common' keyword.",
             ));
         }
-        let param_types = func
-            .params
+        // Name this declaration's type parameters while its signature is
+        // resolved, so a bare `E` in `result<T, E>` is known to be one.
+        self.signature_type_params = func
+            .type_params
             .iter()
-            .map(|p| self.resolve_type(&p.type_))
-            .collect::<Result<Vec<_>, _>>()?;
-        let return_type = self.resolve_type(&func.return_type)?;
+            .map(|(name, _)| name.clone())
+            .collect();
+        let signature = (|analyzer: &mut Self| {
+            let param_types = func
+                .params
+                .iter()
+                .map(|p| analyzer.resolve_type(&p.type_))
+                .collect::<Result<Vec<_>, _>>()?;
+            let return_type = analyzer.resolve_type(&func.return_type)?;
+            Ok::<_, SemanticError>((param_types, return_type))
+        })(self);
+        self.signature_type_params.clear();
+        let (param_types, return_type) = signature?;
         let mut func_type = Type::Function {
             params: param_types,
             returns: Box::new(return_type),

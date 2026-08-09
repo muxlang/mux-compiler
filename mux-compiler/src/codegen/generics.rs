@@ -18,11 +18,6 @@ use crate::lexer::Span;
 use crate::semantics::{Type, infer_missing_type_params_from_bounds};
 
 impl<'a> CodeGenerator<'a> {
-    /// Stamp out every concrete generic enum a type annotation mentions.
-    ///
-    /// Function signatures are declared before any body runs, so a parameter
-    /// typed `Tree<int>` needs its instantiation to exist before the first
-    /// `Tree<int>.Leaf` is ever generated (issue #359).
     /// `instantiate_generic_enums_in_type_node` for a resolved semantic type.
     ///
     /// A module-level global is declared from a `Type` rather than a
@@ -62,6 +57,11 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    /// Stamp out every concrete generic enum a type annotation mentions.
+    ///
+    /// Function signatures are declared before any body runs, so a parameter
+    /// typed `Tree<int>` needs its instantiation to exist before the first
+    /// `Tree<int>.Leaf` is ever generated (issue #359).
     pub(super) fn instantiate_generic_enums_in_type_node(
         &mut self,
         type_node: &TypeNode,
