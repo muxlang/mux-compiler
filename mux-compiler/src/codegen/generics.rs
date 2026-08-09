@@ -956,93 +956,166 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         match &param_type.kind {
             TypeKind::Named(name, type_args) => {
-                self.handle_named_signature_type(name, type_args, param_type, arg_type, type_map)?;
+                self.handle_named_signature_type(name, type_args, param_type, arg_type, type_map)
             }
-            TypeKind::List(inner_param_type) => match arg_type {
-                Type::List(inner_arg_type) => {
-                    self.infer_types_from_signature(inner_param_type, inner_arg_type, type_map)?;
-                }
-                _ => return Err(format!("Expected list type, got {:?}", arg_type)),
-            },
-            // The other composites infer the same way, one component at a time.
-            // Only `list` was handled, so `func lookup<K, V>(map<K, V> d, K k)`
-            // could not be called at all - the parameter fell through to the
-            // catch-all and reported an internal error.
-            TypeKind::Set(inner_param_type) => match arg_type {
-                Type::Set(inner_arg_type) => {
-                    self.infer_types_from_signature(inner_param_type, inner_arg_type, type_map)?;
-                }
-                _ => return Err(format!("Expected set type, got {:?}", arg_type)),
-            },
-            TypeKind::Map(param_key, param_value) => match arg_type {
-                Type::Map(arg_key, arg_value) => {
-                    self.infer_types_from_signature(param_key, arg_key, type_map)?;
-                    self.infer_types_from_signature(param_value, arg_value, type_map)?;
-                }
-                _ => return Err(format!("Expected map type, got {:?}", arg_type)),
-            },
-            TypeKind::Tuple(param_left, param_right) => match arg_type {
-                Type::Tuple(arg_left, arg_right) => {
-                    self.infer_types_from_signature(param_left, arg_left, type_map)?;
-                    self.infer_types_from_signature(param_right, arg_right, type_map)?;
-                }
-                _ => return Err(format!("Expected tuple type, got {:?}", arg_type)),
-            },
-            TypeKind::Reference(inner_param_type) => match arg_type {
-                Type::Reference(inner_arg_type) => {
-                    self.infer_types_from_signature(inner_param_type, inner_arg_type, type_map)?;
-                }
-                _ => return Err(format!("Expected reference type, got {:?}", arg_type)),
-            },
-            TypeKind::Function {
-                params: param_params,
-                returns: param_returns,
-            } => {
-                match arg_type {
-                    Type::Function {
-                        params: arg_params,
-                        returns: arg_returns,
-                        ..
-                    } => {
-                        if param_params.len() != arg_params.len() {
-                            return Err(format!(
-                                "Function parameter count mismatch: expected {}, got {}",
-                                param_params.len(),
-                                arg_params.len()
-                            ));
-                        }
-                        // match parameter types
-                        for (param_param, arg_param) in param_params.iter().zip(arg_params.iter()) {
-                            self.infer_types_from_signature(param_param, arg_param, type_map)?;
-                        }
-                        // match return type
-                        self.infer_types_from_signature(param_returns, arg_returns, type_map)?;
-                    }
-                    _ => return Err(format!("Expected function type, got {:?}", arg_type)),
-                }
+            TypeKind::List(inner) => self.infer_one(
+                "list",
+                inner,
+                Self::list_element(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Set(inner) => self.infer_one(
+                "set",
+                inner,
+                Self::set_element(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Reference(inner) => self.infer_one(
+                "reference",
+                inner,
+                Self::referenced(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Map(key, value) => self.infer_pair(
+                "map",
+                key,
+                value,
+                Self::map_parts(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Tuple(left, right) => self.infer_pair(
+                "tuple",
+                left,
+                right,
+                Self::tuple_parts(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Function { params, returns } => {
+                self.infer_function_signature(params, returns, arg_type, type_map)
             }
-            TypeKind::Primitive(primitive) => {
-                let expected = match primitive {
-                    PrimitiveType::Int => Type::Primitive(PrimitiveType::Int),
-                    PrimitiveType::Float => Type::Primitive(PrimitiveType::Float),
-                    PrimitiveType::Bool => Type::Primitive(PrimitiveType::Bool),
-                    PrimitiveType::Str => Type::Primitive(PrimitiveType::Str),
-                    PrimitiveType::Char => Type::Primitive(PrimitiveType::Char),
-                    _ => return Err(format!("Unsupported primitive type {:?}", primitive)),
-                };
-                if expected != *arg_type {
-                    return Err(format!(
-                        "Primitive type mismatch: expected {:?}, got {:?}",
-                        expected, arg_type
-                    ));
-                }
-            }
-            _ => {
-                return Err(format!(
-                    "Unsupported type kind in signature matching: {:?}",
-                    param_type.kind
-                ));
-            }
+            TypeKind::Primitive(primitive) => Self::check_primitive_signature(primitive, arg_type),
+            _ => Err(format!(
+                "Unsupported type kind in signature matching: {:?}",
+                param_type.kind
+            )),
+        }
+    }
+
+    /// A composite parameter with one component, against the matching component
+    /// of the argument. `None` means the argument was a different shape.
+    fn infer_one(
+        &self,
+        label: &str,
+        inner_param: &TypeNode,
+        inner_arg: Option<&Type>,
+        arg_type: &Type,
+        type_map: &mut std::collections::HashMap<String, Type>,
+    ) -> Result<(), String> {
+        match inner_arg {
+            Some(inner_arg) => self.infer_types_from_signature(inner_param, inner_arg, type_map),
+            None => Err(format!("Expected {} type, got {:?}", label, arg_type)),
+        }
+    }
+
+    /// A composite parameter with two components, inferred left then right.
+    fn infer_pair(
+        &self,
+        label: &str,
+        left_param: &TypeNode,
+        right_param: &TypeNode,
+        parts: Option<(&Type, &Type)>,
+        arg_type: &Type,
+        type_map: &mut std::collections::HashMap<String, Type>,
+    ) -> Result<(), String> {
+        let Some((left_arg, right_arg)) = parts else {
+            return Err(format!("Expected {} type, got {:?}", label, arg_type));
+        };
+        self.infer_types_from_signature(left_param, left_arg, type_map)?;
+        self.infer_types_from_signature(right_param, right_arg, type_map)
+    }
+
+    fn list_element(arg_type: &Type) -> Option<&Type> {
+        match arg_type {
+            Type::List(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    fn set_element(arg_type: &Type) -> Option<&Type> {
+        match arg_type {
+            Type::Set(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    fn referenced(arg_type: &Type) -> Option<&Type> {
+        match arg_type {
+            Type::Reference(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    fn map_parts(arg_type: &Type) -> Option<(&Type, &Type)> {
+        match arg_type {
+            Type::Map(key, value) => Some((key, value)),
+            _ => None,
+        }
+    }
+
+    fn tuple_parts(arg_type: &Type) -> Option<(&Type, &Type)> {
+        match arg_type {
+            Type::Tuple(left, right) => Some((left, right)),
+            _ => None,
+        }
+    }
+
+    fn infer_function_signature(
+        &self,
+        param_params: &[TypeNode],
+        param_returns: &TypeNode,
+        arg_type: &Type,
+        type_map: &mut std::collections::HashMap<String, Type>,
+    ) -> Result<(), String> {
+        let Type::Function {
+            params: arg_params,
+            returns: arg_returns,
+            ..
+        } = arg_type
+        else {
+            return Err(format!("Expected function type, got {:?}", arg_type));
+        };
+        if param_params.len() != arg_params.len() {
+            return Err(format!(
+                "Function parameter count mismatch: expected {}, got {}",
+                param_params.len(),
+                arg_params.len()
+            ));
+        }
+        for (param_param, arg_param) in param_params.iter().zip(arg_params.iter()) {
+            self.infer_types_from_signature(param_param, arg_param, type_map)?;
+        }
+        self.infer_types_from_signature(param_returns, arg_returns, type_map)
+    }
+
+    fn check_primitive_signature(primitive: &PrimitiveType, arg_type: &Type) -> Result<(), String> {
+        let expected = match primitive {
+            PrimitiveType::Int
+            | PrimitiveType::Float
+            | PrimitiveType::Bool
+            | PrimitiveType::Str
+            | PrimitiveType::Char => Type::Primitive(primitive.clone()),
+            _ => return Err(format!("Unsupported primitive type {:?}", primitive)),
+        };
+        if expected != *arg_type {
+            return Err(format!(
+                "Primitive type mismatch: expected {:?}, got {:?}",
+                expected, arg_type
+            ));
         }
         Ok(())
     }
