@@ -12,7 +12,10 @@ pub fn format_type(t: &Type) -> String {
         Type::List(inner) => format!("list<{}>", format_type(inner)),
         Type::Map(k, v) => format!("map<{}, {}>", format_type(k), format_type(v)),
         Type::Set(inner) => format!("set<{}>", format_type(inner)),
-        Type::Tuple(l, r) => format!("({}, {})", format_type(l), format_type(r)),
+        // Every other composite prints in the form the parser accepts, and a
+        // tuple must too: "(int, string)" is not writable syntax, so a
+        // diagnostic naming that type gave the reader nothing they could type.
+        Type::Tuple(l, r) => format!("tuple<{}, {}>", format_type(l), format_type(r)),
         Type::Optional(inner) => format!("optional<{}>", format_type(inner)),
         Type::Result(ok, err) => format!("result<{}, {}>", format_type(ok), format_type(err)),
         Type::Reference(inner) => format!("&{}", format_type(inner)),

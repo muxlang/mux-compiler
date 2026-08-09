@@ -37,12 +37,15 @@ fn format_collection_and_wrapper_types() {
         "map<int, string>"
     );
     assert_eq!(format_type(&Type::Set(b(int()))), "set<int>");
+    // Spelled the way the parser accepts it, like every other composite above.
+    // "(int, bool)" is not writable syntax, so a diagnostic naming that type
+    // handed the reader something they could not type back.
     assert_eq!(
         format_type(&Type::Tuple(
             b(int()),
             b(Type::Primitive(PrimitiveType::Bool))
         )),
-        "(int, bool)"
+        "tuple<int, bool>"
     );
     assert_eq!(format_type(&Type::Optional(b(int()))), "optional<int>");
     assert_eq!(
