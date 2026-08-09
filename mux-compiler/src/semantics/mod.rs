@@ -70,6 +70,10 @@ fn missing_type_args_help(name: &str) -> String {
 pub struct SemanticAnalyzer {
     pub(super) symbol_table: SymbolTable,
     current_bounds: std::collections::HashMap<String, GenericBounds>,
+    /// Type parameters of the declaration whose signature is being resolved.
+    /// A signature is resolved before its parameters become type variables, so
+    /// this is how a name in it is known to be one rather than an unknown type.
+    signature_type_params: std::collections::HashSet<String>,
     errors: Vec<SemanticError>,
     is_in_static_method: bool,
     pub current_self_type: Option<Type>,
@@ -132,6 +136,7 @@ impl SemanticAnalyzer {
         Self {
             symbol_table,
             current_bounds: std::collections::HashMap::new(),
+            signature_type_params: std::collections::HashSet::new(),
             errors: Vec::new(),
             is_in_static_method: false,
             current_self_type: None,
@@ -858,7 +863,19 @@ impl SemanticAnalyzer {
         } else if name == "result" && type_args.len() == 2 {
             let resolved_ok = self.resolve_type(&type_args[0])?;
             let resolved_err = self.resolve_type(&type_args[1])?;
-            if !self.type_implements_interface(&resolved_err, "Error") {
+            // A type parameter reaches here as a bare name: the signature is
+            // resolved before the parameters are substituted for type
+            // variables, so `result<T, E>` would be rejected for E not
+            // implementing Error even when the declaration says `E is Error`.
+            // Its bound is enforced at the call, where E is bound to a real
+            // type, so defer for one - but only for a name the declaration
+            // actually lists, or a misspelled type would be waved through.
+            let err_is_type_param = matches!(
+                &resolved_err,
+                Type::Named(name, args)
+                    if args.is_empty() && self.signature_type_params.contains(name)
+            );
+            if !err_is_type_param && !self.type_implements_interface(&resolved_err, "Error") {
                 return Err(SemanticError::with_help(
                     format!(
                         "Result error type must implement Error, but found {}",
@@ -2573,6 +2590,24 @@ impl SemanticAnalyzer {
                 param,
                 replacement,
             ))),
+            // Tuple and Result are composites like the rest. Falling through to
+            // the catch-all left their members as `Named("A")` rather than a
+            // type variable, so `func f<A, B>(tuple<A, B> t)` could not be
+            // called at all - unification had nothing to bind `A` to.
+            Type::Tuple(left, right) => Type::Tuple(
+                Box::new(self.substitute_type_param(left, param, replacement)),
+                Box::new(self.substitute_type_param(right, param, replacement)),
+            ),
+            Type::Result(ok, err) => Type::Result(
+                Box::new(self.substitute_type_param(ok, param, replacement)),
+                Box::new(self.substitute_type_param(err, param, replacement)),
+            ),
+            Type::Instantiated(name, args) => Type::Instantiated(
+                name.clone(),
+                args.iter()
+                    .map(|a| self.substitute_type_param(a, param, replacement))
+                    .collect(),
+            ),
             _ => type_.clone(),
         }
     }

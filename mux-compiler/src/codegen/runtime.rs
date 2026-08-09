@@ -1477,10 +1477,17 @@ impl<'a> CodeGenerator<'a> {
                 "Unsupported type Function for extraction from {}",
                 variant_name
             )),
-            Type::Variable(v) | Type::Generic(v) => Err(format!(
-                "Unresolved generic type {} for extraction from {}",
-                v, variant_name
-            )),
+            // Inside a specialized body the parameter has a concrete binding,
+            // so resolve it and extract that instead. Failing here made
+            // indexing a generic collection - `d[k]` for a `map<K, V>`
+            // parameter - an internal error, while `d.get(k)` worked.
+            Type::Variable(v) | Type::Generic(v) => match self.resolve_generic_param(v).cloned() {
+                Some(concrete) => self.extract_value_from_ptr(data_ptr, &concrete, variant_name),
+                None => Err(format!(
+                    "Unresolved generic type {} for extraction from {}",
+                    v, variant_name
+                )),
+            },
             Type::Module(_) => {
                 panic!("Module types should not appear in codegen - they are compile-time only")
             }

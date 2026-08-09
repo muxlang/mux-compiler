@@ -1,0 +1,82 @@
+// A generic function may take a map, a set or a list of its type parameters.
+// Only list was handled, so a map parameter failed as an internal error before
+// the call could even be typed.
+
+func lookup<K, V>(map<K, V> data, K key) returns optional<V> {
+    return data.get(key)
+}
+
+func size_of<T>(set<T> items) returns int {
+    return items.len()
+}
+
+func head<T>(list<T> items, T fallback) returns T {
+    if items.is_empty() {
+        return fallback
+    }
+    return items[0]
+}
+
+// The composites that are their own structural variant rather than a named
+// type: a tuple, and the two built-in wrappers.
+func left_of<A, B>(tuple<A, B> pair, A fallback) returns A {
+    return fallback
+}
+
+// Indexing a generic collection resolves the element type through the
+// specialization, which used to fail while the .get() form worked.
+func at_or<K, V>(map<K, V> data, K key, V fallback) returns V {
+    if data.contains(key) {
+        return data[key]
+    }
+    return fallback
+}
+
+func or_else<T>(optional<T> maybe, T fallback) returns T {
+    match maybe {
+        some(v) { return v }
+        none { return fallback }
+    }
+}
+
+func ok_or<T, E is Error>(result<T, E> outcome, T fallback) returns T {
+    match outcome {
+        ok(v) { return v }
+        err(_) { return fallback }
+    }
+}
+
+func main() returns void {
+    auto scores = {"ana": 31, "bo": 24}
+    match lookup(scores, "ana") {
+        some(v) { print(v.to_string()) }
+        none { print("missing") }
+    }
+    match lookup(scores, "zed") {
+        some(v) { print(v.to_string()) }
+        none { print("missing") }
+    }
+
+    set<int> seen = {1, 2, 3}
+    print(size_of(seen).to_string())
+
+    print(head([9, 8], 0).to_string())
+    print(head(["x"], "none"))
+
+    print(at_or(scores, "bo", 0).to_string())
+    print(at_or(scores, "zed", -1).to_string())
+
+    tuple<int, string> pair = (1, "one")
+    print(left_of(pair, 0).to_string())
+
+    optional<int> present = some(4)
+    optional<int> absent = none
+    print(or_else(present, -1).to_string())
+    print(or_else(absent, -1).to_string())
+
+    result<int, string> good = ok(8)
+    result<int, string> bad = err("nope")
+    print(ok_or(good, 0).to_string())
+    print(ok_or(bad, 0).to_string())
+    return
+}

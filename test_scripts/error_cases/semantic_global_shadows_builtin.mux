@@ -1,0 +1,10 @@
+// Should fail: a built-in occupies the module scope, so a global taking its
+// name collided with something the author never wrote and reported a duplicate
+// they could not see. The diagnostic now names the built-in. Inside a function
+// the same declaration is fine, because it shadows in an inner scope.
+func add(int a, int b) returns int {
+    return a + b
+}
+
+auto ok = add(1, 2)
+print(ok.to_string())

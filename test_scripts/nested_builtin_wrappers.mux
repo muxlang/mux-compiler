@@ -1,0 +1,47 @@
+// optional and result nest in either direction. Only the scalar and
+// single-pointer payloads were wired up, so wrapping a result in an optional
+// was rejected as an unsupported type.
+
+func try_parse(optional<string> maybe) returns optional<result<int, string>> {
+    match maybe {
+        some(s) { return some(s.to_int()) }
+        none { return none }
+    }
+}
+
+func positive(int n) returns result<optional<int>, string> {
+    if n > 0 {
+        return ok(some(n))
+    }
+    return ok(none)
+}
+
+func main() returns void {
+    match try_parse(some("42")) {
+        some(r) {
+            match r {
+                ok(v) { print(v.to_string()) }
+                err(e) { print(e) }
+            }
+        }
+        none { print("nothing to parse") }
+    }
+
+    match positive(7) {
+        ok(o) {
+            match o {
+                some(v) { print(v.to_string()) }
+                none { print("not positive") }
+            }
+        }
+        err(e) { print(e) }
+    }
+
+    // A tuple payload too.
+    auto pair = some((1, "one"))
+    match pair {
+        some(p) { print(p.to_string()) }
+        none { print("none") }
+    }
+    return
+}

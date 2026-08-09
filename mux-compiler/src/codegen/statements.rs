@@ -195,19 +195,20 @@ impl<'a> CodeGenerator<'a> {
         iter: &ExpressionNode,
         body: &[StatementNode],
     ) -> Result<(), String> {
-        if let ExpressionKind::Call { func, args } = &iter.kind {
-            let ExpressionKind::Identifier(name) = &func.kind else {
-                return Err("For loop iter must be range call".to_string());
-            };
-            if name == "range" && args.len() == 2 {
-                return self.generate_range_for_loop(function, var, &args[0], &args[1], body);
-            }
-            return Err("For loop iter must be range(start, end)".to_string());
+        // `range(a, b)` counts rather than materializing a list, so it keeps its
+        // own lowering. Everything else is iterated as a list, whatever
+        // expression produced it - `generate_list_for_loop` evaluates the
+        // operand like any other. Restricting it to a bare identifier meant a
+        // method call, a field or a function result could not be iterated at
+        // all, and failed as an internal error rather than a diagnostic.
+        if let ExpressionKind::Call { func, args } = &iter.kind
+            && let ExpressionKind::Identifier(name) = &func.kind
+            && name == "range"
+            && args.len() == 2
+        {
+            return self.generate_range_for_loop(function, var, &args[0], &args[1], body);
         }
-        if let ExpressionKind::Identifier(_) = &iter.kind {
-            return self.generate_list_for_loop(function, var, var_type, iter, body);
-        }
-        Err("For loop iter must be range(...) or list identifier".to_string())
+        self.generate_list_for_loop(function, var, var_type, iter, body)
     }
 
     /// `for <var> in range(<start>, <end>)`: iterate the integers [start, end).
@@ -653,6 +654,12 @@ impl<'a> CodeGenerator<'a> {
         expr: &ExpressionNode,
         function: Option<&FunctionValue<'a>>,
     ) -> Result<(), String> {
+        // A declaration naming a generic enum is the fourth place an
+        // instantiation can first appear, after a construction site, a match
+        // site and a function signature. Without this, `Box<int> b = ...`
+        // resolved the LLVM type before anything had stamped out `Box$int`,
+        // while the same line written with `auto` worked.
+        self.instantiate_generic_enums_in_type_node(type_node)?;
         let var_type = self.llvm_type_from_mux_type(type_node)?;
         let value = self.generate_expression(expr)?;
         let resolved_type = self

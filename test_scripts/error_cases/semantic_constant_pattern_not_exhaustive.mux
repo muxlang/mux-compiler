@@ -1,0 +1,16 @@
+// Should fail: a name that is already a constant is a TEST against it, not a
+// binding, so it does not close the match. Accepting it as a catch-all made
+// the match "exhaustive" and sent every other value into that arm - a silent
+// wrong answer rather than an error.
+const int MAX = 10
+
+func classify(int x) returns string {
+    match x {
+        MAX { return "max" }
+    }
+}
+
+func main() returns void {
+    print(classify(3))
+    return
+}

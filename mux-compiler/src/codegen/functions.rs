@@ -235,9 +235,13 @@ impl<'a> CodeGenerator<'a> {
             param_types.insert(0, self.context.ptr_type(AddressSpace::default()).into());
         }
 
-        let is_specialized = func.name.contains('$');
+        // Boxing applies to a specialized class METHOD, whose caller boxes its
+        // arguments to match (`build_method_call_args`). A generic free
+        // function passes raw values, so `$` alone must not select this - a
+        // generic function instance is `identity$$int`, with no `.` in it.
+        let is_specialized_method = func.name.contains('$') && is_class_method;
         let is_static = func.is_common;
-        if is_specialized && !is_static {
+        if is_specialized_method && !is_static {
             let ptr_type = self.context.ptr_type(AddressSpace::default());
             param_types = param_types
                 .into_iter()

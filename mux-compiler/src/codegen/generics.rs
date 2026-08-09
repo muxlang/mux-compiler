@@ -18,6 +18,45 @@ use crate::lexer::Span;
 use crate::semantics::{Type, infer_missing_type_params_from_bounds};
 
 impl<'a> CodeGenerator<'a> {
+    /// `instantiate_generic_enums_in_type_node` for a resolved semantic type.
+    ///
+    /// A module-level global is declared from a `Type` rather than a
+    /// `TypeNode` - `declare_auto_global` infers one from the initializer - so
+    /// the TypeNode walker never sees it, and `auto b = Box<int>.Full(42)` at
+    /// module scope resolved its LLVM type before anything stamped out
+    /// `Box$int`. Inside a function the same line works.
+    pub(super) fn instantiate_generic_enums_in_type(&mut self, ty: &Type) -> Result<(), String> {
+        match ty {
+            Type::Named(name, args) | Type::Instantiated(name, args) => {
+                for arg in args {
+                    self.instantiate_generic_enums_in_type(arg)?;
+                }
+                if self.enum_asts.contains_key(name) && self.mangled_enum_name(name, args) != *name
+                {
+                    self.ensure_enum_instantiated(name, args)?;
+                }
+            }
+            Type::List(inner) | Type::Set(inner) | Type::Reference(inner) => {
+                self.instantiate_generic_enums_in_type(inner)?;
+            }
+            Type::Optional(inner) => self.instantiate_generic_enums_in_type(inner)?,
+            Type::Map(k, v) | Type::Tuple(k, v) | Type::Result(k, v) => {
+                self.instantiate_generic_enums_in_type(k)?;
+                self.instantiate_generic_enums_in_type(v)?;
+            }
+            Type::Function {
+                params, returns, ..
+            } => {
+                for p in params {
+                    self.instantiate_generic_enums_in_type(p)?;
+                }
+                self.instantiate_generic_enums_in_type(returns)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Stamp out every concrete generic enum a type annotation mentions.
     ///
     /// Function signatures are declared before any body runs, so a parameter
@@ -388,6 +427,17 @@ impl<'a> CodeGenerator<'a> {
                     self.infer_types_from_signature(param_arg, arg_arg, type_map)?;
                 }
                 Ok(())
+            }
+            // `optional<T>` and `result<T, E>` are written as named types with
+            // arguments but carried as their own structural variants, so the
+            // Named arm above never matches them and a generic parameter of
+            // either kind could not be inferred.
+            Type::Optional(inner) if name == "optional" && type_args.len() == 1 => {
+                self.infer_types_from_signature(&type_args[0], inner, type_map)
+            }
+            Type::Result(ok, err) if name == "result" && type_args.len() == 2 => {
+                self.infer_types_from_signature(&type_args[0], ok, type_map)?;
+                self.infer_types_from_signature(&type_args[1], err, type_map)
             }
             _ => Err(format!("Expected named type with args, got {:?}", arg_type)),
         }
@@ -906,63 +956,166 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         match &param_type.kind {
             TypeKind::Named(name, type_args) => {
-                self.handle_named_signature_type(name, type_args, param_type, arg_type, type_map)?;
+                self.handle_named_signature_type(name, type_args, param_type, arg_type, type_map)
             }
-            TypeKind::List(inner_param_type) => match arg_type {
-                Type::List(inner_arg_type) => {
-                    self.infer_types_from_signature(inner_param_type, inner_arg_type, type_map)?;
-                }
-                _ => return Err(format!("Expected list type, got {:?}", arg_type)),
-            },
-            TypeKind::Function {
-                params: param_params,
-                returns: param_returns,
-            } => {
-                match arg_type {
-                    Type::Function {
-                        params: arg_params,
-                        returns: arg_returns,
-                        ..
-                    } => {
-                        if param_params.len() != arg_params.len() {
-                            return Err(format!(
-                                "Function parameter count mismatch: expected {}, got {}",
-                                param_params.len(),
-                                arg_params.len()
-                            ));
-                        }
-                        // match parameter types
-                        for (param_param, arg_param) in param_params.iter().zip(arg_params.iter()) {
-                            self.infer_types_from_signature(param_param, arg_param, type_map)?;
-                        }
-                        // match return type
-                        self.infer_types_from_signature(param_returns, arg_returns, type_map)?;
-                    }
-                    _ => return Err(format!("Expected function type, got {:?}", arg_type)),
-                }
+            TypeKind::List(inner) => self.infer_one(
+                "list",
+                inner,
+                Self::list_element(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Set(inner) => self.infer_one(
+                "set",
+                inner,
+                Self::set_element(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Reference(inner) => self.infer_one(
+                "reference",
+                inner,
+                Self::referenced(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Map(key, value) => self.infer_pair(
+                "map",
+                key,
+                value,
+                Self::map_parts(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Tuple(left, right) => self.infer_pair(
+                "tuple",
+                left,
+                right,
+                Self::tuple_parts(arg_type),
+                arg_type,
+                type_map,
+            ),
+            TypeKind::Function { params, returns } => {
+                self.infer_function_signature(params, returns, arg_type, type_map)
             }
-            TypeKind::Primitive(primitive) => {
-                let expected = match primitive {
-                    PrimitiveType::Int => Type::Primitive(PrimitiveType::Int),
-                    PrimitiveType::Float => Type::Primitive(PrimitiveType::Float),
-                    PrimitiveType::Bool => Type::Primitive(PrimitiveType::Bool),
-                    PrimitiveType::Str => Type::Primitive(PrimitiveType::Str),
-                    PrimitiveType::Char => Type::Primitive(PrimitiveType::Char),
-                    _ => return Err(format!("Unsupported primitive type {:?}", primitive)),
-                };
-                if expected != *arg_type {
-                    return Err(format!(
-                        "Primitive type mismatch: expected {:?}, got {:?}",
-                        expected, arg_type
-                    ));
-                }
-            }
-            _ => {
-                return Err(format!(
-                    "Unsupported type kind in signature matching: {:?}",
-                    param_type.kind
-                ));
-            }
+            TypeKind::Primitive(primitive) => Self::check_primitive_signature(primitive, arg_type),
+            _ => Err(format!(
+                "Unsupported type kind in signature matching: {:?}",
+                param_type.kind
+            )),
+        }
+    }
+
+    /// A composite parameter with one component, against the matching component
+    /// of the argument. `None` means the argument was a different shape.
+    fn infer_one(
+        &self,
+        label: &str,
+        inner_param: &TypeNode,
+        inner_arg: Option<&Type>,
+        arg_type: &Type,
+        type_map: &mut std::collections::HashMap<String, Type>,
+    ) -> Result<(), String> {
+        match inner_arg {
+            Some(inner_arg) => self.infer_types_from_signature(inner_param, inner_arg, type_map),
+            None => Err(format!("Expected {} type, got {:?}", label, arg_type)),
+        }
+    }
+
+    /// A composite parameter with two components, inferred left then right.
+    fn infer_pair(
+        &self,
+        label: &str,
+        left_param: &TypeNode,
+        right_param: &TypeNode,
+        parts: Option<(&Type, &Type)>,
+        arg_type: &Type,
+        type_map: &mut std::collections::HashMap<String, Type>,
+    ) -> Result<(), String> {
+        let Some((left_arg, right_arg)) = parts else {
+            return Err(format!("Expected {} type, got {:?}", label, arg_type));
+        };
+        self.infer_types_from_signature(left_param, left_arg, type_map)?;
+        self.infer_types_from_signature(right_param, right_arg, type_map)
+    }
+
+    fn list_element(arg_type: &Type) -> Option<&Type> {
+        match arg_type {
+            Type::List(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    fn set_element(arg_type: &Type) -> Option<&Type> {
+        match arg_type {
+            Type::Set(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    fn referenced(arg_type: &Type) -> Option<&Type> {
+        match arg_type {
+            Type::Reference(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    fn map_parts(arg_type: &Type) -> Option<(&Type, &Type)> {
+        match arg_type {
+            Type::Map(key, value) => Some((key, value)),
+            _ => None,
+        }
+    }
+
+    fn tuple_parts(arg_type: &Type) -> Option<(&Type, &Type)> {
+        match arg_type {
+            Type::Tuple(left, right) => Some((left, right)),
+            _ => None,
+        }
+    }
+
+    fn infer_function_signature(
+        &self,
+        param_params: &[TypeNode],
+        param_returns: &TypeNode,
+        arg_type: &Type,
+        type_map: &mut std::collections::HashMap<String, Type>,
+    ) -> Result<(), String> {
+        let Type::Function {
+            params: arg_params,
+            returns: arg_returns,
+            ..
+        } = arg_type
+        else {
+            return Err(format!("Expected function type, got {:?}", arg_type));
+        };
+        if param_params.len() != arg_params.len() {
+            return Err(format!(
+                "Function parameter count mismatch: expected {}, got {}",
+                param_params.len(),
+                arg_params.len()
+            ));
+        }
+        for (param_param, arg_param) in param_params.iter().zip(arg_params.iter()) {
+            self.infer_types_from_signature(param_param, arg_param, type_map)?;
+        }
+        self.infer_types_from_signature(param_returns, arg_returns, type_map)
+    }
+
+    fn check_primitive_signature(primitive: &PrimitiveType, arg_type: &Type) -> Result<(), String> {
+        let expected = match primitive {
+            PrimitiveType::Int
+            | PrimitiveType::Float
+            | PrimitiveType::Bool
+            | PrimitiveType::Str
+            | PrimitiveType::Char => Type::Primitive(primitive.clone()),
+            _ => return Err(format!("Unsupported primitive type {:?}", primitive)),
+        };
+        if expected != *arg_type {
+            return Err(format!(
+                "Primitive type mismatch: expected {:?}, got {:?}",
+                expected, arg_type
+            ));
         }
         Ok(())
     }
@@ -1023,12 +1176,17 @@ impl<'a> CodeGenerator<'a> {
         func_name: &str,
         concrete_types: &[Type],
     ) -> Result<String, String> {
-        // create instantiation key
+        // `$` separates a generic instantiation from its type arguments, the
+        // same as `Box$int` for an enum and `Pair$int.method` for a class. It
+        // matters that a user cannot spell it: joining with `_` put
+        // `identity$$int` in the same namespace as a global someone wrote as
+        // `identity_int`, and `max<int>` next to a variable named `max_int`
+        // took the symbol out from under the instantiation.
         let type_names: Vec<String> = concrete_types
             .iter()
             .map(|t| self.type_to_string(t))
             .collect();
-        let instance_name = format!("{}_{}", func_name, type_names.join("_"));
+        let instance_name = format!("{}$${}", func_name, type_names.join("$"));
 
         // check if already instantiated
         if self.module.get_function(&instance_name).is_none() {

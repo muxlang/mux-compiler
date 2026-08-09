@@ -3,9 +3,9 @@ source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
 error: Non-exhaustive match on type 'int'
---> test_scripts/error_cases/semantic_match_guarded_wildcard.mux:6:11
+--> test_scripts/error_cases/semantic_constant_pattern_not_exhaustive.mux:8:11
    |
- 6 |     match n {
+ 8 |     match x {
    |           ^
    |
 = help: End the match with an unguarded '_' arm, or a bare name that binds the value; a guarded arm can fail its guard at runtime

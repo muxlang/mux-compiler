@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: While condition must be boolean, found int
+--> test_scripts/error_cases/semantic_non_bool_condition.mux:7:11
+   |
+ 7 |     while x {
+   |           ^
+   |
+= help: Compare it to produce a bool, e.g. 'while value != 0'

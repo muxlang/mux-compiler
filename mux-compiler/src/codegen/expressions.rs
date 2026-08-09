@@ -3223,6 +3223,14 @@ impl<'a> CodeGenerator<'a> {
         field: &str,
         args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
+        // The arguments belong to the CALLER, so they are generated before the
+        // callee's context is installed. `Pair<T, U>.swap` calling
+        // `Pair<U, T>.from(self.second, self.first)` needs `self.second` typed
+        // by the caller's map; resolving it under the callee's swapped map read
+        // a `string` field as an `int` and emitted a call whose arguments did
+        // not match the signature.
+        let call_args = self.build_call_args_from_expressions(args)?;
+
         let context = GenericContext {
             type_params: self.build_type_param_map(resolved_class_name, resolved_type_args)?,
         };
@@ -3238,7 +3246,6 @@ impl<'a> CodeGenerator<'a> {
             if let Some(block) = saved_insert_block {
                 self.builder.position_at_end(block);
             }
-            let call_args = self.build_call_args_from_expressions(args)?;
             // Use the resolved (module-prefix-stripped) class name here: that's the
             // name `generate_specialized_methods` actually registered the specialized
             // method under. Using the original, possibly module-qualified `class_name`
@@ -3319,9 +3326,33 @@ impl<'a> CodeGenerator<'a> {
             "ok" => self.generate_ok_builtin_call(args)?,
             "some" => self.generate_some_builtin_call(args)?,
             "none" => self.generate_none_builtin_call(args)?,
+            "range" => self.generate_range_builtin_call(args)?,
             _ => return Ok(None),
         };
         Ok(Some(value))
+    }
+
+    /// `range(start, end)` as a value: the integers [start, end) as a `list<int>`.
+    ///
+    /// The for-loop lowers `for i in range(a, b)` to a counter instead, which
+    /// allocates nothing - but `range` is an ordinary function everywhere else,
+    /// and without this it was only callable in that one position.
+    fn generate_range_builtin_call(
+        &mut self,
+        args: &[ExpressionNode],
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if args.len() != 2 {
+            return Err(format!("range expects 2 arguments, got {}", args.len()));
+        }
+        let start = self.generate_expression(&args[0])?;
+        let start = self.get_raw_int_value(start)?;
+        let end = self.generate_expression(&args[1])?;
+        let end = self.get_raw_int_value(end)?;
+        let list_ptr = self
+            .generate_runtime_call("mux_range", &[start.into(), end.into()])
+            .ok_or("mux_range returned no value")?;
+        self.generate_runtime_call("mux_list_value", &[list_ptr.into()])
+            .ok_or_else(|| "mux_list_value returned no value".to_string())
     }
 
     fn try_generate_variable_or_direct_function_call(
@@ -5244,10 +5275,18 @@ fn boxed_value_constructor_name(arg_type: &Type, prefix: &str) -> Option<&'stati
         Type::Primitive(PrimitiveType::Float) => "float",
         Type::Primitive(PrimitiveType::Bool) => "bool",
         Type::Primitive(PrimitiveType::Char) => "char",
+        // Everything already represented as a `*mut Value` shares the generic
+        // constructor. `optional`, `result` and `tuple` belong here for the
+        // same reason as a list or a class: nesting the built-in wrappers
+        // (`optional<result<int, string>>`) is an ordinary shape, and leaving
+        // them out rejected it as an unsupported type.
         Type::Primitive(PrimitiveType::Str)
         | Type::List(_)
         | Type::Map(_, _)
         | Type::Set(_)
+        | Type::Optional(_)
+        | Type::Result(_, _)
+        | Type::Tuple(_, _)
         | Type::Named(_, _)
         | Type::Instantiated(_, _) => "value",
         _ => return None,

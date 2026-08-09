@@ -1,0 +1,29 @@
+// A generic class method may return a different instantiation of itself.
+// Pair<T, U>.swap needs Pair<U, T>, and its arguments belong to the caller -
+// resolving them under the callee's swapped map read a string field as an int
+// and emitted a call whose arguments did not match the signature.
+
+class Pair<T, U> {
+    T first
+    U second
+
+    common func from(T a, U b) returns Pair<T, U> {
+        auto p = Pair<T, U>.new()
+        p.first = a
+        p.second = b
+        return p
+    }
+
+    func swap() returns Pair<U, T> {
+        return Pair<U, T>.from(self.second, self.first)
+    }
+}
+
+func main() returns void {
+    auto p = Pair<int, string>.from(1, "one")
+    print(p.first.to_string() + " " + p.second)
+
+    auto q = p.swap()
+    print(q.first + " " + q.second.to_string())
+    return
+}
