@@ -164,6 +164,16 @@ jobs:
               cp "$lib" dist/mux-${{ matrix.target }}/lib/
             fi
           done
+          # macOS only: llvm-sys links LLVM statically, but LLVM's own system
+          # dependencies arrive dynamically, and Homebrew's llvm@22 pulls in z3.
+          # That left an absolute /opt/homebrew path in the shipped binary, so
+          # it aborted on any machine without Homebrew (#378). Windows already
+          # bundles LLVM's DLLs below for the same reason.
+          if [ "$(uname -s)" = "Darwin" ]; then
+            ./scripts/ci/bundle-macos-dylibs.sh \
+              "dist/mux-${{ matrix.target }}/bin/mux" \
+              "dist/mux-${{ matrix.target }}/lib"
+          fi
           tar -C dist -czf dist/mux-${{ matrix.target }}.${{ matrix.archive_ext }} mux-${{ matrix.target }}
           # Write the checksum with a bare filename (run from dist/) so
           # `sha256sum -c` works from the artifact directory.
