@@ -51,6 +51,16 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+      # cargo emits only a dependency's rlib, never its staticlib, so neither
+      # the test step nor the build step below produces a libmux_runtime.a.
+      # Any test that compiles a Mux program then fails to link. The
+      # build-artifacts job already builds the runtime explicitly for this
+      # reason; this job did not, and nothing caught it until #365 added
+      # repeated_builds_emit_identical_ir, the first test here to build a
+      # program. See the runtime-resolution notes in AGENTS.md.
+      - name: Build runtime
+        run: cargo build -p mux-runtime --locked
+
       - name: Tests
         run: cargo test --locked
 
