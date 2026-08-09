@@ -3223,6 +3223,14 @@ impl<'a> CodeGenerator<'a> {
         field: &str,
         args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
+        // The arguments belong to the CALLER, so they are generated before the
+        // callee's context is installed. `Pair<T, U>.swap` calling
+        // `Pair<U, T>.from(self.second, self.first)` needs `self.second` typed
+        // by the caller's map; resolving it under the callee's swapped map read
+        // a `string` field as an `int` and emitted a call whose arguments did
+        // not match the signature.
+        let call_args = self.build_call_args_from_expressions(args)?;
+
         let context = GenericContext {
             type_params: self.build_type_param_map(resolved_class_name, resolved_type_args)?,
         };
@@ -3238,7 +3246,6 @@ impl<'a> CodeGenerator<'a> {
             if let Some(block) = saved_insert_block {
                 self.builder.position_at_end(block);
             }
-            let call_args = self.build_call_args_from_expressions(args)?;
             // Use the resolved (module-prefix-stripped) class name here: that's the
             // name `generate_specialized_methods` actually registered the specialized
             // method under. Using the original, possibly module-qualified `class_name`
@@ -5268,10 +5275,18 @@ fn boxed_value_constructor_name(arg_type: &Type, prefix: &str) -> Option<&'stati
         Type::Primitive(PrimitiveType::Float) => "float",
         Type::Primitive(PrimitiveType::Bool) => "bool",
         Type::Primitive(PrimitiveType::Char) => "char",
+        // Everything already represented as a `*mut Value` shares the generic
+        // constructor. `optional`, `result` and `tuple` belong here for the
+        // same reason as a list or a class: nesting the built-in wrappers
+        // (`optional<result<int, string>>`) is an ordinary shape, and leaving
+        // them out rejected it as an unsupported type.
         Type::Primitive(PrimitiveType::Str)
         | Type::List(_)
         | Type::Map(_, _)
         | Type::Set(_)
+        | Type::Optional(_)
+        | Type::Result(_, _)
+        | Type::Tuple(_, _)
         | Type::Named(_, _)
         | Type::Instantiated(_, _) => "value",
         _ => return None,

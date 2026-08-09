@@ -375,6 +375,7 @@ impl<'a> CodeGenerator<'a> {
             .analyzer
             .resolve_type(type_node)
             .map_err(|e| e.to_string())?;
+        self.instantiate_generic_enums_in_type(&resolved_type)?;
         let llvm_type = self.llvm_global_type_for_resolved_type(&resolved_type)?;
         self.declare_global_variable(name, llvm_type, resolved_type);
         Ok(())
@@ -388,6 +389,7 @@ impl<'a> CodeGenerator<'a> {
         let resolved_type = self
             .resolve_expression_type_with_fallback(expr)
             .map_err(|e| format!("Failed to get type for {}: {}", name, e))?;
+        self.instantiate_generic_enums_in_type(&resolved_type)?;
         let llvm_type = self.llvm_global_type_for_resolved_type(&resolved_type)?;
         self.declare_global_variable(name, llvm_type, resolved_type);
         Ok(())

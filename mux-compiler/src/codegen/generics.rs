@@ -23,6 +23,45 @@ impl<'a> CodeGenerator<'a> {
     /// Function signatures are declared before any body runs, so a parameter
     /// typed `Tree<int>` needs its instantiation to exist before the first
     /// `Tree<int>.Leaf` is ever generated (issue #359).
+    /// `instantiate_generic_enums_in_type_node` for a resolved semantic type.
+    ///
+    /// A module-level global is declared from a `Type` rather than a
+    /// `TypeNode` - `declare_auto_global` infers one from the initializer - so
+    /// the TypeNode walker never sees it, and `auto b = Box<int>.Full(42)` at
+    /// module scope resolved its LLVM type before anything stamped out
+    /// `Box$int`. Inside a function the same line works.
+    pub(super) fn instantiate_generic_enums_in_type(&mut self, ty: &Type) -> Result<(), String> {
+        match ty {
+            Type::Named(name, args) | Type::Instantiated(name, args) => {
+                for arg in args {
+                    self.instantiate_generic_enums_in_type(arg)?;
+                }
+                if self.enum_asts.contains_key(name) && self.mangled_enum_name(name, args) != *name
+                {
+                    self.ensure_enum_instantiated(name, args)?;
+                }
+            }
+            Type::List(inner) | Type::Set(inner) | Type::Reference(inner) => {
+                self.instantiate_generic_enums_in_type(inner)?;
+            }
+            Type::Optional(inner) => self.instantiate_generic_enums_in_type(inner)?,
+            Type::Map(k, v) | Type::Tuple(k, v) | Type::Result(k, v) => {
+                self.instantiate_generic_enums_in_type(k)?;
+                self.instantiate_generic_enums_in_type(v)?;
+            }
+            Type::Function {
+                params, returns, ..
+            } => {
+                for p in params {
+                    self.instantiate_generic_enums_in_type(p)?;
+                }
+                self.instantiate_generic_enums_in_type(returns)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(super) fn instantiate_generic_enums_in_type_node(
         &mut self,
         type_node: &TypeNode,
@@ -914,6 +953,36 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => return Err(format!("Expected list type, got {:?}", arg_type)),
             },
+            // The other composites infer the same way, one component at a time.
+            // Only `list` was handled, so `func lookup<K, V>(map<K, V> d, K k)`
+            // could not be called at all - the parameter fell through to the
+            // catch-all and reported an internal error.
+            TypeKind::Set(inner_param_type) => match arg_type {
+                Type::Set(inner_arg_type) => {
+                    self.infer_types_from_signature(inner_param_type, inner_arg_type, type_map)?;
+                }
+                _ => return Err(format!("Expected set type, got {:?}", arg_type)),
+            },
+            TypeKind::Map(param_key, param_value) => match arg_type {
+                Type::Map(arg_key, arg_value) => {
+                    self.infer_types_from_signature(param_key, arg_key, type_map)?;
+                    self.infer_types_from_signature(param_value, arg_value, type_map)?;
+                }
+                _ => return Err(format!("Expected map type, got {:?}", arg_type)),
+            },
+            TypeKind::Tuple(param_left, param_right) => match arg_type {
+                Type::Tuple(arg_left, arg_right) => {
+                    self.infer_types_from_signature(param_left, arg_left, type_map)?;
+                    self.infer_types_from_signature(param_right, arg_right, type_map)?;
+                }
+                _ => return Err(format!("Expected tuple type, got {:?}", arg_type)),
+            },
+            TypeKind::Reference(inner_param_type) => match arg_type {
+                Type::Reference(inner_arg_type) => {
+                    self.infer_types_from_signature(inner_param_type, inner_arg_type, type_map)?;
+                }
+                _ => return Err(format!("Expected reference type, got {:?}", arg_type)),
+            },
             TypeKind::Function {
                 params: param_params,
                 returns: param_returns,
@@ -1023,12 +1092,17 @@ impl<'a> CodeGenerator<'a> {
         func_name: &str,
         concrete_types: &[Type],
     ) -> Result<String, String> {
-        // create instantiation key
+        // `$` separates a generic instantiation from its type arguments, the
+        // same as `Box$int` for an enum and `Pair$int.method` for a class. It
+        // matters that a user cannot spell it: joining with `_` put
+        // `identity$$int` in the same namespace as a global someone wrote as
+        // `identity_int`, and `max<int>` next to a variable named `max_int`
+        // took the symbol out from under the instantiation.
         let type_names: Vec<String> = concrete_types
             .iter()
             .map(|t| self.type_to_string(t))
             .collect();
-        let instance_name = format!("{}_{}", func_name, type_names.join("_"));
+        let instance_name = format!("{}$${}", func_name, type_names.join("$"));
 
         // check if already instantiated
         if self.module.get_function(&instance_name).is_none() {

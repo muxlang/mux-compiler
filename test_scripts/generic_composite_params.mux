@@ -1,0 +1,37 @@
+// A generic function may take a map, a set or a list of its type parameters.
+// Only list was handled, so a map parameter failed as an internal error before
+// the call could even be typed.
+
+func lookup<K, V>(map<K, V> data, K key) returns optional<V> {
+    return data.get(key)
+}
+
+func size_of<T>(set<T> items) returns int {
+    return items.len()
+}
+
+func head<T>(list<T> items, T fallback) returns T {
+    if items.is_empty() {
+        return fallback
+    }
+    return items[0]
+}
+
+func main() returns void {
+    auto scores = {"ana": 31, "bo": 24}
+    match lookup(scores, "ana") {
+        some(v) { print(v.to_string()) }
+        none { print("missing") }
+    }
+    match lookup(scores, "zed") {
+        some(v) { print(v.to_string()) }
+        none { print("missing") }
+    }
+
+    set<int> seen = {1, 2, 3}
+    print(size_of(seen).to_string())
+
+    print(head([9, 8], 0).to_string())
+    print(head(["x"], "none"))
+    return
+}
