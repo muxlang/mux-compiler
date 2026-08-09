@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Generic enums**: `enum Box<T> { Full(T value), Empty }` now works end to
+  end - declaration, construction, matching, and use as a field, a parameter or
+  a collection element. Each instantiation is fully monomorphized, so
+  `Box<int>` holds a real `i64` rather than a boxed pointer. Closes #359.
+- **A class can key a map or join a set.** A class declaring `is Hashable`
+  supplies the hash and equality a key needs, and the runtime calls those
+  methods, so two instances holding the same fields are one key. Previously an
+  instance was matched by its address, and a map keyed on a class was rejected
+  outright.
+- **A class can implement the built-in capabilities.** `is Equatable`,
+  `is Comparable`, `is Hashable` and `is Stringable` on a class now register
+  it, so it satisfies the matching generic bound and the operators dispatch to
+  its own `eq`, `cmp`, `hash` and `to_string`. `Comparable` answers `==` too,
+  through `cmp` against zero, so a class defining an order does not write the
+  same test twice.
+- **`*=`, `/=` and `%=`**, and `+=` on a string. All five compound assignment
+  operators parsed and type checked, but only `+=` and `-=` reached codegen;
+  the rest failed with an internal compiler error. Each now applies the same
+  operator its plain form does, inheriting the divide-by-zero and overflow
+  checks along with the arithmetic.
+- **A class implementing `Error` can be a result's error type.** `Error` was
+  missing from the built-in capability list and is not a declared symbol
+  either, so `result<int, MyErr>` rejected its own error type and only a
+  `string` error worked.
 - **`list` and `set` satisfy `Collection<T>`**: the generic `std.dsa.algorithm`
   functions (`sort`, `binary_search`, `reverse`, `index_of`, `unique`, `max`,
   `min`, `any`, `all`, `count`, `sum_ints`, `sum_floats`) now accept a plain
@@ -17,6 +41,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `contains()`, and `to_list()`; `set` and `map` gain `len()`. Closes #277.
 
 ### Changed
+- **BREAKING: an interface cannot be used as a value type.** `func f(Shape s)`
+  and `Shape s = rect` were accepted at the declaration and then failed at
+  every caller with a bare type mismatch. Mux dispatches interfaces statically -
+  the vtable each object carries is never read - so an interface-typed slot has
+  no way to find a method body. The error now lands on the declaration and
+  points at the bound form, `func f<T is Shape>(T s)`, which works and is
+  monomorphized per concrete class.
+- **BREAKING: every enum payload field must be named.** `Circle(float)` is now
+  `Circle(float radius)`. A positional payload could not be referred to in a
+  `where` clause or a pattern, and the two spellings had diverged. Closes #370.
+- **BREAKING: `Hashable` on a class requires `eq` as well as `hash`**, the way
+  a map key in Rust is `Hash + Eq`. A hash alone cannot tell two keys in one
+  bucket apart, and the bound system already promised that `Hashable` satisfies
+  `Equatable`.
+- **BREAKING: a generic class cannot implement `Equatable`, `Comparable` or
+  `Hashable`.** Those three are registered with the runtime per class, and a
+  generic class shares one registration across every instantiation, so there is
+  no per-instantiation type to hang `Ranked$int.cmp` on. Allowing it made the
+  operators work while every collection silently compared by address.
+  `Stringable` registers nothing and is unaffected.
+- **A `set` iterates in insertion order rather than sorted order**, following
+  the runtime's switch to hash-backed collections. `{"b", "a"}` prints as
+  `{b, a}`. Lookup, insert and remove are now O(1).
+- **An `int`, `float`, `bool` or `char` class field is stored inline.**
+  `class Point { int x; float y; string label }` laid out as
+  `{ ptr, ptr, ptr }`, so `p.x = 7` allocated a `Value` to hold a 7. It is now
+  `{ i64, double, ptr }` and the assignment is a plain store. A `string` field
+  stays a pointer: it is a primitive to the language but a reference-counted
+  value at runtime.
+- **A trait bound is enforced, and an operator imposes one.** Bounds were never
+  checked, so an unbounded type parameter reached codegen and failed there.
+  Using `==`, `<` or a method on a type parameter now imposes the corresponding
+  bound, so the error lands on the declaration a reader can fix. `Comparable`
+  and `Hashable` each grant `Equatable`. Closes #361.
 - **BREAKING: `clear()` removed from the `Collection<T>` interface**. It was the
   one member no builtin collection could provide (the runtime has no
   `mux_*_clear`) and it was unused by every stdlib algorithm, so requiring it
@@ -30,6 +88,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   job already ran on the host and adding roughly 180s to every PR and push.
 
 ### Fixed
+- **An enum read out of a collection no longer segfaults** when assigned to a
+  class field, passed as an argument or returned. Everything that worked
+  unboxed it; the remaining boundaries never got the conversion, so the code
+  compiled and faulted at runtime. Closes #363.
+- **A generic instantiated with two different types no longer shares one
+  symbol.** The monomorphized name collapsed every type outside
+  `int`/`float`/`bool`/`string`/`list` to `"unknown"`, so two instantiations
+  shared a function body. A failed LLVM verification was the lucky case; two
+  boxed types colliding would have shared a body quietly. Closes #371.
+- **A local variable sharing a declared type's name is rejected** rather than
+  erasing that type program-wide. Closes #367.
+- **A user type named `optional` or `result` is rejected** rather than
+  overwriting the built-in. Closes #369.
+- **Enum access through a module namespace works** (`shapes.Shape.Circle`),
+  which the class equivalent already did. Closes #368.
+- **Two functions may use the same parameter name for different reference
+  types.** `*r + 5` inside a function taking `&int` compiled to string
+  concatenation when another function had an `&string` parameter also called
+  `r`, and the caller silently got 0 back. A dereference now resolves through
+  codegen's own tracking, and the symbol table prefers what is actually in
+  scope over its flat program-wide index.
+- **A generic class's method is stamped out before it is called.** Whether a
+  program linked depended on source order: a function reaching the method
+  before any construction site linked against the unspecialized name, which
+  never gets a body.
+- **A class registers its type once**, not on every construction. The runtime
+  hands out a fresh id per call, so two instances of one class never shared a
+  type id and the registry grew with every allocation.
 - **Windows links one CRT instead of two**: clang's driver passes
   `-defaultlib:libcmt` unconditionally when it links on Windows, pulling the
   static CRT into a link whose every other member requests `MSVCRT`. The result
