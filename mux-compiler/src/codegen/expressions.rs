@@ -2760,11 +2760,10 @@ impl<'a> CodeGenerator<'a> {
                     self.overwrite_slot_with_owned(ptr, result, &t)?;
                 } else {
                     // The referenced type could not be resolved, so the slot
-                    // takes the value as-is. Ownership still transfers into it:
-                    // leaving the value tracked would have the statement
-                    // boundary free what the slot now points at.
+                    // takes the value as-is. `store_boxed_into_slot` untracks it,
+                    // transferring ownership, so the statement boundary does not
+                    // free what the slot now points at.
                     let boxed = self.box_value(result);
-                    self.untrack_temp(boxed.into());
                     self.store_boxed_into_slot(ptr, boxed)?;
                 }
                 Ok(result)

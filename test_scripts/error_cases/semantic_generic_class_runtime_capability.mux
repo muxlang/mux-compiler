@@ -1,0 +1,24 @@
+// Should fail: Equatable, Comparable and Hashable are handed to the runtime as
+// callbacks on the class's object type, and a generic class registers one
+// object type shared by every instantiation - one layout, one copy, one
+// destructor. There is no per-instantiation type to hang 'Ranked$int.cmp' on,
+// and registering it against the shared type would hand Ranked<string> the int
+// version.
+//
+// Allowing it made the operators work (they monomorphize) while every
+// collection silently compared by address, so a generic Hashable key never
+// found its own entry and 'contains' answered false with no diagnostic.
+class Ranked<T> is Comparable {
+    int rank
+    T payload
+
+    func cmp(Ranked<T> other) returns int {
+        return self.rank - other.rank
+    }
+}
+
+func main() returns void {
+    auto r = Ranked<int>.new()
+    print(r.rank.to_string())
+    return
+}

@@ -908,8 +908,19 @@ impl SemanticAnalyzer {
         // Rejecting here rather than at the call keeps the error on the
         // declaration the reader can fix: it used to be accepted and then fail
         // with "Type mismatch: expected Shape, got Rect" at every caller.
-        if let Some(symbol) = self.symbol_table.lookup(name)
-            && matches!(symbol.kind, SymbolKind::Interface)
+        // The built-in capabilities are answered structurally and are never
+        // declared symbols, so a symbol-kind test alone let `func f(Comparable c)`
+        // through to fail at the caller with the very message this replaces.
+        let is_builtin_capability = self.symbol_table.lookup(name).is_none()
+            && matches!(
+                name,
+                "Stringable" | "Equatable" | "Comparable" | "Hashable" | "Error"
+            );
+        if is_builtin_capability
+            || self
+                .symbol_table
+                .lookup(name)
+                .is_some_and(|symbol| matches!(symbol.kind, SymbolKind::Interface))
         {
             return Err(SemanticError::with_help(
                 format!(
@@ -2928,6 +2939,18 @@ impl SemanticAnalyzer {
         ["Equatable", "Comparable", "Hashable"]
             .iter()
             .any(|declared| self.type_implements_named_interface(name, declared))
+    }
+
+    /// Whether the class declares a capability that *requires* an `eq` method,
+    /// which is what makes its signature checked.
+    ///
+    /// `Comparable` is absent on purpose: it requires only `cmp`, so a class
+    /// declaring it may also have an unrelated method named `eq` that nothing
+    /// validated. Treating that as the equality method emitted a wrapper
+    /// calling it with the wrong argument and return types.
+    pub fn class_declares_equality_method(&self, name: &str) -> bool {
+        self.type_implements_named_interface(name, "Equatable")
+            || self.type_implements_named_interface(name, "Hashable")
     }
 
     fn bound_grants(declared: &str, wanted: &str) -> bool {

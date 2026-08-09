@@ -1258,7 +1258,11 @@ impl<'a> CodeGenerator<'a> {
         right: BasicValueEnum<'a>,
     ) -> Result<IntValue<'a>, String> {
         let eq_name = self.create_specialized_method_name(class_name, type_args, "eq");
-        if let Some(func) = self.module.get_function(&eq_name) {
+        // Only a capability that requires `eq` has had its signature checked;
+        // a `Comparable` class may carry an unrelated method of that name.
+        if self.analyzer.class_declares_equality_method(class_name)
+            && let Some(func) = self.module.get_function(&eq_name)
+        {
             let equal = self
                 .builder
                 .build_call(func, &[left.into(), right.into()], "eq_call")

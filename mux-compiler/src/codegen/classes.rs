@@ -323,7 +323,7 @@ impl<'a> CodeGenerator<'a> {
         method: &str,
     ) -> Option<FunctionValue<'a>> {
         let declared = match method {
-            "eq" => self.analyzer.class_supports_equality(name),
+            "eq" => self.analyzer.class_declares_equality_method(name),
             "cmp" => self
                 .analyzer
                 .type_implements_named_interface(name, "Comparable"),
@@ -605,7 +605,7 @@ impl<'a> CodeGenerator<'a> {
             if !self.vtable_type_map.contains_key(interface_name)
                 && matches!(
                     interface_name.as_str(),
-                    "Stringable" | "Equatable" | "Comparable" | "Hashable"
+                    "Stringable" | "Equatable" | "Comparable" | "Hashable" | "Error"
                 )
             {
                 continue;

@@ -251,6 +251,10 @@ impl SemanticAnalyzer {
             "Equatable" => &["eq"],
             "Comparable" => &["cmp"],
             "Hashable" => &["hash", "eq"],
+            // Absent, a class implementing Error registered nothing, so
+            // `result<int, MyErr>` rejected its own error type and only a
+            // `string` error ever worked.
+            "Error" => &["message"],
             _ => return None,
         };
         // The built-in signatures are written against `Self`, so `eq` and `cmp`
@@ -287,6 +291,44 @@ impl SemanticAnalyzer {
         Some(required)
     }
 
+    /// Reject `Equatable`, `Comparable` or `Hashable` on a generic class.
+    ///
+    /// Those three are handed to the runtime as callbacks on the class's object
+    /// type, and a generic class registers one object type shared by every
+    /// instantiation - one layout, one copy, one destructor. There is no
+    /// per-instantiation type to hang `Ranked$int.cmp` on, and registering it
+    /// against the shared type would hand `Ranked<string>` the `int` version.
+    ///
+    /// Without this the operators worked (they monomorphize) while every
+    /// collection silently fell back to comparing addresses, so a generic
+    /// `Hashable` key never found its own entry and `contains` answered false.
+    ///
+    /// `Stringable` is unaffected: it registers nothing and `to_string` is
+    /// resolved statically like any other method.
+    fn reject_runtime_capability_on_generic_class(
+        interface: &str,
+        class_name: &str,
+        class_type_params: &[(String, Vec<TraitBound>)],
+        span: Span,
+    ) -> Option<SemanticError> {
+        if class_type_params.is_empty()
+            || !matches!(interface, "Equatable" | "Comparable" | "Hashable")
+        {
+            return None;
+        }
+        Some(SemanticError::with_help(
+            format!(
+                "Generic class '{}' cannot implement '{}'",
+                class_name, interface
+            ),
+            span,
+            format!(
+                "'{}' is registered with the runtime per class, and a generic class shares one                  registration across every instantiation. Drop the type parameter, or compare                  through a method you call directly.",
+                interface
+            ),
+        ))
+    }
+
     fn resolve_implemented_interfaces(
         &self,
         class_name: &str,
@@ -300,6 +342,14 @@ impl SemanticAnalyzer {
             // answered structurally for primitives and collections - so a class
             // saying `is Comparable` registered nothing at all, and then failed
             // to satisfy a bound it had genuinely implemented.
+            if let Some(error) = Self::reject_runtime_capability_on_generic_class(
+                &trait_ref.name,
+                class_name,
+                class_type_params,
+                trait_ref.span,
+            ) {
+                return Err(error);
+            }
             if let Some(methods) =
                 self.builtin_interface_methods(&trait_ref.name, class_name, class_type_params)
             {

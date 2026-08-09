@@ -1,31 +1,14 @@
-// A generic class can implement the built-in capabilities. The interface
-// signatures are written against Self, and substituting the bare class name
-// asked 'class Ranked<T> is Comparable' for 'cmp(Ranked)', which then failed as
-// a generic type missing its type argument - so no generic class could declare
-// one at all, whichever way the method was spelled.
+// A generic class may implement Stringable, which registers nothing with the
+// runtime - `to_string` resolves statically like any other method, and the
+// specialized body is what runs.
 //
-// The operators reach the method through the instantiation ('Ranked$string.cmp'),
-// because a generic class only ever emits monomorphized bodies; the
-// unspecialized name is a declaration that never gets one.
+// It may not implement Equatable, Comparable or Hashable: those are registered
+// with the runtime per class, and a generic class shares one registration
+// across every instantiation, so there is no per-instantiation type to hang
+// `Ranked$int.cmp` on. See error_cases/semantic_generic_class_runtime_capability.
 
-class Ranked<T> is Comparable {
-    int rank
-    T payload
-
-    common func of(int r, T p) returns Ranked<T> {
-        auto x = Ranked<T>.new()
-        x.rank = r
-        x.payload = p
-        return x
-    }
-
-    func cmp(Ranked<T> other) returns int {
-        return self.rank - other.rank
-    }
-
-    func get() returns T {
-        return self.payload
-    }
+interface Described {
+    func describe() returns string
 }
 
 class Labelled<T> is Stringable {
@@ -40,30 +23,46 @@ class Labelled<T> is Stringable {
     func to_string() returns string {
         return "labelled"
     }
+
+    func get() returns T {
+        return self.value
+    }
+}
+
+// A user-declared interface on a generic class registers nothing either, and
+// its method is called directly. (Reaching it through a generic bound is a
+// separate, pre-existing defect: the specialized function links against the
+// unspecialized 'Pair.describe'.)
+class Pair<A> is Described {
+    A first
+
+    common func of(A a) returns Pair<A> {
+        auto p = Pair<A>.new()
+        p.first = a
+        return p
+    }
+
+    func describe() returns string {
+        return "pair"
+    }
+}
+
+func show<T is Stringable>(T v) returns string {
+    return v.to_string()
 }
 
 func main() returns void {
-    auto low = Ranked<string>.of(1, "low")
-    auto high = Ranked<string>.of(5, "high")
+    auto li = Labelled<int>.of(7)
+    auto ls = Labelled<string>.of("x")
 
-    // Ordering runs the instantiation's own cmp.
-    print((low < high).to_string())
-    print((high < low).to_string())
-    print((low <= low).to_string())
+    print(li.to_string())
+    print(show(li))
+    print(show(ls))
 
-    // Comparable grants equality, through cmp against zero.
-    print((low == high).to_string())
-    print((low != high).to_string())
+    // Each instantiation keeps its own payload type.
+    print(li.get().to_string())
+    print(ls.get())
 
-    // The payload still round-trips.
-    print(low.get())
-
-    // A second instantiation is independent.
-    auto a = Ranked<int>.of(9, 100)
-    auto b = Ranked<int>.of(2, 200)
-    print((a > b).to_string())
-    print(a.get().to_string())
-
-    print(Labelled<int>.of(7).to_string())
+    print(Pair<int>.of(1).describe())
     return
 }
