@@ -73,6 +73,16 @@ impl SymbolTable {
             });
         }
 
+        // A bare '_' is a hole, not a name: it marks a parameter or binding as
+        // deliberately unused. Nothing can refer to it - '_' is not an
+        // expression - so it never needs to be in scope, and entering it made
+        // a second '_' in the same signature a "Duplicate declaration of '_'".
+        // Names that merely START with an underscore are ordinary identifiers
+        // and bind as usual.
+        if name == "_" {
+            return Ok(());
+        }
+
         if let Some(err) = self.reject_type_name_collision(name, &symbol) {
             return Err(err);
         }

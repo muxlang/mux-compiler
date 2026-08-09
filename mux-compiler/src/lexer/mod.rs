@@ -18,6 +18,15 @@ pub struct Lexer<'a> {
     source: &'a mut Source,
 }
 
+/// A character that may appear in an identifier after its first character.
+///
+/// The full identifier grammar is `[a-zA-Z][a-zA-Z0-9_]* | _[a-zA-Z0-9_]+`:
+/// a leading `_` needs at least one of these after it, otherwise the `_` is
+/// the wildcard token.
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a mut Source) -> Self {
         Lexer { source }
@@ -141,7 +150,17 @@ impl<'a> Lexer<'a> {
                     Ok(Token::new(TokenType::Percent, start_span))
                 }
             }
-            '_' => Ok(Token::new(TokenType::Underscore, start_span)),
+            // A bare '_' keeps its two jobs - the match wildcard and the
+            // unused-parameter marker - so it stays its own token. Followed by
+            // any identifier character it starts an ordinary identifier
+            // ('_x', '_123', '__'), which is how every other language spells
+            // "deliberately unused".
+            '_' => match self.source.peek() {
+                Some(ch) if is_identifier_char(ch) => {
+                    Ok(self.read_identifier_or_keyword(c, start_span))
+                }
+                _ => Ok(Token::new(TokenType::Underscore, start_span)),
+            },
             '.' => match self.source.peek() {
                 Some(c) if c.is_ascii_digit() => self.read_number('.', start_span),
                 Some('.') => {
@@ -169,7 +188,7 @@ impl<'a> Lexer<'a> {
 
     fn consume_identifier_tail(&mut self, ident: &mut String) {
         while let Some(ch) = self.source.peek() {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
+            if is_identifier_char(ch) {
                 ident.push(ch);
                 self.source.next_char();
             } else {
@@ -474,9 +493,9 @@ impl<'a> Lexer<'a> {
             '0'..='9' => self.read_number(first_char, start_span),
             '\'' => self.read_char(start_span),
             '"' => self.handle_string_start(start_span),
-            'a'..='z' | 'A'..='Z' | '_' => {
-                Ok(self.read_identifier_or_keyword(first_char, start_span))
-            }
+            // '_' never arrives here: `next_token` matches it first so it can
+            // decide between the wildcard token and an identifier.
+            'a'..='z' | 'A'..='Z' => Ok(self.read_identifier_or_keyword(first_char, start_span)),
             _ => Err(LexerError::with_help(
                 format!("Unexpected character: '{}'", first_char),
                 start_span,
@@ -1283,6 +1302,50 @@ world"
             let mut lexer = Lexer::new(&mut source);
             assert!(lexer.lex_all().is_err());
         }
+    }
+
+    fn lex_types(input: &str) -> Vec<TokenType> {
+        let mut source = Source::from_test_str(input);
+        let mut lexer = Lexer::new(&mut source);
+        lexer
+            .lex_all()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.token_type)
+            .collect()
+    }
+
+    #[test]
+    fn test_leading_underscore_starts_an_identifier() {
+        for name in ["_x", "_123", "__", "_x_1", "_X"] {
+            match &lex_types(name)[..] {
+                [TokenType::Id(id)] => assert_eq!(id, name),
+                other => panic!("'{}' should lex as one identifier, got {:?}", name, other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_bare_underscore_stays_the_wildcard() {
+        // Nothing may follow it that could extend an identifier, so each of
+        // these keeps '_' as its own token.
+        assert_eq!(lex_types("_"), vec![TokenType::Underscore]);
+        assert_eq!(
+            lex_types("_ _"),
+            vec![TokenType::Underscore, TokenType::Underscore]
+        );
+        assert_eq!(
+            lex_types("(_)"),
+            vec![
+                TokenType::OpenParen,
+                TokenType::Underscore,
+                TokenType::CloseParen
+            ]
+        );
+        assert_eq!(
+            lex_types("_,"),
+            vec![TokenType::Underscore, TokenType::Comma]
+        );
     }
 
     #[test]
