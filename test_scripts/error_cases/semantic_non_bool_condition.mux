@@ -1,0 +1,11 @@
+// Should fail: Mux has no implicit conversions, so a condition must be a bool.
+// Only the if-EXPRESSION checked this; 'while' and the 'if' statement let an
+// int through to codegen, which emitted 'br i64' and failed LLVM verification
+// as an internal compiler error rather than a diagnostic.
+func main() returns void {
+    auto x = 1
+    while x {
+        x--
+    }
+    return
+}

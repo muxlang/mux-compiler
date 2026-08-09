@@ -1,0 +1,42 @@
+// A declaration naming a generic enum instantiates it, the same as any other
+// site. Only 'auto' worked before: an explicit annotation resolved the LLVM
+// type before anything had stamped out 'Box$int', and failed as an internal
+// compiler error.
+
+enum Box<T> {
+    Full(T value),
+    Empty
+}
+
+enum Pair<A, B> {
+    Both(A first, B second),
+    Neither
+}
+
+func unwrap_or(Box<int> b, int fallback) returns int {
+    match b {
+        Full(v) { return v }
+        Empty { return fallback }
+    }
+}
+
+func main() returns void {
+    Box<int> boxed = Box<int>.Full(42)
+    Box<string> named = Box<string>.Full("hello")
+    Box<int> nothing = Box<int>.Empty
+
+    print(unwrap_or(boxed, 0).to_string())
+    print(unwrap_or(nothing, -1).to_string())
+
+    match named {
+        Full(v) { print(v) }
+        Empty { print("empty") }
+    }
+
+    Pair<int, string> p = Pair<int, string>.Both(1, "one")
+    match p {
+        Both(n, s) { print(n.to_string() + " = " + s) }
+        Neither { print("neither") }
+    }
+    return
+}

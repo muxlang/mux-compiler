@@ -1,6 +1,7 @@
 use super::{SemanticAnalyzer, SemanticError, SymbolKind, Type, format_type};
 use crate::ast::{
-    ExpressionKind, ExpressionNode, ImportSpec, PatternNode, StatementKind, StatementNode, TypeNode,
+    ExpressionKind, ExpressionNode, ImportSpec, PatternNode, PrimitiveType, StatementKind,
+    StatementNode, TypeNode,
 };
 use crate::diagnostic::Files;
 use crate::lexer::Span;
@@ -234,6 +235,35 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
+    /// Reject a condition that is not a `bool`.
+    ///
+    /// Mux has no implicit conversions, so `while x` over an `int` is a type
+    /// error. Only the if-*expression* checked this; the statement forms let it
+    /// through to codegen, which emitted `br i64` and failed LLVM verification
+    /// as an internal compiler error rather than a diagnostic.
+    fn check_condition_is_bool(
+        &mut self,
+        cond: &ExpressionNode,
+        construct: &str,
+    ) -> Result<(), SemanticError> {
+        let cond_type = self.get_expression_type(cond)?;
+        if matches!(cond_type, Type::Primitive(PrimitiveType::Bool)) {
+            return Ok(());
+        }
+        Err(SemanticError::with_help(
+            format!(
+                "{} condition must be boolean, found {}",
+                construct,
+                format_type(&cond_type)
+            ),
+            cond.span,
+            format!(
+                "Compare it to produce a bool, e.g. '{} value != 0'",
+                construct.to_lowercase()
+            ),
+        ))
+    }
+
     fn analyze_if_statement(
         &mut self,
         cond: &ExpressionNode,
@@ -242,6 +272,7 @@ impl SemanticAnalyzer {
         mut files: Option<&mut Files>,
     ) -> Result<(), SemanticError> {
         self.analyze_expression(cond)?;
+        self.check_condition_is_bool(cond, "If")?;
 
         self.symbol_table.push_scope()?;
         self.analyze_block(then_block, files.as_deref_mut())?;
@@ -293,6 +324,7 @@ impl SemanticAnalyzer {
         files: Option<&mut Files>,
     ) -> Result<(), SemanticError> {
         self.analyze_expression(cond)?;
+        self.check_condition_is_bool(cond, "While")?;
         self.symbol_table.push_scope()?;
         self.analyze_block(body, files)?;
         self.symbol_table.pop_scope()?;
@@ -705,22 +737,54 @@ impl SemanticAnalyzer {
         (covered, has_wildcard)
     }
 
+    /// A match on a type with no enumerable set of values needs an arm that
+    /// cannot fail.
+    ///
+    /// Two patterns qualify: `_`, and a bare identifier, which binds the value
+    /// and matches everything. Requiring `_` specifically meant a match ending
+    /// in a binding was rejected even though nothing could reach past it, and
+    /// the reader's only fix was to discard the value they had just named.
+    ///
+    /// `bool` is finite, so covering `true` and `false` closes it with no
+    /// catch-all at all - a wildcard after those two would be unreachable.
     fn require_wildcard_pattern(
         &self,
         arms: &[crate::ast::MatchArm],
         expr_type: &Type,
         expr_span: Span,
     ) -> Result<(), SemanticError> {
-        let has_wildcard = arms
-            .iter()
-            .any(|arm| arm.guard.is_none() && matches!(arm.pattern, PatternNode::Wildcard));
-        if !has_wildcard {
-            return Err(SemanticError::with_help(
-                format!("Non-exhaustive match on type '{}'", format_type(expr_type)),
-                expr_span,
-                "Add an unguarded wildcard '_' pattern as the last match arm to handle all remaining cases; a guarded arm can fail its guard at runtime",
-            ));
+        let has_catch_all = arms.iter().any(|arm| {
+            arm.guard.is_none()
+                && matches!(
+                    arm.pattern,
+                    PatternNode::Wildcard | PatternNode::Identifier(_)
+                )
+        });
+        if has_catch_all || Self::bool_literals_are_exhaustive(arms, expr_type) {
+            return Ok(());
         }
-        Ok(())
+        Err(SemanticError::with_help(
+            format!("Non-exhaustive match on type '{}'", format_type(expr_type)),
+            expr_span,
+            "End the match with an unguarded '_' arm, or a bare name that binds the value; a guarded arm can fail its guard at runtime",
+        ))
+    }
+
+    /// Whether this is a `bool` match covering both `true` and `false`
+    /// unguarded, which leaves no value uncovered.
+    fn bool_literals_are_exhaustive(arms: &[crate::ast::MatchArm], expr_type: &Type) -> bool {
+        if !matches!(expr_type, Type::Primitive(PrimitiveType::Bool)) {
+            return false;
+        }
+        let covered = |wanted: bool| {
+            arms.iter().any(|arm| {
+                arm.guard.is_none()
+                    && matches!(
+                        &arm.pattern,
+                        PatternNode::Literal(crate::ast::LiteralNode::Boolean(b)) if *b == wanted
+                    )
+            })
+        };
+        covered(true) && covered(false)
     }
 }

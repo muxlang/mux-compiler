@@ -1,0 +1,32 @@
+// A match closes on any arm that cannot fail. A bare name binds the value and
+// matches everything, so it needs no wildcard after it; and 'true'/'false'
+// together cover a bool completely. Both were rejected as non-exhaustive.
+
+func describe(int code) returns string {
+    match code {
+        200 { return "ok" }
+        404 { return "missing" }
+        other { return "code " + other.to_string() }
+    }
+}
+
+func greet(string who) returns string {
+    match who {
+        "admin" { return "Hello, admin" }
+        name { return "Hello, " + name }
+    }
+}
+
+func main() returns void {
+    print(describe(200))
+    print(describe(500))
+    print(greet("admin"))
+    print(greet("ana"))
+
+    auto flag = true
+    match flag {
+        true { print("enabled") }
+        false { print("disabled") }
+    }
+    return
+}

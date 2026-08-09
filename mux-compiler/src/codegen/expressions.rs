@@ -3319,9 +3319,33 @@ impl<'a> CodeGenerator<'a> {
             "ok" => self.generate_ok_builtin_call(args)?,
             "some" => self.generate_some_builtin_call(args)?,
             "none" => self.generate_none_builtin_call(args)?,
+            "range" => self.generate_range_builtin_call(args)?,
             _ => return Ok(None),
         };
         Ok(Some(value))
+    }
+
+    /// `range(start, end)` as a value: the integers [start, end) as a `list<int>`.
+    ///
+    /// The for-loop lowers `for i in range(a, b)` to a counter instead, which
+    /// allocates nothing - but `range` is an ordinary function everywhere else,
+    /// and without this it was only callable in that one position.
+    fn generate_range_builtin_call(
+        &mut self,
+        args: &[ExpressionNode],
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if args.len() != 2 {
+            return Err(format!("range expects 2 arguments, got {}", args.len()));
+        }
+        let start = self.generate_expression(&args[0])?;
+        let start = self.get_raw_int_value(start)?;
+        let end = self.generate_expression(&args[1])?;
+        let end = self.get_raw_int_value(end)?;
+        let list_ptr = self
+            .generate_runtime_call("mux_range", &[start.into(), end.into()])
+            .ok_or("mux_range returned no value")?;
+        self.generate_runtime_call("mux_list_value", &[list_ptr.into()])
+            .ok_or_else(|| "mux_list_value returned no value".to_string())
     }
 
     fn try_generate_variable_or_direct_function_call(

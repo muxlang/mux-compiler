@@ -1,0 +1,37 @@
+// A for loop iterates any expression producing a list, not only a bare
+// identifier or a literal range() call. A method result, a function result and
+// an indexed value all failed as an internal compiler error before.
+
+func evens_below(int limit) returns list<int> {
+    list<int> out = []
+    for int i in range(0, limit) {
+        if i % 2 == 0 {
+            out.push_back(i)
+        }
+    }
+    return out
+}
+
+func main() returns void {
+    // A method result.
+    auto ages = {"ana": 31, "bo": 24}
+    for string name in ages.get_keys() {
+        print(name)
+    }
+
+    // A function result.
+    for int n in evens_below(6) {
+        print(n.to_string())
+    }
+
+    // range() still lowers to a counter rather than a list.
+    for int i in range(0, 2) {
+        print("r" + i.to_string())
+    }
+
+    // And range() is an ordinary value elsewhere.
+    auto nums = range(0, 4)
+    print(nums.to_string())
+    print(nums.len().to_string())
+    return
+}
