@@ -30,9 +30,10 @@ class Labelled<T> is Stringable {
 }
 
 // A user-declared interface on a generic class registers nothing either, and
-// its method is called directly. (Reaching it through a generic bound is a
-// separate, pre-existing defect: the specialized function links against the
-// unspecialized 'Pair.describe'.)
+// dispatches statically whether it is called directly or reached through a
+// bound. The bound form used to link against the unspecialized 'Pair.describe',
+// because the specialization is stamped out on demand and a function reaching
+// the method before any construction site found nothing to call.
 class Pair<A> is Described {
     A first
 
@@ -51,6 +52,10 @@ func show<T is Stringable>(T v) returns string {
     return v.to_string()
 }
 
+func tell<T is Described>(T v) returns string {
+    return v.describe()
+}
+
 func main() returns void {
     auto li = Labelled<int>.of(7)
     auto ls = Labelled<string>.of("x")
@@ -64,5 +69,7 @@ func main() returns void {
     print(ls.get())
 
     print(Pair<int>.of(1).describe())
+    print(tell(Pair<int>.of(1)))
+    print(tell(Pair<string>.of("s")))
     return
 }
