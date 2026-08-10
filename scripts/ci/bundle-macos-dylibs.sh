@@ -103,6 +103,24 @@ while [[ "${#queue[@]}" -gt 0 ]]; do
   done < <(dependencies_of "$current")
 done
 
+# Every dylib we SHIP has to have a relocatable install name, not only the ones
+# pulled in above. libmux_runtime.dylib is the case that matters: cargo stamps a
+# cdylib's install name with its own build path
+# (target/release/deps/libmux_runtime-<hash>.dylib), and a program records the
+# install name of what it linked against - not the path the linker found it at.
+# So every program `mux` compiled on macOS pointed at a build tree that exists
+# on exactly one machine, and aborted anywhere else. The -Wl,-rpath the compiler
+# already passes cannot help while the recorded name is absolute.
+shopt -s nullglob
+for shipped in "$lib_dir"/*.dylib; do
+  current_id="$(otool -D "$shipped" | tail -n +2)"
+  [[ "$current_id" == /* ]] || continue
+  echo "  normalizing install name of $(basename "$shipped")"
+  install_name_tool -id "@rpath/$(basename "$shipped")" "$shipped"
+  resign "$shipped"
+done
+shopt -u nullglob
+
 if [[ "${#bundled[@]}" -eq 0 ]]; then
   echo "No non-system dylibs referenced; nothing to bundle."
 else
@@ -116,7 +134,8 @@ fi
 # in any load command. Without this the script could silently miss a case and
 # the break would resurface as an abort trap on a user's machine.
 leaked=0
-for file in "$binary" "${bundled[@]+"${bundled[@]}"}"; do
+shopt -s nullglob
+for file in "$binary" "$lib_dir"/*.dylib; do
   while read -r dep; do
     [[ -n "$dep" ]] || continue
     if ! is_system_path "$dep"; then
@@ -124,7 +143,19 @@ for file in "$binary" "${bundled[@]+"${bundled[@]}"}"; do
       leaked=1
     fi
   done < <(dependencies_of "$file")
+
+  # An absolute install name is the other half of the same failure: it is what a
+  # program linking this dylib records, so it breaks the program rather than
+  # this file. Checking it here is what makes the packaged-artifact job on a PR
+  # catch it, instead of only the install verification on a tag.
+  [[ "$file" == "$binary" ]] && continue
+  shipped_id="$(otool -D "$file" | tail -n +2)"
+  if [[ "$shipped_id" == /* ]]; then
+    echo "::error::$(basename "$file") has an absolute install name: $shipped_id" >&2
+    leaked=1
+  fi
 done
+shopt -u nullglob
 [[ "$leaked" -eq 0 ]] || die "bundling did not make the package self-contained"
 
 echo "Package is self-contained: every dylib reference is a system path or @rpath."
