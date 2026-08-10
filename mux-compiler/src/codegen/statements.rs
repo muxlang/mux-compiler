@@ -235,6 +235,65 @@ impl<'a> CodeGenerator<'a> {
         Ok(true)
     }
 
+    /// Give a `for` loop's variable its slot and report the slot back, so the
+    /// per-iteration store can be driven by the storage rather than the type.
+    ///
+    /// A scalar element lives in a slot of its own width. Anything else gets a
+    /// null-initialized entry-block slot: the per-iteration overwrite decrements
+    /// the previous occupant, so the first iteration must see a null (the
+    /// null-safe dec is then a no-op), and a zero-iteration loop must leave a
+    /// null the scope cleanup can safely decrement.
+    fn bind_loop_variable(
+        &mut self,
+        function: &FunctionValue<'a>,
+        var: &str,
+        resolved_var_type: &ResolvedType,
+    ) -> Result<(inkwell::values::PointerValue<'a>, BasicTypeEnum<'a>), String> {
+        let slot_type = self
+            .scalar_slot_for_binding(var, resolved_var_type)
+            .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
+        let var_alloca = self.create_entry_block_alloca(*function, slot_type, var)?;
+        self.variables.insert(
+            var.to_string(),
+            (var_alloca, slot_type, resolved_var_type.clone()),
+        );
+        // The loop variable owns its element for the whole loop when the slot is
+        // a boxed one; release that final occupant at function return or
+        // scope end.
+        if self.slot_owns_boxed_contents(slot_type, resolved_var_type) {
+            self.track_rc_variable(var, var_alloca);
+        }
+        Ok((var_alloca, slot_type))
+    }
+
+    /// Emit a `for` loop's body, then the index increment and the jump back to
+    /// the header. Shared by the counting and list-iterating loops, which differ
+    /// only in how they test the index and fetch the element.
+    fn close_loop_iteration(
+        &mut self,
+        function: &FunctionValue<'a>,
+        body: &[StatementNode],
+        index_alloca: inkwell::values::PointerValue<'a>,
+        index_load: BasicValueEnum<'a>,
+        header_bb: inkwell::basic_block::BasicBlock<'a>,
+    ) -> Result<(), String> {
+        for stmt in body {
+            self.generate_statement(stmt, Some(function))?;
+        }
+        let one = self.context.i64_type().const_int(1, false);
+        let new_index = self
+            .builder
+            .build_int_add(index_load.into_int_value(), one, "inc")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(index_alloca, new_index)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     fn generate_for_statement_inner(
         &mut self,
         function: &FunctionValue<'a>,
@@ -279,21 +338,7 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_store(index_alloca, start_val)
             .map_err(|e| e.to_string())?;
-        // A counting loop variable is a scalar and lives in its own slot. Any
-        // other element type gets a null-initialized entry-block slot, so the
-        // per-iteration overwrite can safely decrement the previous occupant.
-        let slot_type = self
-            .scalar_slot_for_binding(var, &resolved_var_type)
-            .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
-        let var_alloca = self.create_entry_block_alloca(*function, slot_type, var)?;
-        self.variables.insert(
-            var.to_string(),
-            (var_alloca, slot_type, resolved_var_type.clone()),
-        );
-        if self.slot_owns_boxed_contents(slot_type, &resolved_var_type) {
-            // Release the final boxed index at function return / scope end.
-            self.track_rc_variable(var, var_alloca);
-        }
+        let (var_alloca, slot_type) = self.bind_loop_variable(function, var, &resolved_var_type)?;
         let label_id = self.label_counter;
         self.label_counter += 1;
         let header_bb = self
@@ -334,20 +379,7 @@ impl<'a> CodeGenerator<'a> {
         // releasing the previous iteration's boxed index so the loop
         // does not accumulate leaks.
         self.overwrite_slot_of_type(var_alloca, slot_type, index_load2, &resolved_var_type)?;
-        for stmt in body {
-            self.generate_statement(stmt, Some(function))?;
-        }
-        let one = self.context.i64_type().const_int(1, false);
-        let new_index = self
-            .builder
-            .build_int_add(index_load2.into_int_value(), one, "inc")
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(index_alloca, new_index)
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_unconditional_branch(header_bb)
-            .map_err(|e| e.to_string())?;
+        self.close_loop_iteration(function, body, index_alloca, index_load2, header_bb)?;
         self.builder.position_at_end(exit_bb);
         Ok(())
     }
@@ -389,24 +421,7 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_store(index_alloca, zero)
             .map_err(|e| e.to_string())?;
-        // A scalar element lives in a slot of its own width. Anything else gets
-        // a null-initialized entry-block slot: the per-iteration overwrite
-        // decrements the previous occupant, so the first iteration must see
-        // a null (the null-safe dec is then a no-op), and a zero-iteration
-        // loop must leave a null the scope cleanup can safely decrement.
-        let slot_type = self
-            .scalar_slot_for_binding(var, &resolved_var_type)
-            .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
-        let var_alloca = self.create_entry_block_alloca(*function, slot_type, var)?;
-        self.variables.insert(
-            var.to_string(),
-            (var_alloca, slot_type, resolved_var_type.clone()),
-        );
-        // The loop variable owns its element copy for the whole loop; release
-        // the final copy at function return / function-end scope cleanup.
-        if self.slot_owns_boxed_contents(slot_type, &resolved_var_type) {
-            self.track_rc_variable(var, var_alloca);
-        }
+        let (var_alloca, slot_type) = self.bind_loop_variable(function, var, &resolved_var_type)?;
         let label_id = self.label_counter;
         self.label_counter += 1;
         let header_bb = self
@@ -464,20 +479,7 @@ impl<'a> CodeGenerator<'a> {
         // element so long-running loops do not accumulate leaks.
         self.register_temp(value_ptr.into());
         self.overwrite_slot_of_type(var_alloca, slot_type, value_ptr.into(), &resolved_var_type)?;
-        for stmt in body {
-            self.generate_statement(stmt, Some(function))?;
-        }
-        let one = self.context.i64_type().const_int(1, false);
-        let new_index = self
-            .builder
-            .build_int_add(index_load2.into_int_value(), one, "inc")
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(index_alloca, new_index)
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_unconditional_branch(header_bb)
-            .map_err(|e| e.to_string())?;
+        self.close_loop_iteration(function, body, index_alloca, index_load2, header_bb)?;
         let continue_bb = self
             .context
             .append_basic_block(*function, &format!("for_continue_{}", label_id));
