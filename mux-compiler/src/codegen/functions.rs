@@ -138,17 +138,37 @@ impl<'a> CodeGenerator<'a> {
         resolved_type: Type,
     ) -> Result<(), String> {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let alloca = self
-            .builder
-            .build_alloca(ptr_type, param_name)
-            .map_err(|e| e.to_string())?;
+        // A captured parameter's storage is a shared cell, like a captured
+        // local's: a closure writing to it has to be writing to the parameter
+        // the enclosing body reads, not to a copy of it.
+        let slot = if self.captured_names.contains(param_name) {
+            let function = self
+                .builder
+                .get_insert_block()
+                .and_then(|block| block.get_parent())
+                .ok_or("parameter setup needs an enclosing function")?;
+            let cell = self.create_entry_block_cell(function, param_name)?;
+            self.track_cell_variable(param_name, cell);
+            // The cell releases what it holds, so it needs a reference of its
+            // own. A parameter's box belongs to the caller, and a freshly boxed
+            // scalar is a statement temporary that is released separately -
+            // without this the cell hands back a reference it never took, which
+            // showed up as a returned closure losing its capture and a corrupt
+            // heap.
+            self.rc_inc_if_pointer(value_to_store.into())?;
+            cell
+        } else {
+            self.builder
+                .build_alloca(ptr_type, param_name)
+                .map_err(|e| e.to_string())?
+        };
         self.builder
-            .build_store(alloca, value_to_store)
+            .build_store(slot, value_to_store)
             .map_err(|e| e.to_string())?;
 
         self.variables.insert(
             param_name.to_string(),
-            (alloca, BasicTypeEnum::PointerType(ptr_type), resolved_type),
+            (slot, BasicTypeEnum::PointerType(ptr_type), resolved_type),
         );
         Ok(())
     }

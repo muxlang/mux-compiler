@@ -119,7 +119,10 @@ impl<'a> CodeGenerator<'a> {
         name: &str,
         ty: &Type,
     ) -> Option<BasicTypeEnum<'a>> {
-        if self.address_taken.contains(name) {
+        // A captured name is never raw: it is either a cell, or copied into a
+        // closure-owned cell as a `*mut Value`. Either way its slot is a
+        // pointer.
+        if self.address_taken.contains(name) || self.captured_names.contains(name) {
             return None;
         }
         self.scalar_slot_type(ty)

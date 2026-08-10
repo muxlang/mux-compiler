@@ -47,6 +47,10 @@ type EnumVariantFieldMap = HashMap<String, HashMap<String, Vec<EnumVariantField>
 #[derive(Clone)]
 pub(super) enum RcSlot<'a> {
     Boxed(PointerValue<'a>),
+    /// The shared storage of a captured variable. Released with
+    /// `mux_cell_release`, which drops one holder rather than freeing outright,
+    /// because a closure capturing the variable holds the same cell.
+    Cell(PointerValue<'a>),
     EnumStruct {
         enum_name: String,
         alloca: PointerValue<'a>,
@@ -58,7 +62,9 @@ impl<'a> RcSlot<'a> {
     /// is never released twice within a scope.
     fn alloca(&self) -> PointerValue<'a> {
         match self {
-            RcSlot::Boxed(alloca) | RcSlot::EnumStruct { alloca, .. } => *alloca,
+            RcSlot::Boxed(alloca) | RcSlot::Cell(alloca) | RcSlot::EnumStruct { alloca, .. } => {
+                *alloca
+            }
         }
     }
 }
@@ -100,6 +106,17 @@ pub struct CodeGenerator<'a> {
     /// boxed even when the type is a scalar, because a reference has to mean
     /// one thing and a reference to a list element is a `*mut Value`.
     address_taken: std::collections::HashSet<String>,
+    /// Names captured by some closure. Their storage is a reference-counted
+    /// cell shared with every closure that captures them, so a write through
+    /// one is visible to the others for as long as any holder lives.
+    captured_names: std::collections::HashSet<String>,
+    /// The slots that really are reference-counted cells: a captured local,
+    /// parameter or loop variable gets one at its binding, and a captured
+    /// global is emitted as a static cell. Anything else a closure captures is
+    /// copied into a cell the closure owns. Recorded by slot rather than by
+    /// name, because one name can denote either depending on where it was
+    /// bound, and retaining a non-cell as a cell corrupts memory.
+    cell_slots: std::collections::HashSet<PointerValue<'a>>,
     /// Globals visible to the code currently being generated, keyed by their
     /// bare source name. Swapped per module (see `module_globals`) so every
     /// lookup site can keep using the unqualified name.
@@ -361,6 +378,41 @@ impl<'a> CodeGenerator<'a> {
             Some(prefix) => format!("{}!{}", prefix, name),
             None => name.to_string(),
         };
+        // A captured global is emitted as a statically allocated capture cell,
+        // `{ i64 refcount, *mut Value }`, and its slot is that cell's payload.
+        // A closure then shares the global itself rather than a copy of it, so
+        // writing through the closure is a write to the global.
+        //
+        // The refcount starts at 1 for the global's own permanent reference, so
+        // the closures that retain and release it can never take it to zero and
+        // try to free static storage. Teardown releases the value the cell
+        // holds, never the cell.
+        if self.captured_names.contains(name) {
+            let i64_type = self.context.i64_type();
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let cell_type = self
+                .context
+                .struct_type(&[i64_type.into(), ptr_type.into()], false);
+            let global = self.module.add_global(cell_type, None, &llvm_name);
+            global.set_initializer(&cell_type.const_named_struct(&[
+                i64_type.const_int(1, false).into(),
+                ptr_type.const_null().into(),
+            ]));
+            // A constant GEP: globals are declared before the builder is
+            // positioned anywhere, so this cannot go through the builder.
+            let i32_type = self.context.i32_type();
+            let payload = unsafe {
+                global.as_pointer_value().const_in_bounds_gep(
+                    cell_type,
+                    &[i32_type.const_zero(), i32_type.const_int(1, false)],
+                )
+            };
+            self.global_variables
+                .insert(name.to_string(), (payload, ptr_type.into(), resolved_type));
+            self.cell_slots.insert(payload);
+            return;
+        }
+
         let global = self.module.add_global(llvm_type, None, &llvm_name);
         global.set_initializer(&llvm_type.const_zero());
         self.global_variables.insert(
@@ -770,6 +822,8 @@ impl<'a> CodeGenerator<'a> {
             label_counter: 0,
             variables: ScopedVars::new(),
             address_taken: std::collections::HashSet::new(),
+            captured_names: std::collections::HashSet::new(),
+            cell_slots: std::collections::HashSet::new(),
             global_variables: HashMap::new(),
             module_globals: HashMap::new(),
             current_module_prefix: None,
@@ -814,6 +868,47 @@ impl<'a> CodeGenerator<'a> {
     /// Create an alloca instruction in the entry block of the current function.
     /// This ensures proper LLVM dominance - allocas must be in the entry block
     /// to be used throughout the function, including in match arms and loops.
+    /// Allocate a captured variable's storage cell in the entry block.
+    ///
+    /// The cell replaces the entry-block alloca a boxed local would get, and is
+    /// emitted in the same place for the same reason: it has to dominate every
+    /// use, including the scope cleanup that releases it on a path the
+    /// declaration may not dominate. Being on the heap is what lets a closure
+    /// keep the variable alive after the declaring function returns, and being
+    /// reference counted is what lets the variable and several closures share
+    /// one location (see `mux_cell_alloc` in mux-runtime).
+    fn create_entry_block_cell(
+        &mut self,
+        function: FunctionValue<'a>,
+        name: &str,
+    ) -> Result<PointerValue<'a>, String> {
+        let alloc = self
+            .runtime_function("mux_cell_alloc")
+            .ok_or("mux_cell_alloc not found")?;
+        let entry = function
+            .get_first_basic_block()
+            .expect("function should have entry block after creation");
+        let saved = self.builder.get_insert_block();
+        match entry.get_first_instruction() {
+            Some(first) => self.builder.position_before(&first),
+            None => self.builder.position_at_end(entry),
+        }
+        let null = self.context.ptr_type(AddressSpace::default()).const_null();
+        let cell = self
+            .builder
+            .build_call(alloc, &[null.into()], &format!("{}_cell", name))
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_cell_alloc should return a pointer")?
+            .into_pointer_value();
+        if let Some(block) = saved {
+            self.builder.position_at_end(block);
+        }
+        self.cell_slots.insert(cell);
+        Ok(cell)
+    }
+
     fn create_entry_block_alloca(
         &self,
         function: FunctionValue<'a>,
@@ -890,6 +985,15 @@ impl<'a> CodeGenerator<'a> {
         // taken keeps a boxed slot, because `&x` has to mean what `&list[0]`
         // means and a list element is a `*mut Value`.
         self.address_taken = address_taken::collect(nodes);
+        // A captured variable's storage is a shared cell, decided here for the
+        // same reason: it has to exist before the variable's slot does.
+        self.captured_names = self
+            .analyzer
+            .lambda_captures
+            .values()
+            .flatten()
+            .map(|(name, _)| name.clone())
+            .collect();
 
         self.generate_user_defined_types(nodes)?;
         self.generate_all_enum_object_support(nodes)?;
