@@ -1,0 +1,71 @@
+// A name resolves to the declaration in the function being compiled, not to
+// whichever function declared it last.
+//
+// Semantic analysis pops every scope when it finishes, so code generation used
+// to resolve names through a flat program-wide index where the last function to
+// declare a name answered for all of them. Two functions each holding a `slot`
+// of a different instantiation therefore got each other's type: `slot.get()`
+// inside a function taking a `Slot<float>` was typed `int` because another
+// function's `slot` held a `Slot<int>`, and the `.to_string()` consuming it was
+// emitted as an integer conversion over a double - IR that fails the module
+// verifier outright.
+//
+// Code generation now publishes the locals of the function it is emitting into
+// the analyzer's scope chain, so this pins the shapes that depend on it: the
+// same name reused across functions at different instantiations, read directly
+// and through a method; the same name reused as a parameter, a local and a loop
+// variable; and a composite subexpression, which only the analyzer walks - it
+// has to type `slots[i]` itself before it can type the call on the result.
+
+class Slot<T> {
+    T item
+
+    common func of(T value) returns Slot<T> {
+        auto made = Slot<T>.new()
+        made.item = value
+        return made
+    }
+
+    func get() returns T {
+        return self.item
+    }
+}
+
+// `slot` here is a Slot<float>. Declared before any other function that uses
+// the name, so the ordering is not what makes this work.
+func describe_float(Slot<float> slot) returns string {
+    return "float param: " + slot.get().to_string()
+}
+
+// The same name again, at a third instantiation, and read through the field
+// rather than the method.
+func describe_text(Slot<string> slot) returns string {
+    return "string param: " + slot.item
+}
+
+// A composite receiver: the analyzer has to type `slots[i]` on its own before
+// it can type the call on the result.
+func describe_indexed(list<Slot<float>> slots, int i) returns string {
+    return "indexed: " + slots[i].get().to_string()
+}
+
+func main() returns void {
+    // Same name as both parameters above, bound to a different instantiation.
+    auto slot = Slot<int>.of(42)
+    print("int local: " + slot.get().to_string())
+    print("int field: " + slot.item.to_string())
+
+    print(describe_float(Slot<float>.of(2.5)))
+    print(describe_text(Slot<string>.of("hello")))
+    print(describe_indexed([Slot<float>.of(1.5), Slot<float>.of(3.25)], 1))
+
+    // And once more as a loop variable, which is a third kind of binding.
+    list<Slot<bool>> flags = [Slot<bool>.of(true), Slot<bool>.of(false)]
+    for Slot<bool> slot in flags {
+        print("bool loop: " + slot.get().to_string())
+    }
+
+    // The int binding is unchanged by everything above.
+    print("int local again: " + slot.get().to_string())
+    return
+}

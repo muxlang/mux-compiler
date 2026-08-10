@@ -1,0 +1,215 @@
+// Per-instantiation generic class layouts (issue #381). A generic class used to
+// share one type-erased layout across every instantiation, so a field whose type
+// was a type parameter was always a boxed `*mut Value`: `Slot<int>` and
+// `Slot<string>` both laid out as `{ ptr, i64 }` and both registered with the
+// runtime under the single name "Slot". Every fully concrete instantiation now
+// gets its own struct layout, its own copy and destructor, and its own runtime
+// type id under a mangled name, so `Slot<int>` is `{ i64, i64 }` registered as
+// "Slot$int" with a memcpy-only copy and an empty destructor, while
+// `Slot<string>` stays `{ ptr, i64 }` registered as "Slot$string" with a real
+// deep-clone copy and an mux_rc_dec destructor.
+//
+// The failure mode this prevents is a layout and its readers disagreeing. Once
+// the slot holds a raw `i64`, anything that still treats it as a box reads a
+// small integer as a pointer, and anything that boxes on the way in stores a
+// pointer where the copy and destructor expect a scalar. So this pins each shape
+// that has to agree with the chosen layout: reads through a method and through
+// direct field access, a type parameter at int, float, bool and string, two type
+// parameters with a method returning the swapped instantiation, a type parameter
+// bound to a user enum (stored inline in the class now, which is the case that
+// had nowhere to live before) read back by comparison, by binding and by
+// matching the field directly and through `self`, a type parameter bound to a
+// collection,
+// value-semantics copies of both a scalar and a reference-counted
+// instantiation, a nested instantiation, instances held in a list and iterated,
+// and a signature naming an instantiation before any construction site exists to
+// stamp one out.
+
+enum Color { Red, Green, Blue }
+
+class Slot<T> {
+    T item
+    int count
+
+    common func of(T value, int n) returns Slot<T> {
+        auto made = Slot<T>.new()
+        made.item = value
+        made.count = n
+        return made
+    }
+
+    func get() returns T {
+        return self.item
+    }
+
+    func bump() returns void {
+        self.count += 1
+        return
+    }
+}
+
+class Holder<T> {
+    T inner
+
+    // Spelled without type arguments on purpose: inside the class's own generic
+    // method `Holder.new()` means `Holder<T>.new()`, and has to build the
+    // instantiation. Routed to the erased class it allocated the shared layout
+    // and registered a copy and destructor that read the slot as a box, while
+    // every read of the object went through the instantiation's layout, which
+    // stores a raw scalar there.
+    common func wrap(T value) returns Holder<T> {
+        auto wrapped = Holder.new()
+        wrapped.inner = value
+        return wrapped
+    }
+
+    func unwrap() returns T {
+        return self.inner
+    }
+}
+
+// Matching a type-parameter field through `self`. This lives in its own class
+// rather than on Slot because every method is specialized for every
+// instantiation, so a method matching Color variants would have to compile for
+// Slot<int> too.
+class Tagged<T> {
+    T tag
+
+    common func of(T value) returns Tagged<T> {
+        auto made = Tagged<T>.new()
+        made.tag = value
+        return made
+    }
+
+    func describe() returns string {
+        match self.tag {
+            Red { return "red" }
+            Green { return "green" }
+            Blue { return "blue" }
+        }
+    }
+}
+
+class Pair<A, B> {
+    A left
+    B right
+
+    common func of(A a, B b) returns Pair<A, B> {
+        auto built = Pair<A, B>.new()
+        built.left = a
+        built.right = b
+        return built
+    }
+
+    func swap() returns Pair<B, A> {
+        return Pair<B, A>.of(self.right, self.left)
+    }
+}
+
+// A signature is the only mention of `Slot<float>` at this point: nothing has
+// constructed one yet, so the layout has to be stamped out from the parameter
+// type rather than from a construction site.
+func describe_float_slot(Slot<float> fslot) returns string {
+    return "float slot: " + fslot.get().to_string() + " count " + fslot.count.to_string()
+}
+
+func main() returns void {
+    // A type-parameter field alongside a concrete field, at each scalar shape.
+    // Read once through a method and once through the field directly - both go
+    // through the instantiation's layout, not the shared erased one.
+    auto int_slot = Slot<int>.of(42, 1)
+    print("int slot: " + int_slot.get().to_string() + " count " + int_slot.count.to_string())
+    print("int field: " + int_slot.item.to_string())
+
+    auto float_slot = Slot<float>.of(2.5, 2)
+    print(describe_float_slot(float_slot))
+    print("float field: " + float_slot.item.to_string())
+
+    auto bool_slot = Slot<bool>.of(true, 3)
+    print("bool slot: " + bool_slot.get().to_string() + " count " + bool_slot.count.to_string())
+    print("bool field: " + bool_slot.item.to_string())
+
+    auto text_slot = Slot<string>.of("hello", 4)
+    print("string slot: " + text_slot.get() + " count " + text_slot.count.to_string())
+    print("string field: " + text_slot.item)
+
+    // The concrete field still behaves like a concrete field.
+    int_slot.bump()
+    print("bumped count: " + int_slot.count.to_string())
+
+    // Two type parameters, and a method returning the swapped instantiation:
+    // Pair<int, string> and Pair<string, int> are separate layouts now.
+    auto forward_pair = Pair<int, string>.of(7, "seven")
+    print("pair: " + forward_pair.left.to_string() + " " + forward_pair.right)
+    auto swapped_pair = forward_pair.swap()
+    print("swapped: " + swapped_pair.left + " " + swapped_pair.right.to_string())
+
+    // A type parameter bound to a user enum stores the enum inline in the class.
+    auto color_slot = Slot<Color>.of(Color.Green, 5)
+    match color_slot.get() {
+        Red { print("color slot: red") }
+        Green { print("color slot: green") }
+        Blue { print("color slot: blue") }
+    }
+    // Read the inline enum straight out of the field: by comparison, by binding
+    // it out, and by matching the field directly. The direct match is the one
+    // that used to fail, because a match subject that is a type-parameter field
+    // resolved to the declared `T` rather than to what the receiver holds.
+    print("color field is green: " + (color_slot.item == Color.Green).to_string())
+    print("color field is red: " + (color_slot.item == Color.Red).to_string())
+    auto pulled_color = color_slot.item
+    match pulled_color {
+        Red { print("color field: bound red") }
+        Green { print("color field: bound green") }
+        Blue { print("color field: bound blue") }
+    }
+    match color_slot.item {
+        Red { print("color field: direct red") }
+        Green { print("color field: direct green") }
+        Blue { print("color field: direct blue") }
+    }
+
+    // The same read from inside a specialized method, through `self`. This one
+    // failed silently rather than loudly: an unsubstituted `T` was not
+    // recognised as an enum at all, so the match compiled as a value comparison
+    // that always took the first arm and then tripped over the payload.
+    print("tagged: " + Tagged<Color>.of(Color.Green).describe())
+    print("tagged: " + Tagged<Color>.of(Color.Blue).describe())
+    print("tagged: " + Tagged<Color>.of(Color.Red).describe())
+
+    // A type parameter bound to a collection keeps a reference-counted slot.
+    auto list_slot = Slot<list<int>>.of([4, 5, 6], 6)
+    print("list slot: " + list_slot.get().to_string())
+    print("list field size: " + list_slot.item.size().to_string())
+
+    // Value semantics: the copy owns its own slot, so mutating it must leave
+    // the source alone. Once for a scalar instantiation, whose copy is a plain
+    // memcpy, and once for a reference-counted one, whose copy deep-clones.
+    auto source_slot = Slot<int>.of(10, 7)
+    auto copied_slot = source_slot
+    copied_slot.item = 99
+    copied_slot.count = 70
+    print("source after copy write: " + source_slot.item.to_string() + " " + source_slot.count.to_string())
+    print("copy after copy write: " + copied_slot.item.to_string() + " " + copied_slot.count.to_string())
+
+    auto source_text = Slot<string>.of("original", 8)
+    auto copied_text = source_text
+    copied_text.item = "changed"
+    print("source text after copy write: " + source_text.item)
+    print("copy text after copy write: " + copied_text.item)
+
+    // A nested instantiation: the outer layout holds a class pointer, the inner
+    // one holds a raw i64.
+    auto nested_holder = Holder<Holder<int>>.wrap(Holder<int>.wrap(11))
+    print("nested: " + nested_holder.unwrap().unwrap().to_string())
+
+    // Instances in a list, read back through the element type.
+    list<Slot<int>> slot_list = [Slot<int>.of(1, 10), Slot<int>.of(2, 20), Slot<int>.of(3, 30)]
+    for Slot<int> entry in slot_list {
+        print("entry: " + entry.get().to_string() + " count " + entry.count.to_string())
+    }
+    print("list length: " + slot_list.size().to_string())
+
+    print("=== generic class layout done ===")
+    return
+}

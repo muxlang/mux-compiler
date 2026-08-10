@@ -1,0 +1,19 @@
+// Should fail: `Slot.new()` on a generic class, written where the class's type
+// parameters are not in scope, does not say what the object holds. Inside one of
+// Slot's own methods the same call means `Slot<T>.new()` and is accepted, with T
+// bound by the instantiation the method was specialized for.
+//
+// It has to be rejected rather than built: each instantiation is laid out
+// separately (issue #381), so an object with no instantiation to name has fields
+// that cannot be read or written. Rejected in semantics, where there is a span
+// to point at, rather than in codegen, which would report a user's own program
+// as an internal compiler error (issue #360).
+
+class Slot<T> {
+    T item
+}
+
+func main() returns void {
+    auto s = Slot.new()
+    return
+}

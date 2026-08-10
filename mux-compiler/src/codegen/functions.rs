@@ -15,6 +15,7 @@ use crate::ast::{AstNode, FunctionNode, PrimitiveType, StatementNode, TypeKind};
 use crate::semantics::Type;
 
 use super::CodeGenerator;
+use super::scoped_vars::ScopedVars;
 
 impl<'a> CodeGenerator<'a> {
     fn resolve_base_class_name_for_method(method_name: &str) -> &str {
@@ -48,9 +49,17 @@ impl<'a> CodeGenerator<'a> {
         param_index: &mut u32,
     ) -> Result<(), String> {
         let base_class_name = Self::resolve_base_class_name_for_method(&func.name);
-        let class_type = self
+        let self_type = self.resolve_self_type_for_method(base_class_name);
+        // `Box$int.get` reads `self` through the instantiation's layout, where
+        // `item` is a real `i64`; the erased `Box` layout it was specialized
+        // from has a `*mut Value` in that slot.
+        let layout_name = match &self_type {
+            Type::Named(name, type_args) => self.ensure_class_instantiated(name, type_args)?,
+            _ => base_class_name.to_string(),
+        };
+        let class_type = *self
             .type_map
-            .get(base_class_name)
+            .get(&layout_name)
             .expect("class type should be in type_map after type generation");
         let arg = function
             .get_nth_param(*param_index)
@@ -66,9 +75,8 @@ impl<'a> CodeGenerator<'a> {
             .build_store(alloca, arg)
             .map_err(|e| e.to_string())?;
 
-        let self_type = self.resolve_self_type_for_method(base_class_name);
         self.variables
-            .insert("self".to_string(), (alloca, *class_type, self_type.clone()));
+            .insert("self".to_string(), (alloca, class_type, self_type.clone()));
         self.analyzer.current_self_type = Some(self_type);
         Ok(())
     }
@@ -220,9 +228,9 @@ impl<'a> CodeGenerator<'a> {
         // A signature may be the first mention of a generic enum instantiation,
         // and it is declared before any body that could construct one.
         for param in &func.params {
-            self.instantiate_generic_enums_in_type_node(&param.type_)?;
+            self.instantiate_generic_types_in_type_node(&param.type_)?;
         }
-        self.instantiate_generic_enums_in_type_node(&func.return_type)?;
+        self.instantiate_generic_types_in_type_node(&func.return_type)?;
 
         let mut param_types: Vec<BasicMetadataTypeEnum> = func
             .params
@@ -301,7 +309,7 @@ impl<'a> CodeGenerator<'a> {
         self.builder.position_at_end(entry);
 
         // copy global_variables to variables so statements can access/initialize them
-        self.variables = self.global_variables.clone();
+        self.variables = ScopedVars::from_bindings(self.global_variables.clone());
 
         // Isolate RC scope and statement temporaries for this init body, exactly
         // as generate_function does: nested function generation triggered while
@@ -533,6 +541,12 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?,
         );
 
+        // Open the scope this function's locals are published into, so the
+        // analyzer types expressions against what is in scope here rather than
+        // through its flat program-wide index. Nested generation opens its own
+        // and closes it, so an inner function shadows this one while it runs.
+        self.analyzer.symbol_table_mut().open_codegen_scope();
+
         let function = *self
             .functions
             .get(&func.name)
@@ -589,6 +603,8 @@ impl<'a> CodeGenerator<'a> {
         // cleaned up before returns, and non-void functions must have explicit returns)
         self.rc_scope_stack.pop();
         self.closure_scope_stack.pop();
+
+        self.analyzer.symbol_table_mut().close_codegen_scope();
 
         // Restore previous function context
         self.current_function_name = saved_function_name;

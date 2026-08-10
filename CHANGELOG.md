@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-10
+
+The generic class layout release. A generic class is now laid out per
+instantiation rather than sharing one type-erased layout, so a field whose type
+is a type parameter holds its value inline. Three long-standing bugs in how a
+generic receiver's type was resolved are fixed with it, one of which was silent.
+
+### Changed
+- **A generic class instantiation gets its own layout.** Every instantiation
+  used to share one type-erased layout, so a field whose type was a type
+  parameter was always a boxed `*mut Value`: `Slot<int>` and `Slot<string>`
+  both laid out as `{ ptr, i64 }` and both registered with the runtime under
+  the one name `Slot`. Each fully concrete instantiation is now stamped out
+  with its own struct layout, its own copy and destructor, and its own runtime
+  type id, so `Slot<int>` is `{ i64, i64 }` with a memcpy-only copy and an
+  empty destructor, while `Slot<string>` keeps its reference-counted slot. A
+  type parameter bound to a user enum is stored inline in the class. Reading or
+  writing such a field no longer allocates. Closes #381.
+
+### Fixed
+- **A name resolves to the declaration in the function being compiled.** Every
+  function's scope is popped when analysis finishes, so code generation
+  resolved names through a flat program-wide index where the last function to
+  declare a name answered for all of them. `h.get()` inside
+  `func show(Holder<float> h)` was typed `int` merely because another function
+  also had an `h`, that one holding a `Holder<int>`, and the `.to_string()`
+  consuming it was emitted as `mux_int_to_string` over a `double` - invalid IR
+  that failed the module verifier. Code generation now publishes the locals of
+  the function it is emitting into the analyzer's scope chain, so composite
+  expressions resolve correctly too: `slots[i].get()` needs `slots` typed
+  before the call on the result can be, and only the analyzer walks inside the
+  expression.
+- **A name bound inside a block belongs to that block.** The code generator's
+  variable table was flat for the whole function, which broke two ways at once.
+  A binding made inside a block stayed visible after it, so `auto x = 42`
+  followed by `for int x in nums` left `x` naming the loop variable, at the
+  loop's type, for the rest of the function. And because a redeclaration reuses
+  the slot of a live binding of the same name - which is how a loop-local
+  reuses its storage each iteration instead of leaking one allocation per pass
+  - a block that shadowed an outer name also wrote through to the outer
+  variable's storage, changing it. The table is a stack of scopes now, so the
+  redeclaration that reuses a slot is the one already bound in the same scope,
+  and a shadowing declaration in an inner block is a different variable with
+  storage of its own. Applies to `if`, `else`, `while`, `for` and match arms.
+- **Matching a field whose type is a type parameter.** The subject's type came
+  from the class declaration, where the field is written as `T` and never
+  substituted with what the receiver actually holds. Matching such a field
+  directly failed with "Enum T not found in type map", and matching it through
+  `self` inside a specialized method failed silently instead: an unsubstituted
+  `T` was not recognised as an enum at all, so the match compiled as a value
+  comparison that always took the first arm and then misread the payload.
+- **A closure bound in a loop body no longer leaks.** A closure carries its own
+  refcount, and binding one stores it into a slot the loop re-executes into, so
+  without releasing what the slot already held a loop running n times leaked
+  n - 1 closures along with everything they captured. The reference-counted
+  path already released the previous occupant and deliberately skipped a
+  closure, because `mux_rc_dec` is the wrong release for one; the closure path
+  had none of its own. A borrowed alias (`auto f = g`) is still stored without a
+  release, since that slot never took a reference to give back.
+- A class no longer emits a duplicate `type_name_X` constant per construction
+  site. Only the first was ever read, since registration is guarded by the
+  class's shared type id.
+- `Class.new()` on a generic class, written without type arguments where the
+  class's type parameters are not in scope, is now a type error naming the fix
+  instead of an internal compiler error. Written inside one of the class's own
+  methods it keeps working, and means `Class<T>.new()`.
+
+### Removed
+- A generic class no longer emits the unspecialized `new`, `copy` and
+  `destructor` over the shared type-erased layout. Every construction goes
+  through an instantiation, so these were unreachable, and their layout
+  disagreed with the one the instantiations use.
+
 ## [0.7.0] - 2026-08-09
 
 The enum and generics release. Generic enums work end to end, a class can

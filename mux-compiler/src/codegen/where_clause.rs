@@ -117,7 +117,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         let invariants: Vec<ExpressionNode> = self
             .analyzer
-            .class_invariants(class_name)
+            .class_invariants(Self::declared_class_name(class_name))
             .iter()
             .map(|inv| inv.predicate.clone())
             .collect();
@@ -143,7 +143,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         let invariants: Vec<ExpressionNode> = self
             .analyzer
-            .class_invariants(class_name)
+            .class_invariants(Self::declared_class_name(class_name))
             .iter()
             .filter(|inv| inv.referenced_fields.iter().any(|f| f == assigned_field))
             .map(|inv| inv.predicate.clone())
@@ -162,6 +162,10 @@ impl<'a> CodeGenerator<'a> {
     /// Bind every field of `class_name` into the variable table as a bare
     /// name backed by its slot in the object at `struct_ptr`, so invariant
     /// predicates can read fields like locals.
+    ///
+    /// `class_name` is the layout name, so a generic instantiation reads its
+    /// own slots; the field's declared semantic type still comes from the
+    /// symbol table, which only ever knew the declaration.
     fn bind_class_fields(
         &mut self,
         class_name: &str,
@@ -181,12 +185,13 @@ impl<'a> CodeGenerator<'a> {
             .get(class_name)
             .ok_or_else(|| format!("Class {} not found in field types map", class_name))?
             .clone();
+        let declared_name = Self::declared_class_name(class_name);
         let mut field_semantic_types: Vec<(String, Type)> = {
             let class_symbol = self
                 .analyzer
                 .symbol_table()
-                .lookup(class_name)
-                .ok_or_else(|| format!("Class {} not found in symbol table", class_name))?;
+                .lookup(declared_name)
+                .ok_or_else(|| format!("Class {} not found in symbol table", declared_name))?;
             class_symbol
                 .fields
                 .iter()

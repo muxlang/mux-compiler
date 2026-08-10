@@ -283,6 +283,18 @@ impl SemanticAnalyzer {
         &self.symbol_table
     }
 
+    /// Mutable access, for code generation to publish the locals of the
+    /// function it is emitting into the scope chain.
+    pub fn symbol_table_mut(&mut self) -> &mut SymbolTable {
+        &mut self.symbol_table
+    }
+
+    /// Build a local variable symbol from a name and its resolved type, for
+    /// code generation to publish what is in scope where it is emitting.
+    pub fn local_symbol(span: Span, type_: Type) -> Symbol {
+        Self::make_symbol(SymbolKind::Variable, span, Some(type_))
+    }
+
     pub fn all_symbols(&self) -> &std::collections::HashMap<String, Symbol> {
         &self.symbol_table.all_symbols
     }
@@ -1675,6 +1687,8 @@ impl SemanticAnalyzer {
         args: &[ExpressionNode],
         expr_span: Span,
     ) -> Result<Type, SemanticError> {
+        self.check_bare_generic_construction(func, expr_span)?;
+
         let func_type = match self.resolve_enum_variant_call(func, expr_span) {
             Some(Err(e)) => return Err(e),
             Some(Ok(t)) => t,
@@ -1701,6 +1715,58 @@ impl SemanticAnalyzer {
                 "Only functions can be called with '()'. Ensure the expression before '()' is a function.",
             )),
         }
+    }
+
+    /// Reject `Slot.new()` on a generic class written where the class's type
+    /// parameters are not in scope.
+    ///
+    /// Inside one of `Slot`'s own methods the call means `Slot<T>.new()`, with
+    /// T bound by the instantiation the method was specialized for. Anywhere
+    /// else there is nothing to infer it from, and the object that would be
+    /// built has fields nobody can read or write: each instantiation is laid out
+    /// separately, and this names no instantiation to lay out. Rejected here,
+    /// where there is a span to point at, rather than in codegen, which would
+    /// report a user's own program as an internal compiler error (issue #360).
+    fn check_bare_generic_construction(
+        &self,
+        func: &ExpressionNode,
+        span: Span,
+    ) -> Result<(), SemanticError> {
+        let ExpressionKind::FieldAccess { expr, field } = &func.kind else {
+            return Ok(());
+        };
+        if field != "new" {
+            return Ok(());
+        }
+        let ExpressionKind::Identifier(class_name) = &expr.kind else {
+            return Ok(());
+        };
+        let Some(symbol) = self.symbol_table.lookup(class_name) else {
+            return Ok(());
+        };
+        if symbol.kind != SymbolKind::Class || symbol.type_params.is_empty() {
+            return Ok(());
+        }
+        let in_scope = self
+            .current_class_type_params
+            .as_ref()
+            .is_some_and(|params| {
+                symbol
+                    .type_params
+                    .iter()
+                    .all(|(name, _)| params.iter().any(|(scoped, _)| scoped == name))
+            });
+        if in_scope {
+            return Ok(());
+        }
+        Err(SemanticError::with_help(
+            format!(
+                "'{}' is generic, so '{}.new()' does not say what it holds",
+                class_name, class_name
+            ),
+            span,
+            format!("Name the type arguments, as in {}<int>.new().", class_name),
+        ))
     }
 
     fn resolve_called_function_type(

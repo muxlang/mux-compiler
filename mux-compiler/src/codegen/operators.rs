@@ -12,7 +12,7 @@ use crate::ast::{
     BinaryOp, ExpressionKind, ExpressionNode, LiteralNode, PrimitiveType, Spanned, UnaryOp,
 };
 use crate::lexer::Span;
-use crate::semantics::Type;
+use crate::semantics::{SemanticAnalyzer, Symbol, Type};
 
 use super::CodeGenerator;
 
@@ -111,12 +111,6 @@ impl EqualityKind {
 }
 
 impl<'a> CodeGenerator<'a> {
-    fn infer_method_return_type(&self, receiver_type: &Type, method_name: &str) -> Option<Type> {
-        self.analyzer
-            .get_method_sig(receiver_type, method_name)
-            .map(|sig| sig.return_type)
-    }
-
     /// Ensure a value is a pointer, boxing it if necessary.
     pub(super) fn ensure_pointer(&mut self, val: BasicValueEnum<'a>) -> PointerValue<'a> {
         if val.is_pointer_value() {
@@ -352,6 +346,37 @@ impl<'a> CodeGenerator<'a> {
             .map(|v| v.into())
     }
 
+    /// Hand the analyzer the locals of the function being emitted, so it types
+    /// an expression against what is really in scope here.
+    ///
+    /// This is what the codegen scope is for. The analyzer's own scopes were
+    /// popped when analysis finished, leaving a flat program-wide index where
+    /// the last function to declare a name answers for every function that uses
+    /// it - `h.get()` inside `func show(Holder<float> h)` was typed `int`
+    /// because some other function also had an `h`. Codegen's variable table is
+    /// the authority for the function it is emitting, and publishing it makes
+    /// the analyzer right about composite expressions too: `hs[i].get()` needs
+    /// `hs` typed to type the receiver, and only the analyzer walks inside the
+    /// expression.
+    ///
+    /// Republished per query rather than kept in step with every mutation of
+    /// the variable table: far more places add, drop or rebind a local than ask
+    /// the analyzer a question, and a scope left stale would be a silently
+    /// wrong answer of exactly the kind this removes.
+    fn publish_locals_to_analyzer(&mut self) {
+        let locals: Vec<(String, Symbol)> = self
+            .variables
+            .iter()
+            .map(|(name, (_, _, ty))| {
+                (
+                    name.clone(),
+                    SemanticAnalyzer::local_symbol(Span::new(0, 0), ty.clone()),
+                )
+            })
+            .collect();
+        self.analyzer.symbol_table_mut().set_codegen_locals(locals);
+    }
+
     /// Query the semantic analyzer for an expression's type, then resolve away any
     /// remaining generic type variables using codegen's active generic context.
     ///
@@ -367,6 +392,7 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         expr: &ExpressionNode,
     ) -> Result<Type, String> {
+        self.publish_locals_to_analyzer();
         let analyzer_result = self.analyzer.get_expression_type(expr);
         let ty = match analyzer_result {
             Ok(ty) => ty,
@@ -513,32 +539,18 @@ impl<'a> CodeGenerator<'a> {
     }
 
     fn resolve_call_type(&mut self, expr: &ExpressionNode) -> Result<Type, String> {
-        match &expr.kind {
-            ExpressionKind::Call { func, .. } => {
-                if let Ok(ty) = self.get_resolved_expression_type(expr) {
-                    return Ok(ty);
-                }
+        let ExpressionKind::Call { func, .. } = &expr.kind else {
+            return Err("Expected call expression".to_string());
+        };
 
-                if let ExpressionKind::FieldAccess {
-                    expr: receiver_expr,
-                    field,
-                } = &func.kind
-                {
-                    let receiver_type =
-                        self.resolve_expression_type_with_fallback(receiver_expr)?;
-                    if let Some(return_type) = self.infer_method_return_type(&receiver_type, field)
-                    {
-                        return Ok(return_type);
-                    }
-                }
+        if let Ok(ty) = self.get_resolved_expression_type(expr) {
+            return Ok(ty);
+        }
 
-                let func_type = self.resolve_expression_type_with_fallback(func)?;
-                match func_type {
-                    Type::Function { returns, .. } => Ok(*returns),
-                    other => Err(format!("Cannot call non-function type: {:?}", other)),
-                }
-            }
-            _ => Err("Expected call expression".to_string()),
+        let func_type = self.resolve_expression_type_with_fallback(func)?;
+        match func_type {
+            Type::Function { returns, .. } => Ok(*returns),
+            other => Err(format!("Cannot call non-function type: {:?}", other)),
         }
     }
 

@@ -1,0 +1,81 @@
+// A name bound inside a block belongs to that block.
+//
+// The code generator's variable table used to be flat for the whole function,
+// which broke two ways at once. A binding made inside a block stayed visible
+// after it, so `auto x = 42` followed by `for int x in nums` left `x` naming the
+// loop variable, at the loop's type, for the rest of the function. And because a
+// redeclaration reuses the slot of a live binding of the same name - which is
+// how a loop-local reuses its storage each iteration instead of leaking one
+// allocation per pass - a block that shadowed an outer name also wrote *through*
+// to the outer variable's storage, so the outer value changed.
+//
+// The table is a stack of scopes now, so the redeclaration that reuses a slot is
+// the one already bound in the same scope, and a shadowing declaration in an
+// inner block is a different variable with storage of its own. This pins each
+// block form: if, else, while, for, and a match arm's pattern binding, at
+// several types, checking the outer binding after each one.
+
+func main() returns void {
+    auto x = 42
+    print("start: " + x.to_string())
+
+    if true {
+        auto x = 7
+        print("in if: " + x.to_string())
+    }
+    print("after if: " + x.to_string())
+
+    if false {
+        print("unreachable")
+    } else {
+        auto x = 13
+        print("in else: " + x.to_string())
+    }
+    print("after else: " + x.to_string())
+
+    int i = 0
+    while i < 2 {
+        auto x = 100 + i
+        print("in while: " + x.to_string())
+        i = i + 1
+    }
+    print("after while: " + x.to_string())
+
+    list<int> nums = [1, 2, 3]
+    for int x in nums {
+        print("loop var: " + x.to_string())
+    }
+    print("after for: " + x.to_string())
+
+    // Shadowing at a different type, so a leak would be visible as a wrong
+    // rendering and not merely a wrong number.
+    for string x in ["a", "b"] {
+        print("string loop var: " + x)
+    }
+    print("after string for: " + x.to_string())
+
+    // A block-local declared inside a loop body is fresh each iteration and
+    // must not disturb the outer binding either.
+    for int n in nums {
+        auto x = n * 10
+        print("nested decl: " + x.to_string())
+    }
+    print("after nested decl: " + x.to_string())
+
+    // A match arm's pattern binding is a block binding too.
+    auto found = maybe(3)
+    match found {
+        some(x) { print("match binding: " + x.to_string()) }
+        none { print("match binding: none") }
+    }
+    print("after match: " + x.to_string())
+
+    return
+}
+
+func maybe(int n) returns optional<int> {
+    if n > 0 {
+        return some(n)
+    }
+    return none
+}
