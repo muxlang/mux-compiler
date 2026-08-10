@@ -9,12 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0] - 2026-08-10
 
-The generic class layout release. A generic class is now laid out per
-instantiation rather than sharing one type-erased layout, so a field whose type
-is a type parameter holds its value inline. Three long-standing bugs in how a
-generic receiver's type was resolved are fixed with it, one of which was silent.
+The unboxing release. A scalar local now holds its value rather than a pointer
+to a heap-allocated one, so integer arithmetic stops allocating entirely, and a
+generic class is laid out per instantiation rather than sharing one type-erased
+layout, so a field whose type is a type parameter holds its value inline. Five
+long-standing bugs surfaced alongside them and are fixed here, two of which
+failed silently.
 
 ### Changed
+- **A scalar local holds its value.** An `int`, `float`, `bool` or `char` local
+  lived in a heap-allocated reference-counted `Value` behind a `*mut Value`
+  slot, so `total = total + i` allocated a box for the result, unboxed both
+  operands to do the arithmetic on raw machine words, then released the
+  previous box - two allocations per statement for arithmetic that needs none.
+  A scalar now lives in a slot of its own width, the same way a concrete scalar
+  class field has since this release. Measured over 600k loop iterations of
+  `total = total + i`: **1,200,006 heap allocations before, 5 after**. A list
+  benchmark doing 300k pushes and 300k indexed reads alongside the same loops
+  went from 1,500,026 allocations to 600,025, and from 0.138s to 0.081s.
+
+  `string` is deliberately unchanged: it is a primitive to the language but a
+  reference-counted heap value at runtime, so its slot still holds a pointer.
+  Two places keep a scalar boxed because they must. A variable whose address is
+  taken anywhere is given a boxed slot at its declaration, since `&int` also has
+  to mean a reference to a list element and those are boxed. And a closure
+  capture cell stays a `*mut Value`, since the runtime releases every capture as
+  one; a captured variable is rebound to that cell so mutation through the
+  closure is shared, with the pre-existing limit that a capture made inside a
+  block stops being shared when the block ends (#384). Closes #383.
 - **A generic class instantiation gets its own layout.** Every instantiation
   used to share one type-erased layout, so a field whose type was a type
   parameter was always a boxed `*mut Value`: `Slot<int>` and `Slot<string>`

@@ -242,13 +242,23 @@ a git dependency pinned by `Cargo.lock`; see the mux-runtime section of
 - Visibility: `pub(super)` for submodule functions, `fn` for private helpers.
 - Memory management uses reference counting (see `memory.rs`).
 - Expressions vs. statements: expressions return values; statements perform actions.
-- Boxing/unboxing: primitives are boxed into `*mut Value` pointers in
-  collection elements and `optional`/`result` payloads. **Class fields and enum
-  payloads are not**: both are stored inline, so `E.A(7)` puts a real `i64` in
-  the struct and so does `Slot<int>.item`. A value crossing between the two
-  representations has to be converted, and forgetting to is how an enum read out
-  of a collection segfaulted when assigned to a class field (issue #363,
+- Boxing/unboxing: a value is boxed into a `*mut Value` in a collection element
+  and in an `optional`/`result` payload. **A scalar local, a class field and an
+  enum payload are not**: all three hold the value itself, so `E.A(7)` puts a
+  real `i64` in the struct, and so do `Slot<int>.item` and `auto x = 7`.
+  `scalar_slot_type` is the single rule for which types those are - `string` is
+  excluded, being a primitive to the language but a reference-counted heap value
+  at runtime. A value crossing between the two representations has to be
+  converted, and forgetting to is how an enum read out of a collection
+  segfaulted when assigned to a class field (issue #363,
   `coerce_boxed_enum_to_inline`).
+- Two places hold a scalar boxed anyway, and both rebind the variable to the box
+  so mutation stays shared: a closure capture cell, because the runtime releases
+  every capture as a `*mut Value`; and a variable whose address is taken,
+  because `&int` also has to mean a reference to a list element and those are
+  boxed. So storage and semantic type can disagree - drive a slot write from
+  `overwrite_slot_of_type` with the slot's real LLVM type, not from the value's
+  type, or a raw scalar lands in a pointer cell.
 - Three type representations: AST (`TypeNode`), semantic (`Type`), LLVM (`BasicTypeEnum`).
 - Codegen's variable table (`ScopedVars`) is a stack of block scopes, not a flat
   map. `get` walks outward; `get_in_current_scope` is what distinguishes a

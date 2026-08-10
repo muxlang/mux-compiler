@@ -41,7 +41,7 @@ impl<'a> CodeGenerator<'a> {
         // belong to.
         let existing_var = self.variables.get_in_current_scope(name).cloned();
 
-        if let Some((existing_ptr, _, _)) = existing_var {
+        if let Some((existing_ptr, existing_slot_type, _)) = existing_var {
             if value.is_struct_value() {
                 // Reassigning an inline enum struct into an existing slot (a
                 // re-declared local or a pre-declared global) must release the
@@ -56,7 +56,12 @@ impl<'a> CodeGenerator<'a> {
                 // previous occupant, or every iteration but the last leaks.
                 // Global slots are zero-initialized and locals hold their prior
                 // owned value, so the null-safe release is always correct.
-                self.overwrite_slot_with_owned(existing_ptr, value, resolved_type)?;
+                self.overwrite_slot_of_type(
+                    existing_ptr,
+                    existing_slot_type,
+                    value,
+                    resolved_type,
+                )?;
             }
         } else if value.is_struct_value() {
             self.declare_struct_variable(
@@ -73,40 +78,43 @@ impl<'a> CodeGenerator<'a> {
             // route it through overwrite_slot_with_owned so each pass releases the
             // previous iteration's value. The first pass sees the null init and
             // the release is a no-op.
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let alloca = self.create_entry_block_alloca(*func, ptr_type.into(), name)?;
-            self.variables.insert(
-                name.to_string(),
-                (
-                    alloca,
-                    BasicTypeEnum::PointerType(ptr_type),
-                    resolved_type.clone(),
-                ),
-            );
-            if self.type_needs_rc_tracking(resolved_type) {
+            // A scalar lives in a slot of its own width; everything else in a
+            // `*mut Value` slot.
+            let slot_type = self
+                .scalar_slot_for_binding(name, resolved_type)
+                .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
+            let alloca = self.create_entry_block_alloca(*func, slot_type, name)?;
+            self.variables
+                .insert(name.to_string(), (alloca, slot_type, resolved_type.clone()));
+            // Tracked when the slot owns a box - which a scalar's slot does
+            // when its address is taken, since that keeps it boxed.
+            if self.slot_owns_boxed_contents(slot_type, resolved_type) {
                 self.track_rc_variable(name, alloca);
             }
-            self.overwrite_slot_with_owned(alloca, value, resolved_type)?;
+            self.overwrite_slot_of_type(alloca, slot_type, value, resolved_type)?;
         } else {
             // No function context: the fallback alloca is not null-initialized,
             // so we cannot release a previous occupant; just store the owned box.
-            let boxed = self.box_value_owned_for_slot(value, resolved_type)?;
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let slot_type = self
+                .scalar_slot_for_binding(name, resolved_type)
+                .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
             let alloca = self
                 .builder
-                .build_alloca(ptr_type, name)
+                .build_alloca(slot_type, name)
                 .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(alloca, boxed)
-                .map_err(|e| e.to_string())?;
-            self.variables.insert(
-                name.to_string(),
-                (
-                    alloca,
-                    BasicTypeEnum::PointerType(ptr_type),
-                    resolved_type.clone(),
-                ),
-            );
+            if let Some(scalar) = self.scalar_slot_for_binding(name, resolved_type) {
+                let narrowed = self.coerce_to_scalar(value, scalar)?;
+                self.builder
+                    .build_store(alloca, narrowed)
+                    .map_err(|e| e.to_string())?;
+            } else {
+                let boxed = self.box_value_owned_for_slot(value, resolved_type)?;
+                self.builder
+                    .build_store(alloca, boxed)
+                    .map_err(|e| e.to_string())?;
+            }
+            self.variables
+                .insert(name.to_string(), (alloca, slot_type, resolved_type.clone()));
         }
         Ok(())
     }
@@ -271,20 +279,21 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_store(index_alloca, start_val)
             .map_err(|e| e.to_string())?;
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        // Null-initialized entry-block slot so the per-iteration
-        // overwrite can safely decrement the previous boxed index.
-        let var_alloca = self.create_entry_block_alloca(*function, ptr_type.into(), var)?;
+        // A counting loop variable is a scalar and lives in its own slot. Any
+        // other element type gets a null-initialized entry-block slot, so the
+        // per-iteration overwrite can safely decrement the previous occupant.
+        let slot_type = self
+            .scalar_slot_for_binding(var, &resolved_var_type)
+            .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
+        let var_alloca = self.create_entry_block_alloca(*function, slot_type, var)?;
         self.variables.insert(
             var.to_string(),
-            (
-                var_alloca,
-                BasicTypeEnum::PointerType(ptr_type),
-                resolved_var_type.clone(),
-            ),
+            (var_alloca, slot_type, resolved_var_type.clone()),
         );
-        // Release the final boxed index at function return / scope end.
-        self.track_rc_variable(var, var_alloca);
+        if self.slot_owns_boxed_contents(slot_type, &resolved_var_type) {
+            // Release the final boxed index at function return / scope end.
+            self.track_rc_variable(var, var_alloca);
+        }
         let label_id = self.label_counter;
         self.label_counter += 1;
         let header_bb = self
@@ -324,7 +333,7 @@ impl<'a> CodeGenerator<'a> {
         // Box the current index and transfer it into the loop slot,
         // releasing the previous iteration's boxed index so the loop
         // does not accumulate leaks.
-        self.overwrite_slot_with_owned(var_alloca, index_load2, &resolved_var_type)?;
+        self.overwrite_slot_of_type(var_alloca, slot_type, index_load2, &resolved_var_type)?;
         for stmt in body {
             self.generate_statement(stmt, Some(function))?;
         }
@@ -380,23 +389,22 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_store(index_alloca, zero)
             .map_err(|e| e.to_string())?;
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        // Null-initialized entry-block slot: the per-iteration overwrite
+        // A scalar element lives in a slot of its own width. Anything else gets
+        // a null-initialized entry-block slot: the per-iteration overwrite
         // decrements the previous occupant, so the first iteration must see
         // a null (the null-safe dec is then a no-op), and a zero-iteration
         // loop must leave a null the scope cleanup can safely decrement.
-        let var_alloca = self.create_entry_block_alloca(*function, ptr_type.into(), var)?;
+        let slot_type = self
+            .scalar_slot_for_binding(var, &resolved_var_type)
+            .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
+        let var_alloca = self.create_entry_block_alloca(*function, slot_type, var)?;
         self.variables.insert(
             var.to_string(),
-            (
-                var_alloca,
-                BasicTypeEnum::PointerType(ptr_type),
-                resolved_var_type.clone(),
-            ),
+            (var_alloca, slot_type, resolved_var_type.clone()),
         );
         // The loop variable owns its element copy for the whole loop; release
         // the final copy at function return / function-end scope cleanup.
-        if self.type_needs_rc_tracking(&resolved_var_type) {
+        if self.slot_owns_boxed_contents(slot_type, &resolved_var_type) {
             self.track_rc_variable(var, var_alloca);
         }
         let label_id = self.label_counter;
@@ -455,7 +463,7 @@ impl<'a> CodeGenerator<'a> {
         // would leak the copy) while releasing the previous iteration's
         // element so long-running loops do not accumulate leaks.
         self.register_temp(value_ptr.into());
-        self.overwrite_slot_with_owned(var_alloca, value_ptr.into(), &resolved_var_type)?;
+        self.overwrite_slot_of_type(var_alloca, slot_type, value_ptr.into(), &resolved_var_type)?;
         for stmt in body {
             self.generate_statement(stmt, Some(function))?;
         }
@@ -503,25 +511,28 @@ impl<'a> CodeGenerator<'a> {
         self.register_temp(temp_val);
         let temp_name = format!("match_temp_{}", self.label_counter);
         self.label_counter += 1;
-        let temp_type = self.context.ptr_type(AddressSpace::default());
+        let actual_type = self
+            .get_resolved_expression_type(expr)
+            .map_err(|e| format!("Type inference failed: {}", e))?;
+        // The spill slot holds whatever the subject is. A scalar subject is a
+        // raw value, and a slot typed `*mut Value` would have the arms read it
+        // as a pointer.
+        let temp_type = self
+            .scalar_slot_type(&actual_type)
+            .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
         let temp_alloca = self
             .builder
             .build_alloca(temp_type, &temp_name)
             .map_err(|e| e.to_string())?;
+        let spilled = match self.scalar_slot_type(&actual_type) {
+            Some(scalar) => self.coerce_to_scalar(temp_val, scalar)?,
+            None => temp_val,
+        };
         self.builder
-            .build_store(temp_alloca, temp_val)
+            .build_store(temp_alloca, spilled)
             .map_err(|e| e.to_string())?;
-        let actual_type = self
-            .get_resolved_expression_type(expr)
-            .map_err(|e| format!("Type inference failed: {}", e))?;
-        self.variables.insert(
-            temp_name.clone(),
-            (
-                temp_alloca,
-                BasicTypeEnum::PointerType(temp_type),
-                actual_type,
-            ),
-        );
+        self.variables
+            .insert(temp_name.clone(), (temp_alloca, temp_type, actual_type));
         let temp_expr = ExpressionNode {
             kind: ExpressionKind::Identifier(temp_name),
             span: expr.span,
@@ -726,40 +737,57 @@ impl<'a> CodeGenerator<'a> {
         function: Option<&FunctionValue<'a>>,
     ) -> Result<(), String> {
         let value = self.generate_expression(expr)?;
-        let boxed = self.box_value(value);
-        // Ownership of the boxed value transfers into the constant's storage
-        // slot; do not also free it as a statement temporary.
-        self.untrack_temp(boxed.into());
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let resolved_type = self
             .resolve_expression_type_with_fallback(expr)
             .map_err(|e| format!("Failed to get type for {}: {}", name, e))?;
-        let existing_ptr = self.variables.get(name).map(|(p, _, _)| *p);
-        if let Some(existing_ptr) = existing_ptr {
+
+        // A scalar constant lives in its slot like any other scalar. Boxing it
+        // wrote a pointer into a slot the readers load as a raw value, and left
+        // the box owned by nobody.
+        let scalar = self.scalar_slot_for_binding(name, &resolved_type);
+        let stored: BasicValueEnum<'a> = match scalar {
+            Some(scalar_type) => self.coerce_to_scalar(value, scalar_type)?,
+            None => {
+                let boxed = self.box_value(value);
+                // Ownership of the boxed value transfers into the constant's
+                // storage slot; do not also free it as a statement temporary.
+                self.untrack_temp(boxed.into());
+                boxed.into()
+            }
+        };
+        let slot_type = scalar.unwrap_or(BasicTypeEnum::PointerType(ptr_type));
+
+        // Only a slot in THIS scope is the same constant being initialized - a
+        // module-level constant reusing its pre-declared global. A binding of
+        // the same name further out is a different constant this one shadows,
+        // and writing into its slot both clobbered it and, when the two had
+        // different storage, wrote a raw scalar where readers load a pointer.
+        let existing = self
+            .variables
+            .get_in_current_scope(name)
+            .map(|(p, t, _)| (*p, *t));
+        if let Some((existing_ptr, existing_slot_type)) = existing
+            && existing_slot_type == slot_type
+        {
             self.builder
-                .build_store(existing_ptr, boxed)
+                .build_store(existing_ptr, stored)
                 .map_err(|e| e.to_string())?;
             return Ok(());
         }
 
         let alloca = if let Some(func) = function {
-            self.create_entry_block_alloca(*func, ptr_type.into(), name)?
+            self.create_entry_block_alloca(*func, slot_type, name)?
         } else {
             self.builder
-                .build_alloca(ptr_type, name)
+                .build_alloca(slot_type, name)
                 .map_err(|e| e.to_string())?
         };
         self.builder
-            .build_store(alloca, boxed)
+            .build_store(alloca, stored)
             .map_err(|e| e.to_string())?;
-        self.variables.insert(
-            name.to_string(),
-            (
-                alloca,
-                BasicTypeEnum::PointerType(ptr_type),
-                resolved_type.clone(),
-            ),
-        );
+        self.variables
+            .insert(name.to_string(), (alloca, slot_type, resolved_type.clone()));
         if function.is_some() && self.type_needs_rc_tracking(&resolved_type) {
             self.track_rc_variable(name, alloca);
         }
@@ -1478,36 +1506,33 @@ impl<'a> CodeGenerator<'a> {
                     .unwrap_or(false);
 
                 if is_constant {
-                    let const_ptr = self
+                    let (const_ptr, const_slot_type, _) = self
                         .variables
                         .get(name)
                         .or_else(|| self.global_variables.get(name))
                         .ok_or_else(|| format!("Constant {} not found", name))?
-                        .0;
+                        .clone();
 
-                    let boxed_ptr = self
+                    // Read through the constant's own slot: a scalar constant
+                    // holds its value, so loading it as a pointer and unboxing
+                    // dereferenced the value itself.
+                    let loaded = self
                         .builder
-                        .build_load(
-                            self.context.ptr_type(AddressSpace::default()),
-                            const_ptr,
-                            &format!("load_{}", name),
-                        )
-                        .map_err(|e| e.to_string())?
-                        .into_pointer_value();
+                        .build_load(const_slot_type, const_ptr, &format!("load_{}", name))
+                        .map_err(|e| e.to_string())?;
 
-                    let const_val = match match_expr_type {
+                    let const_val: BasicValueEnum<'a> = match match_expr_type {
                         Type::Primitive(PrimitiveType::Int)
                         | Type::Primitive(PrimitiveType::Char) => {
-                            self.get_raw_int_value(boxed_ptr.into())?.into()
+                            self.get_raw_int_value(loaded)?.into()
                         }
                         Type::Primitive(PrimitiveType::Bool) => {
-                            self.get_raw_bool_value(boxed_ptr.into())?.into()
+                            self.get_raw_bool_value(loaded)?.into()
                         }
                         Type::Primitive(PrimitiveType::Float) => {
-                            self.get_raw_float_value(boxed_ptr.into())?.into()
+                            self.get_raw_float_value(loaded)?.into()
                         }
-                        Type::Primitive(PrimitiveType::Str) => boxed_ptr.into(),
-                        _ => boxed_ptr.into(),
+                        _ => loaded,
                     };
 
                     self.generate_value_equality(match_val, const_val, match_expr_type)

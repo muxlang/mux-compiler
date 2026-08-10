@@ -1,0 +1,156 @@
+// A scalar local holds its value, not a pointer to one.
+//
+// An `int`, `float`, `bool` or `char` local used to live in a heap-allocated
+// reference-counted `Value` behind a `*mut Value` slot, so `total = total + i`
+// allocated a box for the result, unboxed both operands to do the arithmetic on
+// raw machine words, then released the previous box. Two allocations per
+// statement for arithmetic that needs none: 600k loop iterations cost 1,200,006
+// heap allocations. A scalar now lives in a slot of its own width, the same way
+// a concrete scalar class field has since 0.8.0, and the same loop allocates
+// nothing.
+//
+// `string` is deliberately not a scalar here: it is a primitive to the language
+// but a reference-counted heap value at runtime, so its slot still holds a
+// pointer. That split is what this pins, along with every place a scalar slot
+// and a boxed slot have to agree:
+//
+//   - arithmetic and compound assignment on a local
+//   - `++` / `--`, which read and write the slot directly
+//   - a scalar captured by a closure, which is boxed into the capture cell so
+//     the runtime can release it, and rebound so mutation stays shared
+//   - a variable whose address is taken, which keeps a boxed slot from its
+//     declaration because `&int` also has to mean a reference to a list element
+//     and those are boxed. Deciding that up front rather than converting the
+//     variable when `&x` is reached is what the local, block-local, loop and
+//     global cases below pin: a conversion emitted at the `&` allocated its cell
+//     wherever control happened to be, re-ran on every pass through a loop, and
+//     rebound a global into the function-local table so the write landed on a
+//     copy while the global kept its old value
+//   - a match subject and a constant pattern, both read through the slot
+//   - a module-level constant and a global, including a constant that shadows an
+//     outer binding of a different width
+//   - a scalar loop variable, and a scalar element read out of a list
+
+int counter = 100
+const int LIMIT = 10
+const float RATIO = 1.5
+
+func read_counter() returns int {
+    return counter
+}
+
+func bump(&int r) returns int {
+    *r = *r + 5
+    *r += 2
+    return *r
+}
+
+func make_counter() returns func() returns int {
+    auto count = 0
+    return func() returns int {
+        count++
+        return count
+    }
+}
+
+func classify(int x) returns string {
+    match x {
+        LIMIT { return "at limit" }
+        other { return "other: " + other.to_string() }
+    }
+}
+
+func main() returns void {
+    // Arithmetic on locals: the whole point of the change.
+    int total = 0
+    for int i in range(0, 5) {
+        total = total + i
+    }
+    print("total: " + total.to_string())
+
+    // Compound assignment and the update operators.
+    int n = 10
+    n += 5
+    n -= 3
+    n++
+    n--
+    print("n: " + n.to_string())
+
+    // Each scalar shape, so a slot of the wrong width would show up.
+    float f = 2.5
+    f += 0.25
+    print("float: " + f.to_string())
+    bool flag = true
+    print("bool: " + flag.to_string())
+    char c = 'a'
+    print("char: " + c.to_string())
+
+    // A string local is not a scalar and keeps its reference-counted slot.
+    string s = "ab"
+    s += "c"
+    print("string: " + s)
+
+    // A variable whose address is taken keeps a boxed slot from its
+    // declaration, so the write through the reference is visible afterwards.
+    auto target = 1
+    print("via ref: " + bump(&target).to_string())
+    print("target after: " + target.to_string())
+
+    // The same inside a block. Converting the variable at the `&` instead would
+    // have to allocate wherever control happens to be, and the cell would not
+    // dominate the cleanup that reads it.
+    auto nested = 1
+    if true {
+        print("via ref in block: " + bump(&nested).to_string())
+    }
+    print("nested after: " + nested.to_string())
+
+    // And in a loop, where converting at the `&` would re-run every pass,
+    // resetting the variable and dropping the previous box.
+    auto looped = 0
+    for int i in range(0, 3) {
+        bump(&looped)
+    }
+    print("looped after: " + looped.to_string())
+
+    // A global whose address is taken is the case a function-local conversion
+    // got silently wrong: the write landed on a copy and the global kept its
+    // old value.
+    print("global via ref: " + bump(&counter).to_string())
+    print("global after: " + counter.to_string())
+    print("global seen elsewhere: " + read_counter().to_string())
+
+    // A constant shadowing an outer binding of a different width declares its
+    // own slot rather than writing a raw scalar through the outer one.
+    string shadowed = "outer"
+    if true {
+        const int shadowed = 5
+        print("inner const: " + shadowed.to_string())
+    }
+    print("outer still: " + shadowed)
+
+    // A captured scalar is boxed into the capture cell and stays shared.
+    auto next = make_counter()
+    print("counter: " + next().to_string())
+    print("counter: " + next().to_string())
+
+    // Match on a scalar subject, against a constant pattern and a binding.
+    print(classify(10))
+    print(classify(3))
+
+    // Module-level constants, read as scalars.
+    print("limit: " + LIMIT.to_string())
+    print("ratio: " + RATIO.to_string())
+
+    // A scalar element read out of a list arrives boxed and is narrowed into
+    // the loop variable's slot; the box has to be released, not dropped.
+    list<int> xs = [4, 5, 6]
+    int sum = 0
+    for int x in xs {
+        sum = sum + x
+    }
+    print("sum: " + sum.to_string())
+    print("indexed: " + xs[1].to_string())
+
+    return
+}
