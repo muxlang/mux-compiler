@@ -73,57 +73,83 @@ impl<'a> CodeGenerator<'a> {
                 rhs_owned,
             )?;
         } else if let Some(func) = function {
-            // Hoisted, null-initialized entry-block slot: because the store below
-            // runs on every pass (e.g. a variable declared inside a loop body),
-            // route it through overwrite_slot_with_owned so each pass releases the
-            // previous iteration's value. The first pass sees the null init and
-            // the release is a no-op.
-            // A captured variable's storage is a shared cell; a scalar lives in
-            // a slot of its own width; everything else in a `*mut Value` slot.
-            let ptr_slot = self.context.ptr_type(AddressSpace::default()).into();
-            let (slot, slot_type) = if self.captured_names.contains(name) {
-                let cell = self.create_entry_block_cell(*func, name)?;
-                self.track_cell_variable(name, cell);
-                (cell, ptr_slot)
-            } else {
-                let slot_type = self
-                    .scalar_slot_for_binding(name, resolved_type)
-                    .unwrap_or(ptr_slot);
-                let alloca = self.create_entry_block_alloca(*func, slot_type, name)?;
-                // Tracked when the slot owns a box - which a scalar's slot does
-                // when its address is taken, since that keeps it boxed.
-                if self.slot_owns_boxed_contents(slot_type, resolved_type) {
-                    self.track_rc_variable(name, alloca);
-                }
-                (alloca, slot_type)
-            };
-            self.variables
-                .insert(name.to_string(), (slot, slot_type, resolved_type.clone()));
-            self.overwrite_slot_of_type(slot, slot_type, value, resolved_type)?;
+            self.declare_local_in_function(name, value, resolved_type, func)?;
         } else {
-            // No function context: the fallback alloca is not null-initialized,
-            // so we cannot release a previous occupant; just store the owned box.
+            self.declare_local_without_function(name, value, resolved_type)?;
+        }
+        Ok(())
+    }
+
+    /// Bind a fresh local inside a function, in an entry-block slot.
+    ///
+    /// The slot is hoisted and null-initialized because the store runs on every
+    /// pass: a variable declared inside a loop body is stored to on each
+    /// iteration. So it goes through `overwrite_slot_of_type`, which releases
+    /// the previous occupant, and the first pass sees the null init where that
+    /// release is a no-op.
+    ///
+    /// Which slot depends on the variable: a captured one shares a cell, a
+    /// scalar lives in a slot of its own width, everything else in a
+    /// `*mut Value` slot. Split out of `declare_variable` to keep that
+    /// dispatcher's cognitive complexity down.
+    fn declare_local_in_function(
+        &mut self,
+        name: &str,
+        value: BasicValueEnum<'a>,
+        resolved_type: &ResolvedType,
+        func: &FunctionValue<'a>,
+    ) -> Result<(), String> {
+        let ptr_slot = self.context.ptr_type(AddressSpace::default()).into();
+        let (slot, slot_type) = if self.captured_names.contains(name) {
+            let cell = self.create_entry_block_cell(*func, name)?;
+            self.track_cell_variable(name, cell);
+            (cell, ptr_slot)
+        } else {
             let slot_type = self
                 .scalar_slot_for_binding(name, resolved_type)
-                .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
-            let alloca = self
-                .builder
-                .build_alloca(slot_type, name)
-                .map_err(|e| e.to_string())?;
-            if let Some(scalar) = self.scalar_slot_for_binding(name, resolved_type) {
-                let narrowed = self.coerce_to_scalar(value, scalar)?;
-                self.builder
-                    .build_store(alloca, narrowed)
-                    .map_err(|e| e.to_string())?;
-            } else {
-                let boxed = self.box_value_owned_for_slot(value, resolved_type)?;
-                self.builder
-                    .build_store(alloca, boxed)
-                    .map_err(|e| e.to_string())?;
+                .unwrap_or(ptr_slot);
+            let alloca = self.create_entry_block_alloca(*func, slot_type, name)?;
+            // Tracked when the slot owns a box - which a scalar's slot does when
+            // its address is taken, since that keeps it boxed.
+            if self.slot_owns_boxed_contents(slot_type, resolved_type) {
+                self.track_rc_variable(name, alloca);
             }
-            self.variables
-                .insert(name.to_string(), (alloca, slot_type, resolved_type.clone()));
-        }
+            (alloca, slot_type)
+        };
+        self.variables
+            .insert(name.to_string(), (slot, slot_type, resolved_type.clone()));
+        self.overwrite_slot_of_type(slot, slot_type, value, resolved_type)
+    }
+
+    /// Bind a fresh local with no enclosing function, which is module-init and
+    /// top-level statement territory.
+    ///
+    /// The alloca here is at the current position rather than hoisted, so it is
+    /// not null-initialized and no previous occupant can be released; the value
+    /// is simply stored. Split out of `declare_variable` for the same reason as
+    /// the function case above.
+    fn declare_local_without_function(
+        &mut self,
+        name: &str,
+        value: BasicValueEnum<'a>,
+        resolved_type: &ResolvedType,
+    ) -> Result<(), String> {
+        let scalar = self.scalar_slot_for_binding(name, resolved_type);
+        let slot_type =
+            scalar.unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
+        let alloca = self
+            .builder
+            .build_alloca(slot_type, name)
+            .map_err(|e| e.to_string())?;
+        let stored = match scalar {
+            Some(scalar_type) => self.coerce_to_scalar(value, scalar_type)?,
+            None => self.box_value_owned_for_slot(value, resolved_type)?.into(),
+        };
+        self.builder
+            .build_store(alloca, stored)
+            .map_err(|e| e.to_string())?;
+        self.variables
+            .insert(name.to_string(), (alloca, slot_type, resolved_type.clone()));
         Ok(())
     }
 
