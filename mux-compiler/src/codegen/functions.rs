@@ -468,11 +468,10 @@ impl<'a> CodeGenerator<'a> {
                         // pointer can be decremented; loading and decrementing an
                         // inline non-pointer would dereference a non-pointer.
                         // References and functions borrow their target and are
-                        // managed elsewhere.
-                        if !llvm_type.is_pointer_type()
-                            || !self.type_needs_rc_tracking(ty)
-                            || matches!(ty, Type::Reference(_) | Type::Function { .. })
-                        {
+                        // managed elsewhere. Driven by the slot, so a scalar
+                        // global kept boxed because its address is taken is
+                        // still released.
+                        if !self.slot_owns_boxed_contents(*llvm_type, ty) {
                             return None;
                         }
                         Some((label, super::RcSlot::Boxed(*alloca)))

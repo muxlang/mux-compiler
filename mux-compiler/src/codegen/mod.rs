@@ -96,6 +96,10 @@ pub struct CodeGenerator<'a> {
     string_counter: usize,
     label_counter: usize,
     variables: ScopedVars<(PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
+    /// Names whose address is taken somewhere in the program. Their slots stay
+    /// boxed even when the type is a scalar, because a reference has to mean
+    /// one thing and a reference to a list element is a `*mut Value`.
+    address_taken: std::collections::HashSet<String>,
     /// Globals visible to the code currently being generated, keyed by their
     /// bare source name. Swapped per module (see `module_globals`) so every
     /// lookup site can keep using the unqualified name.
@@ -367,8 +371,16 @@ impl<'a> CodeGenerator<'a> {
 
     fn llvm_global_type_for_resolved_type(
         &mut self,
+        name: &str,
         resolved_type: &ResolvedType,
     ) -> Result<BasicTypeEnum<'a>, String> {
+        // A global holds what a local of the same type holds. Module init seeds
+        // the variable table from these slots, so a scalar global that stayed a
+        // `*mut Value` would be written with a raw scalar by the initializing
+        // assignment and then read back as a pointer.
+        if let Some(scalar) = self.scalar_slot_for_binding(name, resolved_type) {
+            return Ok(scalar);
+        }
         match resolved_type {
             Type::Primitive(_) => Ok(self.context.ptr_type(AddressSpace::default()).into()),
             _ => {
@@ -388,7 +400,7 @@ impl<'a> CodeGenerator<'a> {
             .resolve_type(type_node)
             .map_err(|e| e.to_string())?;
         self.instantiate_generic_types_in_type(&resolved_type)?;
-        let llvm_type = self.llvm_global_type_for_resolved_type(&resolved_type)?;
+        let llvm_type = self.llvm_global_type_for_resolved_type(name, &resolved_type)?;
         self.declare_global_variable(name, llvm_type, resolved_type);
         Ok(())
     }
@@ -402,7 +414,7 @@ impl<'a> CodeGenerator<'a> {
             .resolve_expression_type_with_fallback(expr)
             .map_err(|e| format!("Failed to get type for {}: {}", name, e))?;
         self.instantiate_generic_types_in_type(&resolved_type)?;
-        let llvm_type = self.llvm_global_type_for_resolved_type(&resolved_type)?;
+        let llvm_type = self.llvm_global_type_for_resolved_type(name, &resolved_type)?;
         self.declare_global_variable(name, llvm_type, resolved_type);
         Ok(())
     }
@@ -757,6 +769,7 @@ impl<'a> CodeGenerator<'a> {
             string_counter: 0,
             label_counter: 0,
             variables: ScopedVars::new(),
+            address_taken: std::collections::HashSet::new(),
             global_variables: HashMap::new(),
             module_globals: HashMap::new(),
             current_module_prefix: None,
@@ -872,6 +885,11 @@ impl<'a> CodeGenerator<'a> {
         }
         all_nodes.extend(nodes.to_vec());
         let nodes = &all_nodes;
+
+        // Decided before any slot is allocated: a variable whose address is
+        // taken keeps a boxed slot, because `&x` has to mean what `&list[0]`
+        // means and a list element is a `*mut Value`.
+        self.address_taken = address_taken::collect(nodes);
 
         self.generate_user_defined_types(nodes)?;
         self.generate_all_enum_object_support(nodes)?;
@@ -1015,6 +1033,7 @@ impl<'a> CodeGenerator<'a> {
 }
 
 // Re-export all submodules
+mod address_taken;
 mod classes;
 mod constructors;
 mod expressions;

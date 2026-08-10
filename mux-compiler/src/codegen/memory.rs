@@ -2174,15 +2174,49 @@ impl<'a> CodeGenerator<'a> {
     /// already exists before the old reference is dropped. The old value is only
     /// released for value-type slots that uniquely own their contents; reference
     /// and function slots hold a borrowed handle and must not be decremented.
-    pub(super) fn overwrite_slot_with_owned(
+    /// Overwrite a slot under value semantics, driven by the slot's own
+    /// storage rather than by the value's type.
+    ///
+    /// The two can disagree, and did: a closure capture cell always holds a
+    /// `*mut Value` so the runtime can release it, and a variable whose address
+    /// is taken keeps a boxed slot so `&x` means what `&list[0]` means - in both
+    /// cases the type says scalar while the storage is a pointer. Writing a raw
+    /// scalar into those cells because the type said `int` is how `count++`
+    /// inside a lambda came to store an integer where a pointer was expected.
+    ///
+    pub(super) fn overwrite_slot_of_type(
         &mut self,
         slot: PointerValue<'a>,
+        slot_type: BasicTypeEnum<'a>,
         value: BasicValueEnum<'a>,
         resolved_type: &Type,
     ) -> Result<(), String> {
+        // A scalar slot holds the value itself: nothing to release, nothing to
+        // box. Reaching the boxed path below would allocate a `Value` per
+        // assignment and then decrement the slot's raw contents as if it were a
+        // pointer.
+        if let Some(scalar) = self
+            .scalar_slot_type(resolved_type)
+            .filter(|_| !slot_type.is_pointer_type())
+        {
+            let narrowed = self.coerce_to_scalar(value, scalar)?;
+            // Read out of the box first, then give its reference back. A caller
+            // may hand over an owned box - a list element copy, a call result -
+            // expecting the slot to take ownership of it, which is what boxing
+            // into the slot used to do. A scalar slot holds the value itself and
+            // cannot keep the box, so the transfer ends here instead. Only a
+            // tracked temporary is released; a borrowed load owns nothing.
+            if value.is_pointer_value() && self.untrack_temp(value) {
+                self.emit_value_decref(value.into_pointer_value())?;
+            }
+            self.builder
+                .build_store(slot, narrowed)
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+
         let owned = self.box_value_owned_for_slot(value, resolved_type)?;
-        let owns_contents = self.type_needs_rc_tracking(resolved_type)
-            && !matches!(resolved_type, Type::Reference(_) | Type::Function { .. });
+        let owns_contents = self.slot_owns_boxed_contents(slot_type, resolved_type);
         if owns_contents {
             let ptr_type = self.context.ptr_type(AddressSpace::default());
             let rc_dec = self
@@ -2227,10 +2261,32 @@ impl<'a> CodeGenerator<'a> {
 
     /// Check if a type requires RC tracking.
     /// Currently all boxed values (primitives, strings, objects) use RC.
+    /// Whether a slot of this storage holding a value of this type owns the box
+    /// inside it, and so must release the previous occupant when overwritten
+    /// and its final occupant at scope end.
+    ///
+    /// Storage rather than type, because the two disagree wherever a scalar is
+    /// kept boxed: a closure capture cell, and a variable whose address is
+    /// taken. A scalar in its own slot owns nothing; the same scalar in a
+    /// pointer slot owns a box. Reference and function slots hold a borrowed
+    /// handle and own nothing either way.
+    pub(super) fn slot_owns_boxed_contents(
+        &self,
+        slot_type: BasicTypeEnum<'a>,
+        resolved_type: &Type,
+    ) -> bool {
+        slot_type.is_pointer_type()
+            && (self.type_needs_rc_tracking(resolved_type)
+                || self.scalar_slot_type(resolved_type).is_some())
+            && !matches!(resolved_type, Type::Reference(_) | Type::Function { .. })
+    }
+
     pub(super) fn type_needs_rc_tracking(&self, ty: &Type) -> bool {
         match ty {
-            // Primitives are boxed, so they need RC tracking
-            Type::Primitive(_) => true,
+            // A scalar lives in its slot, so there is no reference to count.
+            // `string` is the exception among the primitives: it is a
+            // reference-counted heap value, so its slot holds a pointer.
+            Type::Primitive(_) => self.scalar_slot_type(ty).is_none(),
             // Named types (classes) are RC-allocated
             Type::Named(_, _) => true,
             // Generic types that resolve to RC types

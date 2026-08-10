@@ -99,6 +99,43 @@ impl<'a> CodeGenerator<'a> {
         self.type_kind_to_llvm_type(&type_node.kind)
     }
 
+    /// The LLVM type a value of `ty` is stored in directly, or `None` when it
+    /// lives behind a `*mut Value`.
+    ///
+    /// A scalar slot holds the value itself, so it is not reference counted,
+    /// needs no box on the way in and no unbox on the way out. `string` is
+    /// absent on purpose: it is a primitive to the language but a
+    /// reference-counted heap value at runtime, so its slot holds a pointer.
+    /// This is the same rule `scalar_field_type` applies to a class field.
+    /// `scalar_slot_type` for a named binding, which additionally stays boxed
+    /// when its address is taken anywhere in the program.
+    ///
+    /// A reference has to mean one thing, and a reference to a list element is
+    /// the element's `*mut Value`, so a referenced variable has to be boxed too.
+    /// Deciding it here, before the slot exists, is what keeps `&x` from having
+    /// to convert a live variable mid-body (see `codegen::address_taken`).
+    pub(super) fn scalar_slot_for_binding(
+        &self,
+        name: &str,
+        ty: &Type,
+    ) -> Option<BasicTypeEnum<'a>> {
+        if self.address_taken.contains(name) {
+            return None;
+        }
+        self.scalar_slot_type(ty)
+    }
+
+    pub(super) fn scalar_slot_type(&self, ty: &Type) -> Option<BasicTypeEnum<'a>> {
+        match ty {
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
+                Some(self.context.i64_type().into())
+            }
+            Type::Primitive(PrimitiveType::Float) => Some(self.context.f64_type().into()),
+            Type::Primitive(PrimitiveType::Bool) => Some(self.context.bool_type().into()),
+            _ => None,
+        }
+    }
+
     pub(super) fn semantic_type_to_llvm(
         &self,
         sem_type: &Type,

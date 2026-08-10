@@ -707,6 +707,10 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?
                 .into_pointer_value();
 
+            // A capture cell always holds a `*mut Value` (see
+            // `create_closure_with_captures`, which boxes a scalar on the way
+            // in), so the binding names a pointer slot whatever the variable's
+            // type is.
             self.variables.insert(
                 name.clone(),
                 (
@@ -822,20 +826,49 @@ impl<'a> CodeGenerator<'a> {
                 .ok_or("malloc didn't return a value")?
                 .into_pointer_value();
 
+            // Read through the slot's own type: a scalar holds the value
+            // itself, and loading that as a pointer misreads the integer.
             let current_value = self
                 .builder
-                .build_load(ptr_type, var_ptr, &format!("cap_{}_val", name))
+                .build_load(llvm_type, var_ptr, &format!("cap_{}_val", name))
                 .map_err(|e| e.to_string())?;
-            // The closure keeps its own reference to the captured value: a
-            // returned closure outlives the function whose scope cleanup would
-            // otherwise free the captured binding, leaving a dangling capture.
-            self.rc_inc_if_pointer(current_value)?;
+            // Every capture cell holds a `*mut Value`, because the runtime
+            // releases each of them as one when the closure dies. So a scalar
+            // is boxed on the way in, and the variable is rebound to the cell -
+            // the enclosing code and the closure go on sharing one location, as
+            // they must for `count++` inside a lambda to be visible outside it.
+            let stored_value = if llvm_type.is_pointer_type() {
+                // The closure keeps its own reference to the captured value: a
+                // returned closure outlives the function whose scope cleanup
+                // would otherwise free the captured binding, leaving a dangling
+                // capture.
+                self.rc_inc_if_pointer(current_value)?;
+                current_value
+            } else {
+                let boxed = self.box_value(current_value);
+                // That fresh box IS the closure's reference, so it must not
+                // also be released as a statement temporary.
+                self.untrack_temp(boxed.into());
+                boxed.into()
+            };
             self.builder
-                .build_store(heap_storage, current_value)
+                .build_store(heap_storage, stored_value)
                 .map_err(|e| e.to_string())?;
 
-            self.variables
-                .insert(name.clone(), (heap_storage, llvm_type, var_type.clone()));
+            // Bound in the current scope. A capture made inside a block does
+            // not survive it: the cell is malloc'd where the closure is built,
+            // so a binding that outlived the block would reference storage
+            // created in a branch that may not have run. Sharing a captured
+            // scalar past its block needs the variable heap-allocated at its
+            // declaration instead - see issue #384.
+            self.variables.insert(
+                name.clone(),
+                (
+                    heap_storage,
+                    BasicTypeEnum::PointerType(ptr_type),
+                    var_type.clone(),
+                ),
+            );
 
             let field_ptr = self
                 .builder
@@ -1189,6 +1222,11 @@ impl<'a> CodeGenerator<'a> {
         expr: &ExpressionNode,
     ) -> Result<BasicValueEnum<'a>, String> {
         if let ExpressionKind::Identifier(name) = &expr.kind {
+            // The slot is already boxed: `address_taken` saw this `&` before any
+            // slot was allocated, so a scalar whose address is taken was never
+            // given a raw one. Converting it here instead would have to emit an
+            // alloca wherever control happens to be, re-run on every pass
+            // through a loop, and rebind a global into the function-local table.
             if let Some((ptr, _, _)) = self
                 .variables
                 .get(name)
@@ -1234,6 +1272,10 @@ impl<'a> CodeGenerator<'a> {
         expr: &ExpressionNode,
     ) -> Result<BasicValueEnum<'a>, String> {
         let ref_val = self.generate_expression(expr)?;
+        // Every reference points at a slot holding a `*mut Value`, whatever the
+        // referent's type: a reference to a list element points at the element's
+        // box, and `generate_ref_unary_expression` promotes a scalar variable to
+        // a boxed slot for exactly that reason.
         let boxed_ptr = self
             .builder
             .build_load(
@@ -1283,40 +1325,24 @@ impl<'a> CodeGenerator<'a> {
             ));
         };
 
-        let ptr = if allow_global {
+        let (ptr, slot_type) = if allow_global {
             self.variables
                 .get(name)
                 .or_else(|| self.global_variables.get(name))
-                .map(|(p, _, _)| *p)
+                .map(|(p, t, _)| (*p, *t))
         } else {
-            self.variables.get(name).map(|(p, _, _)| *p)
+            self.variables.get(name).map(|(p, t, _)| (*p, *t))
         }
         .ok_or_else(|| format!("Undefined variable {}", name))?;
 
-        let value_ptr = self
+        // Read through the slot's own type. An `int` slot holds the value
+        // itself, so loading it as a `*mut Value` and asking the runtime to
+        // unbox it dereferenced the integer as a pointer.
+        let loaded = self
             .builder
-            .build_load(
-                self.context.ptr_type(AddressSpace::default()),
-                ptr,
-                &format!("{}_load", name),
-            )
-            .map_err(|e| e.to_string())?
-            .into_pointer_value();
-        let get_int_func = self
-            .runtime_function("mux_value_get_int")
-            .ok_or("mux_value_get_int not found")?;
-        let current_val = self
-            .builder
-            .build_call(
-                get_int_func,
-                &[value_ptr.into()],
-                &format!("{}_get_int", name),
-            )
-            .map_err(|e| e.to_string())?
-            .try_as_basic_value()
-            .basic()
-            .expect("mux_value_get_int should return a basic value")
-            .into_int_value();
+            .build_load(slot_type, ptr, &format!("{}_load", name))
+            .map_err(|e| e.to_string())?;
+        let current_val = self.get_raw_int_value(loaded)?;
 
         let one = self.context.i64_type().const_int(1, false);
         let new_val = if increment {
@@ -1328,10 +1354,11 @@ impl<'a> CodeGenerator<'a> {
                 .build_int_sub(current_val, one, "decr_result")
                 .map_err(|e| e.to_string())?
         };
-        // The incremented value is freshly boxed; releasing the previous boxed
-        // integer avoids leaking it on every `++`/`--`.
+        // Written back through the slot's own type: a scalar slot takes the raw
+        // value, while a capture cell holds a box whose previous occupant is
+        // released so `++` in a lambda does not leak one per call.
         let int_type = Type::Primitive(PrimitiveType::Int);
-        self.overwrite_slot_with_owned(ptr, new_val.into(), &int_type)?;
+        self.overwrite_slot_of_type(ptr, slot_type, new_val.into(), &int_type)?;
         Ok(new_val.into())
     }
 
@@ -2206,7 +2233,7 @@ impl<'a> CodeGenerator<'a> {
             return Ok(result);
         }
 
-        let Some((ptr, _, type_node)) = self
+        let Some((ptr, slot_type, type_node)) = self
             .variables
             .get(name)
             .or_else(|| self.global_variables.get(name))
@@ -2214,6 +2241,7 @@ impl<'a> CodeGenerator<'a> {
             return Err(format!("Undefined variable {}", name));
         };
         let ptr_copy = *ptr;
+        let slot_type_copy = *slot_type;
         let type_node_copy = type_node.clone();
 
         let is_enum = if let Type::Named(type_name, _) = &type_node_copy {
@@ -2235,8 +2263,10 @@ impl<'a> CodeGenerator<'a> {
             self.store_struct_value(ptr_copy, right_val, &type_node_copy, rhs_owned, true)?;
         } else {
             // Value-semantic overwrite: copy a borrowed value type so `x = y`
-            // does not alias, release the previous occupant, then store.
-            self.overwrite_slot_with_owned(ptr_copy, right_val, &type_node_copy)?;
+            // does not alias, release the previous occupant, then store. Driven
+            // by the slot's own type, because a captured scalar's slot is a
+            // pointer cell while its type is a scalar.
+            self.overwrite_slot_of_type(ptr_copy, slot_type_copy, right_val, &type_node_copy)?;
         }
         Ok(right_val)
     }
@@ -2411,7 +2441,10 @@ impl<'a> CodeGenerator<'a> {
             _ => None,
         };
         if let Some(t) = target_type {
-            self.overwrite_slot_with_owned(ptr, right_val, &t)?;
+            // A referent slot always holds a `*mut Value`, so the write goes
+            // through the boxed path even when the referent is a scalar.
+            let ptr_slot = self.context.ptr_type(AddressSpace::default()).into();
+            self.overwrite_slot_of_type(ptr, ptr_slot, right_val, &t)?;
         } else {
             let boxed = self.box_value(right_val);
             self.store_boxed_into_slot(ptr, boxed)?;
@@ -2732,7 +2765,7 @@ impl<'a> CodeGenerator<'a> {
 
         match &left.kind {
             ExpressionKind::Identifier(name) => {
-                let Some((ptr, _, ty)) = self
+                let Some((ptr, slot_type, ty)) = self
                     .variables
                     .get(name)
                     .or_else(|| self.global_variables.get(name))
@@ -2740,10 +2773,12 @@ impl<'a> CodeGenerator<'a> {
                     return Err(format!("Undefined variable {}", name));
                 };
                 let ptr_copy = *ptr;
+                let slot_type_copy = *slot_type;
                 let ty_copy = ty.clone();
-                // `result` is a freshly computed scalar; release the previous
-                // boxed value rather than leaking it.
-                self.overwrite_slot_with_owned(ptr_copy, result, &ty_copy)?;
+                // Written back through the slot's own type: a scalar slot takes
+                // the raw result, a boxed slot releases its previous occupant
+                // rather than leaking it.
+                self.overwrite_slot_of_type(ptr_copy, slot_type_copy, result, &ty_copy)?;
                 Ok(result)
             }
             ExpressionKind::Unary {
@@ -2758,7 +2793,10 @@ impl<'a> CodeGenerator<'a> {
                     _ => None,
                 };
                 if let Some(t) = target_type {
-                    self.overwrite_slot_with_owned(ptr, result, &t)?;
+                    // A referent slot always holds a `*mut Value`, so the write
+                    // goes through the boxed path even for a scalar referent.
+                    let ptr_slot = self.context.ptr_type(AddressSpace::default()).into();
+                    self.overwrite_slot_of_type(ptr, ptr_slot, result, &t)?;
                 } else {
                     // The referenced type could not be resolved, so the slot
                     // takes the value as-is. `store_boxed_into_slot` untracks it,
