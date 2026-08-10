@@ -781,6 +781,53 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    /// Copy a captured variable that is not itself a cell into a fresh cell the
+    /// closure owns a reference to.
+    ///
+    /// Used for a global, a parameter or a loop variable: their storage is an
+    /// ordinary slot, not a cell, so the closure cannot share it. The caller
+    /// rebinds the variable to the returned cell, which shares the value for as
+    /// long as that binding lasts.
+    fn copy_into_capture_cell(
+        &mut self,
+        name: &str,
+        var_ptr: PointerValue<'a>,
+        llvm_type: BasicTypeEnum<'a>,
+    ) -> Result<PointerValue<'a>, String> {
+        // Read through the slot's own type: a scalar holds the value itself, and
+        // loading that as a pointer misreads the integer.
+        let current_value = self
+            .builder
+            .build_load(llvm_type, var_ptr, &format!("cap_{}_val", name))
+            .map_err(|e| e.to_string())?;
+        // A cell holds a `*mut Value`, so a scalar is boxed on the way in.
+        let stored_value = if llvm_type.is_pointer_type() {
+            // The closure keeps its own reference to the captured value: a
+            // returned closure outlives the function whose scope cleanup would
+            // otherwise free the captured binding, leaving a dangling capture.
+            self.rc_inc_if_pointer(current_value)?;
+            current_value
+        } else {
+            let boxed = self.box_value(current_value);
+            // That fresh box IS the cell's reference, so it must not also be
+            // released as a statement temporary.
+            self.untrack_temp(boxed.into());
+            boxed.into()
+        };
+        let alloc = self
+            .runtime_function("mux_cell_alloc")
+            .ok_or("mux_cell_alloc not found")?;
+        let cell = self
+            .builder
+            .build_call(alloc, &[stored_value.into()], &format!("cap_{}_cell", name))
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_cell_alloc should return a pointer")?
+            .into_pointer_value();
+        Ok(cell)
+    }
+
     fn create_closure_with_captures(
         &mut self,
         function: inkwell::values::FunctionValue<'a>,
@@ -804,7 +851,7 @@ impl<'a> CodeGenerator<'a> {
             .ok_or("malloc didn't return a value")?
             .into_pointer_value();
 
-        for (i, (name, var_type)) in captures.iter().enumerate() {
+        for (i, (name, _var_type)) in captures.iter().enumerate() {
             let (var_ptr, llvm_type, _) = self
                 .variables
                 .get(name)
@@ -812,63 +859,28 @@ impl<'a> CodeGenerator<'a> {
                 .ok_or_else(|| format!("Captured variable '{}' not found", name))?
                 .clone();
 
-            let ptr_size = self
-                .context
-                .ptr_type(AddressSpace::default())
-                .size_of()
-                .into();
-            let heap_storage = self
-                .builder
-                .build_call(malloc_fn, &[ptr_size], &format!("cap_{}_heap", name))
-                .map_err(|e| e.to_string())?
-                .try_as_basic_value()
-                .basic()
-                .ok_or("malloc didn't return a value")?
-                .into_pointer_value();
-
-            // Read through the slot's own type: a scalar holds the value
-            // itself, and loading that as a pointer misreads the integer.
-            let current_value = self
-                .builder
-                .build_load(llvm_type, var_ptr, &format!("cap_{}_val", name))
-                .map_err(|e| e.to_string())?;
-            // Every capture cell holds a `*mut Value`, because the runtime
-            // releases each of them as one when the closure dies. So a scalar
-            // is boxed on the way in, and the variable is rebound to the cell -
-            // the enclosing code and the closure go on sharing one location, as
-            // they must for `count++` inside a lambda to be visible outside it.
-            let stored_value = if llvm_type.is_pointer_type() {
-                // The closure keeps its own reference to the captured value: a
-                // returned closure outlives the function whose scope cleanup
-                // would otherwise free the captured binding, leaving a dangling
-                // capture.
-                self.rc_inc_if_pointer(current_value)?;
-                current_value
+            // A captured local's storage IS a cell (see
+            // `create_entry_block_cell`), so the closure shares it rather than
+            // copying into one of its own. Copying is what made a capture stop
+            // being shared once the block that built the closure ended: the cell
+            // lived where the closure was built, not where the variable was
+            // declared (issue #384).
+            //
+            // A captured parameter, loop variable and global are cells too.
+            // Anything else reaching here has an ordinary slot, so it is copied
+            // into a cell the closure owns, which shares for as long as the
+            // rebinding lasts.
+            let heap_storage = if self.cell_slots.contains(&var_ptr) {
+                let retain = self
+                    .runtime_function("mux_cell_retain")
+                    .ok_or("mux_cell_retain not found")?;
+                self.builder
+                    .build_call(retain, &[var_ptr.into()], &format!("cap_{}_retain", name))
+                    .map_err(|e| e.to_string())?;
+                var_ptr
             } else {
-                let boxed = self.box_value(current_value);
-                // That fresh box IS the closure's reference, so it must not
-                // also be released as a statement temporary.
-                self.untrack_temp(boxed.into());
-                boxed.into()
+                self.copy_into_capture_cell(name, var_ptr, llvm_type)?
             };
-            self.builder
-                .build_store(heap_storage, stored_value)
-                .map_err(|e| e.to_string())?;
-
-            // Bound in the current scope. A capture made inside a block does
-            // not survive it: the cell is malloc'd where the closure is built,
-            // so a binding that outlived the block would reference storage
-            // created in a branch that may not have run. Sharing a captured
-            // scalar past its block needs the variable heap-allocated at its
-            // declaration instead - see issue #384.
-            self.variables.insert(
-                name.clone(),
-                (
-                    heap_storage,
-                    BasicTypeEnum::PointerType(ptr_type),
-                    var_type.clone(),
-                ),
-            );
 
             let field_ptr = self
                 .builder

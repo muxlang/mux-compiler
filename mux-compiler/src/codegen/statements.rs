@@ -78,20 +78,28 @@ impl<'a> CodeGenerator<'a> {
             // route it through overwrite_slot_with_owned so each pass releases the
             // previous iteration's value. The first pass sees the null init and
             // the release is a no-op.
-            // A scalar lives in a slot of its own width; everything else in a
-            // `*mut Value` slot.
-            let slot_type = self
-                .scalar_slot_for_binding(name, resolved_type)
-                .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
-            let alloca = self.create_entry_block_alloca(*func, slot_type, name)?;
+            // A captured variable's storage is a shared cell; a scalar lives in
+            // a slot of its own width; everything else in a `*mut Value` slot.
+            let ptr_slot = self.context.ptr_type(AddressSpace::default()).into();
+            let (slot, slot_type) = if self.captured_names.contains(name) {
+                let cell = self.create_entry_block_cell(*func, name)?;
+                self.track_cell_variable(name, cell);
+                (cell, ptr_slot)
+            } else {
+                let slot_type = self
+                    .scalar_slot_for_binding(name, resolved_type)
+                    .unwrap_or(ptr_slot);
+                let alloca = self.create_entry_block_alloca(*func, slot_type, name)?;
+                // Tracked when the slot owns a box - which a scalar's slot does
+                // when its address is taken, since that keeps it boxed.
+                if self.slot_owns_boxed_contents(slot_type, resolved_type) {
+                    self.track_rc_variable(name, alloca);
+                }
+                (alloca, slot_type)
+            };
             self.variables
-                .insert(name.to_string(), (alloca, slot_type, resolved_type.clone()));
-            // Tracked when the slot owns a box - which a scalar's slot does
-            // when its address is taken, since that keeps it boxed.
-            if self.slot_owns_boxed_contents(slot_type, resolved_type) {
-                self.track_rc_variable(name, alloca);
-            }
-            self.overwrite_slot_of_type(alloca, slot_type, value, resolved_type)?;
+                .insert(name.to_string(), (slot, slot_type, resolved_type.clone()));
+            self.overwrite_slot_of_type(slot, slot_type, value, resolved_type)?;
         } else {
             // No function context: the fallback alloca is not null-initialized,
             // so we cannot release a previous occupant; just store the owned box.
@@ -249,9 +257,19 @@ impl<'a> CodeGenerator<'a> {
         var: &str,
         resolved_var_type: &ResolvedType,
     ) -> Result<(inkwell::values::PointerValue<'a>, BasicTypeEnum<'a>), String> {
+        let ptr_slot = self.context.ptr_type(AddressSpace::default()).into();
+        // A captured loop variable gets the shared cell too, so a closure built
+        // in the body writes to the variable the body reads.
+        if self.captured_names.contains(var) {
+            let cell = self.create_entry_block_cell(*function, var)?;
+            self.track_cell_variable(var, cell);
+            self.variables
+                .insert(var.to_string(), (cell, ptr_slot, resolved_var_type.clone()));
+            return Ok((cell, ptr_slot));
+        }
         let slot_type = self
             .scalar_slot_for_binding(var, resolved_var_type)
-            .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).into());
+            .unwrap_or(ptr_slot);
         let var_alloca = self.create_entry_block_alloca(*function, slot_type, var)?;
         self.variables.insert(
             var.to_string(),

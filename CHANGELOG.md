@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-10
+
+### Fixed
+- **A closure and the code around it share the variable it captures.** A capture
+  cell was owned outright by one closure, so a captured variable had to be
+  copied into a fresh cell and the variable rebound to it. That copy is what
+  limited the sharing, and it was broken for every binding form: a closure
+  created inside a block stopped sharing once the block ended (#384), while a
+  captured parameter, loop variable or global never shared at all - the write
+  went to the copy and the original kept its old value.
+
+  A cell is reference counted now and IS the captured variable's storage, so
+  the variable and every closure capturing it name one location. A local,
+  parameter or loop variable gets its cell where it is bound, and a captured
+  global is emitted as a statically allocated cell whose count starts at one for
+  the global's own permanent reference. Two closures over one variable now agree,
+  which a per-closure cell could not express.
+
+  Coupled with mux-runtime, which grew `mux_cell_alloc` / `mux_cell_retain` /
+  `mux_cell_release`; `mux_closure_release` drops a reference rather than freeing
+  the cell. Closes #384.
+
 ## [0.8.0] - 2026-08-10
 
 The unboxing release. A scalar local now holds its value rather than a pointer

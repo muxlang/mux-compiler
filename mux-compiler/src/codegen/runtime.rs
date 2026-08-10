@@ -166,6 +166,24 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        // A capture cell is the shared storage of a captured variable, so it is
+        // reference counted rather than owned by one closure.
+        module.add_function(
+            "mux_cell_alloc",
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_cell_retain",
+            void_type.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_cell_release",
+            void_type.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+
         let params = &[i8_ptr.into(), i8_ptr.into()];
         let fn_type = i8_ptr.fn_type(params, false);
         module.add_function("mux_string_concat", fn_type, None);

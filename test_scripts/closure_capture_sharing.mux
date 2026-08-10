@@ -1,0 +1,117 @@
+// A closure and the code around it share the variable it captures.
+//
+// A capture cell used to be owned outright by one closure, so the compiler had
+// to copy the variable into a fresh cell and rebind the variable to it. That
+// copy is what limited the sharing: the cell lived where the closure was built,
+// not where the variable was declared, so a closure created inside a block
+// stopped sharing the moment the block ended, and a captured parameter, loop
+// variable or global never shared at all - the write went to the copy while the
+// original kept its old value.
+//
+// A cell is reference counted now (`mux_cell_alloc` in mux-runtime) and IS the
+// captured variable's storage, so the variable and every closure capturing it
+// name one location. This pins each binding form that has to work, since each
+// one was separately broken:
+//
+//   - a local, captured inside a block (the original report, #384)
+//   - a parameter
+//   - a loop variable
+//   - a global
+//   - two closures over one variable, which a per-closure cell cannot express
+//   - a returned closure, which outlives the function that declared the
+//     variable and so must keep the cell alive
+//   - a captured string, so the release path is exercised on a value that is
+//     itself reference counted rather than a scalar
+
+int counter = 0
+
+func bump_global() returns int {
+    counter++
+    return counter
+}
+
+func capture_param(int p) returns void {
+    auto add = func() returns int {
+        p++
+        return p
+    }
+    print("param inner: " + add().to_string())
+    print("param inner: " + add().to_string())
+    print("param after: " + p.to_string())
+    return
+}
+
+func make_adder(int base) returns func(int) returns int {
+    return func(int x) returns int {
+        return x + base
+    }
+}
+
+func main() returns void {
+    // A local captured inside a block: the closure's writes are visible after
+    // the block ends.
+    auto count = 0
+    if true {
+        auto step = func() returns int {
+            count++
+            return count
+        }
+        print("block inner: " + step().to_string())
+        print("block inner: " + step().to_string())
+    }
+    print("block after: " + count.to_string())
+
+    // A parameter.
+    capture_param(0)
+
+    // A loop variable.
+    for int i in [10] {
+        auto tick = func() returns int {
+            i++
+            return i
+        }
+        print("loop inner: " + tick().to_string())
+        print("loop after: " + i.to_string())
+    }
+
+    // A global, mutated through a closure in another function.
+    print("global inner: " + bump_global().to_string())
+    print("global inner: " + bump_global().to_string())
+    print("global after: " + counter.to_string())
+
+    // Two closures over one variable. A cell owned by a single closure cannot
+    // express this: each would have its own copy and the two would disagree.
+    auto shared = 0
+    auto inc = func() returns int {
+        shared++
+        return shared
+    }
+    auto dec = func() returns int {
+        shared--
+        return shared
+    }
+    print("shared inc: " + inc().to_string())
+    print("shared inc: " + inc().to_string())
+    print("shared dec: " + dec().to_string())
+    print("shared after: " + shared.to_string())
+
+    // A returned closure outlives the function whose variable it captured, so
+    // the cell has to stay alive on the closure's reference alone.
+    auto add5 = make_adder(5)
+    auto add10 = make_adder(10)
+    print("add5(3): " + add5(3).to_string())
+    print("add10(3): " + add10(3).to_string())
+
+    // A captured value that is itself reference counted, so releasing the cell
+    // has to release the string rather than treat it as a scalar.
+    auto label = "start"
+    auto relabel = func() returns string {
+        label = label + "!"
+        return label
+    }
+    print("string inner: " + relabel())
+    print("string inner: " + relabel())
+    print("string after: " + label)
+
+    return
+}

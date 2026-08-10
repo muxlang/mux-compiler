@@ -150,6 +150,18 @@ impl<'a> CodeGenerator<'a> {
                         .build_call(rc_dec, &[value.into()], &format!("rc_dec_{}", name))
                         .map_err(|e| e.to_string())?;
                 }
+                RcSlot::Cell(cell) => {
+                    let release = self
+                        .runtime_function("mux_cell_release")
+                        .ok_or("mux_cell_release not found")?;
+                    self.builder
+                        .build_call(
+                            release,
+                            &[(*cell).into()],
+                            &format!("cell_release_{}", name),
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
                 RcSlot::EnumStruct { enum_name, alloca } => {
                     self.emit_enum_drop(enum_name, *alloca)?;
                 }
@@ -2270,6 +2282,14 @@ impl<'a> CodeGenerator<'a> {
     /// taken. A scalar in its own slot owns nothing; the same scalar in a
     /// pointer slot owns a box. Reference and function slots hold a borrowed
     /// handle and own nothing either way.
+    /// Register a captured variable's cell for release at scope end.
+    ///
+    /// The variable holds one reference to its own storage; each closure
+    /// capturing it holds another, so the cell outlives whichever goes first.
+    pub(super) fn track_cell_variable(&mut self, name: &str, cell: PointerValue<'a>) {
+        self.track_slot(name, RcSlot::Cell(cell));
+    }
+
     pub(super) fn slot_owns_boxed_contents(
         &self,
         slot_type: BasicTypeEnum<'a>,
