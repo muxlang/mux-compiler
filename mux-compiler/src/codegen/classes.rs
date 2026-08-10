@@ -71,7 +71,7 @@ impl<'a> CodeGenerator<'a> {
                 // of this one, so its AST is available to stamp from.
                 for variant in variants {
                     for (_, type_node) in variant.data.iter().flatten() {
-                        self.instantiate_generic_enums_in_type_node(type_node)?;
+                        self.instantiate_generic_types_in_type_node(type_node)?;
                     }
                 }
                 self.generate_enum_type(name, variants)?;
@@ -200,7 +200,7 @@ impl<'a> CodeGenerator<'a> {
         // A field may be the first mention of a generic enum instantiation, and
         // class types are built before any body that could construct one.
         for field in fields {
-            self.instantiate_generic_enums_in_type_node(&field.type_)?;
+            self.instantiate_generic_types_in_type_node(&field.type_)?;
         }
 
         let mut field_types = Vec::new();
@@ -322,14 +322,17 @@ impl<'a> CodeGenerator<'a> {
         name: &str,
         method: &str,
     ) -> Option<FunctionValue<'a>> {
+        // A capability is declared by the class, not by one of its layouts, so
+        // `Box$int` has to ask about `Box`.
+        let declared_name = Self::declared_class_name(name);
         let declared = match method {
-            "eq" => self.analyzer.class_declares_equality_method(name),
+            "eq" => self.analyzer.class_declares_equality_method(declared_name),
             "cmp" => self
                 .analyzer
-                .type_implements_named_interface(name, "Comparable"),
+                .type_implements_named_interface(declared_name, "Comparable"),
             _ => self
                 .analyzer
-                .type_implements_named_interface(name, "Hashable"),
+                .type_implements_named_interface(declared_name, "Hashable"),
         };
         if !declared {
             return None;
@@ -344,7 +347,7 @@ impl<'a> CodeGenerator<'a> {
         let is_generic = self
             .analyzer
             .all_symbols()
-            .get(name)
+            .get(declared_name)
             .is_some_and(|symbol| !symbol.type_params.is_empty());
         if is_generic {
             return None;

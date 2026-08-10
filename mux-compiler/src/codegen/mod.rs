@@ -34,6 +34,8 @@ use crate::ast::{
 };
 use crate::semantics::{GenericContext, SemanticAnalyzer, Type, Type as ResolvedType};
 
+use scoped_vars::ScopedVars;
+
 type ClassTypeParamBounds = Vec<(String, Vec<(String, Vec<Type>)>)>;
 type EnumVariantFieldMap = HashMap<String, HashMap<String, Vec<EnumVariantField>>>;
 
@@ -93,7 +95,7 @@ pub struct CodeGenerator<'a> {
     lambda_counter: usize,
     string_counter: usize,
     label_counter: usize,
-    variables: HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
+    variables: ScopedVars<(PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
     /// Globals visible to the code currently being generated, keyed by their
     /// bare source name. Swapped per module (see `module_globals`) so every
     /// lookup site can keep using the unqualified name.
@@ -311,6 +313,16 @@ impl<'a> CodeGenerator<'a> {
                     self.generate_enum_constructors(name, variants)?;
                 }
                 AstNode::Class { name, fields, .. } => {
+                    // A generic class has nothing to build here: it is laid out
+                    // per instantiation, and `ensure_class_instantiated` gives
+                    // each one its own constructor, copy and destructor over its
+                    // own layout. Emitting the unspecialized set as well would
+                    // put a second, type-erased layout of the same class in the
+                    // module, whose copy and destructor read a slot the
+                    // instantiations store a raw scalar in.
+                    if self.class_is_generic(name) {
+                        continue;
+                    }
                     let interfaces = self
                         .analyzer
                         .all_symbols()
@@ -375,7 +387,7 @@ impl<'a> CodeGenerator<'a> {
             .analyzer
             .resolve_type(type_node)
             .map_err(|e| e.to_string())?;
-        self.instantiate_generic_enums_in_type(&resolved_type)?;
+        self.instantiate_generic_types_in_type(&resolved_type)?;
         let llvm_type = self.llvm_global_type_for_resolved_type(&resolved_type)?;
         self.declare_global_variable(name, llvm_type, resolved_type);
         Ok(())
@@ -389,7 +401,7 @@ impl<'a> CodeGenerator<'a> {
         let resolved_type = self
             .resolve_expression_type_with_fallback(expr)
             .map_err(|e| format!("Failed to get type for {}: {}", name, e))?;
-        self.instantiate_generic_enums_in_type(&resolved_type)?;
+        self.instantiate_generic_types_in_type(&resolved_type)?;
         let llvm_type = self.llvm_global_type_for_resolved_type(&resolved_type)?;
         self.declare_global_variable(name, llvm_type, resolved_type);
         Ok(())
@@ -744,7 +756,7 @@ impl<'a> CodeGenerator<'a> {
             lambda_counter: 0,
             string_counter: 0,
             label_counter: 0,
-            variables: HashMap::new(),
+            variables: ScopedVars::new(),
             global_variables: HashMap::new(),
             module_globals: HashMap::new(),
             current_module_prefix: None,
@@ -1012,6 +1024,7 @@ mod memory;
 mod methods;
 mod operators;
 mod runtime;
+mod scoped_vars;
 mod statements;
 mod types;
 mod where_clause;

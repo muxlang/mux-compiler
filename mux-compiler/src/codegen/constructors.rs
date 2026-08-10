@@ -236,6 +236,26 @@ impl<'a> CodeGenerator<'a> {
         self.cleanup_temps_to(temp_mark)
     }
 
+    /// The global holding a class's runtime type name, created once per class.
+    ///
+    /// `build_global_string_ptr` mints a fresh global every call and LLVM
+    /// uniquifies the clashing name, so a class built from three places carried
+    /// three identical `type_name_X` constants. Only the first was ever read:
+    /// registration is guarded by the class's shared `type_id` slot, so the rest
+    /// were dead constants in the module.
+    fn class_type_name_global(&mut self, class_name: &str) -> Result<PointerValue<'a>, String> {
+        let global_name = format!("type_name_{}", class_name);
+        if let Some(existing) = self.module.get_global(&global_name) {
+            return Ok(existing.as_pointer_value());
+        }
+        let global = self
+            .builder
+            .build_global_string_ptr(class_name, &global_name)
+            .map_err(|e| e.to_string())?;
+        global.set_linkage(inkwell::module::Linkage::External);
+        Ok(global.as_pointer_value())
+    }
+
     /// Register the class with the runtime the first time an instance is built,
     /// and return its type id.
     ///
@@ -448,22 +468,14 @@ impl<'a> CodeGenerator<'a> {
         self.builder.position_at_end(entry);
 
         // register the object type if not already registered
-        let type_name = format!("type_name_{}", name);
-        let type_name_global = self
-            .builder
-            .build_global_string_ptr(name, &type_name)
-            .map_err(|e| e.to_string())?;
-        if let Some(global) = self.module.get_global(&type_name) {
-            global.set_linkage(inkwell::module::Linkage::External);
-        }
+        let type_name_global = self.class_type_name_global(name)?;
         let type_size = self
             .type_map
             .get(name)
             .ok_or("Class type not found")?
             .size_of()
             .ok_or("Cannot get type size")?;
-        let type_id_val =
-            self.register_class_type(name, type_name_global.as_pointer_value(), type_size)?;
+        let type_id_val = self.register_class_type(name, type_name_global, type_size)?;
 
         let (obj_value_ptr, struct_ptr) = self.allocate_class_object(type_id_val)?;
 
@@ -829,8 +841,13 @@ impl<'a> CodeGenerator<'a> {
             self.generate_specialized_methods(class_name, type_args)?;
         }
 
+        // Build the instantiation's own layout, not the type-erased one shared
+        // by the declaration: `Box<int>` allocates `{ i64, i64 }` and registers
+        // its own size, copy and destructor with the runtime.
+        let layout_name = self.ensure_class_instantiated(class_name, type_args)?;
+
         // generate constructor with context
-        let result = self.generate_constructor_call(class_name, args);
+        let result = self.generate_constructor_call(&layout_name, args);
 
         // restore the context that was active before this call
         self.context_stack.pop();
@@ -915,17 +932,9 @@ impl<'a> CodeGenerator<'a> {
             .ok_or(format!("Class '{}' not found in type map", class_name))?;
 
         // register the object type if not already registered
-        let type_name = format!("type_name_{}", class_name);
-        let type_name_global = self
-            .builder
-            .build_global_string_ptr(class_name, &type_name)
-            .map_err(|e| e.to_string())?;
-        if let Some(global) = self.module.get_global(&type_name) {
-            global.set_linkage(inkwell::module::Linkage::External);
-        }
+        let type_name_global = self.class_type_name_global(class_name)?;
         let type_size = class_type.size_of().ok_or("Cannot get type size")?;
-        let type_id_val =
-            self.register_class_type(class_name, type_name_global.as_pointer_value(), type_size)?;
+        let type_id_val = self.register_class_type(class_name, type_name_global, type_size)?;
 
         let (obj_value_ptr, struct_ptr) = self.allocate_class_object(type_id_val)?;
 
@@ -967,7 +976,7 @@ impl<'a> CodeGenerator<'a> {
         let interfaces = self
             .analyzer
             .all_symbols()
-            .get(class_name)
+            .get(Self::declared_class_name(class_name))
             .map(|sym| sym.interfaces.clone())
             .unwrap_or_default();
         for interface_name in interfaces.keys() {

@@ -214,20 +214,23 @@ a git dependency pinned by `Cargo.lock`; see the mux-runtime section of
   - A **generic enum** is fully monomorphized. `Box<int>` gets its own struct
     holding a real `i64`, its own constructors and its own glue. Verify with
     `mux build --intermediate`: `define { i32, i64 } @"Box$int!Full"(i64)`.
-  - A **generic class** specializes its method bodies (`Box$int.from`) over one
-    shared layout, and one copy/destructor is shared across instantiations. A
-    field of a **type parameter** is a `*mut Value`; a concrete `int`, `float`,
-    `bool` or `char` field is stored inline, so
-    `class Point { int x; float y; string label }` lays out as
-    `{ i64, double, ptr }`. `string` stays a pointer - it is a primitive to the
-    language but a reference-counted value at runtime.
+  - A **generic class** is monomorphized too, since 0.8.0: each fully concrete
+    instantiation gets its own layout, its own copy and destructor, and its own
+    runtime type id, all registered under the mangled name its specialized
+    methods already carry (`Box$int.from` reads the `Box$int` layout). So
+    `class Slot<T> { T item  int count }` lays out as `{ i64, i64 }` at
+    `Slot<int>` and `{ ptr, i64 }` at `Slot<string>`, and a type parameter bound
+    to a user enum is stored inline. `string` stays a pointer - it is a
+    primitive to the language but a reference-counted value at runtime.
 
-  The difference is not arbitrary: an enum is an inline tagged struct with
-  compiler-generated glue and no runtime object registration, so it can be
-  stamped out at compile time alone. A class registers with
-  `mux_register_object_type` and hands the runtime its copy, destructor,
-  equality, ordering and hash, so per-instantiation layouts would be a coupled
-  compiler+runtime change.
+    An instantiation is only stamped out when every type argument is concrete;
+    a declaration still under its own type parameters keeps the bare name and
+    the type-erased layout, which is why `class_layout_name` returns the class
+    name unchanged in that case.
+
+  What is still boxed: collection elements, and `optional` / `result` payloads.
+  Unboxing those means monomorphized containers inside the runtime, which is a
+  coupled compiler+runtime change and a tier beyond this.
 
   **Check the emitted IR before claiming either does something.** The wrong
   version of this line ("all generics monomorphize") nearly caused generic enums
@@ -239,14 +242,24 @@ a git dependency pinned by `Cargo.lock`; see the mux-runtime section of
 - Visibility: `pub(super)` for submodule functions, `fn` for private helpers.
 - Memory management uses reference counting (see `memory.rs`).
 - Expressions vs. statements: expressions return values; statements perform actions.
-- Boxing/unboxing: primitives are boxed into `*mut Value` pointers in most
-  positions - class fields, collection elements, `optional`/`result`. **Enum
-  payloads are the exception**: they are stored inline, so `E.A(7)` puts a real
-  `i64` in the struct. A value crossing between the two representations has to
-  be converted, and forgetting to is how an enum read out of a collection
-  segfaulted when assigned to a class field (issue #363,
+- Boxing/unboxing: primitives are boxed into `*mut Value` pointers in
+  collection elements and `optional`/`result` payloads. **Class fields and enum
+  payloads are not**: both are stored inline, so `E.A(7)` puts a real `i64` in
+  the struct and so does `Slot<int>.item`. A value crossing between the two
+  representations has to be converted, and forgetting to is how an enum read out
+  of a collection segfaulted when assigned to a class field (issue #363,
   `coerce_boxed_enum_to_inline`).
 - Three type representations: AST (`TypeNode`), semantic (`Type`), LLVM (`BasicTypeEnum`).
+- Codegen's variable table (`ScopedVars`) is a stack of block scopes, not a flat
+  map. `get` walks outward; `get_in_current_scope` is what distinguishes a
+  redeclaration that should reuse its slot from a shadowing declaration that
+  needs its own. Every block form opens a scope through `in_block_scope`.
+- The analyzer's scopes are gone by the time codegen runs, so codegen publishes
+  the locals of the function it is emitting into the analyzer's scope chain
+  (`publish_locals_to_analyzer`, called from `get_resolved_expression_type` -
+  the one place codegen asks the analyzer to type an expression). Without it a
+  name resolves through `all_symbols`, a flat program-wide index where the last
+  function to declare a name answers for every other one.
 
 ## When to Ask for Clarification
 - Unclear requirements or specifications.

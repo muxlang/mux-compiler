@@ -18,82 +18,93 @@ use crate::lexer::Span;
 use crate::semantics::{Type, infer_missing_type_params_from_bounds};
 
 impl<'a> CodeGenerator<'a> {
-    /// `instantiate_generic_enums_in_type_node` for a resolved semantic type.
+    /// `instantiate_generic_types_in_type_node` for a resolved semantic type.
     ///
     /// A module-level global is declared from a `Type` rather than a
     /// `TypeNode` - `declare_auto_global` infers one from the initializer - so
     /// the TypeNode walker never sees it, and `auto b = Box<int>.Full(42)` at
     /// module scope resolved its LLVM type before anything stamped out
     /// `Box$int`. Inside a function the same line works.
-    pub(super) fn instantiate_generic_enums_in_type(&mut self, ty: &Type) -> Result<(), String> {
+    pub(super) fn instantiate_generic_types_in_type(&mut self, ty: &Type) -> Result<(), String> {
         match ty {
             Type::Named(name, args) | Type::Instantiated(name, args) => {
                 for arg in args {
-                    self.instantiate_generic_enums_in_type(arg)?;
+                    self.instantiate_generic_types_in_type(arg)?;
                 }
-                if self.enum_asts.contains_key(name) && self.mangled_enum_name(name, args) != *name
-                {
-                    self.ensure_enum_instantiated(name, args)?;
-                }
+                self.instantiate_named_generic(name, args)?;
             }
             Type::List(inner) | Type::Set(inner) | Type::Reference(inner) => {
-                self.instantiate_generic_enums_in_type(inner)?;
+                self.instantiate_generic_types_in_type(inner)?;
             }
-            Type::Optional(inner) => self.instantiate_generic_enums_in_type(inner)?,
+            Type::Optional(inner) => self.instantiate_generic_types_in_type(inner)?,
             Type::Map(k, v) | Type::Tuple(k, v) | Type::Result(k, v) => {
-                self.instantiate_generic_enums_in_type(k)?;
-                self.instantiate_generic_enums_in_type(v)?;
+                self.instantiate_generic_types_in_type(k)?;
+                self.instantiate_generic_types_in_type(v)?;
             }
             Type::Function {
                 params, returns, ..
             } => {
                 for p in params {
-                    self.instantiate_generic_enums_in_type(p)?;
+                    self.instantiate_generic_types_in_type(p)?;
                 }
-                self.instantiate_generic_enums_in_type(returns)?;
+                self.instantiate_generic_types_in_type(returns)?;
             }
             _ => {}
         }
         Ok(())
     }
 
-    /// Stamp out every concrete generic enum a type annotation mentions.
+    /// Stamp out whatever `name<args>` names: a generic enum gets its own
+    /// struct, constructors and glue; a generic class gets its own layout, copy
+    /// and destructor. A name that is neither, or arguments that are not all
+    /// concrete, is left alone.
+    fn instantiate_named_generic(&mut self, name: &str, args: &[Type]) -> Result<(), String> {
+        if self.enum_asts.contains_key(name) {
+            if self.mangled_enum_name(name, args) != *name {
+                self.ensure_enum_instantiated(name, args)?;
+            }
+            return Ok(());
+        }
+        if self.classes.contains_key(name) {
+            self.ensure_class_instantiated(name, args)?;
+        }
+        Ok(())
+    }
+
+    /// Stamp out every concrete generic enum and class a type annotation
+    /// mentions.
     ///
     /// Function signatures are declared before any body runs, so a parameter
     /// typed `Tree<int>` needs its instantiation to exist before the first
-    /// `Tree<int>.Leaf` is ever generated (issue #359).
-    pub(super) fn instantiate_generic_enums_in_type_node(
+    /// `Tree<int>.Leaf` is ever generated (issue #359), and a parameter typed
+    /// `Box<int>` needs its layout before the first `b.item` is read.
+    pub(super) fn instantiate_generic_types_in_type_node(
         &mut self,
         type_node: &TypeNode,
     ) -> Result<(), String> {
         match &type_node.kind {
             TypeKind::Named(name, args) => {
                 for arg in args {
-                    self.instantiate_generic_enums_in_type_node(arg)?;
+                    self.instantiate_generic_types_in_type_node(arg)?;
                 }
-                if self.enum_asts.contains_key(name) {
-                    let arg_types: Vec<Type> =
-                        args.iter().map(|a| self.type_node_to_type(a)).collect();
-                    if self.mangled_enum_name(name, &arg_types) != *name {
-                        self.ensure_enum_instantiated(name, &arg_types)?;
-                    }
-                }
+                let arg_types: Vec<Type> = args.iter().map(|a| self.type_node_to_type(a)).collect();
+                self.instantiate_named_generic(name, &arg_types)?;
             }
             TypeKind::List(inner)
             | TypeKind::Set(inner)
             | TypeKind::Reference(inner)
             | TypeKind::TraitObject(inner) => {
-                self.instantiate_generic_enums_in_type_node(inner)?;
+                self.instantiate_generic_types_in_type_node(inner)?;
             }
             TypeKind::Map(k, v) | TypeKind::Tuple(k, v) => {
-                self.instantiate_generic_enums_in_type_node(k)?;
-                self.instantiate_generic_enums_in_type_node(v)?;
+                self.instantiate_generic_types_in_type_node(k)?;
+                self.instantiate_generic_types_in_type_node(v)?;
             }
             TypeKind::Function { params, returns } => {
                 for param in params {
-                    self.instantiate_generic_enums_in_type_node(param)?;
+                    self.instantiate_generic_types_in_type_node(param)?;
                 }
-                self.instantiate_generic_enums_in_type_node(returns)?;
+                self.instantiate_generic_types_in_type_node(returns)?;
             }
             _ => {}
         }
@@ -303,6 +314,121 @@ impl<'a> CodeGenerator<'a> {
         Ok(key)
     }
 
+    /// The codegen name of a generic class instantiation: `Box` with `[int]`
+    /// becomes `Box$int`, which is the key its layout, copy, destructor and
+    /// runtime type id are registered under. It is also the prefix the
+    /// specialized methods already carry, so `Box$int.get` and the layout it
+    /// reads agree by construction.
+    ///
+    /// A class with no type arguments, or one whose arguments are not all
+    /// concrete, keeps its own name and the shared type-erased layout - the
+    /// declaration `Box<T>` still has to mean `Box`.
+    pub(super) fn class_layout_name(&self, class_name: &str, type_args: &[Type]) -> String {
+        if type_args.is_empty() || !type_args.iter().all(|arg| self.is_concrete_type_arg(arg)) {
+            return class_name.to_string();
+        }
+        self.build_variant_key(class_name, type_args)
+    }
+
+    /// Whether `class_name` declares type parameters, and so is laid out once
+    /// per instantiation rather than once for the class.
+    pub(super) fn class_is_generic(&self, class_name: &str) -> bool {
+        self.analyzer
+            .all_symbols()
+            .get(class_name)
+            .is_some_and(|symbol| !symbol.type_params.is_empty())
+    }
+
+    /// The class a layout name was stamped out from: `Box$int` came from `Box`.
+    ///
+    /// The codegen maps are keyed by the instantiation, but the symbol table,
+    /// class invariants and interface queries only ever knew the declared name,
+    /// so anything reaching for those has to come back through here.
+    pub(super) fn declared_class_name(layout_name: &str) -> &str {
+        layout_name.split('$').next().unwrap_or(layout_name)
+    }
+
+    /// Stamp out a generic class's layout for one set of type arguments, if it
+    /// does not exist yet, and return the instantiation's name.
+    ///
+    /// Method bodies were already monomorphised (`Box$int.get`); this gives the
+    /// instantiation its own struct layout, so a field whose type is a type
+    /// parameter holds the value inline - `Box<int>` lays out as `{ i64, i64 }`
+    /// rather than the `{ ptr, i64 }` every instantiation used to share. It also
+    /// needs its own copy and destructor, because both walk the layout deciding
+    /// which slots are reference-counted, and its own runtime type id, because
+    /// the size now differs per instantiation.
+    ///
+    /// Unlike an enum, this cannot be a pure compile-time expansion: the object
+    /// is registered with `mux_register_object_type` and hands the runtime the
+    /// callbacks above, so an instantiation is a registration of its own.
+    pub(super) fn ensure_class_instantiated(
+        &mut self,
+        class_name: &str,
+        type_args: &[Type],
+    ) -> Result<String, String> {
+        let key = self.class_layout_name(class_name, type_args);
+        if key == class_name || self.classes.contains_key(&key) {
+            return Ok(key);
+        }
+        // A type annotation can name a class before its declaration has been
+        // walked, and an imported name may have no layout here at all. Leaving
+        // the name alone is correct either way: the value is a `*mut Value`
+        // whatever its instantiation, and the construction site stamps the
+        // layout out before anything reads a field.
+        let (Some(fields), Some(class_symbol)) = (
+            self.classes.get(class_name).cloned(),
+            self.lookup_class_symbol(class_name),
+        ) else {
+            return Ok(class_name.to_string());
+        };
+        if class_symbol.type_params.len() != type_args.len() {
+            return Err(format!(
+                "Class {} takes {} type argument(s), got {}",
+                class_name,
+                class_symbol.type_params.len(),
+                type_args.len()
+            ));
+        }
+        let substitution: HashMap<String, Type> = class_symbol
+            .type_params
+            .iter()
+            .map(|(name, _)| name.clone())
+            .zip(type_args.iter().cloned())
+            .collect();
+        let substituted: Vec<crate::ast::Field> = fields
+            .iter()
+            .map(|field| crate::ast::Field {
+                type_: self.substitute_types_in_type_node(&field.type_, &substitution),
+                // The slot holds a concrete type now, so it is an ordinary
+                // field. Leaving the flag set would keep initializing it as a
+                // null box and reading it back through the boxed path.
+                is_generic_param: false,
+                ..field.clone()
+            })
+            .collect();
+
+        // Registered before generating, so a field naming this same
+        // instantiation - `Node<int>` inside `Node<int>` - resolves to it
+        // rather than expanding again forever.
+        self.classes.insert(key.clone(), substituted.clone());
+
+        // Generating the copy and destructor bodies moves the builder into
+        // them, and this runs mid-expression from a construction or method-call
+        // site, so the caller's insertion point has to be put back - the same
+        // reason `ensure_enum_instantiated` saves it.
+        let saved_block = self.builder.get_insert_block();
+        let interfaces = class_symbol.interfaces.clone();
+        let result = self
+            .generate_class_type(&key, &substituted, &interfaces)
+            .and_then(|()| self.generate_class_copy_and_destructor(&key, &substituted));
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+        result?;
+        Ok(key)
+    }
+
     fn build_variant_key(&self, class_name: &str, type_args: &[Type]) -> String {
         let variant_suffix = type_args
             .iter()
@@ -464,6 +590,12 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         // save the current builder position so we can restore it after generating specialized methods
         let saved_insert_block = self.builder.get_insert_block();
+
+        // The bodies about to be emitted read `self` through this
+        // instantiation's layout, so it has to exist first. Idempotent, and
+        // ahead of the already-generated check below because a caller may reach
+        // the layout without ever needing a method body.
+        self.ensure_class_instantiated(class_name, type_args)?;
 
         // check if we need to generate specialized methods for this variant
         let variant_key = self.build_variant_key(class_name, type_args);

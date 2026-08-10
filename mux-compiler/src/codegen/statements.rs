@@ -13,7 +13,7 @@ use inkwell::values::{BasicValueEnum, FunctionValue};
 
 use crate::ast::{
     EnumVariantField, ExpressionKind, ExpressionNode, LiteralNode, PatternNode, PrimitiveType,
-    StatementKind, StatementNode, TypeKind,
+    StatementKind, StatementNode,
 };
 use crate::semantics::{Type, Type as ResolvedType};
 
@@ -33,7 +33,13 @@ impl<'a> CodeGenerator<'a> {
             return Ok(());
         }
 
-        let existing_var = self.variables.get(name).cloned();
+        // Only a binding in THIS scope is the same variable being redeclared -
+        // a loop-local on its second iteration, or a top-level declaration
+        // reusing its pre-declared global slot. A binding of the same name
+        // further out is a different variable that this one shadows, and
+        // writing into its slot would change it from inside a block it does not
+        // belong to.
+        let existing_var = self.variables.get_in_current_scope(name).cloned();
 
         if let Some((existing_ptr, _, _)) = existing_var {
             if value.is_struct_value() {
@@ -167,13 +173,47 @@ impl<'a> CodeGenerator<'a> {
             return Ok(false);
         }
         let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let alloca = match function {
-            Some(func) => self.create_entry_block_alloca(*func, ptr_type.into(), name)?,
-            None => self
-                .builder
-                .build_alloca(ptr_type, name)
-                .map_err(|e| e.to_string())?,
+        // An entry-block slot is zero-initialized and is re-executed by a loop,
+        // so the store below can be overwriting the previous iteration's
+        // closure. A slot allocated at the current position is fresh each time
+        // control reaches it and holds nothing to release.
+        let (alloca, slot_may_hold_previous) = match function {
+            Some(func) => (
+                self.create_entry_block_alloca(*func, ptr_type.into(), name)?,
+                true,
+            ),
+            None => (
+                self.builder
+                    .build_alloca(ptr_type, name)
+                    .map_err(|e| e.to_string())?,
+                false,
+            ),
         };
+        // Decided before the store, because it decides whether this slot owns
+        // what it holds. An owned closure temporary transfers its reference into
+        // the slot; a borrowed one (a parameter, or an alias of another
+        // variable) is stored without tracking and the slot owns nothing.
+        let takes_ownership = self.untrack_closure_temp(value);
+        if takes_ownership && slot_may_hold_previous {
+            // Release what the previous iteration left here, or every iteration
+            // but the last leaks its closure - a loop running n times leaked
+            // n - 1. `overwrite_slot_with_owned` does this for reference-counted
+            // values and deliberately skips a closure, which needs
+            // `mux_closure_release` to walk and release its captures. The slot
+            // is zero-initialized and the release is null-safe, so the first
+            // iteration releases nothing. Only an owning slot is released: a
+            // borrowed alias never held a reference to give back.
+            let release = self
+                .runtime_function("mux_closure_release")
+                .ok_or("mux_closure_release not found")?;
+            let previous = self
+                .builder
+                .build_load(ptr_type, alloca, "old_closure")
+                .map_err(|e| e.to_string())?;
+            self.builder
+                .build_call(release, &[previous.into()], "release_old_closure")
+                .map_err(|e| e.to_string())?;
+        }
         self.builder
             .build_store(alloca, value)
             .map_err(|e| e.to_string())?;
@@ -181,7 +221,7 @@ impl<'a> CodeGenerator<'a> {
             name.to_string(),
             (alloca, ptr_type.into(), resolved_type.clone()),
         );
-        if self.untrack_closure_temp(value) {
+        if takes_ownership {
             self.track_closure_variable(name, alloca);
         }
         Ok(true)
@@ -557,27 +597,46 @@ impl<'a> CodeGenerator<'a> {
         };
 
         let result = match &self_type {
-            Type::Named(class_name, _) => self
-                .classes
-                .get(class_name)
-                .cloned()
-                .ok_or_else(|| format!("Class {} not found", class_name))
-                .and_then(|fields| {
-                    fields
-                        .iter()
-                        .find(|f| f.name == *field)
-                        .ok_or_else(|| format!("Field {} not found in class {}", field, class_name))
-                        .and_then(|f| {
-                            self.analyzer
-                                .resolve_type(&f.type_)
-                                .map_err(|e| format!("Type resolution failed: {}", e))
-                        })
-                }),
+            // Through the receiver's own type arguments: a specialized method of
+            // `Slot<Color>` still declares its field as `T`, and an unsubstituted
+            // `T` is not recognised as an enum, so `match self.item` fell through
+            // to the value-comparison path and silently took the first arm.
+            Type::Named(class_name, class_args) => {
+                self.class_field_type_for_receiver(class_name, class_args, field)
+            }
             _ => self
                 .get_resolved_expression_type(match_expr)
                 .map_err(|e| format!("Type inference failed: {}", e)),
         };
         Some(result)
+    }
+
+    /// Run `body` in its own variable scope, so a name it binds stops being
+    /// visible when the block ends and does not disturb an outer binding of the
+    /// same name.
+    ///
+    /// The table used to be flat for the whole function, which broke two ways.
+    /// A binding made inside a block outlived it, so `auto x = 42` followed by
+    /// `for int x in nums` left `x` naming the loop variable for the rest of the
+    /// function. And because `declare_variable` reuses the slot of a live
+    /// binding of the same name - which is how a loop-local reuses its storage
+    /// each iteration instead of leaking one allocation per pass - a block that
+    /// shadowed an outer name also wrote through to the outer variable's
+    /// storage. A real scope answers both: the redeclaration that should reuse
+    /// its slot is the one already bound in this same scope, and a shadowing
+    /// declaration in an inner scope is a different variable that gets its own.
+    ///
+    /// RC cleanup is unaffected: it tracks allocas through the RC scope stack,
+    /// not this table. The scope is closed on the error path too, so the table
+    /// is never left half-open if error recovery is ever added.
+    fn in_block_scope<R>(
+        &mut self,
+        body: impl FnOnce(&mut Self) -> Result<R, String>,
+    ) -> Result<R, String> {
+        self.variables.push_scope();
+        let result = body(self);
+        self.variables.pop_scope();
+        result
     }
 
     fn generate_match_statement_inner(
@@ -587,22 +646,12 @@ impl<'a> CodeGenerator<'a> {
         arms: &[crate::ast::MatchArm],
     ) -> Result<(), String> {
         // Pattern bindings (e.g. `n` in `n if n % 2 == 0`) and any arm-body
-        // locals are scoped to the match. Snapshot the variable table and restore
-        // it afterwards so those names do not leak into the enclosing scope. Left
-        // in place, a later `auto n` would reuse the arm-local slot - an alloca
-        // created inside a conditional arm block that does not dominate the store,
-        // producing invalid LLVM IR ("instruction does not dominate all uses").
-        // RC cleanup is unaffected: it tracks allocas through the RC scope stack,
-        // not this table.
-        //
-        // Restore on every exit path, including the error paths inside
-        // generate_match_body: codegen errors are terminal today, but leaving the
-        // table half-mutated would be a latent trap if error recovery is ever
-        // added.
-        let saved_variables = self.variables.clone();
-        let result = self.generate_match_body(function, expr, arms);
-        self.variables = saved_variables;
-        result
+        // locals are scoped to the match, like any other block. Left visible
+        // afterwards, a later `auto n` would reuse the arm-local slot - an
+        // alloca created inside a conditional arm block that does not dominate
+        // the store, producing invalid LLVM IR ("instruction does not dominate
+        // all uses").
+        self.in_block_scope(|me| me.generate_match_body(function, expr, arms))
     }
 
     fn generate_match_body(
@@ -659,7 +708,7 @@ impl<'a> CodeGenerator<'a> {
         // site and a function signature. Without this, `Box<int> b = ...`
         // resolved the LLVM type before anything had stamped out `Box$int`,
         // while the same line written with `auto` worked.
-        self.instantiate_generic_enums_in_type_node(type_node)?;
+        self.instantiate_generic_types_in_type_node(type_node)?;
         let var_type = self.llvm_type_from_mux_type(type_node)?;
         let value = self.generate_expression(expr)?;
         let resolved_type = self
@@ -1127,12 +1176,14 @@ impl<'a> CodeGenerator<'a> {
                 then_block,
                 else_block,
             } => {
-                let function = function.ok_or("If statement not in function")?;
-                self.generate_if_statement(function, cond, then_block, else_block)?;
+                let function = *function.ok_or("If statement not in function")?;
+                self.in_block_scope(|me| {
+                    me.generate_if_statement(&function, cond, then_block, else_block)
+                })?;
             }
             StatementKind::While { cond, body } => {
-                let function = function.ok_or("While statement not in function")?;
-                self.generate_while_statement(function, cond, body)?;
+                let function = *function.ok_or("While statement not in function")?;
+                self.in_block_scope(|me| me.generate_while_statement(&function, cond, body))?;
             }
             StatementKind::For {
                 var,
@@ -1140,8 +1191,10 @@ impl<'a> CodeGenerator<'a> {
                 iter,
                 body,
             } => {
-                let function = function.ok_or("For statement not in function")?;
-                self.generate_for_statement_inner(function, var, var_type, iter, body)?;
+                let function = *function.ok_or("For statement not in function")?;
+                self.in_block_scope(|me| {
+                    me.generate_for_statement_inner(&function, var, var_type, iter, body)
+                })?;
             }
             StatementKind::Match { expr, arms } => {
                 let function = function.ok_or("Match not in function")?;
@@ -1276,22 +1329,22 @@ impl<'a> CodeGenerator<'a> {
         };
 
         if obj == "self" {
-            if let Some((_, _, Type::Named(class_name, _))) = self
+            if let Some((_, _, Type::Named(class_name, class_args))) = self
                 .variables
                 .get("self")
                 .or_else(|| self.global_variables.get("self"))
             {
-                return self.resolve_enum_name_from_class_field(class_name, field);
+                return self.resolve_enum_name_from_class_field(class_name, class_args, field);
             }
             return Err("Self not found".to_string());
         }
 
-        if let Some((_, _, Type::Named(class_name, _))) = self
+        if let Some((_, _, Type::Named(class_name, class_args))) = self
             .variables
             .get(obj)
             .or_else(|| self.global_variables.get(obj))
         {
-            return self.resolve_enum_name_from_class_field(class_name, field);
+            return self.resolve_enum_name_from_class_field(class_name, class_args, field);
         }
 
         if self
@@ -1306,11 +1359,58 @@ impl<'a> CodeGenerator<'a> {
         Err(format!("Variable {} not found", obj))
     }
 
+    /// Name the enum a matched class field holds, as seen through the receiver.
     fn resolve_enum_name_from_class_field(
         &self,
         class_name: &str,
+        class_args: &[Type],
         field: &str,
     ) -> Result<String, String> {
+        let field_type = self.class_field_type_for_receiver(class_name, class_args, field)?;
+        // The type arguments are carried into the name, so matching a `Box<int>`
+        // field binds against the `Box$int` instantiation and not the base enum,
+        // whose payload is still the type parameter (issue #359).
+        self.enum_name_from_type(&field_type, "Match field must be enum type")
+    }
+
+    /// A class field's type as an instance of `class_name<class_args>` holds it.
+    ///
+    /// The field type comes from the class declaration, so in a generic class it
+    /// is written in the class's type parameters: `Slot<T>.item` is declared `T`
+    /// whatever the instance is. Left unsubstituted, `T` names neither an enum in
+    /// the type map nor a type recognised as an enum at all, which is how
+    /// matching a type-parameter field both failed outright and, from a
+    /// specialized method's `self`, silently took the first arm. Substituting the
+    /// receiver's arguments recovers the type the instance actually holds, and
+    /// leaves a concrete field type untouched.
+    fn class_field_type_for_receiver(
+        &self,
+        class_name: &str,
+        class_args: &[Type],
+        field: &str,
+    ) -> Result<Type, String> {
+        let field_type = self.class_field_type(class_name, field)?;
+        Ok(match self.build_type_param_map(class_name, class_args) {
+            Ok(type_param_map) => self.substitute_type_with_map(&field_type, &type_param_map),
+            Err(_) => field_type,
+        })
+    }
+
+    /// A class field's declared type, as the semantic analyzer recorded it.
+    ///
+    /// The analyzer's copy keeps a field written in a type parameter as a type
+    /// variable, which is what makes it substitutable; the parsed declaration
+    /// cannot distinguish the type parameter `T` from a class named `T`, so
+    /// reading the field type from there leaves nothing for a receiver's type
+    /// arguments to replace. The parsed declaration stays as the fallback for a
+    /// class the analyzer has no symbol for.
+    fn class_field_type(&self, class_name: &str, field: &str) -> Result<Type, String> {
+        if let Some(class_symbol) = self.lookup_class_symbol(class_name)
+            && let Some((field_type, _)) = class_symbol.fields.get(field)
+        {
+            return Ok(field_type.clone());
+        }
+
         let fields = self
             .classes
             .get(class_name)
@@ -1319,14 +1419,7 @@ impl<'a> CodeGenerator<'a> {
             .iter()
             .find(|f| f.name == field)
             .ok_or_else(|| format!("Field {} not found in class {}", field, class_name))?;
-        if let TypeKind::Named(n, args) = &field_info.type_.kind {
-            // Carry the field's type arguments, so matching a `Box<int>` field
-            // binds against the `Box$int` instantiation and not the base enum,
-            // whose payload is still the type parameter (issue #359).
-            let arg_types: Vec<Type> = args.iter().map(|a| self.type_node_to_type(a)).collect();
-            return Ok(self.mangled_enum_name(n, &arg_types));
-        }
-        Err("Match field must be enum type".to_string())
+        Ok(self.type_node_to_type(&field_info.type_))
     }
 
     fn emit_match_guard_and_body(

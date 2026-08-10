@@ -1,0 +1,25 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+start: 42
+in if: 7
+after if: 42
+in else: 13
+after else: 42
+in while: 100
+in while: 101
+after while: 42
+loop var: 1
+loop var: 2
+loop var: 3
+after for: 42
+string loop var: a
+string loop var: b
+after string for: 42
+nested decl: 10
+nested decl: 20
+nested decl: 30
+after nested decl: 42
+match binding: 3
+after match: 42

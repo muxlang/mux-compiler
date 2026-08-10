@@ -152,38 +152,39 @@ impl<'a> CodeGenerator<'a> {
 
     /// Helper function to resolve the class/struct name from any expression
     /// Uses the semantic analyzer to get the expression type
+    /// The codegen layout an expression's object is laid out with, which for a
+    /// generic class is the instantiation rather than the declaration: a
+    /// `Box<int>` reads its fields out of `Box$int`, whose `item` slot is a real
+    /// `i64`, not the `*mut Value` the erased `Box` shares with every other
+    /// instantiation. A non-generic class is its own layout, so this is the
+    /// class name unchanged.
     fn resolve_expression_class_name(&mut self, expr: &ExpressionNode) -> Option<String> {
-        if let ExpressionKind::Identifier(name) = &expr.kind
+        let object_type = if let ExpressionKind::Identifier(name) = &expr.kind
             && let Some((_, _, var_type)) = self
                 .variables
                 .get(name)
                 .or_else(|| self.global_variables.get(name))
         {
-            return match var_type {
-                Type::Named(type_name, _) => Some(type_name.clone()),
-                Type::Reference(inner) => {
-                    if let Type::Named(type_name, _) = inner.as_ref() {
-                        Some(type_name.clone())
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            };
+            var_type.clone()
+        } else {
+            self.get_resolved_expression_type(expr).ok()?
+        };
+        let named = match &object_type {
+            Type::Named(..) => &object_type,
+            Type::Reference(inner) => inner.as_ref(),
+            _ => return None,
+        };
+        let Type::Named(type_name, type_args) = named else {
+            return None;
+        };
+        // Only a class has a stamped-out layout to name. Every other named type
+        // reaching here - an enum, a built-in like `Csv` - keeps its own name,
+        // which is what the callers that fall through to non-class handling
+        // match on.
+        if !self.classes.contains_key(type_name) {
+            return Some(type_name.clone());
         }
-
-        let expr_type = self.get_resolved_expression_type(expr).ok()?;
-        match expr_type {
-            Type::Named(name, _) => Some(name.clone()),
-            Type::Reference(inner) => {
-                if let Type::Named(name, _) = inner.as_ref() {
-                    Some(name.clone())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        Some(self.class_layout_name(type_name, type_args))
     }
 
     fn generate_csv_field_access(
@@ -3017,6 +3018,35 @@ impl<'a> CodeGenerator<'a> {
         ))
     }
 
+    /// The type arguments a bare `Class.new()` inherits from the instantiation
+    /// it is written inside.
+    ///
+    /// Written outside any instantiation there is nothing to inherit, and no
+    /// layout can be chosen. That is an error rather than a fallback to the
+    /// erased layout, because such an object cannot have a field read or
+    /// written without disagreeing with the layout its readers use.
+    fn class_type_args_from_generic_context(
+        &self,
+        class_name: &str,
+        type_params: &[(String, Vec<String>)],
+    ) -> Result<Vec<Type>, String> {
+        type_params
+            .iter()
+            .map(|(param, _)| {
+                self.generic_context
+                    .as_ref()
+                    .and_then(|context| context.type_params.get(param))
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "Cannot infer type argument '{}' for '{}.new()'. Name it, as in {}<...>.new()",
+                            param, class_name, class_name
+                        )
+                    })
+            })
+            .collect()
+    }
+
     fn generate_class_symbol_method_call(
         &mut self,
         class_name: &str,
@@ -3031,6 +3061,20 @@ impl<'a> CodeGenerator<'a> {
             .symbol_table()
             .lookup(class_name)
             .ok_or_else(|| format!("Class {} not found", class_name))?;
+        // `Slot.new()` written inside the class's own generic method means
+        // `Slot<T>.new()`, with T bound by the specialization it appears in. It
+        // has to build the instantiation: the unspecialized `Slot.new` allocates
+        // the shared type-erased layout and registers the erased copy and
+        // destructor, while every read of the resulting object goes through the
+        // instantiation's layout instead, so the two disagree the moment a field
+        // is touched.
+        if field == "new" && !class_symbol.type_params.is_empty() {
+            let type_args =
+                self.class_type_args_from_generic_context(class_name, &class_symbol.type_params)?;
+            return self
+                .generate_constructor_call_with_types(class_name, &type_args, args)
+                .map(Some);
+        }
         let Some(method) = class_symbol.methods.get(field) else {
             return Err(format!(
                 "Method {} not found on class {}",

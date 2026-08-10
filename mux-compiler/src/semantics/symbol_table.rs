@@ -11,6 +11,11 @@ use std::rc::Rc;
 pub struct SymbolTable {
     scopes: Vec<Rc<RefCell<Scope>>>,
     pub all_symbols: HashMap<String, Symbol>,
+    /// How many scopes code generation has pushed on top of the analysis
+    /// scopes. Only those may be written to or popped by the codegen helpers
+    /// below, so an unbalanced call can never clobber or discard a scope that
+    /// analysis owns.
+    codegen_scope_depth: usize,
 }
 
 #[derive(Debug, Default)]
@@ -31,6 +36,58 @@ impl SymbolTable {
         SymbolTable {
             scopes: vec![root],
             all_symbols: HashMap::new(),
+            codegen_scope_depth: 0,
+        }
+    }
+
+    /// Open a scope for the locals of the function code generation is emitting.
+    ///
+    /// Analysis pops every scope before code generation starts, so a name would
+    /// otherwise resolve through `all_symbols`, a flat program-wide index where
+    /// the last function to declare a name answers for all of them - two
+    /// functions with a same-named parameter of different types each got the
+    /// other's. Code generation knows exactly what is in scope in the function
+    /// it is emitting, so it supplies that here and the analyzer resolves
+    /// against it.
+    ///
+    /// Nested generation (a specialized method emitted mid-body) opens its own
+    /// scope and closes it again, so the inner function shadows the outer one
+    /// for as long as it is being emitted, which is what the scope chain
+    /// already means.
+    pub fn open_codegen_scope(&mut self) {
+        self.scopes.push(Rc::new(RefCell::new(Scope::default())));
+        self.codegen_scope_depth += 1;
+    }
+
+    /// Close the innermost scope opened by `open_codegen_scope`.
+    pub fn close_codegen_scope(&mut self) {
+        if self.codegen_scope_depth == 0 {
+            return;
+        }
+        self.scopes.pop();
+        self.codegen_scope_depth -= 1;
+    }
+
+    /// Replace the contents of the innermost code generation scope.
+    ///
+    /// Inserted raw rather than through `add_symbol`: these names were already
+    /// checked when the function was analyzed, and re-running the duplicate and
+    /// type-collision rules over them would reject rebindings that analysis
+    /// allowed.
+    pub fn set_codegen_locals<I>(&mut self, locals: I)
+    where
+        I: IntoIterator<Item = (String, Symbol)>,
+    {
+        if self.codegen_scope_depth == 0 {
+            return;
+        }
+        let Some(scope) = self.scopes.last() else {
+            return;
+        };
+        let mut scope = scope.borrow_mut();
+        scope.symbols.clear();
+        for (name, symbol) in locals {
+            scope.symbols.insert(name, symbol);
         }
     }
 

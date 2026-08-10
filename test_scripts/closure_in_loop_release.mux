@@ -1,0 +1,43 @@
+// A closure bound in a loop body releases the one the previous iteration left.
+//
+// A closure carries its own refcount and is freed with `mux_closure_release`,
+// which walks and releases its captures. Binding one to a local stores it into
+// an entry-block slot, and a loop re-executes that store every iteration - so
+// without releasing what the slot already held, a loop running n times leaked
+// n - 1 closures. The reference-counted path does this already
+// (`overwrite_slot_with_owned`) and deliberately skips a closure, because
+// `mux_rc_dec` is the wrong release for one; the closure path had no release of
+// its own.
+//
+// Only an owning slot may be released, which is the second thing pinned here.
+// `auto f = g` binds a borrowed alias: the slot never took a reference, so
+// releasing on overwrite would hand back one that was never held and free a
+// closure still in use. The loop below aliases an outer closure and then calls
+// the outer one afterwards, which is what that mistake would break.
+
+func main() returns void {
+    // Owned: a fresh closure each iteration, each capturing its own value.
+    for int i in [1, 2, 3] {
+        auto scale = i * 1000
+        auto owned = func(int a) returns int { return a + scale }
+        print("owned: " + owned(0).to_string())
+    }
+
+    // Borrowed: the same closure aliased each iteration, still callable after.
+    auto shared = func(int a) returns int { return a + 1 }
+    for int i in [1, 2, 3] {
+        auto alias = shared
+        print("alias: " + alias(i).to_string())
+    }
+    print("shared after loop: " + shared(100).to_string())
+
+    // A capture that is itself reference counted, so the release has to walk
+    // into the closure rather than just drop a pointer.
+    for int i in [1, 2] {
+        auto label = "row " + i.to_string()
+        auto describe = func() returns string { return label }
+        print("captured: " + describe())
+    }
+
+    return
+}
