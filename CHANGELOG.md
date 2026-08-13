@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A closure now captures variables referenced inside a `match` arm.**
+  Free-variable collection walked `if`, `while`, `for` and plain blocks but not
+  `match`, so a variable used ONLY inside an arm was never recorded as a
+  capture; the closure's environment struct had no slot for it and codegen
+  failed with "Undefined variable". A variable used both inside and outside an
+  arm worked, which made it look like a match-scoping problem rather than a
+  capture-collection one. Since every fallible call returns a `result` opened
+  with `match`, this hit any closure that calls something fallible and records
+  the outcome - including any thread reporting a value back (#394).
+- **A trailing comma is accepted in a call argument list**, matching collection
+  literals. Wrapping a long argument list is exactly where one gets written
+  (#395).
+- **Naming an interface that was never imported is a diagnostic, not an
+  internal compiler error.** Importing a type does not import the interfaces it
+  implements, so `import std.dsa.graph.Graph` alone left `Collection` unknown
+  and codegen crashed. The message now says which interface is missing and how
+  to import it. Making the import pull the interface in remains open (#391).
+
+### Added
+- **An expression may span lines while `(` or `[` is open**, so a long call,
+  a wrapped operator chain, or a multi-line list literal parses as one
+  expression. Previously a newline ended an expression unconditionally.
+  `{` is deliberately not counted: braces open both blocks and map/set literals
+  and the lexer cannot tell which, so counting them would swallow the newlines
+  that separate statements inside every function body (#395).
+
 ## [0.8.1] - 2026-08-10
 
 ### Fixed

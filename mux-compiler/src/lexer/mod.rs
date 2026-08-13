@@ -16,6 +16,15 @@ use ordered_float::OrderedFloat;
 /// The lexer for the Mux language.
 pub struct Lexer<'a> {
     source: &'a mut Source,
+    /// How many `(` or `[` are currently open.
+    ///
+    /// A newline inside one continues the expression instead of ending the
+    /// statement, so a long call or list literal can be wrapped across lines.
+    ///
+    /// `{` is deliberately NOT counted. Braces open both blocks and map/set
+    /// literals, and the lexer cannot tell which - counting them would swallow
+    /// the newlines that separate statements inside every function body.
+    bracket_depth: usize,
 }
 
 /// A character that may appear in an identifier after its first character.
@@ -29,7 +38,10 @@ fn is_identifier_char(ch: char) -> bool {
 
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a mut Source) -> Self {
-        Lexer { source }
+        Lexer {
+            source,
+            bracket_depth: 0,
+        }
     }
 
     pub fn lex_all(&mut self) -> Result<Vec<Token>, LexerError> {
@@ -91,6 +103,13 @@ impl<'a> Lexer<'a> {
             Some('\n') => {
                 let start_span = Span::new(self.source.line, self.source.col);
                 self.source.next_char(); // consume '\n'
+                if self.bracket_depth > 0 {
+                    // Inside `(` or `[` a newline continues the expression, so a
+                    // wrapped call or list literal parses as one. Recurse rather
+                    // than emitting: the next thing may be another newline, or a
+                    // comment, and the parser should see neither.
+                    return self.next_token();
+                }
                 return Ok(Token::new(TokenType::NewLine, start_span));
             }
             // handle comments and division operator starting with slash
@@ -134,12 +153,26 @@ impl<'a> Lexer<'a> {
         };
 
         match c {
-            '(' => Ok(Token::new(TokenType::OpenParen, start_span)),
-            ')' => Ok(Token::new(TokenType::CloseParen, start_span)),
+            '(' => {
+                self.bracket_depth += 1;
+                Ok(Token::new(TokenType::OpenParen, start_span))
+            }
+            ')' => {
+                // Saturating: an unbalanced ')' is the parser's error to report,
+                // and underflowing here would panic before it ever got the chance.
+                self.bracket_depth = self.bracket_depth.saturating_sub(1);
+                Ok(Token::new(TokenType::CloseParen, start_span))
+            }
             '{' => Ok(Token::new(TokenType::OpenBrace, start_span)),
             '}' => Ok(Token::new(TokenType::CloseBrace, start_span)),
-            '[' => Ok(Token::new(TokenType::OpenBracket, start_span)),
-            ']' => Ok(Token::new(TokenType::CloseBracket, start_span)),
+            '[' => {
+                self.bracket_depth += 1;
+                Ok(Token::new(TokenType::OpenBracket, start_span))
+            }
+            ']' => {
+                self.bracket_depth = self.bracket_depth.saturating_sub(1);
+                Ok(Token::new(TokenType::CloseBracket, start_span))
+            }
             ',' => Ok(Token::new(TokenType::Comma, start_span)),
             ':' => Ok(Token::new(TokenType::Colon, start_span)),
             '%' => {
