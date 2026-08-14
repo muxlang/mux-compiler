@@ -136,7 +136,69 @@ impl<'a> CodeGenerator<'a> {
         {
             return Ok(result);
         }
+        if let Some(result) = self.try_generate_string_compare(left_expr, left, right, int_pred)? {
+            return Ok(result);
+        }
         self.generate_numeric_compare(left, right, int_pred, float_pred, label)
+    }
+
+    /// Order two strings lexicographically, via the runtime's `strcmp`-shaped
+    /// comparison.
+    ///
+    /// Without this a string fell through to the numeric path, where
+    /// `get_raw_int_value` treats a POINTER as a boxed int and emits
+    /// `mux_value_get_int` - so `<` compared addresses and answered `false` in
+    /// both directions at once, silently (issue #390). `generate_numeric_compare`
+    /// now rejects pointers outright, so this branch is what makes the operators
+    /// work rather than merely error.
+    fn try_generate_string_compare(
+        &mut self,
+        left_expr: &ExpressionNode,
+        left: BasicValueEnum<'a>,
+        right: BasicValueEnum<'a>,
+        predicate: inkwell::IntPredicate,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if !matches!(
+            self.resolve_expression_type_with_fallback(left_expr),
+            Ok(Type::Primitive(PrimitiveType::Str))
+        ) {
+            return Ok(None);
+        }
+        // The runtime takes C strings, not `Value` pointers, and hands back an
+        // owned copy that has to be freed - the same dance `call_string_comparison`
+        // does for `==`. Passing the `Value` straight through reads the struct
+        // header as text, which compares nothing and frees nothing.
+        let left_ptr = self.ensure_pointer(left);
+        let right_ptr = self.ensure_pointer(right);
+        let left_cstr = self.extract_c_string_from_value(left_ptr)?;
+        let right_cstr = self.extract_c_string_from_value(right_ptr)?;
+
+        let func = self
+            .runtime_function("mux_string_compare")
+            .ok_or("mux_string_compare not found")?;
+        let ordering = self
+            .builder
+            .build_call(func, &[left_cstr.into(), right_cstr.into()], "str_cmp")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_string_compare should return a value")?
+            .into_int_value();
+
+        let free_fn = self
+            .runtime_function("mux_free_string")
+            .ok_or("mux_free_string not found")?;
+        for cstr in [left_cstr, right_cstr] {
+            self.builder
+                .build_call(free_fn, &[cstr.into()], "free_cstr")
+                .map_err(|e| e.to_string())?;
+        }
+
+        let zero = ordering.get_type().const_zero();
+        self.builder
+            .build_int_compare(predicate, ordering, zero, "str_ord")
+            .map_err(|e| e.to_string())
+            .map(|v| Some(v.into()))
     }
 
     /// Order two values of a class that declares `is Comparable`, by calling its
@@ -189,6 +251,14 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Generate a numeric comparison (int or float) with the given predicates.
+    ///
+    /// A POINTER operand is rejected rather than unboxed. `get_raw_int_value`
+    /// happily emits `mux_value_get_int` for one, which is right for a boxed
+    /// int out of a collection and catastrophic for anything else - it is how
+    /// `<` on strings came to compare addresses and answer `false` in both
+    /// directions with no diagnostic (#390). Any type whose ordering needs more
+    /// than a machine comparison has to be handled before reaching here, so
+    /// failing loudly is what stops the next one shipping the same way.
     fn generate_numeric_compare(
         &mut self,
         left: BasicValueEnum<'a>,
@@ -197,6 +267,14 @@ impl<'a> CodeGenerator<'a> {
         float_pred: inkwell::FloatPredicate,
         label: &str,
     ) -> Result<BasicValueEnum<'a>, String> {
+        if left.is_pointer_value() || right.is_pointer_value() {
+            return Err(format!(
+                "Ordering comparison '{}' reached the numeric path with a pointer operand. \
+                 A type ordered by more than a machine comparison must be handled before \
+                 this point",
+                label
+            ));
+        }
         if let (Ok(left_int), Ok(right_int)) =
             (self.get_raw_int_value(left), self.get_raw_int_value(right))
         {

@@ -218,6 +218,16 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        // Lexicographic ordering, negative / zero / positive like strcmp. The
+        // relational operators on `string` lower to this.
+        module.add_function(
+            "mux_string_compare",
+            context
+                .i64_type()
+                .fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+            None,
+        );
+
         module.add_function(
             "mux_string_not_equal",
             context
