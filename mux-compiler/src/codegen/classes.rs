@@ -647,11 +647,21 @@ impl<'a> CodeGenerator<'a> {
     pub(super) fn generate_interface_type(&mut self, name: &str) -> Result<(), String> {
         // generate LLVM struct for interface: { *mut vtable, field1, field2, ... }
         // for simplicity, vtable is struct of void* function pointers
-        let symbol = self
-            .analyzer
-            .all_symbols()
-            .get(name)
-            .ok_or_else(|| format!("Interface symbol '{}' not found in symbol table", name))?;
+        // A class can name an interface that was never imported: importing a
+        // type does not pull in the interfaces it implements, so
+        // `import std.dsa.graph.Graph` alone leaves `Collection` unknown here.
+        // That is muxlang/mux-compiler#391 and the import side is the real fix;
+        // until then this must not read as a compiler crash, because the user
+        // can act on it - the missing import is theirs to add.
+        let symbol = self.analyzer.all_symbols().get(name).ok_or_else(|| {
+            format!(
+                "interface '{name}' is implemented by a type in use here but was never imported.\n\
+                 note: importing a type does not import the interfaces it implements\n\
+                 help: add an import for '{name}' - for a standard library interface that is \
+                 usually `import std.<module>.<submodule>.{name}`, e.g. \
+                 `import std.dsa.collection.Collection`"
+            )
+        })?;
         let (_, interface_methods) = symbol
             .interfaces
             .get(name)

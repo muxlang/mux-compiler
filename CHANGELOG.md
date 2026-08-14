@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A closure now captures variables referenced inside a `match` arm.**
+  Free-variable collection walked `if`, `while`, `for` and plain blocks but not
+  `match`, so a variable used ONLY inside an arm was never recorded as a
+  capture; the closure's environment struct had no slot for it and codegen
+  failed with "Undefined variable". A variable used both inside and outside an
+  arm worked, which made it look like a match-scoping problem rather than a
+  capture-collection one. Since every fallible call returns a `result` opened
+  with `match`, this hit any closure that calls something fallible and records
+  the outcome - including any thread reporting a value back (#394).
+- **A trailing comma is accepted in a call argument list**, matching collection
+  literals. Wrapping a long argument list is exactly where one gets written
+  (#395).
+- **A `match` arm's pattern binding no longer leaks into later arms.** Codegen
+  opened one scope for the whole match, so `ok(v)` was still bound while the
+  `err` arm was generated and a later arm reading an outer `v` resolved to the
+  earlier arm's slot - which holds nothing on the path where that arm did not
+  run. Each arm now gets its own scope. Pre-existing, not introduced by the
+  capture work above (#397).
+- **A nested named function that reads a local of the function around it is a
+  compile error naming the fix**, rather than an internal compiler error. A
+  lambda captures; a nested function is emitted with no environment, so the
+  reference had nothing to resolve to. Globals, module constants and other
+  functions are unaffected.
+- **Importing a type whose interface is not in scope is a compile error naming
+  the fix**, rather than an internal compiler error. Importing a type does not
+  import the interfaces it implements, so `import std.dsa.graph.Graph` alone
+  left `Collection` unknown and codegen crashed while building the interface's
+  type - asking the user to file a compiler bug about their own program. Per
+  #360 the rejection now happens in semantics, where the import statement gives
+  a span, and the message names both the missing interface and the wildcard that
+  would supply it.
+
+  The check is deferred until every import is resolved, so it does not depend on
+  the order imports are written: `Graph` on one line and `Collection` on the
+  next is accepted. Making the import pull the interface in automatically is
+  still open (#391).
+
+### Added
+- **An expression may span lines while `(` or `[` is open**, so a long call,
+  a wrapped operator chain, or a multi-line list literal parses as one
+  expression. Previously a newline ended an expression unconditionally.
+  `{` is deliberately not counted: braces open both blocks and map/set literals
+  and the lexer cannot tell which, so counting them would swallow the newlines
+  that separate statements inside every function body (#395).
+
 ## [0.8.1] - 2026-08-10
 
 ### Fixed

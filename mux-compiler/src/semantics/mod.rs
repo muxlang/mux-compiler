@@ -99,6 +99,13 @@ pub struct SemanticAnalyzer {
     // processed twice (some import side effects, like registering a
     // submodule namespace symbol, are not safe to repeat).
     pub(super) hoisted_import_spans: HashSet<Span>,
+    /// Interfaces an imported type implements, to verify once every import has
+    /// been resolved: `(type, interface, module path, import span)`.
+    ///
+    /// Checked at import time this would depend on the order the imports are
+    /// written - `import ...graph.Graph` followed by `import ...collection.Collection`
+    /// would fail on the first line for something the second line supplies.
+    pub(super) pending_interface_imports: Vec<(String, String, String, Span)>,
     // Class name -> the where-clause invariants (field-level and class-level)
     // codegen enforces on field assignment.
     pub(super) class_invariants: HashMap<String, Vec<where_clause::ClassInvariant>>,
@@ -150,6 +157,7 @@ impl SemanticAnalyzer {
             current_class_type_params: None,
             fresh_type_var_counter: 0,
             hoisted_import_spans: HashSet::new(),
+            pending_interface_imports: Vec::new(),
             class_invariants: HashMap::new(),
             interface_preconditions: HashMap::new(),
             inherited_preconditions: HashMap::new(),
@@ -726,6 +734,9 @@ impl SemanticAnalyzer {
         if let Err(e) = self.collect_hoistable_declarations(ast, files.as_deref_mut()) {
             self.errors.push(e);
         }
+        // Every import is resolved by now, so a type's implemented interfaces
+        // can be checked without depending on the order the imports appear in.
+        self.verify_pending_interface_imports();
         // Imports are loaded by now, so interface where-clauses from every
         // module are visible for classes to inherit during analysis.
         self.collect_interface_preconditions(ast);

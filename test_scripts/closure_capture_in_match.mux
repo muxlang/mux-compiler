@@ -1,0 +1,106 @@
+// A closure captures variables referenced inside a match arm.
+//
+// Free-variable collection walked `if`, `while`, `for` and plain blocks but not
+// `match`, so a variable referenced ONLY inside an arm was never recorded as a
+// capture. The closure's environment struct then had no slot for it and codegen
+// failed with "Undefined variable" (issue #394).
+//
+// The shape that hid it: a variable used both inside and outside an arm worked,
+// because the outside use put it in the capture list and the arm then found it
+// there. So the bug looked like a match-scoping problem rather than a
+// capture-collection one.
+//
+// Every fallible call in Mux returns a result opened with `match`, so "closure
+// that calls something fallible and records the outcome" is a shape users reach
+// for constantly - including any thread that has to report a value back.
+
+func fallible(int n) returns result<int, string> {
+    if n < 0 { return err("negative") }
+    return ok(n * 2)
+}
+
+func find_even(list<int> xs) returns optional<int> {
+    for int x in xs {
+        if x % 2 == 0 { return some(x) }
+    }
+    return none
+}
+
+const int LIMIT = 10
+
+func main() returns void {
+    // Referenced only inside an arm, which is the case that failed.
+    auto only_in_arm = "captured"
+    auto reader = func() returns void {
+        match fallible(4) {
+            ok(v) { print("ok arm sees: " + only_in_arm + " " + v.to_string()) }
+            err(e) { print("err arm sees: " + only_in_arm + " " + e) }
+        }
+        return
+    }
+    reader()
+
+    // Written from an arm, and the write must be visible to the caller
+    // afterwards - the capture is shared storage, not a copy.
+    auto recorded = "unset"
+    auto writer = func() returns void {
+        match fallible(-1) {
+            ok(v) { recorded = "ok " + v.to_string() }
+            err(e) { recorded = "err " + e }
+        }
+        return
+    }
+    writer()
+    print("after writer: " + recorded)
+
+    // An optional subject, with an arm binding that SHADOWS a captured name.
+    // Inside its own arm `value` is the pattern binding; the outer one is
+    // untouched afterwards.
+    //
+    // Deliberately no arm here reads the captured `value`. A sibling arm that
+    // does reads the shadowing arm's binding instead of the capture - that is a
+    // pre-existing codegen scoping bug, reproducible without any closure and on
+    // main, so it is filed separately rather than pinned here. Asserting the
+    // current output would certify the wrong answer.
+    auto value = "outer"
+    auto shadowing = func() returns void {
+        match find_even([1, 3, 6]) {
+            some(value) { print("bound in arm: " + value.to_string()) }
+            none { print("no even value") }
+        }
+        return
+    }
+    shadowing()
+    print("outer value intact: " + value)
+
+    // A switch-style match, where a bare identifier arm is a catch-all binding
+    // and a constant arm compares instead. Free-variable collection has to make
+    // the same call as codegen or the capture goes missing.
+    auto tag = "tagged"
+    auto classify = func(int n) returns string {
+        match n {
+            LIMIT { return tag + ": at limit" }
+            other { return tag + ": " + other.to_string() }
+        }
+    }
+    print(classify(10))
+    print(classify(3))
+
+    // Nested: a match inside a closure inside a match arm.
+    auto depth = "deep"
+    match fallible(1) {
+        ok(_) {
+            auto inner = func() returns void {
+                match fallible(2) {
+                    ok(v) { print("nested sees: " + depth + " " + v.to_string()) }
+                    err(_) { print("nested err") }
+                }
+                return
+            }
+            inner()
+        }
+        err(_) { print("unreachable") }
+    }
+
+    return
+}

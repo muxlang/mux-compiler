@@ -1,0 +1,135 @@
+// An expression may span lines while a bracket is open.
+//
+// A newline used to end an expression unconditionally, so a call or a list
+// literal had to fit on one line and any wrapped expression failed to parse -
+// including the leading-operator and trailing-operator styles alike.
+//
+// The lexer now suppresses the newline while `(` or `[` is open. `{` is
+// deliberately NOT counted: braces open both blocks and map/set literals and
+// the lexer cannot tell which, so counting them would swallow the newlines that
+// separate statements inside every function body. The block cases at the bottom
+// are here to pin that.
+
+func total(int a, int b, int c) returns int {
+    return a + b + c
+}
+
+func run(func() returns void body) returns void {
+    body()
+    return
+}
+
+func run_twice(func() returns void first, func() returns void second) returns void {
+    first()
+    second()
+    return
+}
+
+class Point {
+    int x
+    int y
+    common func of(int x, int y) returns Point {
+        auto p = Point.new()
+        p.x = x
+        p.y = y
+        return p
+    }
+}
+
+func main() returns void {
+    // Arguments across lines, including a trailing comma before the close.
+    auto summed = total(
+        1,
+        2,
+        3,
+    )
+    print("call: " + summed.to_string())
+
+    // Operator at the end of the line.
+    auto trailing = (1 +
+        2 +
+        3)
+    print("trailing operator: " + trailing.to_string())
+
+    // Operator at the start of the line.
+    auto leading = (10
+        - 4
+        - 3)
+    print("leading operator: " + leading.to_string())
+
+    // List literal across lines, with a trailing comma.
+    auto items = [
+        10,
+        20,
+        30,
+    ]
+    print("list: " + items.to_string())
+
+    // Nested literals, each wrapped.
+    auto grid = [
+        [1, 2],
+        [3, 4],
+    ]
+    print("grid: " + grid.to_string())
+
+    // Index brackets also continue.
+    auto first = items[
+        0
+    ]
+    print("index: " + first.to_string())
+
+    // A map literal spans lines only because it sits inside the call's parens.
+    print("map: " + {
+        "a": 1,
+        "b": 2,
+    }.size().to_string())
+
+    // A constructor call across lines.
+    auto p = Point.of(
+        3,
+        4
+    )
+    print("point: " + p.x.to_string() + "," + p.y.to_string())
+
+    // Statements inside a block still separate by newline, which is what
+    // counting `{` would have broken.
+    if true {
+        auto a = 1
+        auto b = 2
+        print("block: " + (a + b).to_string())
+    }
+
+    // The case that matters most: a block written INSIDE an open bracket, which
+    // is what a lambda argument is. Continuation has to stop at the brace, or
+    // these two statements run together as `auto doubled = seed - seed` and the
+    // program silently prints 0 instead of 14.
+    auto seed = 7
+    run(func() returns void {
+        auto doubled = seed
+        -seed
+        print("lambda in call: " + (doubled * 2).to_string())
+        return
+    })
+
+    // Continuation resumes after the block closes, so the wrapped argument list
+    // around it still parses.
+    run_twice(
+        func() returns void {
+            auto inner = seed
+            -seed
+            print("first: " + inner.to_string())
+            return
+        },
+        func() returns void {
+            print("second")
+            return
+        },
+    )
+
+    for int i in range(0, 2) {
+        auto doubled = i * 2
+        print("loop: " + doubled.to_string())
+    }
+
+    return
+}

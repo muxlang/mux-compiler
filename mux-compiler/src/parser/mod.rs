@@ -2790,6 +2790,14 @@ impl<'a> Parser<'a> {
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
+                // A trailing comma ends the list. Collection literals already
+                // allow one, and an argument list spanning several lines is
+                // exactly where people write it - so rejecting it here was an
+                // inconsistency between two forms that look the same.
+                self.skip_newlines();
+                if self.check(TokenType::CloseParen) {
+                    break;
+                }
             }
         }
         let end_span = self.consume_token(TokenType::CloseParen, "Expected ')' after arguments")?;

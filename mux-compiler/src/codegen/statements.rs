@@ -2126,15 +2126,22 @@ impl<'a> CodeGenerator<'a> {
 
             self.builder.position_at_end(arm_bb);
 
-            self.bind_enum_arm_variables(
-                arm,
-                &enum_name,
-                match_expr_type,
-                expr_ptr_opt,
-                temp_ptr_opt,
-            )?;
-
-            self.emit_match_guard_and_body(function, arm, next_bb, end_bb, i)?;
+            // Each arm gets its own scope, so a pattern binding belongs to the
+            // arm that introduced it. The match as a whole already opened one,
+            // but that is not enough: without a per-arm scope, `ok(v)` was still
+            // bound when the `err` arm was generated, so a later arm reading an
+            // outer `v` resolved to the earlier arm's slot - which holds nothing
+            // on the path where that arm did not run.
+            self.in_block_scope(|me| {
+                me.bind_enum_arm_variables(
+                    arm,
+                    &enum_name,
+                    match_expr_type,
+                    expr_ptr_opt,
+                    temp_ptr_opt,
+                )?;
+                me.emit_match_guard_and_body(function, arm, next_bb, end_bb, i)
+            })?;
 
             current_bb = next_bb;
         }
@@ -2197,17 +2204,22 @@ impl<'a> CodeGenerator<'a> {
 
             self.builder.position_at_end(arm_bb);
 
-            // For list patterns, bind variables after the condition check succeeds
-            if let PatternNode::List { elements, rest } = &arm.pattern {
-                self.bind_list_pattern_variables(
-                    match_val,
-                    match_expr_type,
-                    elements,
-                    rest.as_deref(),
-                )?;
-            }
+            // Per-arm scope, for the same reason as the enum path above: a
+            // pattern binding must not still be visible when the next arm is
+            // generated.
+            self.in_block_scope(|me| {
+                // For list patterns, bind variables after the condition check succeeds
+                if let PatternNode::List { elements, rest } = &arm.pattern {
+                    me.bind_list_pattern_variables(
+                        match_val,
+                        match_expr_type,
+                        elements,
+                        rest.as_deref(),
+                    )?;
+                }
 
-            self.emit_match_guard_and_body(function, arm, next_bb, end_bb, i)?;
+                me.emit_match_guard_and_body(function, arm, next_bb, end_bb, i)
+            })?;
 
             current_bb = next_bb;
         }

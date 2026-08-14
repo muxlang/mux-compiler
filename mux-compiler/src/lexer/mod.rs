@@ -16,6 +16,28 @@ use ordered_float::OrderedFloat;
 /// The lexer for the Mux language.
 pub struct Lexer<'a> {
     source: &'a mut Source,
+    /// How many `(` or `[` are currently open.
+    ///
+    /// A newline inside one continues the expression instead of ending the
+    /// statement, so a long call or list literal can be wrapped across lines.
+    ///
+    /// `{` is deliberately NOT counted. Braces open both blocks and map/set
+    /// literals, and the lexer cannot tell which - counting them would swallow
+    /// the newlines that separate statements inside every function body.
+    bracket_depth: usize,
+    /// `bracket_depth` as it was when each currently-open `{` was reached.
+    ///
+    /// A brace RESETS the depth rather than merely not incrementing it, because
+    /// a block can appear inside an open bracket - a lambda passed as a call
+    /// argument, `spawn(func() returns void { ... })`, is the everyday case.
+    /// Leaving the count alone there suppressed the newlines *inside the block*
+    /// too, so its statements silently ran together: `auto b = a` followed by
+    /// `-a` parsed as `auto b = a - a`, with no diagnostic.
+    ///
+    /// Saving and restoring means continuation applies to the bracketed
+    /// expression itself and stops at the boundary of any block written inside
+    /// it, which is the rule the two constructs actually need.
+    brace_depths: Vec<usize>,
 }
 
 /// A character that may appear in an identifier after its first character.
@@ -29,7 +51,11 @@ fn is_identifier_char(ch: char) -> bool {
 
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a mut Source) -> Self {
-        Lexer { source }
+        Lexer {
+            source,
+            bracket_depth: 0,
+            brace_depths: Vec::new(),
+        }
     }
 
     pub fn lex_all(&mut self) -> Result<Vec<Token>, LexerError> {
@@ -91,6 +117,14 @@ impl<'a> Lexer<'a> {
             Some('\n') => {
                 let start_span = Span::new(self.source.line, self.source.col);
                 self.source.next_char(); // consume '\n'
+                if self.bracket_depth > 0 {
+                    // Inside `(` or `[` a newline continues the expression, so a
+                    // wrapped call or list literal parses as one. Recursing
+                    // rather than looping keeps a run of blank lines collapsing
+                    // to nothing; a comment on the next line is returned as
+                    // usual and filtered downstream like any other.
+                    return self.next_token();
+                }
                 return Ok(Token::new(TokenType::NewLine, start_span));
             }
             // handle comments and division operator starting with slash
@@ -134,12 +168,38 @@ impl<'a> Lexer<'a> {
         };
 
         match c {
-            '(' => Ok(Token::new(TokenType::OpenParen, start_span)),
-            ')' => Ok(Token::new(TokenType::CloseParen, start_span)),
-            '{' => Ok(Token::new(TokenType::OpenBrace, start_span)),
-            '}' => Ok(Token::new(TokenType::CloseBrace, start_span)),
-            '[' => Ok(Token::new(TokenType::OpenBracket, start_span)),
-            ']' => Ok(Token::new(TokenType::CloseBracket, start_span)),
+            '(' => {
+                self.bracket_depth += 1;
+                Ok(Token::new(TokenType::OpenParen, start_span))
+            }
+            ')' => {
+                // Saturating: an unbalanced ')' is the parser's error to report,
+                // and underflowing here would panic before it ever got the chance.
+                self.bracket_depth = self.bracket_depth.saturating_sub(1);
+                Ok(Token::new(TokenType::CloseParen, start_span))
+            }
+            '{' => {
+                // Start a fresh continuation context: statements inside a block
+                // are newline-separated even when the block sits inside an open
+                // bracket.
+                self.brace_depths.push(self.bracket_depth);
+                self.bracket_depth = 0;
+                Ok(Token::new(TokenType::OpenBrace, start_span))
+            }
+            '}' => {
+                // Back to whatever was open around the brace, so a wrapped call
+                // keeps continuing after a lambda argument closes.
+                self.bracket_depth = self.brace_depths.pop().unwrap_or(0);
+                Ok(Token::new(TokenType::CloseBrace, start_span))
+            }
+            '[' => {
+                self.bracket_depth += 1;
+                Ok(Token::new(TokenType::OpenBracket, start_span))
+            }
+            ']' => {
+                self.bracket_depth = self.bracket_depth.saturating_sub(1);
+                Ok(Token::new(TokenType::CloseBracket, start_span))
+            }
             ',' => Ok(Token::new(TokenType::Comma, start_span)),
             ':' => Ok(Token::new(TokenType::Colon, start_span)),
             '%' => {

@@ -1,5 +1,7 @@
 use super::{SemanticAnalyzer, SemanticError, SymbolKind, Type};
-use crate::ast::{ExpressionKind, ExpressionNode, Param, StatementKind, StatementNode};
+use crate::ast::{
+    ExpressionKind, ExpressionNode, MatchArm, Param, PatternNode, StatementKind, StatementNode,
+};
 use crate::lexer::Span;
 
 impl SemanticAnalyzer {
@@ -77,9 +79,101 @@ impl SemanticAnalyzer {
             StatementKind::Block(stmts) => {
                 self.handle_block_statement(stmts, local_vars, free_vars)?;
             }
+            StatementKind::Match { expr, arms } => {
+                self.handle_match_statement(expr, arms, local_vars, free_vars)?;
+            }
+            // `StatementKind::Function` is deliberately absent: a nested named
+            // function is emitted as an ordinary function with no environment,
+            // so collecting a capture for it would allocate one nothing reads.
+            // A reference to an enclosing local is rejected in
+            // `analyze_nested_function_captures` instead, where there is a span.
+            // A missing case here is not a compile error - it silently drops
+            // every capture the statement needed, which is how `match` went
+            // unwalked. So this arm is a known gap, not a claim of completeness:
+            // `StatementKind::Function` carries a body that can reference an
+            // enclosing variable and is NOT walked, so a nested named function
+            // referring to one still fails in codegen. That predates this
+            // change and needs its own decision - whether a nested function
+            // captures at all, or is rejected in semantics with a span - rather
+            // than being quietly folded in here.
             _ => {}
         }
         Ok(())
+    }
+
+    /// Free variables of a `match`, including its arms.
+    ///
+    /// Without this the arms were never walked, so a variable referenced ONLY
+    /// inside an arm was never recorded as a capture. The closure's environment
+    /// struct then had no slot for it and codegen failed with
+    /// "Undefined variable" (mux-compiler#394). A variable used both inside and
+    /// outside an arm worked, which is what made this look like a match-scoping
+    /// problem rather than a capture-collection one.
+    fn handle_match_statement(
+        &self,
+        expr: &ExpressionNode,
+        arms: &[MatchArm],
+        local_vars: &mut std::collections::HashSet<String>,
+        free_vars: &mut std::collections::BTreeMap<String, Type>,
+    ) -> Result<(), SemanticError> {
+        self.find_free_variables_in_expression(expr, local_vars, free_vars)?;
+
+        for arm in arms {
+            // Pattern bindings belong to their own arm. Cloning rather than
+            // inserting into `local_vars` keeps `ok(v)` in one arm from hiding a
+            // captured `v` referenced by the next.
+            let mut arm_locals = local_vars.clone();
+            self.collect_pattern_bindings(&arm.pattern, &mut arm_locals);
+
+            if let Some(guard) = &arm.guard {
+                self.find_free_variables_in_expression(guard, &arm_locals, free_vars)?;
+            }
+            for stmt in &arm.body {
+                self.find_free_variables_in_statement(stmt, &mut arm_locals, free_vars)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Names a pattern binds, which are local to the arm rather than captured.
+    fn collect_pattern_bindings(
+        &self,
+        pattern: &PatternNode,
+        locals: &mut std::collections::HashSet<String>,
+    ) {
+        match pattern {
+            PatternNode::Identifier(name) => {
+                // A bare identifier binds UNLESS it names a constant, in which
+                // case the arm compares against it. Codegen decides the same way
+                // (`PatternNode::Identifier` in `generate_switch_match`), and the
+                // two have to agree: treat a real binding as a reference and it
+                // gets captured needlessly; treat a constant as a binding and the
+                // capture it needed goes missing.
+                let is_constant = self
+                    .symbol_table()
+                    .lookup(name)
+                    .map(|s| s.kind == SymbolKind::Constant)
+                    .unwrap_or(false);
+                if !is_constant {
+                    locals.insert(name.clone());
+                }
+            }
+            PatternNode::EnumVariant { args, .. } => {
+                // The variant name is not a variable; its arguments bind.
+                for arg in args {
+                    self.collect_pattern_bindings(arg, locals);
+                }
+            }
+            PatternNode::List { elements, rest } => {
+                for element in elements {
+                    self.collect_pattern_bindings(element, locals);
+                }
+                if let Some(rest) = rest {
+                    self.collect_pattern_bindings(rest, locals);
+                }
+            }
+            PatternNode::Literal(_) | PatternNode::Wildcard => {}
+        }
     }
 
     fn handle_variable_declaration(
