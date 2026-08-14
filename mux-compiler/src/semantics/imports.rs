@@ -641,8 +641,87 @@ impl SemanticAnalyzer {
             imported_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, item_name));
         }
 
+        self.check_implemented_interfaces_available(symbol, item_name, module_path, span)?;
+
         self.add_import_symbol_if_absent(local_name, imported_symbol)?;
         Ok(())
+    }
+
+    /// Reject importing a type whose implemented interface is not in scope.
+    ///
+    /// Importing a type does not bring in the interfaces it implements, so
+    /// `import std.dsa.graph.Graph` left `Collection` unknown. Codegen then
+    /// failed building the interface's type and reported an internal compiler
+    /// error, asking the user to file a compiler bug about their own program. A
+    /// codegen error describing user code is a type-checking gap (issue #360),
+    /// so the rejection belongs here, where the import statement gives a span
+    /// and the message can name the import to add.
+    ///
+    /// Only classes and enums are checked. An INTERFACE lists itself in its own
+    /// `interfaces` map, so checking one reports that `Collection` does not
+    /// implement `Collection` - which is what a first attempt at this did,
+    /// during the standard library's own analysis, where such an import is
+    /// exactly what `std.dsa.graph` performs.
+    ///
+    /// The wildcard form is unaffected: it pulls in everything under the module,
+    /// including the interface.
+    fn check_implemented_interfaces_available(
+        &mut self,
+        symbol: &Symbol,
+        item_name: &str,
+        module_path: &str,
+        span: Span,
+    ) -> Result<(), SemanticError> {
+        if !matches!(symbol.kind, SymbolKind::Class | SymbolKind::Enum) {
+            return Ok(());
+        }
+
+        for interface_name in symbol.interfaces.keys() {
+            if interface_name == item_name {
+                continue;
+            }
+            self.pending_interface_imports.push((
+                item_name.to_string(),
+                interface_name.clone(),
+                module_path.to_string(),
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Report any imported type whose interface never came into scope.
+    ///
+    /// Deferred until every import is resolved, so `import ...graph.Graph`
+    /// followed by `import ...collection.Collection` is accepted - checking at
+    /// import time would reject the first line for something the second line
+    /// supplies.
+    pub(super) fn verify_pending_interface_imports(&mut self) {
+        for (item_name, interface_name, module_path, span) in
+            std::mem::take(&mut self.pending_interface_imports)
+        {
+            if self.symbol_table.get_cloned(&interface_name).is_some() {
+                continue;
+            }
+            // The interface sits beside the type's module rather than inside it
+            // (`std.dsa.collection.Collection` next to `std.dsa.graph`), so the
+            // useful wildcard is the PARENT - `std.dsa.*`, not `std.*`.
+            let parent = module_path
+                .rsplit_once('.')
+                .map_or(module_path.as_str(), |(head, _)| head);
+            self.errors.push(SemanticError::with_help(
+                format!(
+                    "'{}' implements interface '{}', which is not imported",
+                    item_name, interface_name
+                ),
+                span,
+                format!(
+                    "importing a type does not import the interfaces it implements. \
+                     Import '{0}' as well, or import the whole module with 'import {1}.*'",
+                    interface_name, parent
+                ),
+            ));
+        }
     }
 
     fn add_import_symbol_if_absent(

@@ -31,15 +31,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lambda captures; a nested function is emitted with no environment, so the
   reference had nothing to resolve to. Globals, module constants and other
   functions are unaffected.
-- **Naming an interface that was never imported now says what to do about it.**
-  Importing a type does not import the interfaces it implements, so
-  `import std.dsa.graph.Graph` alone leaves `Collection` unknown and codegen
-  fails. The message names the missing interface and the import to add, instead
-  of only reporting a symbol absent from a table. It is still reported as an
-  internal compiler error, which is the wrong shape for a message about the
-  user's own program: per #360 that rejection belongs in semantics, where there
-  is a span. Both that and making the import pull the interface in are still
-  open (#391).
+- **Importing a type whose interface is not in scope is a compile error naming
+  the fix**, rather than an internal compiler error. Importing a type does not
+  import the interfaces it implements, so `import std.dsa.graph.Graph` alone
+  left `Collection` unknown and codegen crashed while building the interface's
+  type - asking the user to file a compiler bug about their own program. Per
+  #360 the rejection now happens in semantics, where the import statement gives
+  a span, and the message names both the missing interface and the wildcard that
+  would supply it.
+
+  The check is deferred until every import is resolved, so it does not depend on
+  the order imports are written: `Graph` on one line and `Collection` on the
+  next is accepted. Making the import pull the interface in automatically is
+  still open (#391).
 
 ### Added
 - **An expression may span lines while `(` or `[` is open**, so a long call,
