@@ -82,10 +82,20 @@ impl SemanticAnalyzer {
             StatementKind::Match { expr, arms } => {
                 self.handle_match_statement(expr, arms, local_vars, free_vars)?;
             }
-            // Remaining statement kinds contain no expressions that could
-            // reference an enclosing variable. Note this arm is why a match went
-            // unwalked for so long: a missing case here is not a compile error,
-            // it silently drops every capture the statement needed.
+            // `StatementKind::Function` is deliberately absent: a nested named
+            // function is emitted as an ordinary function with no environment,
+            // so collecting a capture for it would allocate one nothing reads.
+            // A reference to an enclosing local is rejected in
+            // `analyze_nested_function_captures` instead, where there is a span.
+            // A missing case here is not a compile error - it silently drops
+            // every capture the statement needed, which is how `match` went
+            // unwalked. So this arm is a known gap, not a claim of completeness:
+            // `StatementKind::Function` carries a body that can reference an
+            // enclosing variable and is NOT walked, so a nested named function
+            // referring to one still fails in codegen. That predates this
+            // change and needs its own decision - whether a nested function
+            // captures at all, or is rejected in semantics with a span - rather
+            // than being quietly folded in here.
             _ => {}
         }
         Ok(())

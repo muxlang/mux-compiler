@@ -546,9 +546,55 @@ impl SemanticAnalyzer {
                 }
             }
             StatementKind::Function(func) => {
+                self.analyze_nested_function_captures(func, stmt.span)?;
                 self.analyze_function(func, None)?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Reject a nested named function that reads a local of the function around
+    /// it.
+    ///
+    /// A lambda captures; a nested named function does not - it is emitted as an
+    /// ordinary function with no environment, so such a reference had nothing to
+    /// resolve to and failed in codegen as an internal compiler error about the
+    /// user's own program. Per issue #360 that rejection belongs here, where the
+    /// statement gives a span and the message can name the alternative.
+    ///
+    /// Globals, module constants and other functions are unaffected: those
+    /// resolve without an environment, which is why the check asks whether the
+    /// name is in the global scope rather than merely whether it resolves.
+    fn analyze_nested_function_captures(
+        &self,
+        func: &crate::ast::FunctionNode,
+        span: Span,
+    ) -> Result<(), SemanticError> {
+        let mut params: std::collections::HashSet<String> =
+            func.params.iter().map(|p| p.name.clone()).collect();
+        params.insert(func.name.clone());
+
+        let free = self.find_free_variables_in_block(&func.body, &params)?;
+        let globals = self.symbol_table.global_scope_symbols();
+
+        for (name, _) in free {
+            if globals.contains_key(&name) || self.symbol_table.lookup(&name).is_none() {
+                continue;
+            }
+            return Err(SemanticError::with_help(
+                format!(
+                    "nested function '{}' cannot use '{}' from the function around it",
+                    func.name, name
+                ),
+                span,
+                format!(
+                    "a nested function has no captured environment. Pass '{0}' as a parameter, \
+                     or use a lambda, which does capture: \
+                     'auto {1} = func(...) returns ... {{ ... }}'",
+                    name, func.name
+                ),
+            ));
         }
         Ok(())
     }

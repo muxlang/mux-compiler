@@ -25,6 +25,19 @@ pub struct Lexer<'a> {
     /// literals, and the lexer cannot tell which - counting them would swallow
     /// the newlines that separate statements inside every function body.
     bracket_depth: usize,
+    /// `bracket_depth` as it was when each currently-open `{` was reached.
+    ///
+    /// A brace RESETS the depth rather than merely not incrementing it, because
+    /// a block can appear inside an open bracket - a lambda passed as a call
+    /// argument, `spawn(func() returns void { ... })`, is the everyday case.
+    /// Leaving the count alone there suppressed the newlines *inside the block*
+    /// too, so its statements silently ran together: `auto b = a` followed by
+    /// `-a` parsed as `auto b = a - a`, with no diagnostic.
+    ///
+    /// Saving and restoring means continuation applies to the bracketed
+    /// expression itself and stops at the boundary of any block written inside
+    /// it, which is the rule the two constructs actually need.
+    brace_depths: Vec<usize>,
 }
 
 /// A character that may appear in an identifier after its first character.
@@ -41,6 +54,7 @@ impl<'a> Lexer<'a> {
         Lexer {
             source,
             bracket_depth: 0,
+            brace_depths: Vec::new(),
         }
     }
 
@@ -105,9 +119,10 @@ impl<'a> Lexer<'a> {
                 self.source.next_char(); // consume '\n'
                 if self.bracket_depth > 0 {
                     // Inside `(` or `[` a newline continues the expression, so a
-                    // wrapped call or list literal parses as one. Recurse rather
-                    // than emitting: the next thing may be another newline, or a
-                    // comment, and the parser should see neither.
+                    // wrapped call or list literal parses as one. Recursing
+                    // rather than looping keeps a run of blank lines collapsing
+                    // to nothing; a comment on the next line is returned as
+                    // usual and filtered downstream like any other.
                     return self.next_token();
                 }
                 return Ok(Token::new(TokenType::NewLine, start_span));
@@ -163,8 +178,20 @@ impl<'a> Lexer<'a> {
                 self.bracket_depth = self.bracket_depth.saturating_sub(1);
                 Ok(Token::new(TokenType::CloseParen, start_span))
             }
-            '{' => Ok(Token::new(TokenType::OpenBrace, start_span)),
-            '}' => Ok(Token::new(TokenType::CloseBrace, start_span)),
+            '{' => {
+                // Start a fresh continuation context: statements inside a block
+                // are newline-separated even when the block sits inside an open
+                // bracket.
+                self.brace_depths.push(self.bracket_depth);
+                self.bracket_depth = 0;
+                Ok(Token::new(TokenType::OpenBrace, start_span))
+            }
+            '}' => {
+                // Back to whatever was open around the brace, so a wrapped call
+                // keeps continuing after a lambda argument closes.
+                self.bracket_depth = self.brace_depths.pop().unwrap_or(0);
+                Ok(Token::new(TokenType::CloseBrace, start_span))
+            }
             '[' => {
                 self.bracket_depth += 1;
                 Ok(Token::new(TokenType::OpenBracket, start_span))

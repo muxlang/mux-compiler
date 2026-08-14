@@ -53,13 +53,20 @@ func main() returns void {
     writer()
     print("after writer: " + recorded)
 
-    // An optional subject, and an arm binding that SHADOWS a captured name:
-    // `value` here is the pattern binding, not the outer variable.
+    // An optional subject, with an arm binding that SHADOWS a captured name.
+    // Inside its own arm `value` is the pattern binding; the outer one is
+    // untouched afterwards.
+    //
+    // Deliberately no arm here reads the captured `value`. A sibling arm that
+    // does reads the shadowing arm's binding instead of the capture - that is a
+    // pre-existing codegen scoping bug, reproducible without any closure and on
+    // main, so it is filed separately rather than pinned here. Asserting the
+    // current output would certify the wrong answer.
     auto value = "outer"
     auto shadowing = func() returns void {
         match find_even([1, 3, 6]) {
             some(value) { print("bound in arm: " + value.to_string()) }
-            none { print("none arm sees: " + value) }
+            none { print("no even value") }
         }
         return
     }

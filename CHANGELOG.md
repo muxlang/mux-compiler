@@ -20,11 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A trailing comma is accepted in a call argument list**, matching collection
   literals. Wrapping a long argument list is exactly where one gets written
   (#395).
-- **Naming an interface that was never imported is a diagnostic, not an
-  internal compiler error.** Importing a type does not import the interfaces it
-  implements, so `import std.dsa.graph.Graph` alone left `Collection` unknown
-  and codegen crashed. The message now says which interface is missing and how
-  to import it. Making the import pull the interface in remains open (#391).
+- **A `match` arm's pattern binding no longer leaks into later arms.** Codegen
+  opened one scope for the whole match, so `ok(v)` was still bound while the
+  `err` arm was generated and a later arm reading an outer `v` resolved to the
+  earlier arm's slot - which holds nothing on the path where that arm did not
+  run. Each arm now gets its own scope. Pre-existing, not introduced by the
+  capture work above (#397).
+- **A nested named function that reads a local of the function around it is a
+  compile error naming the fix**, rather than an internal compiler error. A
+  lambda captures; a nested function is emitted with no environment, so the
+  reference had nothing to resolve to. Globals, module constants and other
+  functions are unaffected.
+- **Naming an interface that was never imported now says what to do about it.**
+  Importing a type does not import the interfaces it implements, so
+  `import std.dsa.graph.Graph` alone leaves `Collection` unknown and codegen
+  fails. The message names the missing interface and the import to add, instead
+  of only reporting a symbol absent from a table. It is still reported as an
+  internal compiler error, which is the wrong shape for a message about the
+  user's own program: per #360 that rejection belongs in semantics, where there
+  is a span. Both that and making the import pull the interface in are still
+  open (#391).
 
 ### Added
 - **An expression may span lines while `(` or `[` is open**, so a long call,

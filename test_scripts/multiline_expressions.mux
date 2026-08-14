@@ -14,6 +14,17 @@ func total(int a, int b, int c) returns int {
     return a + b + c
 }
 
+func run(func() returns void body) returns void {
+    body()
+    return
+}
+
+func run_twice(func() returns void first, func() returns void second) returns void {
+    first()
+    second()
+    return
+}
+
 class Point {
     int x
     int y
@@ -87,6 +98,33 @@ func main() returns void {
         auto b = 2
         print("block: " + (a + b).to_string())
     }
+
+    // The case that matters most: a block written INSIDE an open bracket, which
+    // is what a lambda argument is. Continuation has to stop at the brace, or
+    // these two statements run together as `auto doubled = seed - seed` and the
+    // program silently prints 0 instead of 14.
+    auto seed = 7
+    run(func() returns void {
+        auto doubled = seed
+        -seed
+        print("lambda in call: " + (doubled * 2).to_string())
+        return
+    })
+
+    // Continuation resumes after the block closes, so the wrapped argument list
+    // around it still parses.
+    run_twice(
+        func() returns void {
+            auto inner = seed
+            -seed
+            print("first: " + inner.to_string())
+            return
+        },
+        func() returns void {
+            print("second")
+            return
+        },
+    )
 
     for int i in range(0, 2) {
         auto doubled = i * 2
