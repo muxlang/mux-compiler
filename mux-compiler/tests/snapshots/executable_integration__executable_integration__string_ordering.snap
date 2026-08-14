@@ -1,0 +1,22 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+apple < pear:  true
+pear < apple:  false
+apple > pear:  false
+pear > apple:  true
+same < same:   false
+same <= same:  true
+same >= same:  true
+ab < abc:      true
+empty < a:     true
+var lt:        true
+var gt:        false
+cmp a,b:       -1
+cmp b,a:       1
+cmp a,a:       0
+sorted:        [apple, fig, pear]
+max:           pear
+min:           apple
+Z < a:         true

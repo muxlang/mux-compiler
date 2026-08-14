@@ -1,0 +1,64 @@
+// Strings order lexicographically.
+//
+// `<` and `>` used to fall through to the numeric comparison path, where a
+// pointer is treated as a boxed int and unboxed with `mux_value_get_int`. So
+// they compared ADDRESSES: `"apple" < "pear"` and `"pear" < "apple"` were both
+// false at once, and nothing reported anything (issue #390).
+//
+// Two things kept that hidden. `cmp` was declared for `string` in the semantic
+// method table but never implemented, which was enough to satisfy the
+// `Comparable` bound - so `algorithm.sort` on a `list<string>` type-checked and
+// then silently returned its input unchanged. And the numeric path accepted
+// pointers instead of rejecting them, so there was no error to notice.
+//
+// The numeric path now refuses a pointer operand outright, which is what stops
+// the next type ordered by more than a machine comparison from shipping the
+// same way.
+
+import std.dsa.*
+
+func main() returns void {
+    // Both directions, which is what a pointer comparison could not get right.
+    print("apple < pear:  " + ("apple" < "pear").to_string())
+    print("pear < apple:  " + ("pear" < "apple").to_string())
+    print("apple > pear:  " + ("apple" > "pear").to_string())
+    print("pear > apple:  " + ("pear" > "apple").to_string())
+
+    // Equal operands, where the strict and non-strict forms differ.
+    print("same < same:   " + ("same" < "same").to_string())
+    print("same <= same:  " + ("same" <= "same").to_string())
+    print("same >= same:  " + ("same" >= "same").to_string())
+
+    // A prefix sorts before the longer string that extends it.
+    print("ab < abc:      " + ("ab" < "abc").to_string())
+    print("empty < a:     " + ("" < "a").to_string())
+
+    // Through variables as well as literals.
+    string first = "alpha"
+    string second = "beta"
+    print("var lt:        " + (first < second).to_string())
+    print("var gt:        " + (first > second).to_string())
+
+    // `cmp` returns negative / zero / positive like strcmp. Calling it used to
+    // be an internal compiler error, since only the declaration existed.
+    print("cmp a,b:       " + "a".cmp("b").to_string())
+    print("cmp b,a:       " + "b".cmp("a").to_string())
+    print("cmp a,a:       " + "a".cmp("a").to_string())
+
+    // The consumers that were silently wrong.
+    list<string> words = ["pear", "apple", "fig"]
+    print("sorted:        " + algorithm.sort(words).to_string())
+    match algorithm.max(words) {
+        some(v) { print("max:           " + v) }
+        none { print("max:           none") }
+    }
+    match algorithm.min(words) {
+        some(v) { print("min:           " + v) }
+        none { print("min:           none") }
+    }
+
+    // Ordering is by code point, so uppercase sorts before lowercase.
+    print("Z < a:         " + ("Z" < "a").to_string())
+
+    return
+}

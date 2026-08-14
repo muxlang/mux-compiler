@@ -202,6 +202,24 @@ impl<'a> CodeGenerator<'a> {
         self.with_extracted(obj_value, "mux_value_get_set", "mux_free_set", f)
     }
 
+    /// Unwrap a Mux string Value to the raw C string the runtime's string
+    /// helpers take. Same step `call_string_conversion_func` performs, split out
+    /// for the helpers that need two operands rather than one.
+    fn string_value_to_cstr(
+        &self,
+        value: BasicValueEnum<'a>,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let func = self
+            .runtime_function("mux_value_to_string")
+            .ok_or("mux_value_to_string not found")?;
+        self.builder
+            .build_call(func, &[value.into()], "str_to_cstr")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| "mux_value_to_string should return a basic value".to_string())
+    }
+
     fn call_string_conversion_func(
         &self,
         obj_value: BasicValueEnum<'a>,
@@ -838,7 +856,7 @@ impl<'a> CodeGenerator<'a> {
 
         match &resolved_obj_type {
             Type::Primitive(prim) => {
-                self.generate_primitive_method_call(obj_value, prim, method_name)
+                self.generate_primitive_method_call(obj_value, prim, method_name, args)
             }
             Type::List(_) => self.generate_list_method_call(obj_value, method_name, args),
             Type::Map(key_type, value_type) => {
@@ -874,6 +892,7 @@ impl<'a> CodeGenerator<'a> {
         obj_value: BasicValueEnum<'a>,
         prim: &PrimitiveType,
         method_name: &str,
+        args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
         match prim {
             PrimitiveType::Int => match method_name {
@@ -919,6 +938,35 @@ impl<'a> CodeGenerator<'a> {
                 // mux_string_length takes a raw C string, so unwrap the
                 // boxed value first like the conversion functions do.
                 "length" => self.call_string_conversion_func(obj_value, "mux_string_length"),
+                // Declared in `get_string_method_sig` and, until now, never
+                // implemented - so `"a".cmp("b")` was an internal compiler
+                // error, while the declaration alone was enough to let `string`
+                // satisfy the `Comparable` bound and reach a broken `sort`.
+                "cmp" => {
+                    let other = gen_one_expr(self, args)?;
+                    let left = self.string_value_to_cstr(obj_value)?;
+                    let right = self.string_value_to_cstr(other)?;
+                    let func = self
+                        .runtime_function("mux_string_compare")
+                        .ok_or("mux_string_compare not found".to_string())?;
+                    let ordering = self
+                        .builder
+                        .build_call(func, &[left.into(), right.into()], "str_cmp")
+                        .map_err(|e| e.to_string())?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| "mux_string_compare should return a value".to_string())?;
+                    // Both C strings are owned copies from mux_value_to_string.
+                    let free_fn = self
+                        .runtime_function("mux_free_string")
+                        .ok_or("mux_free_string not found".to_string())?;
+                    for cstr in [left, right] {
+                        self.builder
+                            .build_call(free_fn, &[cstr.into()], "free_cstr")
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok(ordering)
+                }
                 _ => Err(format!("Method {} not implemented for string", method_name)),
             },
             PrimitiveType::Bool => match method_name {

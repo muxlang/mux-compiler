@@ -367,6 +367,36 @@ jobs:
           if [ "${RUNNER_OS}" = "Windows" ]; then exe=".exe"; fi
           ./scripts/ci/smoke-run.sh "installed/bin/mux${exe}"
 
+      # The published examples have to work with the compiler being published.
+      # mux-examples' own CI runs this same script against mux-compiler `main`,
+      # which is a weaker claim: an example can be correct on main and broken
+      # for everyone who installs the release. This is the only place that gap
+      # is closed, and it uses the artifact a user actually receives rather than
+      # a build from source.
+      #
+      # Linux only, deliberately. The examples are platform-independent Mux
+      # programs, so running them on five platforms tests the installer five
+      # times over rather than the examples - and the installer already has its
+      # own coverage in the step above.
+      - name: Check out mux-examples
+        if: ${{ runner.os == 'Linux' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: muxlang/mux-examples
+          ref: main
+          path: mux-examples
+
+      - name: Run the published examples against the installed compiler
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        working-directory: mux-examples
+        env:
+          # The absolute path matters: the runner cds into each example's
+          # directory before invoking the compiler.
+          MUX_BIN: ${{ github.workspace }}/installed/bin/mux
+          MUX_RUNTIME_LIB: ${{ github.workspace }}/installed/lib/libmux_runtime.a
+        run: ./scripts/run-examples.sh
+
       - name: Show what was installed
         # Only on failure, and it is the first question anyone asks: a missing
         # runtime library or a DLL left behind in the bundle looks identical to a
