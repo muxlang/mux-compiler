@@ -1173,6 +1173,9 @@ impl SemanticAnalyzer {
                 self.arity_check_type(type_node, params);
                 self.arity_check_expr(expr, params);
             }
+            StatementKind::UninitDecl(_, type_node) => {
+                self.arity_check_type(type_node, params);
+            }
             StatementKind::Function(func) => self.arity_check_function(func, params),
             StatementKind::For {
                 var_type,
@@ -1280,6 +1283,12 @@ impl SemanticAnalyzer {
             ExpressionKind::ListAccess { expr, index } => {
                 self.arity_check_expr(expr, params);
                 self.arity_check_expr(index, params);
+            }
+            ExpressionKind::Slice { expr, start, end } => {
+                self.arity_check_expr(expr, params);
+                for bound in [start, end].iter().copied().flatten() {
+                    self.arity_check_expr(bound, params);
+                }
             }
             ExpressionKind::ListLiteral(items)
             | ExpressionKind::SetLiteral(items)

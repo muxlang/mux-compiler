@@ -319,6 +319,18 @@ impl<'a> Parser<'a> {
         let start_span = self.peek().span;
         let type_node = self.parse_type()?;
         let name = self.consume_identifier("Expected variable name after type")?;
+
+        // `Type name` with no initializer. Deciding here, after the name, is
+        // what lets an initialized and an uninitialized declaration share one
+        // entry point (#393).
+        if !self.check(TokenType::Eq) {
+            let name_span = self.tokens[self.current - 1].span;
+            return Ok(AstNode::Statement(StatementNode {
+                kind: StatementKind::UninitDecl(name, type_node),
+                span: start_span.combine(&name_span),
+            }));
+        }
+
         self.consume_token(TokenType::Eq, "Expected '=' after variable name")?;
         let value = self.parse_expression()?;
 
@@ -1233,9 +1245,16 @@ impl<'a> Parser<'a> {
             && j < n
             && let TokenType::Id(_) = self.tokens[j].token_type
             && j + 1 < n
-            && self.tokens[j + 1].token_type == TokenType::Eq
         {
-            return true;
+            return match &self.tokens[j + 1].token_type {
+                TokenType::Eq => true,
+                // `Type name` with no initializer (#393). A type followed by a
+                // name followed by the end of the statement is unambiguously a
+                // declaration - Mux has no expression form where two
+                // identifiers sit side by side.
+                TokenType::NewLine | TokenType::CloseBrace | TokenType::Eof => true,
+                _ => false,
+            };
         }
         false
     }
@@ -2825,13 +2844,49 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_index_postfix(&mut self, expr: ExpressionNode) -> ParserResult<ExpressionNode> {
+        // `xs[:b]` - an omitted start, so the colon comes first and there is no
+        // index expression to parse.
+        if self.matches(&[TokenType::Colon]) {
+            return self.finish_slice(expr, None);
+        }
+
         let index = self.parse_expression()?;
+
+        // `xs[a:b]` or `xs[a:]`. Deciding here, after the first expression,
+        // is what lets an index and a slice share one entry point.
+        if self.matches(&[TokenType::Colon]) {
+            return self.finish_slice(expr, Some(index));
+        }
+
         let end_span = self.consume_token(TokenType::CloseBracket, "Expected ']' after index")?;
         let expr_span = *expr.span();
         Ok(ExpressionNode {
             kind: ExpressionKind::ListAccess {
                 expr: Box::new(expr),
                 index: Box::new(index),
+            },
+            span: expr_span.combine(&end_span),
+        })
+    }
+
+    /// Finish `xs[start:` - the colon is consumed, the end bound is optional.
+    fn finish_slice(
+        &mut self,
+        expr: ExpressionNode,
+        start: Option<ExpressionNode>,
+    ) -> ParserResult<ExpressionNode> {
+        let end = if self.check(TokenType::CloseBracket) {
+            None
+        } else {
+            Some(Box::new(self.parse_expression()?))
+        };
+        let end_span = self.consume_token(TokenType::CloseBracket, "Expected ']' after slice")?;
+        let expr_span = *expr.span();
+        Ok(ExpressionNode {
+            kind: ExpressionKind::Slice {
+                expr: Box::new(expr),
+                start: start.map(Box::new),
+                end,
             },
             span: expr_span.combine(&end_span),
         })

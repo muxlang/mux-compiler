@@ -62,6 +62,9 @@ impl SemanticAnalyzer {
             ExpressionKind::ListAccess { expr, index } => {
                 self.analyze_list_access_expr(expr, index, false)
             }
+            ExpressionKind::Slice { expr, start, end } => {
+                self.analyze_slice_expr(expr, start.as_deref(), end.as_deref())
+            }
             ExpressionKind::ListLiteral(elements) => self.analyze_list_literal_expr(elements),
             ExpressionKind::MapLiteral { entries, .. } => {
                 self.analyze_map_literal_expr(expr, entries)
@@ -504,6 +507,27 @@ impl SemanticAnalyzer {
                     ));
                 }
             }
+            // A string indexes by CHARACTER, the same rule as its length,
+            // iteration and slicing (#389).
+            Type::Primitive(PrimitiveType::Str) => {
+                if !matches!(index_type, Type::Primitive(PrimitiveType::Int)) {
+                    return Err(SemanticError::with_help(
+                        format!(
+                            "String index must be an integer, found {}",
+                            format_type(&index_type)
+                        ),
+                        index.span,
+                        "Strings are indexed by character position, e.g. text[0]",
+                    ));
+                }
+                if is_assignment_target {
+                    return Err(SemanticError::with_help(
+                        "Cannot assign to a character of a string",
+                        expr.span,
+                        "Strings are immutable. Build a new one, e.g. with substring and '+'.",
+                    ));
+                }
+            }
             Type::EmptyMap => {
                 return Err(SemanticError::with_help(
                     "Cannot index empty map",
@@ -515,7 +539,7 @@ impl SemanticAnalyzer {
                 return Err(SemanticError::with_help(
                     "Cannot index non-list type",
                     expr.span,
-                    "Only lists and maps can be indexed with '[]'. Examples: my_list[0], my_map['key']",
+                    "Only lists, maps and strings can be indexed with '[]'. Examples: my_list[0], my_map['key'], text[0]",
                 ));
             }
         }
@@ -523,6 +547,46 @@ impl SemanticAnalyzer {
             return Ok(());
         }
         self.check_const_index(expr, &target_type, index)
+    }
+
+    /// `xs[a:b]` on a list or a string. Both bounds are optional and both must
+    /// be integers; the result is the same type as the subject, since a slice
+    /// of a list is a list and a slice of a string is a string.
+    fn analyze_slice_expr(
+        &mut self,
+        expr: &ExpressionNode,
+        start: Option<&ExpressionNode>,
+        end: Option<&ExpressionNode>,
+    ) -> Result<(), SemanticError> {
+        self.analyze_expression(expr)?;
+        let target_type = self.get_expression_type(expr)?;
+
+        if !matches!(
+            target_type,
+            Type::List(_) | Type::Primitive(PrimitiveType::Str)
+        ) {
+            return Err(SemanticError::with_help(
+                format!("Cannot slice type {}", format_type(&target_type)),
+                expr.span,
+                "Only lists and strings can be sliced. Examples: items[1:3], text[:4]",
+            ));
+        }
+
+        for bound in [start, end].into_iter().flatten() {
+            self.analyze_expression(bound)?;
+            let bound_type = self.get_expression_type(bound)?;
+            if !matches!(bound_type, Type::Primitive(PrimitiveType::Int)) {
+                return Err(SemanticError::with_help(
+                    format!(
+                        "Slice bound must be an integer, found {}",
+                        format_type(&bound_type)
+                    ),
+                    bound.span,
+                    "Slice bounds are positions, e.g. items[1:3]. A negative bound counts from the end.",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn analyze_list_literal_expr(

@@ -39,7 +39,7 @@ impl<'a> CodeGenerator<'a> {
     /// Wrap an *owned* C string (returned by a runtime `*_to_string` helper) in
     /// a Mux string Value. Uses the ownership-taking constructor so the input C
     /// string is freed after its contents are copied, rather than leaked.
-    fn call_cstr_to_mux_string(
+    pub(super) fn call_cstr_to_mux_string(
         &self,
         cstr_ptr: BasicValueEnum<'a>,
     ) -> Result<BasicValueEnum<'a>, String> {
@@ -56,7 +56,7 @@ impl<'a> CodeGenerator<'a> {
             .expect("mux_new_string_from_owned_cstr should return a basic value"))
     }
 
-    fn call_runtime_function(
+    pub(super) fn call_runtime_function(
         &self,
         func_name: &str,
         args: &[BasicValueEnum<'a>],
@@ -205,7 +205,7 @@ impl<'a> CodeGenerator<'a> {
     /// Unwrap a Mux string Value to the raw C string the runtime's string
     /// helpers take. Same step `call_string_conversion_func` performs, split out
     /// for the helpers that need two operands rather than one.
-    fn string_value_to_cstr(
+    pub(super) fn string_value_to_cstr(
         &self,
         value: BasicValueEnum<'a>,
     ) -> Result<BasicValueEnum<'a>, String> {
@@ -218,6 +218,23 @@ impl<'a> CodeGenerator<'a> {
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| "mux_value_to_string should return a basic value".to_string())
+    }
+
+    /// Free the owned C strings `string_value_to_cstr` handed back.
+    ///
+    /// `mux_value_to_string` returns an owned copy, so every operand unwrapped
+    /// for a runtime string call has to be released or the call leaks one
+    /// allocation per operand per invocation.
+    pub(super) fn free_cstrings(&self, cstrs: &[BasicValueEnum<'a>]) -> Result<(), String> {
+        let free_fn = self
+            .runtime_function("mux_free_string")
+            .ok_or("mux_free_string not found")?;
+        for cstr in cstrs {
+            self.builder
+                .build_call(free_fn, &[(*cstr).into()], "free_cstr")
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn call_string_conversion_func(
@@ -966,6 +983,91 @@ impl<'a> CodeGenerator<'a> {
                             .map_err(|e| e.to_string())?;
                     }
                     Ok(ordering)
+                }
+                // Transforms: take the receiver's C string, hand back an owned
+                // one, wrap it as a Mux string.
+                "trim" | "to_upper" | "to_lower" => {
+                    self.ensure_no_args(method_name, args)?;
+                    let recv = self.string_value_to_cstr(obj_value)?;
+                    let out = self
+                        .call_runtime_function(&format!("mux_string_{}", method_name), &[recv])?;
+                    self.free_cstrings(&[recv])?;
+                    self.call_cstr_to_mux_string(out)
+                }
+                "split" => {
+                    let sep = gen_one_expr(self, args)?;
+                    let recv = self.string_value_to_cstr(obj_value)?;
+                    let sep_cstr = self.string_value_to_cstr(sep)?;
+                    let list = self.call_runtime_function("mux_string_split", &[recv, sep_cstr])?;
+                    self.free_cstrings(&[recv, sep_cstr])?;
+                    self.register_temp(list);
+                    Ok(list)
+                }
+                "to_list" => {
+                    self.ensure_no_args("to_list", args)?;
+                    let recv = self.string_value_to_cstr(obj_value)?;
+                    let list = self.call_runtime_function("mux_string_to_list", &[recv])?;
+                    self.free_cstrings(&[recv])?;
+                    self.register_temp(list);
+                    Ok(list)
+                }
+                "char_at" => {
+                    let index = gen_one_expr(self, args)?;
+                    let recv = self.string_value_to_cstr(obj_value)?;
+                    let raw_index = self.get_raw_int_value(index)?;
+                    let opt = self
+                        .call_runtime_function("mux_string_char_at", &[recv, raw_index.into()])?;
+                    self.free_cstrings(&[recv])?;
+                    self.register_temp(opt);
+                    Ok(opt)
+                }
+                "substring" => {
+                    let (start, end) = gen_two_expr(self, args)?;
+                    let recv = self.string_value_to_cstr(obj_value)?;
+                    let raw_start = self.get_raw_int_value(start)?;
+                    let raw_end = self.get_raw_int_value(end)?;
+                    let out = self.call_runtime_function(
+                        "mux_string_slice",
+                        &[recv, raw_start.into(), raw_end.into()],
+                    )?;
+                    self.free_cstrings(&[recv])?;
+                    self.call_cstr_to_mux_string(out)
+                }
+                // mux_string_contains takes Values rather than C strings, so
+                // this one does not unwrap its operands.
+                "contains" => {
+                    let needle = gen_one_expr(self, args)?;
+                    self.call_runtime_function("mux_string_contains", &[obj_value, needle])
+                }
+                "starts_with" | "ends_with" => {
+                    let other = gen_one_expr(self, args)?;
+                    let recv = self.string_value_to_cstr(obj_value)?;
+                    let other_cstr = self.string_value_to_cstr(other)?;
+                    let result = self.call_runtime_function(
+                        &format!("mux_string_{}", method_name),
+                        &[recv, other_cstr],
+                    )?;
+                    self.free_cstrings(&[recv, other_cstr])?;
+                    Ok(result)
+                }
+                "index_of" => {
+                    let needle = gen_one_expr(self, args)?;
+                    let recv = self.string_value_to_cstr(obj_value)?;
+                    let needle_cstr = self.string_value_to_cstr(needle)?;
+                    let result =
+                        self.call_runtime_function("mux_string_index_of", &[recv, needle_cstr])?;
+                    self.free_cstrings(&[recv, needle_cstr])?;
+                    Ok(result)
+                }
+                "replace" => {
+                    let (from, to) = gen_two_expr(self, args)?;
+                    let recv = self.string_value_to_cstr(obj_value)?;
+                    let from_cstr = self.string_value_to_cstr(from)?;
+                    let to_cstr = self.string_value_to_cstr(to)?;
+                    let out = self
+                        .call_runtime_function("mux_string_replace", &[recv, from_cstr, to_cstr])?;
+                    self.free_cstrings(&[recv, from_cstr, to_cstr])?;
+                    self.call_cstr_to_mux_string(out)
                 }
                 _ => Err(format!("Method {} not implemented for string", method_name)),
             },

@@ -3,6 +3,7 @@
 pub mod const_checks;
 pub mod const_fold;
 pub mod declarations;
+mod definite_assignment;
 pub mod error;
 pub mod expressions;
 pub mod format;
@@ -1079,6 +1080,9 @@ impl SemanticAnalyzer {
             ExpressionKind::ListAccess { expr, index: _ } => {
                 self.resolve_list_access_type(expr, expr.span)
             }
+            // A slice has the same type as its subject: a slice of a list is a
+            // list, a slice of a string is a string.
+            ExpressionKind::Slice { expr, .. } => self.get_expression_type(expr),
             ExpressionKind::ListLiteral(elements) => self.resolve_list_literal_type(elements),
             ExpressionKind::MapLiteral { entries, .. } => self.resolve_map_literal_type(entries),
             ExpressionKind::If {
@@ -1281,6 +1285,8 @@ impl SemanticAnalyzer {
         match target_type {
             Type::List(elem_type) => Ok(*elem_type),
             Type::Map(_, value_type) => Ok(*value_type),
+            // Indexing a string yields a character, matching iteration.
+            Type::Primitive(PrimitiveType::Str) => Ok(Type::Primitive(PrimitiveType::Char)),
             Type::EmptyMap => Err(SemanticError::with_help(
                 "Cannot index empty map",
                 span,
@@ -1289,7 +1295,7 @@ impl SemanticAnalyzer {
             _ => Err(SemanticError::with_help(
                 "Cannot index non-list type",
                 span,
-                "Only lists and maps can be indexed with '[]'. Examples: my_list[0], my_map['key']",
+                "Only lists, maps and strings can be indexed with '[]'. Examples: my_list[0], my_map['key'], text[0]",
             )),
         }
     }
@@ -3272,6 +3278,50 @@ impl SemanticAnalyzer {
             "eq" => Some(Self::make_eq_method_sig(PrimitiveType::Str)),
             "cmp" => Some(Self::make_cmp_method_sig(PrimitiveType::Str)),
             "hash" => Some(Self::make_hash_method_sig()),
+            // Decomposition. Positions are characters, matching `length`.
+            "split" => Some(Self::make_instance_method_sig(
+                vec![Type::Primitive(PrimitiveType::Str)],
+                Type::List(Box::new(Type::Primitive(PrimitiveType::Str))),
+            )),
+            "char_at" => Some(Self::make_instance_method_sig(
+                vec![Type::Primitive(PrimitiveType::Int)],
+                Type::Optional(Box::new(Type::Primitive(PrimitiveType::Char))),
+            )),
+            "substring" => Some(Self::make_instance_method_sig(
+                vec![
+                    Type::Primitive(PrimitiveType::Int),
+                    Type::Primitive(PrimitiveType::Int),
+                ],
+                Type::Primitive(PrimitiveType::Str),
+            )),
+            // The characters as a list, which is also what makes
+            // `for char c in s` work through the existing list loop.
+            "to_list" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::List(Box::new(Type::Primitive(PrimitiveType::Char))),
+            )),
+            "trim" | "to_upper" | "to_lower" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Primitive(PrimitiveType::Str),
+            )),
+            "starts_with" | "ends_with" | "contains" => Some(Self::make_instance_method_sig(
+                vec![Type::Primitive(PrimitiveType::Str)],
+                Type::Primitive(PrimitiveType::Bool),
+            )),
+            // -1 when absent, so this is an int rather than an optional: a
+            // caller almost always compares it, and `>= 0` reads better than
+            // opening an optional to ask the same question.
+            "index_of" => Some(Self::make_instance_method_sig(
+                vec![Type::Primitive(PrimitiveType::Str)],
+                Type::Primitive(PrimitiveType::Int),
+            )),
+            "replace" => Some(Self::make_instance_method_sig(
+                vec![
+                    Type::Primitive(PrimitiveType::Str),
+                    Type::Primitive(PrimitiveType::Str),
+                ],
+                Type::Primitive(PrimitiveType::Str),
+            )),
             _ => None,
         }
     }

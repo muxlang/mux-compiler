@@ -604,6 +604,8 @@ impl<'a> CodeGenerator<'a> {
                 match container_type {
                     Type::List(inner) => Ok(*inner),
                     Type::Map(_, value) => Ok(*value),
+                    // Indexing a string yields a character (#389).
+                    Type::Primitive(PrimitiveType::Str) => Ok(Type::Primitive(PrimitiveType::Char)),
                     Type::Tuple(left, right) => match &index.kind {
                         ExpressionKind::Literal(LiteralNode::Integer(0)) => Ok(*left),
                         ExpressionKind::Literal(LiteralNode::Integer(1)) => Ok(*right),

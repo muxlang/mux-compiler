@@ -218,6 +218,60 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        // Decomposition. Every position is a character position, matching
+        // mux_string_length.
+        for owned in [
+            "mux_string_trim",
+            "mux_string_to_upper",
+            "mux_string_to_lower",
+        ] {
+            module.add_function(owned, i8_ptr.fn_type(&[i8_ptr.into()], false), None);
+        }
+        module.add_function(
+            "mux_string_split",
+            i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_string_to_list",
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_string_char_at",
+            i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_string_slice",
+            i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into(), i64_type.into()], false),
+            None,
+        );
+        for pred in ["mux_string_starts_with", "mux_string_ends_with"] {
+            module.add_function(
+                pred,
+                context
+                    .bool_type()
+                    .fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+                None,
+            );
+        }
+        module.add_function(
+            "mux_string_index_of",
+            i64_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_string_replace",
+            i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_list_slice_value",
+            i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into(), i64_type.into()], false),
+            None,
+        );
+
         // Lexicographic ordering, negative / zero / positive like strcmp. The
         // relational operators on `string` lower to this.
         module.add_function(
