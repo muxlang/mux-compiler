@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Typed accessors on `Json`**: `as_string`, `as_int`, `as_float`, `as_bool`,
+  `as_list`, `as_map` and `is_null`. Each returns an `optional<T>`, `none` when
+  the value is a different kind - ordinary control flow when reading a document,
+  not an error worth reporting, which is the same reasoning that makes
+  `list.get` an optional.
+
+  `stringify` was previously the only method a `Json` had, so inspecting a value
+  meant serializing it back to JSON text: a string field came back ENCODED, with
+  its quotes, and stripping them needs string operations that do not exist yet
+  (#389) - so a string could not be read out of a document at all. Reading an
+  integer took `stringify` then `to_float` then `to_int`. Needs the runtime side
+  from muxlang/mux-runtime#56 (#392).
+
 ### Fixed
 - **A closure now captures variables referenced inside a `match` arm.**
   Free-variable collection walked `if`, `while`, `for` and plain blocks but not

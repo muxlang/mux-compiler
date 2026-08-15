@@ -1255,6 +1255,22 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(result);
                 Ok(result)
             }
+            // Typed accessors. Each returns an owned optional<T>, so it is
+            // registered for statement-end release the same way stringify's
+            // result is.
+            "as_string" | "as_int" | "as_float" | "as_bool" | "as_list" | "as_map" => {
+                self.ensure_no_args(method_name, args)?;
+                let result =
+                    self.call_runtime_function(&format!("mux_json_{}", method_name), &[obj_value])?;
+                self.register_temp(result);
+                Ok(result)
+            }
+            // Returns a bare bool rather than an optional, so nothing to
+            // release.
+            "is_null" => {
+                self.ensure_no_args("is_null", args)?;
+                self.call_runtime_function("mux_json_is_null", &[obj_value])
+            }
             _ => Err(format!("Method {} not implemented for Json", method_name)),
         }
     }
