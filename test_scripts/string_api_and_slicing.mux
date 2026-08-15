@@ -1,0 +1,94 @@
+// Taking a string apart, and slicing both strings and lists.
+//
+// A string could previously only be measured, parsed whole, compared and
+// concatenated. There was no split, no indexing, no iteration - so a program
+// could receive text (io.read_file hands back a whole file as one string) and
+// had no way to do anything with it (issue #389).
+//
+// Every position here is a CHARACTER position, matching `length`. That is the
+// point of the non-ASCII cases at the bottom: every other assertion in this
+// file passes whether positions are bytes or characters, so they would not
+// notice the difference.
+
+func main() returns void {
+    // Splitting, the operation whose absence made text processing impossible.
+    print("split:      " + "a,b,c".split(",").to_string())
+    print("no sep:     " + "abc".split(",").to_string())
+    // An empty separator splits into characters, making split the inverse of
+    // joining a character list.
+    print("empty sep:  " + "hi".split("").to_string())
+
+    // Transforms.
+    print("trim:       [" + "  x  ".trim() + "]")
+    print("upper:      " + "hi".to_upper())
+    print("lower:      " + "HI".to_lower())
+    print("replace:    " + "a-b-c".replace("-", "+"))
+
+    // Predicates and search. index_of returns -1 rather than an optional,
+    // because a caller almost always compares it.
+    print("starts:     " + "hello".starts_with("he").to_string())
+    print("ends:       " + "hello".ends_with("lo").to_string())
+    print("contains:   " + "hello".contains("ell").to_string())
+    print("index_of:   " + "hello".index_of("llo").to_string())
+    print("missing:    " + "hello".index_of("zz").to_string())
+
+    // Indexing, including negatives counting from the end - the same rule
+    // lists use.
+    auto word = "hello"
+    print("word[0]:    " + word[0].to_string())
+    print("word[-1]:   " + word[-1].to_string())
+
+    // char_at is the non-panicking form, for an index that might be out of
+    // range.
+    match word.char_at(1) {
+        some(c) { print("char_at 1:  " + c.to_string()) }
+        none { print("char_at 1:  none") }
+    }
+    match word.char_at(99) {
+        some(c) { print("char_at 99: " + c.to_string()) }
+        none { print("char_at 99: none") }
+    }
+
+    // Iteration, which reads the characters in order.
+    auto spelled = ""
+    for char c in word {
+        spelled = spelled + c.to_string() + "."
+    }
+    print("iterated:   " + spelled)
+
+    // Slicing. Half-open, negatives from the end, clamping rather than
+    // failing, and empty rather than reversed when the bounds cross.
+    auto letters = "abcdef"
+    print("s[1:3]:     " + letters[1:3])
+    print("s[:3]:      " + letters[:3])
+    print("s[2:]:      " + letters[2:])
+    print("s[-2:]:     " + letters[-2:])
+    print("s[:]:       " + letters[:])
+    print("s[4:2]:     [" + letters[4:2] + "]")
+    print("s[2:99]:    " + letters[2:99])
+    print("substring:  " + letters.substring(1, 3))
+
+    // The same rules on lists, because one rule is better than two.
+    auto nums = [1, 2, 3, 4, 5]
+    print("xs[1:3]:    " + nums[1:3].to_string())
+    print("xs[:3]:     " + nums[:3].to_string())
+    print("xs[2:]:     " + nums[2:].to_string())
+    print("xs[-2:]:    " + nums[-2:].to_string())
+    print("xs[4:2]:    " + nums[4:2].to_string())
+    print("xs[2:99]:   " + nums[2:99].to_string())
+
+    // A slice is a copy: Mux is value-semantic, so the original is untouched.
+    auto part = nums[0:2]
+    print("original:   " + nums.to_string())
+    print("slice:      " + part.to_string())
+
+    // Positions are characters, not bytes. The accented letter below occupies
+    // two bytes, so a byte-based implementation gets every one of these wrong.
+    auto accented = "héllo"
+    print("len:        " + accented.length().to_string())
+    print("last char:  " + accented[-1].to_string())
+    print("index_of:   " + accented.index_of("llo").to_string())
+    print("slice 0:2:  " + accented[0:2])
+
+    return
+}

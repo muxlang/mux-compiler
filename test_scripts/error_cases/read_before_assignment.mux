@@ -1,0 +1,15 @@
+// Reading a declaration that has not been assigned on every path.
+//
+// `int n` declares without initializing (issue #393). The `if` has no `else`,
+// so there is a path to the read where nothing was assigned. Accepting this is
+// what a flow-INSENSITIVE check ("was there an assignment anywhere") would do,
+// and for a class type it is a segfault rather than a wrong number.
+
+func main() returns void {
+    int n
+    if true {
+        n = 5
+    }
+    print("n is " + n.to_string())
+    return
+}

@@ -3634,6 +3634,64 @@ impl<'a> CodeGenerator<'a> {
         Err(format!("Cannot call non-function type: {:?}", func_type))
     }
 
+    /// `xs[a:b]` on a list or a string.
+    ///
+    /// An omitted bound becomes the extreme the runtime clamps to: 0 for the
+    /// start, and i64::MAX for the end rather than the actual length, since the
+    /// runtime clamps anyway and asking for the length here would mean an extra
+    /// call and a second place for the two to disagree.
+    fn generate_slice_expression(
+        &mut self,
+        target_expr: &ExpressionNode,
+        start: Option<&ExpressionNode>,
+        end: Option<&ExpressionNode>,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let target_val = self.generate_expression(target_expr)?;
+        let target_type = self.resolve_expression_type_with_fallback(target_expr)?;
+
+        let i64_type = self.context.i64_type();
+        let start_val = match start {
+            Some(e) => {
+                let v = self.generate_expression(e)?;
+                self.get_raw_int_value(v)?
+            }
+            None => i64_type.const_zero(),
+        };
+        let end_val = match end {
+            Some(e) => {
+                let v = self.generate_expression(e)?;
+                self.get_raw_int_value(v)?
+            }
+            None => i64_type.const_int(i64::MAX as u64, false),
+        };
+
+        match &target_type {
+            crate::semantics::Type::Primitive(crate::ast::PrimitiveType::Str) => {
+                let cstr = self.string_value_to_cstr(target_val)?;
+                let out = self.call_runtime_function(
+                    "mux_string_slice",
+                    &[cstr, start_val.into(), end_val.into()],
+                )?;
+                self.free_cstrings(&[cstr])?;
+                // A slice is an expression, not a method call, so nothing above
+                // registers the string it allocates - unlike `trim`, which
+                // reaches here through the method path.
+                let wrapped = self.call_cstr_to_mux_string(out)?;
+                self.register_temp(wrapped);
+                Ok(wrapped)
+            }
+            crate::semantics::Type::List(_) => {
+                let out = self.call_runtime_function(
+                    "mux_list_slice_value",
+                    &[target_val, start_val.into(), end_val.into()],
+                )?;
+                self.register_temp(out);
+                Ok(out)
+            }
+            other => Err(format!("Cannot slice type: {:?}", other)),
+        }
+    }
+
     fn generate_list_access_expression(
         &mut self,
         target_expr: &ExpressionNode,
@@ -3646,6 +3704,46 @@ impl<'a> CodeGenerator<'a> {
         let target_type = self.resolve_expression_type_with_fallback(target_expr)?;
 
         match &target_type {
+            // A string indexes by character. char_at hands back an optional so
+            // it can report out of range, but indexing is not an optional
+            // expression - it panics like a list does - so the payload is
+            // unwrapped and a none is the out-of-bounds path.
+            crate::semantics::Type::Primitive(crate::ast::PrimitiveType::Str) => {
+                let cstr = self.string_value_to_cstr(target_val)?;
+                let raw_index = self.get_raw_int_value(index_val)?;
+                let opt =
+                    self.call_runtime_function("mux_string_char_at", &[cstr, raw_index.into()])?;
+                // Length BEFORE the free: the C string is an owned copy, and
+                // reading it after release is a use-after-free that showed up
+                // as a ptr::copy_nonoverlapping precondition abort.
+                let length = self.call_runtime_function("mux_string_length", &[cstr])?;
+                self.free_cstrings(&[cstr])?;
+                let payload = self
+                    .call_runtime_function("mux_optional_get_value", &[opt])?
+                    .into_pointer_value();
+                self.check_list_bounds(
+                    payload,
+                    index_val,
+                    length,
+                    Some(&index.span),
+                    "string_index",
+                )?;
+                let raw = self.get_raw_int_value(payload.into())?;
+                // char_at allocates an optional and get_value allocates its
+                // payload. The character is a raw int by this point, so both
+                // wrappers are dead here - released now rather than registered
+                // as statement temporaries, because the value that outlives
+                // this expression is the unboxed int, not either wrapper.
+                let release = self
+                    .runtime_function("mux_rc_dec")
+                    .ok_or("mux_rc_dec not found")?;
+                for dead in [BasicValueEnum::from(payload), opt] {
+                    self.builder
+                        .build_call(release, &[dead.into()], "release_index_temp")
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(raw.into())
+            }
             crate::semantics::Type::List(element_type) => {
                 // Read the element directly from the list Value. Indexing the
                 // live list in O(1) avoids the old `mux_value_get_list` path,
@@ -4807,6 +4905,11 @@ impl<'a> CodeGenerator<'a> {
                 expr: target_expr,
                 index,
             } => self.generate_list_access_expression(target_expr, index),
+            ExpressionKind::Slice {
+                expr: target_expr,
+                start,
+                end,
+            } => self.generate_slice_expression(target_expr, start.as_deref(), end.as_deref()),
             ExpressionKind::ListLiteral(elements) => {
                 self.generate_list_literal_expression(elements)
             }

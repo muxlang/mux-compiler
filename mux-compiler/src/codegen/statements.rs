@@ -441,7 +441,21 @@ impl<'a> CodeGenerator<'a> {
             .analyzer
             .resolve_type(var_type)
             .map_err(|e| e.message)?;
-        let list_val = self.generate_expression(iter)?;
+        let mut list_val = self.generate_expression(iter)?;
+        // A string iterates as its characters. Converting the subject here
+        // keeps the loop itself list-only, so nothing below needs a string
+        // case (#389).
+        if matches!(
+            self.resolve_expression_type_with_fallback(iter),
+            Ok(crate::semantics::Type::Primitive(
+                crate::ast::PrimitiveType::Str
+            ))
+        ) {
+            let cstr = self.string_value_to_cstr(list_val)?;
+            list_val = self.call_runtime_function("mux_string_to_list", &[cstr])?;
+            self.free_cstrings(&[cstr])?;
+            self.register_temp(list_val);
+        }
         let len_call = self
             .builder
             .build_call(
@@ -751,6 +765,41 @@ impl<'a> CodeGenerator<'a> {
         let var_type = value.get_type();
         let rhs_owned = Self::rhs_produces_owned_enum(&expr.kind);
         self.declare_variable(name, var_type, value, &concrete_type, function, rhs_owned)
+    }
+
+    /// `Type name` with no initializer: allocate the slot and bind the name,
+    /// but store nothing.
+    ///
+    /// The slot is zeroed rather than left as whatever the stack held, so a
+    /// reference-counted type sees a null pointer rather than a wild one. That
+    /// is defence in depth, not the guarantee - semantics rejects a read before
+    /// the assignment (#393), so a well-formed program never observes it. But
+    /// if that check is ever wrong, a null is a clean crash instead of a
+    /// corrupted refcount on an arbitrary address.
+    fn generate_uninit_decl_statement(
+        &mut self,
+        name: &str,
+        type_node: &crate::ast::TypeNode,
+        function: Option<&FunctionValue<'a>>,
+    ) -> Result<(), String> {
+        self.instantiate_generic_types_in_type_node(type_node)?;
+        let var_type = self.llvm_type_from_mux_type(type_node)?;
+        let resolved_type = self
+            .analyzer
+            .resolve_type(type_node)
+            .map_err(|e| e.to_string())?;
+
+        let zero = match var_type {
+            BasicTypeEnum::IntType(t) => t.const_zero().into(),
+            BasicTypeEnum::FloatType(t) => t.const_zero().into(),
+            BasicTypeEnum::PointerType(t) => t.const_null().into(),
+            BasicTypeEnum::StructType(t) => t.const_zero().into(),
+            BasicTypeEnum::ArrayType(t) => t.const_zero().into(),
+            BasicTypeEnum::VectorType(t) => t.const_zero().into(),
+            BasicTypeEnum::ScalableVectorType(t) => t.const_zero().into(),
+        };
+
+        self.declare_variable(name, var_type, zero, &resolved_type, function, false)
     }
 
     fn generate_typed_decl_statement(
@@ -1234,6 +1283,9 @@ impl<'a> CodeGenerator<'a> {
             }
             StatementKind::TypedDecl(name, type_node, expr) => {
                 self.generate_typed_decl_statement(name, type_node, expr, function)?;
+            }
+            StatementKind::UninitDecl(name, type_node) => {
+                self.generate_uninit_decl_statement(name, type_node, function)?;
             }
             StatementKind::ConstDecl(name, _, expr) => {
                 self.generate_const_decl_statement(name, expr, function)?;

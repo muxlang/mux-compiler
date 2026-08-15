@@ -334,6 +334,12 @@ fn collect_identifiers(
             collect_identifiers(expr, fields, found, contains_lambda);
             collect_identifiers(index, fields, found, contains_lambda);
         }
+        ExpressionKind::Slice { expr, start, end } => {
+            collect_identifiers(expr, fields, found, contains_lambda);
+            for bound in [start, end].iter().copied().flatten() {
+                collect_identifiers(bound, fields, found, contains_lambda);
+            }
+        }
         ExpressionKind::ListLiteral(elements)
         | ExpressionKind::SetLiteral(elements)
         | ExpressionKind::TupleLiteral(elements) => {

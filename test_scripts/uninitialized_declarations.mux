@@ -1,0 +1,55 @@
+// Declaring a variable without initializing it.
+//
+// Mux has no exceptions and no propagation operator, so every fallible call is
+// opened with `match`. Keeping that flat needs somewhere to bind the value
+// before the match - and for a CLASS type there is no zero value to initialize
+// with, so `Thing t` had to be writable before `fetch()` could be consumed
+// outside its arm (issue #393). Without it, every call after the first nested
+// one level deeper.
+//
+// Separating declaration from assignment is only safe because reading before
+// the assignment is a compile error. The rejected cases live in
+// error_cases/read_before_assignment.mux; this file is the accepted ones.
+//
+// The check is flow-sensitive: a branch counts only when every path through it
+// assigns or leaves. That is why the match below is accepted - the `err` arm
+// returns rather than assigning - while an `if` with no `else` is not.
+
+class Thing {
+    int n
+    common func of(int n) returns Thing {
+        auto t = Thing.new()
+        t.n = n
+        return t
+    }
+}
+
+func fetch(bool succeed) returns result<Thing, string> {
+    if succeed { return ok(Thing.of(7)) }
+    return err("nope")
+}
+
+func run(bool good) returns string {
+    Thing t
+    match fetch(good) {
+        ok(v) { t = v }
+        err(e) { return "failed: " + e }
+    }
+    return "got " + t.n.to_string()
+}
+
+func main() returns void {
+    print(run(true))
+    print(run(false))
+
+    // A scalar works the same way.
+    int count
+    if true {
+        count = 5
+    } else {
+        count = 0
+    }
+    print("count: " + count.to_string())
+
+    return
+}

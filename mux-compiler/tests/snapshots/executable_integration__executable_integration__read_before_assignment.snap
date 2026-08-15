@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: 'n' is read before it is assigned
+--> test_scripts/error_cases/read_before_assignment.mux:13:21
+   |
+13 |     print("n is " + n.to_string())
+   |                     ^
+   |
+= help: 'n' was declared without a value. Assign it on every path that                          reaches this point - an `if` needs an `else`, and every arm of a                          `match` must assign it or return.

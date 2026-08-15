@@ -1,0 +1,41 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+split:      [a, b, c]
+no sep:     [abc]
+empty sep:  [h, i]
+trim:       [x]
+upper:      HI
+lower:      hi
+replace:    a+b+c
+starts:     true
+ends:       true
+contains:   true
+index_of:   2
+missing:    -1
+word[0]:    h
+word[-1]:   o
+char_at 1:  e
+char_at 99: none
+iterated:   h.e.l.l.o.
+s[1:3]:     bc
+s[:3]:      abc
+s[2:]:      cdef
+s[-2:]:     ef
+s[:]:       abcdef
+s[4:2]:     []
+s[2:99]:    cdef
+substring:  bc
+xs[1:3]:    [2, 3]
+xs[:3]:     [1, 2, 3]
+xs[2:]:     [3, 4, 5]
+xs[-2:]:    [4, 5]
+xs[4:2]:    []
+xs[2:99]:   [3, 4, 5]
+original:   [1, 2, 3, 4, 5]
+slice:      [1, 2]
+len:        5
+last char:  o
+index_of:   2
+slice 0:2:  hé
