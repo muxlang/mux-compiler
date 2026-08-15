@@ -1,11 +1,11 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Cannot index non-list type
+error: Cannot assign to a character of a string
 --> test_scripts/error_cases/semantic_assign_index_non.mux:3:1
    |
  3 | s[0] = 'a'
    | ^
    |
-= help: Only lists and maps can be indexed with '[]'. Examples: my_list[0], my_map['key']
+= help: Strings are immutable. Build a new one, e.g. with substring and '+'.

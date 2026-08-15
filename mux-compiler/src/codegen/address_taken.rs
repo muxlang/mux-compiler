@@ -53,6 +53,8 @@ fn visit_statement(stmt: &StatementNode, found: &mut HashSet<String>) {
         | StatementKind::TypedDecl(_, _, expr)
         | StatementKind::ConstDecl(_, _, expr)
         | StatementKind::Expression(expr) => visit_expression(expr, found),
+        // No initializer, so no expression to walk.
+        StatementKind::UninitDecl(_, _) => {}
         StatementKind::Return(expr) => {
             if let Some(expr) = expr {
                 visit_expression(expr, found);
@@ -119,6 +121,12 @@ fn visit_expression(expr: &ExpressionNode, found: &mut HashSet<String>) {
         ExpressionKind::ListAccess { expr, index } => {
             visit_expression(expr, found);
             visit_expression(index, found);
+        }
+        ExpressionKind::Slice { expr, start, end } => {
+            visit_expression(expr, found);
+            for bound in [start, end].into_iter().flatten() {
+                visit_expression(bound, found);
+            }
         }
         ExpressionKind::ListLiteral(items)
         | ExpressionKind::SetLiteral(items)

@@ -218,6 +218,60 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
+        // Decomposition. Every position is a character position, matching
+        // mux_string_length.
+        for owned in [
+            "mux_string_trim",
+            "mux_string_to_upper",
+            "mux_string_to_lower",
+        ] {
+            module.add_function(owned, i8_ptr.fn_type(&[i8_ptr.into()], false), None);
+        }
+        module.add_function(
+            "mux_string_split",
+            i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_string_to_list",
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_string_char_at",
+            i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_string_slice",
+            i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into(), i64_type.into()], false),
+            None,
+        );
+        for pred in ["mux_string_starts_with", "mux_string_ends_with"] {
+            module.add_function(
+                pred,
+                context
+                    .bool_type()
+                    .fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+                None,
+            );
+        }
+        module.add_function(
+            "mux_string_index_of",
+            i64_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_string_replace",
+            i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_list_slice_value",
+            i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into(), i64_type.into()], false),
+            None,
+        );
+
         // Lexicographic ordering, negative / zero / positive like strcmp. The
         // relational operators on `string` lower to this.
         module.add_function(
@@ -883,6 +937,22 @@ impl<'a> CodeGenerator<'a> {
         );
         add_i8_fn(module, i8_ptr, "mux_json_from_map", &[i8_ptr.into()]);
         add_i8_fn(module, i8_ptr, "mux_json_to_map", &[i8_ptr.into()]);
+        // Typed accessors, each returning an owned optional<T>.
+        for accessor in [
+            "mux_json_as_string",
+            "mux_json_as_int",
+            "mux_json_as_float",
+            "mux_json_as_bool",
+            "mux_json_as_list",
+            "mux_json_as_map",
+        ] {
+            add_i8_fn(module, i8_ptr, accessor, &[i8_ptr.into()]);
+        }
+        module.add_function(
+            "mux_json_is_null",
+            context.bool_type().fn_type(&[i8_ptr.into()], false),
+            None,
+        );
         // CSV helpers
         add_i8_fn(module, i8_ptr, "mux_csv_parse", &[i8_ptr.into()]);
         add_i8_fn(

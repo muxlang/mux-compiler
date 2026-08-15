@@ -1,6 +1,6 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
 error: Cannot index non-list type
 --> test_scripts/error_cases/semantic_empty_map_index.mux:3:1
@@ -8,4 +8,4 @@ error: Cannot index non-list type
  3 | m["key"]
    | ^
    |
-= help: Only lists and maps can be indexed with '[]'. Examples: my_list[0], my_map['key']
+= help: Only lists, maps and strings can be indexed with '[]'. Examples: my_list[0], my_map['key'], text[0]

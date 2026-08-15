@@ -1,3 +1,7 @@
-// Should fail: Cannot index non-list type
-auto s = "hello"
-s[0]
+// Should fail: only lists, maps and strings can be indexed.
+//
+// This used to index a string, which was an error until #389 made a string
+// behave like a sequence of characters. An int never has been indexable, so it
+// is what the rule is now demonstrated with.
+auto n = 42
+n[0]

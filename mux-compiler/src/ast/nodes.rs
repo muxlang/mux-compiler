@@ -89,6 +89,18 @@ pub enum ImportSpec {
 pub enum StatementKind {
     AutoDecl(String, TypeNode, ExpressionNode),
     TypedDecl(String, TypeNode, ExpressionNode),
+    /// `Type name` with no initializer.
+    ///
+    /// Mux has no exceptions and no propagation operator, so a fallible call is
+    /// opened with `match`. Keeping that flat needs somewhere to bind the value
+    /// before the match, and for a class type there is no zero value to
+    /// initialize with - so `TcpStream stream` had to be writable before
+    /// `accept()` could be consumed outside its arm (issue #393).
+    ///
+    /// Reading one before it is assigned is a compile error, so this does not
+    /// introduce uninitialized values; it only separates declaring from
+    /// assigning.
+    UninitDecl(String, TypeNode),
     ConstDecl(String, TypeNode, ExpressionNode),
     Function(FunctionNode),
     Import {
@@ -170,6 +182,14 @@ pub enum ExpressionKind {
     ListAccess {
         expr: Box<ExpressionNode>,
         index: Box<ExpressionNode>,
+    },
+    /// `xs[a:b]`, half-open. Either bound may be omitted (`xs[:b]`, `xs[a:]`,
+    /// `xs[:]`), which is why they are optional rather than defaulted here -
+    /// the default for `end` is the length, which the parser does not know.
+    Slice {
+        expr: Box<ExpressionNode>,
+        start: Option<Box<ExpressionNode>>,
+        end: Option<Box<ExpressionNode>>,
     },
     ListLiteral(Vec<ExpressionNode>),
     MapLiteral {

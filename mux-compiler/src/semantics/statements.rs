@@ -53,6 +53,39 @@ impl SemanticAnalyzer {
             self.analyze_statement(stmt, files.as_deref_mut())?;
         }
 
+        self.check_definite_assignment(stmts)?;
+
+        Ok(())
+    }
+
+    /// Reject a read of an uninitialized declaration before its assignment.
+    ///
+    /// `Type name` separates declaring from assigning (#393), which is only
+    /// safe if reading first is a compile error - otherwise the slot holds
+    /// whatever was there, and for a class type that is a segfault rather than
+    /// a diagnostic.
+    ///
+    /// Checked per block, over the statements that FOLLOW the declaration, so
+    /// the analysis sees exactly the region where the variable is live.
+    fn check_definite_assignment(&self, stmts: &[StatementNode]) -> Result<(), SemanticError> {
+        for (i, stmt) in stmts.iter().enumerate() {
+            let StatementKind::UninitDecl(name, _) = &stmt.kind else {
+                continue;
+            };
+            let rest = &stmts[i + 1..];
+
+            if let Some(read) = super::definite_assignment::first_read_before_assignment(rest, name)
+            {
+                return Err(SemanticError::with_help(
+                    format!("'{}' is read before it is assigned", name),
+                    read.span,
+                    format!(
+                        "'{0}' was declared without a value. Assign it on every path that                          reaches this point - an `if` needs an `else`, and every arm of a                          `match` must assign it or return.",
+                        name
+                    ),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -300,11 +333,15 @@ impl SemanticAnalyzer {
         let iter_type = self.get_expression_type(iter)?;
         let var_type = match iter_type {
             Type::List(elem_type) => *elem_type,
+            // A string iterates as its characters, which is the same model as
+            // indexing and slicing it (#389). Codegen turns the subject into a
+            // list, so the loop itself needs no string case.
+            Type::Primitive(PrimitiveType::Str) => Type::Primitive(PrimitiveType::Char),
             _ => {
                 return Err(SemanticError::with_help(
                     format!("Cannot iterate over type {}", format_type(&iter_type)),
                     iter.span,
-                    "The 'for' loop can only iterate over list types. Use .to_list() for sets. For maps, use .get_keys(), .get_values(), or .get_pairs() to get a list. For numeric ranges, use range(start, end).",
+                    "The 'for' loop can only iterate over lists and strings. Use .to_list() for sets. For maps, use .get_keys(), .get_values(), or .get_pairs() to get a list. For numeric ranges, use range(start, end).",
                 ));
             }
         };
@@ -500,6 +537,13 @@ impl SemanticAnalyzer {
             }
             StatementKind::TypedDecl(name, type_node, expr) => {
                 self.analyze_typed_decl_statement(name, type_node, expr, stmt.span)?;
+            }
+            StatementKind::UninitDecl(name, type_node) => {
+                let declared_type = self.resolve_type(type_node)?;
+                self.symbol_table.add_symbol(
+                    name,
+                    Self::make_symbol(SymbolKind::Variable, stmt.span, Some(declared_type)),
+                )?;
             }
             StatementKind::Expression(expr) => {
                 self.analyze_expression(expr)?;
