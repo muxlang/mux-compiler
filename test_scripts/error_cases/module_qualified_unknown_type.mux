@@ -1,0 +1,13 @@
+// A module-qualified type still has to name something.
+//
+// `graph.Graph` is accepted in a type position because the module is in scope
+// and holds that type. Resolving the qualifier is what makes this an ordinary
+// "undefined type" and not a parse error about the dot: the module is real, the
+// type in it is not, and the message says so.
+
+import std.dsa.*
+
+func main() returns void {
+    graph.Heap<string> h = graph.Graph<string>.new()
+    return
+}

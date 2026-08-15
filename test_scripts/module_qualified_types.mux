@@ -1,0 +1,47 @@
+// Importing a std.dsa type, and naming it the way the import spells it.
+//
+// Two things used to make this impossible (#391). Importing `Graph` alone
+// crashed the compiler, because `Graph` declares `is Collection<T>` and nothing
+// had brought `Collection` into scope - so a working program had to name an
+// interface it never mentions. And `graph.Graph<string>`, the exact path a
+// wildcard import leaves you writing, was rejected in every type position, so a
+// graph could be built but never passed to or returned from a function.
+
+import std.dsa.graph.Graph
+import std.dsa.*
+
+// A module-qualified type as a parameter, as a return type, and nested inside
+// another type. All three name the same type the unqualified spelling does.
+func build(list<string> names) returns graph.Graph<string> {
+    graph.Graph<string> g = graph.Graph<string>.new()
+    for string name in names {
+        g.add_vertex(name)
+    }
+    return g
+}
+
+func total(list<graph.Graph<string>> graphs) returns int {
+    int sum = 0
+    for graph.Graph<string> g in graphs {
+        sum = sum + g.len()
+    }
+    return sum
+}
+
+// The unqualified name, available because the import brought it in directly.
+func describe(Graph<string> g) returns string {
+    return "graph of " + g.len().to_string()
+}
+
+func main() returns void {
+    auto left = build(["a", "b"])
+    auto right = build(["x", "y", "z"])
+
+    left.add_edge("a", "b")
+    print(describe(left))
+    print(describe(right))
+    print(total([left, right]).to_string())
+    print(left.neighbors("a").len().to_string())
+
+    return
+}

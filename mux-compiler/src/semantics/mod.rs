@@ -872,6 +872,23 @@ impl SemanticAnalyzer {
         type_args: &[TypeNode],
         span: Span,
     ) -> Result<Type, SemanticError> {
+        // A module-qualified name, `graph.Graph`. Written in a type position it
+        // means exactly what the unqualified name means - the qualifier says
+        // which module to find it in, and both spellings name one type - so it
+        // resolves to the same thing rather than to a type of its own. Without
+        // this a `graph.Graph<string>` local would not accept the value
+        // `graph.Graph<string>.new()` returns (#391).
+        if let Some((module, bare)) = name.rsplit_once('.') {
+            if self
+                .imported_symbols
+                .get(module)
+                .is_some_and(|symbols| symbols.contains_key(bare))
+            {
+                return self.resolve_named_type(bare, type_args, span);
+            }
+            return Err(SemanticError::new(format!("Undefined type '{name}'"), span));
+        }
+
         // A generic type parameter (e.g. `T`) resolves to a type variable.
         if type_args.is_empty()
             && let Some(symbol) = self.symbol_table.lookup(name)
