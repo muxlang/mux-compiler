@@ -1,0 +1,21 @@
+// A namespace import binds the namespace, not its contents.
+//
+// `import std.net` makes `net.TcpListener` reachable; the bare name is not in
+// scope. Analysis used to accept the bare name anyway, on the grounds that SOME
+// imported stdlib namespace held a class by that name - which let it through
+// without ever binding it, and codegen, which has no such fallback, reported an
+// internal compiler error about the user's own program.
+//
+// The type is real and the program is one word away from working, so the
+// message names the spelling that resolves rather than claiming the type does
+// not exist.
+
+import std.net
+
+func main() returns void {
+    match TcpListener.bind("127.0.0.1:0") {
+        ok(listener) { print("bound") }
+        err(e) { print("failed: " + e) }
+    }
+    return
+}

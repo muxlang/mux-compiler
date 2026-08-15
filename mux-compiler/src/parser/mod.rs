@@ -1911,9 +1911,25 @@ impl<'a> Parser<'a> {
 
     fn parse_named_type_with_builtin_support(
         &mut self,
-        name: String,
+        mut name: String,
         start_span: Span,
     ) -> ParserResult<TypeNode> {
+        // A module-qualified type, `graph.Graph<string>`. This is the form
+        // `import std.dsa.*` naturally leads you to write - the same path that
+        // already works in expression position - and it was rejected outright
+        // in a type position, so a function could not take or return one (#391).
+        //
+        // A type is never followed by a field access, so a dot here is
+        // unambiguous and consuming it greedily costs nothing. The qualifier is
+        // kept in the name and resolved by the analyzer, which is the only
+        // place that knows which module namespaces are in scope.
+        while self.check(TokenType::Dot) {
+            self.current += 1;
+            let segment = self.consume_identifier("Expected a type name after '.'")?;
+            name.push('.');
+            name.push_str(&segment);
+        }
+
         if let Ok(prim_type) =
             PrimitiveType::parse(Token::new(TokenType::Id(name.clone()), start_span))
         {

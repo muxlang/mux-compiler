@@ -81,7 +81,7 @@ impl SemanticAnalyzer {
         module_analyzer: &SemanticAnalyzer,
     ) -> HashMap<String, Symbol> {
         let global_symbols = module_analyzer.symbol_table.global_scope_symbols();
-        let declared: HashMap<String, Symbol> = module_nodes
+        let mut declared: HashMap<String, Symbol> = module_nodes
             .iter()
             .filter_map(Self::declared_symbol_name)
             .filter_map(|symbol_name| {
@@ -92,7 +92,37 @@ impl SemanticAnalyzer {
             })
             .collect();
 
+        let interfaces = Self::implemented_interfaces(&declared, &global_symbols);
+        declared.extend(interfaces);
         self.filter_module_export_symbols(&declared)
+    }
+
+    /// Carry along the interfaces the declared types implement.
+    ///
+    /// A module's exports are the symbols it DECLARES, which excludes an
+    /// interface it merely imported - so `std.dsa.graph` exported `Graph` but
+    /// not the `Collection` that `Graph` implements, and importing the type
+    /// alone left codegen with no interface to build (#391).
+    ///
+    /// The interface is taken from the module's own scope, which is where its
+    /// import of `std.dsa.collection` put it, so this reuses a resolution that
+    /// already happened rather than performing a second one.
+    fn implemented_interfaces(
+        declared: &HashMap<String, Symbol>,
+        module_scope: &HashMap<String, Symbol>,
+    ) -> HashMap<String, Symbol> {
+        let mut found = HashMap::new();
+        for symbol in declared.values() {
+            for interface_name in symbol.interfaces.keys() {
+                if declared.contains_key(interface_name) {
+                    continue;
+                }
+                if let Some(interface) = module_scope.get(interface_name) {
+                    found.insert(interface_name.clone(), interface.clone());
+                }
+            }
+        }
+        found
     }
 
     fn declared_symbol_name(node: &AstNode) -> Option<&str> {
@@ -641,51 +671,59 @@ impl SemanticAnalyzer {
             imported_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, item_name));
         }
 
-        self.check_implemented_interfaces_available(symbol, item_name, module_path, span)?;
-
         self.add_import_symbol_if_absent(local_name, imported_symbol)?;
+
+        // Bring in the interfaces this type implements. Importing a type used
+        // to leave them behind, so `import std.dsa.graph.Graph` alone left
+        // `Collection` unknown and codegen had no interface to build - reported
+        // first as an internal compiler error, then as a diagnostic telling the
+        // user to add an import they never mentioned. Neither is a good answer
+        // when the requirement is knowable from the type itself (#391).
+        self.import_implemented_interfaces(symbol, item_name, module_path, module_symbols, span)?;
         Ok(())
     }
 
-    /// Reject importing a type whose implemented interface is not in scope.
+    /// Import the interfaces `symbol` implements, from the same module.
     ///
-    /// Importing a type does not bring in the interfaces it implements, so
-    /// `import std.dsa.graph.Graph` left `Collection` unknown. Codegen then
-    /// failed building the interface's type and reported an internal compiler
-    /// error, asking the user to file a compiler bug about their own program. A
-    /// codegen error describing user code is a type-checking gap (issue #360),
-    /// so the rejection belongs here, where the import statement gives a span
-    /// and the message can name the import to add.
+    /// Only what the module exports is reachable here, which is why
+    /// `collect_declared_module_symbols` carries an implemented interface along
+    /// with the type it belongs to. That covers the case worth covering: an
+    /// interface the module itself can see.
     ///
-    /// Only classes and enums are checked. An INTERFACE lists itself in its own
-    /// `interfaces` map, so checking one reports that `Collection` does not
-    /// implement `Collection` - which is what a first attempt at this did,
-    /// during the standard library's own analysis, where such an import is
-    /// exactly what `std.dsa.graph` performs.
-    ///
-    /// The wildcard form is unaffected: it pulls in everything under the module,
-    /// including the interface.
-    fn check_implemented_interfaces_available(
+    /// One the module cannot supply is recorded rather than reported, because
+    /// the interface may still arrive from a later import. The deferred check
+    /// in `verify_pending_interface_imports` owns that diagnostic and runs once
+    /// every import has resolved, so it never depends on the order they were
+    /// written - and it is what keeps an unresolved interface from reaching
+    /// codegen, where the failure was an internal compiler error.
+    fn import_implemented_interfaces(
         &mut self,
         symbol: &Symbol,
         item_name: &str,
         module_path: &str,
+        module_symbols: &std::collections::HashMap<String, Symbol>,
         span: Span,
     ) -> Result<(), SemanticError> {
         if !matches!(symbol.kind, SymbolKind::Class | SymbolKind::Enum) {
             return Ok(());
         }
 
-        for interface_name in symbol.interfaces.keys() {
-            if interface_name == item_name {
+        let names: Vec<String> = symbol.interfaces.keys().cloned().collect();
+        for interface_name in names {
+            if self.symbol_table.get_cloned(&interface_name).is_some() {
                 continue;
             }
-            self.pending_interface_imports.push((
-                item_name.to_string(),
-                interface_name.clone(),
-                module_path.to_string(),
-                span,
-            ));
+            match module_symbols.get(&interface_name) {
+                Some(interface) => {
+                    self.add_import_symbol_if_absent(&interface_name, interface.clone())?
+                }
+                None => self.pending_interface_imports.push((
+                    item_name.to_string(),
+                    interface_name,
+                    module_path.to_string(),
+                    span,
+                )),
+            }
         }
         Ok(())
     }

@@ -1,0 +1,27 @@
+// Importing one type, and nothing else.
+//
+// Every `std.dsa` container declares `is Collection<T>`. That interface was not
+// part of what `import std.dsa.graph.Graph` brought in, so the import left the
+// class half-resolved and the compiler crashed on it (#391). Naming the
+// interface as well made it work, but a program that never mentions
+// `Collection` should not have to import it - what a type implements is the
+// type's business, not the importer's.
+
+import std.dsa.graph.Graph
+import std.dsa.stack.Stack
+
+func main() returns void {
+    Graph<string> g = Graph<string>.new()
+    g.add_vertex("a")
+    g.add_vertex("b")
+    g.add_edge("a", "b")
+    print(g.len().to_string())
+    print(g.bfs("a").to_string())
+
+    Stack<int> s = Stack<int>.new()
+    s.push(1)
+    s.push(2)
+    print(s.len().to_string())
+
+    return
+}
