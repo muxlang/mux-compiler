@@ -866,27 +866,46 @@ impl SemanticAnalyzer {
     /// built-in wrapper (`optional`/`result`), or a user class/enum/interface.
     /// Split out of `resolve_type` to keep that dispatcher's cognitive
     /// complexity within the gate (SonarQube rust:S3776).
+    /// Resolve a module-qualified name in a type position, `graph.Graph`.
+    ///
+    /// Written in a type position it means exactly what the unqualified name
+    /// means - the qualifier says which module to find the type in, and both
+    /// spellings name one type - so it resolves to the same thing rather than
+    /// to a type of its own. Without this a `graph.Graph<string>` local would
+    /// not accept the value `graph.Graph<string>.new()` returns (#391).
+    ///
+    /// `None` means the name carries no qualifier and the caller resolves it as
+    /// an ordinary one. A qualifier naming a real module that does not hold the
+    /// type is an ordinary "undefined type", which is why the error is raised
+    /// here rather than left to a lookup on a name that still has a dot in it.
+    fn resolve_qualified_named_type(
+        &self,
+        name: &str,
+        type_args: &[TypeNode],
+        span: Span,
+    ) -> Option<Result<Type, SemanticError>> {
+        let (module, bare) = name.rsplit_once('.')?;
+        if self
+            .imported_symbols
+            .get(module)
+            .is_some_and(|symbols| symbols.contains_key(bare))
+        {
+            return Some(self.resolve_named_type(bare, type_args, span));
+        }
+        Some(Err(SemanticError::new(
+            format!("Undefined type '{name}'"),
+            span,
+        )))
+    }
+
     fn resolve_named_type(
         &self,
         name: &str,
         type_args: &[TypeNode],
         span: Span,
     ) -> Result<Type, SemanticError> {
-        // A module-qualified name, `graph.Graph`. Written in a type position it
-        // means exactly what the unqualified name means - the qualifier says
-        // which module to find it in, and both spellings name one type - so it
-        // resolves to the same thing rather than to a type of its own. Without
-        // this a `graph.Graph<string>` local would not accept the value
-        // `graph.Graph<string>.new()` returns (#391).
-        if let Some((module, bare)) = name.rsplit_once('.') {
-            if self
-                .imported_symbols
-                .get(module)
-                .is_some_and(|symbols| symbols.contains_key(bare))
-            {
-                return self.resolve_named_type(bare, type_args, span);
-            }
-            return Err(SemanticError::new(format!("Undefined type '{name}'"), span));
+        if let Some(qualified) = self.resolve_qualified_named_type(name, type_args, span) {
+            return qualified;
         }
 
         // A generic type parameter (e.g. `T`) resolves to a type variable.

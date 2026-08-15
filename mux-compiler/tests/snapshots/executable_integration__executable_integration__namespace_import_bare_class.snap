@@ -1,0 +1,11 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+error: Undefined variable 'TcpListener'
+--> test_scripts/error_cases/namespace_import_bare_class.mux:16:11
+   |
+16 |     match TcpListener.bind("127.0.0.1:PORT") {
+   |           ^^^^^^^^^^^
+   |
+= help: 'TcpListener' comes from 'net', which was imported as a namespace, so it is reached as 'net.TcpListener'. To use the bare name, import it directly with 'import std.net.TcpListener' or bring the whole module in with 'import std.net.*'

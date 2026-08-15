@@ -123,12 +123,24 @@ impl SemanticAnalyzer {
             ));
         }
 
-        let mut exists_like =
-            self.symbol_table.exists(name) || self.get_builtin_sig(name).is_some();
+        let exists_like = self.symbol_table.exists(name) || self.get_builtin_sig(name).is_some();
         if !exists_like {
-            exists_like = self.check_stdlib_imports_for_class(name);
-        }
-        if !exists_like {
+            // A class that a `import std.net` style import can reach, but only
+            // through its namespace. Saying "undefined" would be true and
+            // useless - the type exists, the program just named it in a
+            // spelling that is not in scope.
+            if let Some(namespace) = self.stdlib_namespace_holding_class(name) {
+                return Err(SemanticError::with_help(
+                    format!("Undefined variable '{}'", name),
+                    expr.span,
+                    format!(
+                        "'{0}' comes from '{1}', which was imported as a namespace, so it is \
+                         reached as '{1}.{0}'. To use the bare name, import it directly with \
+                         'import std.{1}.{0}' or bring the whole module in with 'import std.{1}.*'",
+                        name, namespace
+                    ),
+                ));
+            }
             if self.symbol_table.find_similar(name).is_none()
                 && let Some(help) = collection_new_hint(name)
             {
@@ -241,22 +253,28 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    fn check_stdlib_imports_for_class(&self, name: &str) -> bool {
+    /// The imported stdlib namespace holding a class called `name`, if any.
+    ///
+    /// `import std.net` binds the namespace, not its contents, so `TcpListener`
+    /// is reached as `net.TcpListener`. This used to report the bare name as
+    /// existing, which let it past analysis without ever being in scope - and
+    /// codegen, which has no such fallback, failed with an internal compiler
+    /// error on the user's own program. Naming the namespace turns that into a
+    /// diagnostic that spells out the form that works.
+    fn stdlib_namespace_holding_class(&self, name: &str) -> Option<String> {
         let stdlib_names: std::collections::HashSet<String> = std_module_registry()
             .keys()
             .filter_map(|s| s.strip_prefix("std.").map(|name| name.to_string()))
             .collect();
-        for (ns, module_symbols) in &self.imported_symbols {
-            if !stdlib_names.contains(ns) {
-                continue;
-            }
-            if let Some(sym) = module_symbols.get(name)
-                && matches!(sym.kind, SymbolKind::Class)
-            {
-                return true;
-            }
-        }
-        false
+        self.imported_symbols
+            .iter()
+            .filter(|(ns, _)| stdlib_names.contains(*ns))
+            .find(|(_, module_symbols)| {
+                module_symbols
+                    .get(name)
+                    .is_some_and(|sym| matches!(sym.kind, SymbolKind::Class))
+            })
+            .map(|(ns, _)| ns.clone())
     }
 
     fn analyze_unary_expr(

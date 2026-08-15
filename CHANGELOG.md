@@ -41,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`list<graph.Graph<string>>`). A qualifier naming a real module but no such
   type is an ordinary "undefined type" error rather than a parse error about
   the dot (#391).
+- **A namespace import no longer lets a bare class name past analysis.**
+  `import std.net` binds the namespace, so the type is reached as
+  `net.TcpListener`. Analysis accepted the bare `TcpListener` anyway, on the
+  grounds that some imported stdlib namespace held a class by that name - which
+  let it through without ever binding it, and codegen has no such fallback, so
+  `TcpListener.bind(...)` failed with an internal compiler error about the
+  user's own program. It is now a diagnostic naming the three spellings that
+  do resolve: `net.TcpListener`, `import std.net.TcpListener`, or
+  `import std.net.*`.
 - **A closure now captures variables referenced inside a `match` arm.**
   Free-variable collection walked `if`, `while`, `for` and plain blocks but not
   `match`, so a variable used ONLY inside an arm was never recorded as a
