@@ -34,7 +34,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -161,7 +161,7 @@ jobs:
       # path, and caching a second multi-GB release tree to speed it up would
       # cost more cache than it saves.
       - name: Cache Cargo registry and release build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> target-ab-pr"
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -264,7 +264,7 @@ jobs:
           key: mux-ab-baseline-linux-${{ github.sha }}
       - name: Cache Cargo registry and release build
         if: steps.baseline_cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> target-ab-baseline"
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -318,7 +318,7 @@ jobs:
         # target/ on every PR run would churn through the 10GB repo cache limit
         # and evict the entries this exists to provide. PRs restore from main's
         # cache, which is the state they branch from anyway.
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build
@@ -366,7 +366,7 @@ jobs:
         # target/ on every PR run would churn through the 10GB repo cache limit
         # and evict the entries this exists to provide. PRs restore from main's
         # cache, which is the state they branch from anyway.
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust checks
@@ -608,7 +608,7 @@ jobs:
         # target/ on every PR run would churn through the 10GB repo cache limit
         # and evict the entries this exists to provide. PRs restore from main's
         # cache, which is the state they branch from anyway.
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Valgrind checks
@@ -681,7 +681,7 @@ jobs:
         # target/ on every PR run would churn through the 10GB repo cache limit
         # and evict the entries this exists to provide. PRs restore from main's
         # cache, which is the state they branch from anyway.
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Resolve runtime paths for the container
