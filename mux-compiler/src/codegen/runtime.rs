@@ -883,6 +883,22 @@ impl<'a> CodeGenerator<'a> {
         );
         add_i8_fn(module, i8_ptr, "mux_json_from_map", &[i8_ptr.into()]);
         add_i8_fn(module, i8_ptr, "mux_json_to_map", &[i8_ptr.into()]);
+        // Typed accessors, each returning an owned optional<T>.
+        for accessor in [
+            "mux_json_as_string",
+            "mux_json_as_int",
+            "mux_json_as_float",
+            "mux_json_as_bool",
+            "mux_json_as_list",
+            "mux_json_as_map",
+        ] {
+            add_i8_fn(module, i8_ptr, accessor, &[i8_ptr.into()]);
+        }
+        module.add_function(
+            "mux_json_is_null",
+            context.bool_type().fn_type(&[i8_ptr.into()], false),
+            None,
+        );
         // CSV helpers
         add_i8_fn(module, i8_ptr, "mux_csv_parse", &[i8_ptr.into()]);
         add_i8_fn(

@@ -1,0 +1,105 @@
+// Reading values out of a JSON document.
+//
+// `stringify` used to be the only method a `Json` had, so inspecting a value
+// meant serializing it back to JSON text. A string field came back ENCODED -
+// `"Ada"`, six characters including the quotes - and stripping them needs
+// string operations Mux does not have yet, so a string could not be read out of
+// a document at all. A number arrived as a float, and `"36.0".to_int()` fails,
+// so reading an integer took three conversions.
+//
+// Each accessor returns an `optional<T>` and yields `none` when the value is a
+// different kind. That is ordinary control flow when reading a document rather
+// than an error worth reporting, which is the same reasoning that makes
+// `list.get` an optional.
+
+import std.data.json
+
+func read_string(map<string, Json> obj, string key) returns string {
+    if !obj.contains(key) {
+        return "<missing>"
+    }
+    match obj[key].as_string() {
+        some(text) { return text }
+        none { return "<not a string>" }
+    }
+}
+
+func main() returns void {
+    match json.parse("{\"name\":\"Ada\",\"age\":36,\"score\":1.5,\"active\":true,\"tags\":[\"x\",\"y\"],\"nothing\":null}") {
+        ok(doc) {
+            match json.to_map(doc) {
+                ok(fields) {
+                    // The case that was impossible: a decoded string, no quotes.
+                    print("name: " + read_string(fields, "name"))
+
+                    match fields["age"].as_int() {
+                        some(n) { print("age: " + n.to_string()) }
+                        none { print("age: not an int") }
+                    }
+
+                    match fields["score"].as_float() {
+                        some(f) { print("score: " + f.to_string()) }
+                        none { print("score: not a float") }
+                    }
+
+                    match fields["active"].as_bool() {
+                        some(b) { print("active: " + b.to_string()) }
+                        none { print("active: not a bool") }
+                    }
+
+                    match fields["tags"].as_list() {
+                        some(items) { print("tags: " + items.size().to_string() + " entries") }
+                        none { print("tags: not a list") }
+                    }
+
+                    // A JSON null is a kind of its own, not an absent value.
+                    print("nothing is null: " + fields["nothing"].is_null().to_string())
+                    print("name is null:    " + fields["name"].is_null().to_string())
+
+                    // Asking for the wrong kind is `none`, not a wrong answer.
+                    match fields["name"].as_int() {
+                        some(n) { print("name as int: " + n.to_string()) }
+                        none { print("name as int: none") }
+                    }
+
+                    // An integral float reads as an int, so a document written
+                    // `42.0` still works; a fractional one does not truncate.
+                    match json.parse("{\"whole\":42.0,\"partial\":1.5}") {
+                        ok(numbers) {
+                            match json.to_map(numbers) {
+                                ok(nmap) {
+                                    match nmap["whole"].as_int() {
+                                        some(n) { print("42.0 as int: " + n.to_string()) }
+                                        none { print("42.0 as int: none") }
+                                    }
+                                    match nmap["partial"].as_int() {
+                                        some(n) { print("1.5 as int: " + n.to_string()) }
+                                        none { print("1.5 as int: none") }
+                                    }
+                                    // An int widens to float on request.
+                                    match nmap["whole"].as_float() {
+                                        some(f) { print("42.0 as float: " + f.to_string()) }
+                                        none { print("42.0 as float: none") }
+                                    }
+                                }
+                                err(e) { print("inner to_map failed: " + e) }
+                            }
+                        }
+                        err(e) { print("inner parse failed: " + e) }
+                    }
+
+                    // as_map is the method form of json.to_map, with `none`
+                    // rather than an error message for a non-object.
+                    match doc.as_map() {
+                        some(m) { print("as_map: " + m.size().to_string() + " fields") }
+                        none { print("as_map: not an object") }
+                    }
+                }
+                err(e) { print("to_map failed: " + e) }
+            }
+        }
+        err(e) { print("parse failed: " + e) }
+    }
+
+    return
+}

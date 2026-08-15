@@ -1232,6 +1232,47 @@ impl SemanticAnalyzer {
                 is_static: false,
             },
         );
+
+        // Typed accessors, each returning `optional<T>` - `none` when the value
+        // is a different kind. Without these `stringify` was the only way to
+        // inspect a value, so a string field came back JSON-encoded with its
+        // quotes and nothing could strip them (#392).
+        let json = Type::Named("Json".to_string(), Vec::new());
+        for (name, inner) in [
+            ("as_string", Type::Primitive(PrimitiveType::Str)),
+            ("as_int", Type::Primitive(PrimitiveType::Int)),
+            ("as_float", Type::Primitive(PrimitiveType::Float)),
+            ("as_bool", Type::Primitive(PrimitiveType::Bool)),
+            ("as_list", Type::List(Box::new(json.clone()))),
+            (
+                "as_map",
+                Type::Map(
+                    Box::new(Type::Primitive(PrimitiveType::Str)),
+                    Box::new(json.clone()),
+                ),
+            ),
+        ] {
+            methods.insert(
+                name.to_string(),
+                MethodSig {
+                    params: vec![],
+                    return_type: Type::Optional(Box::new(inner)),
+                    is_static: false,
+                },
+            );
+        }
+
+        // Not an accessor: a JSON null is a kind, not an absent value, so this
+        // answers a question rather than yielding one.
+        methods.insert(
+            "is_null".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Type::Primitive(PrimitiveType::Bool),
+                is_static: false,
+            },
+        );
+
         Symbol {
             kind: SymbolKind::Class,
             span,
