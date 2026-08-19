@@ -647,12 +647,15 @@ impl<'a> CodeGenerator<'a> {
     pub(super) fn generate_interface_type(&mut self, name: &str) -> Result<(), String> {
         // generate LLVM struct for interface: { *mut vtable, field1, field2, ... }
         // for simplicity, vtable is struct of void* function pointers
-        // A class can name an interface that was never imported: importing a
-        // type does not pull in the interfaces it implements, so
-        // `import std.dsa.graph.Graph` alone leaves `Collection` unknown here.
-        // That is muxlang/mux-compiler#391 and the import side is the real fix;
-        // until then this must not read as a compiler crash, because the user
-        // can act on it - the missing import is theirs to add.
+        // A class can name an interface that is not in scope. Importing a type
+        // now brings its interfaces with it, and semantics reports what the
+        // module cannot supply before codegen runs (#391), so reaching here
+        // means both of those missed something.
+        //
+        // It stays a message the user can act on rather than an assertion. The
+        // failure it guards is a missing import, which is theirs to fix, and
+        // reporting it as a compiler crash sends them to file a bug about their
+        // own program - which is exactly what #391 was.
         let symbol = self.analyzer.all_symbols().get(name).ok_or_else(|| {
             format!(
                 "interface '{name}' is implemented by a type in use here but was never imported.\n\
