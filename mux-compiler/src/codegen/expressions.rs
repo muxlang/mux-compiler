@@ -3125,6 +3125,13 @@ impl<'a> CodeGenerator<'a> {
                 .generate_constructor_call_with_types(class_name, &type_args, args)
                 .map(Some);
         }
+        // Synthesized deserializers are emitted on first use, not for every
+        // class: a class this cannot read yet is legal until something asks it
+        // to deserialize.
+        if field == "from_json" {
+            self.ensure_deserializer(class_name)?;
+        }
+
         let Some(method) = class_symbol.methods.get(field) else {
             return Err(format!(
                 "Method {} not found on class {}",

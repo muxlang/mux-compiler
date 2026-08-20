@@ -953,6 +953,16 @@ impl<'a> CodeGenerator<'a> {
             context.bool_type().fn_type(&[i8_ptr.into()], false),
             None,
         );
+        // One field of a JSON object by name, as an owned optional<Json>.
+        // `none` means absent or not an object; a field holding null comes back
+        // as some(null), which is what keeps the two apart for a deserializer
+        // that must reject a missing required field but accept an explicit one.
+        add_i8_fn(
+            module,
+            i8_ptr,
+            "mux_json_field",
+            &[i8_ptr.into(), i8_ptr.into()],
+        );
         // CSV helpers
         add_i8_fn(module, i8_ptr, "mux_csv_parse", &[i8_ptr.into()]);
         add_i8_fn(

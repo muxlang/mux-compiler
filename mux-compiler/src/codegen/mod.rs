@@ -1140,6 +1140,7 @@ impl<'a> CodeGenerator<'a> {
 mod address_taken;
 mod classes;
 mod constructors;
+mod deserialize;
 mod expressions;
 mod functions;
 mod generics;
