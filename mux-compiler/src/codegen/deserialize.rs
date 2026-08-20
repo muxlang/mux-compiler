@@ -244,7 +244,7 @@ impl<'a> CodeGenerator<'a> {
         // naming: `from_json` was probably meant.
         let as_list = self.call_returning_ptr("mux_json_as_list", &[document.into()])?;
         let is_array = self
-            .call_returning_value("mux_optional_is_some", &[as_list.into()])?
+            .call_returning_value("mux_result_is_ok", &[as_list.into()])?
             .into_int_value();
         let array_block = self.context.append_basic_block(function, "is_array");
         let not_array = self.context.append_basic_block(function, "not_array");
@@ -258,7 +258,7 @@ impl<'a> CodeGenerator<'a> {
         self.return_error("expected a JSON array; use from_json for a single object")?;
 
         self.builder.position_at_end(array_block);
-        let items = self.call_returning_ptr("mux_optional_get_value", &[as_list.into()])?;
+        let items = self.call_returning_ptr("mux_result_data", &[as_list.into()])?;
         self.emit_value_decref(as_list)?;
         let source = self.call_returning_ptr("mux_value_get_list", &[items.into()])?;
         let count = self
@@ -852,7 +852,7 @@ impl<'a> CodeGenerator<'a> {
         let as_list = self.call_returning_ptr("mux_json_as_list", &[raw.into()])?;
         self.emit_value_decref(raw)?;
         let is_array = self
-            .call_returning_value("mux_optional_is_some", &[as_list.into()])?
+            .call_returning_value("mux_result_is_ok", &[as_list.into()])?
             .into_int_value();
         let ok_block = self
             .context
@@ -870,7 +870,7 @@ impl<'a> CodeGenerator<'a> {
         self.return_error(&format!("field '{label}': expected an array"))?;
 
         self.builder.position_at_end(ok_block);
-        let items = self.call_returning_ptr("mux_optional_get_value", &[as_list.into()])?;
+        let items = self.call_returning_ptr("mux_result_data", &[as_list.into()])?;
         self.emit_value_decref(as_list)?;
         let source = self.call_returning_ptr("mux_value_get_list", &[items.into()])?;
         let count = self
@@ -951,7 +951,7 @@ impl<'a> CodeGenerator<'a> {
         let converted = self.call_returning_ptr(runtime_fn, &[raw.into()])?;
         self.emit_value_decref(raw)?;
         let right_kind = self
-            .call_returning_value("mux_optional_is_some", &[converted.into()])?
+            .call_returning_value("mux_result_is_ok", &[converted.into()])?
             .into_int_value();
 
         let good = self
@@ -964,13 +964,16 @@ impl<'a> CodeGenerator<'a> {
             .build_conditional_branch(right_kind, good, bad)
             .map_err(|e| e.to_string())?;
 
+        // The accessor's own message says what was there; this prefixes the
+        // field so the reader learns both, rather than one at the cost of the
+        // other.
         self.builder.position_at_end(bad);
         self.emit_value_decref(converted)?;
         self.emit_value_decref(instance)?;
         self.return_error(&format!("field '{label}': expected {expected}"))?;
 
         self.builder.position_at_end(good);
-        let inner = self.call_returning_ptr("mux_optional_get_value", &[converted.into()])?;
+        let inner = self.call_returning_ptr("mux_result_data", &[converted.into()])?;
         self.emit_value_decref(converted)?;
         Ok(inner)
     }

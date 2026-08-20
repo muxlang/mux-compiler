@@ -19,8 +19,8 @@ func read_string(map<string, Json> obj, string key) returns string {
         return "<missing>"
     }
     match obj[key].as_string() {
-        some(text) { return text }
-        none { return "<not a string>" }
+        ok(text) { return text }
+        err(e) { return "<not a string>" }
     }
 }
 
@@ -33,23 +33,23 @@ func main() returns void {
                     print("name: " + read_string(fields, "name"))
 
                     match fields["age"].as_int() {
-                        some(n) { print("age: " + n.to_string()) }
-                        none { print("age: not an int") }
+                        ok(n) { print("age: " + n.to_string()) }
+                        err(e) { print("age: not an int") }
                     }
 
                     match fields["score"].as_float() {
-                        some(f) { print("score: " + f.to_string()) }
-                        none { print("score: not a float") }
+                        ok(f) { print("score: " + f.to_string()) }
+                        err(e) { print("score: not a float") }
                     }
 
                     match fields["active"].as_bool() {
-                        some(b) { print("active: " + b.to_string()) }
-                        none { print("active: not a bool") }
+                        ok(b) { print("active: " + b.to_string()) }
+                        err(e) { print("active: not a bool") }
                     }
 
                     match fields["tags"].as_list() {
-                        some(items) { print("tags: " + items.size().to_string() + " entries") }
-                        none { print("tags: not a list") }
+                        ok(items) { print("tags: " + items.size().to_string() + " entries") }
+                        err(e) { print("tags: not a list") }
                     }
 
                     // A JSON null is a kind of its own, not an absent value.
@@ -58,8 +58,8 @@ func main() returns void {
 
                     // Asking for the wrong kind is `none`, not a wrong answer.
                     match fields["name"].as_int() {
-                        some(n) { print("name as int: " + n.to_string()) }
-                        none { print("name as int: none") }
+                        ok(n) { print("name as int: " + n.to_string()) }
+                        err(e) { print("name as int: none") }
                     }
 
                     // An integral float reads as an int, so a document written
@@ -69,17 +69,17 @@ func main() returns void {
                             match json.to_map(numbers) {
                                 ok(nmap) {
                                     match nmap["whole"].as_int() {
-                                        some(n) { print("42.0 as int: " + n.to_string()) }
-                                        none { print("42.0 as int: none") }
+                                        ok(n) { print("42.0 as int: " + n.to_string()) }
+                                        err(e) { print("42.0 as int: none") }
                                     }
                                     match nmap["partial"].as_int() {
-                                        some(n) { print("1.5 as int: " + n.to_string()) }
-                                        none { print("1.5 as int: none") }
+                                        ok(n) { print("1.5 as int: " + n.to_string()) }
+                                        err(e) { print("1.5 as int: none") }
                                     }
                                     // An int widens to float on request.
                                     match nmap["whole"].as_float() {
-                                        some(f) { print("42.0 as float: " + f.to_string()) }
-                                        none { print("42.0 as float: none") }
+                                        ok(f) { print("42.0 as float: " + f.to_string()) }
+                                        err(e) { print("42.0 as float: none") }
                                     }
                                 }
                                 err(e) { print("inner to_map failed: " + e) }
@@ -91,8 +91,8 @@ func main() returns void {
                     // as_map is the method form of json.to_map, with `none`
                     // rather than an error message for a non-object.
                     match doc.as_map() {
-                        some(m) { print("as_map: " + m.size().to_string() + " fields") }
-                        none { print("as_map: not an object") }
+                        ok(m) { print("as_map: " + m.size().to_string() + " fields") }
+                        err(e) { print("as_map: not an object") }
                     }
                 }
                 err(e) { print("to_map failed: " + e) }

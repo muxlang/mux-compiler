@@ -42,8 +42,8 @@ func main() returns void {
                             match tx_rs.next() {
                                 some(tx_row) {
                                     match tx_row["name"].as_string() {
-                                        some(tx_name) { print("transaction row name: " + tx_name) }
-                                        none { assert.assert(false, "transaction row conversion failed: ") }
+                                        ok(tx_name) { print("transaction row name: " + tx_name) }
+                                        err(e) { assert.assert(false, "transaction row conversion failed: ") }
                                     }
                                 }
                                 none { assert.assert(false, "expected transaction query row") }
@@ -65,30 +65,30 @@ func main() returns void {
                     match rs.next() {
                         some(first) {
                             match first["id"].as_int() {
-                                some(id1) { assert.assert(id1 == 1, "first id mismatch") }
-                                none { assert.assert(false, "first id conversion failed: ") }
+                                ok(id1) { assert.assert(id1 == 1, "first id mismatch") }
+                                err(e) { assert.assert(false, "first id conversion failed: ") }
                             }
                             match first["name"].as_string() {
-                                some(name1) {
+                                ok(name1) {
                                     assert.assert(name1 == "Ada", "first name mismatch")
                                     print("first row name: " + name1)
                                 }
-                                none { assert.assert(false, "first name conversion failed: ") }
+                                err(e) { assert.assert(false, "first name conversion failed: ") }
                             }
                             match first["active"].as_bool() {
-                                some(active1) {
+                                ok(active1) {
                                     assert.assert(active1, "first active mismatch")
                                     print("first row active: " + active1.to_string())
                                 }
-                                none { assert.assert(false, "first active conversion failed: ") }
+                                err(e) { assert.assert(false, "first active conversion failed: ") }
                             }
                             match first["payload"].as_bytes() {
-                                some(bytes1) {
+                                ok(bytes1) {
                                     assert.assert(bytes1.size() == 2, "first payload length mismatch")
                                     assert.assert(bytes1[0] == 65, "first payload byte 0 mismatch")
                                     assert.assert(bytes1[1] == 66, "first payload byte 1 mismatch")
                                 }
-                                none { assert.assert(false, "first payload conversion failed: ") }
+                                err(e) { assert.assert(false, "first payload conversion failed: ") }
                             }
                             assert.assert(first["note"].is_null(), "first note should be null")
                         }
@@ -98,33 +98,33 @@ func main() returns void {
                     match rs.next() {
                         some(second) {
                             match second["id"].as_int() {
-                                some(id2) { assert.assert(id2 == 2, "second id mismatch") }
-                                none { assert.assert(false, "second id conversion failed: ") }
+                                ok(id2) { assert.assert(id2 == 2, "second id mismatch") }
+                                err(e) { assert.assert(false, "second id conversion failed: ") }
                             }
                             match second["name"].as_string() {
-                                some(name2) {
+                                ok(name2) {
                                     assert.assert(name2 == "Linus", "second name mismatch")
                                     print("second row name: " + name2)
                                 }
-                                none { assert.assert(false, "second name conversion failed: ") }
+                                err(e) { assert.assert(false, "second name conversion failed: ") }
                             }
                             match second["active"].as_bool() {
-                                some(active2) {
+                                ok(active2) {
                                     assert.assert(!active2, "second active mismatch")
                                     print("second row active: " + active2.to_string())
                                 }
-                                none { assert.assert(false, "second active conversion failed: ") }
+                                err(e) { assert.assert(false, "second active conversion failed: ") }
                             }
                             match second["payload"].as_bytes() {
-                                some(bytes2) {
+                                ok(bytes2) {
                                     assert.assert(bytes2.size() == 1, "second payload length mismatch")
                                     assert.assert(bytes2[0] == 67, "second payload byte mismatch")
                                 }
-                                none { assert.assert(false, "second payload conversion failed: ") }
+                                err(e) { assert.assert(false, "second payload conversion failed: ") }
                             }
                             match second["note"].as_string() {
-                                some(note2) { assert.assert(note2 == "ok", "second note mismatch") }
-                                none { assert.assert(false, "second note conversion failed: ") }
+                                ok(note2) { assert.assert(note2 == "ok", "second note mismatch") }
+                                err(e) { assert.assert(false, "second note conversion failed: ") }
                             }
                         }
                         none { assert.assert(false, "expected second row from cursor") }

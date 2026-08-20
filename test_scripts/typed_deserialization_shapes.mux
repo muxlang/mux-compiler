@@ -50,8 +50,8 @@ func main() returns void {
 
             // A heterogeneous array: each entry is read on its own terms.
             match o.mixed[1].as_string() {
-                some(s) { print("mixed[1] " + s) }
-                none { print("mixed[1] not a string") }
+                ok(s) { print("mixed[1] " + s) }
+                err(e) { print("mixed[1] not a string") }
             }
         }
         err(e) { print("err: " + e) }
