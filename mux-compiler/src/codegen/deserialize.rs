@@ -552,7 +552,7 @@ impl<'a> CodeGenerator<'a> {
 
         let as_rows = self.call_returning_ptr("mux_csv_rows_as_maps", &[table.into()])?;
         let paired = self
-            .call_returning_value("mux_optional_is_some", &[as_rows.into()])?
+            .call_returning_value("mux_result_is_ok", &[as_rows.into()])?
             .into_int_value();
         let rows_block = self.context.append_basic_block(function, "has_rows");
         let no_rows = self.context.append_basic_block(function, "no_rows");
@@ -560,13 +560,16 @@ impl<'a> CodeGenerator<'a> {
             .build_conditional_branch(paired, rows_block, no_rows)
             .map_err(|e| e.to_string())?;
 
+        // Pairing says why it could not - a duplicate column names itself -
+        // so its message is returned rather than replaced with a vaguer one.
         self.builder.position_at_end(no_rows);
-        self.emit_value_decref(as_rows)?;
         self.emit_value_decref(table)?;
-        self.return_error("could not read the CSV rows")?;
+        self.builder
+            .build_return(Some(&as_rows))
+            .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(rows_block);
-        let rows = self.call_returning_ptr("mux_optional_get_value", &[as_rows.into()])?;
+        let rows = self.call_returning_ptr("mux_result_data", &[as_rows.into()])?;
         self.emit_value_decref(as_rows)?;
         let source = self.call_returning_ptr("mux_value_get_list", &[rows.into()])?;
         let count = self
