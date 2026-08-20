@@ -517,29 +517,40 @@ fn sql_value_methods() -> HashMap<String, MethodSig> {
             return_type: bool_(),
             is_static: false
         },
+        // Optional, not result, for two reasons that agree.
+        //
+        // It is what the runtime already does: every `mux_sql_value_as_*`
+        // returns `sql_optional(...)`, so declaring a result made the signature
+        // disagree with its own implementation - a program matching `ok`/`err`
+        // type-checked while the runtime handed back an `Optional`.
+        //
+        // And it is the right shape. The driver already decoded the value, so
+        // `as_int` only asks whether it is that kind; there is no error to
+        // report beyond "no". Reading a value out of a document works the same
+        // way on `Json`, and both now say so (#404).
         "as_bool" => {
             params: [],
-            return_type: io_result(bool_()),
+            return_type: Type::Optional(Box::new(bool_())),
             is_static: false
         },
         "as_int" => {
             params: [],
-            return_type: io_result(int()),
+            return_type: Type::Optional(Box::new(int())),
             is_static: false
         },
         "as_float" => {
             params: [],
-            return_type: io_result(float()),
+            return_type: Type::Optional(Box::new(float())),
             is_static: false
         },
         "as_string" => {
             params: [],
-            return_type: io_result(str_()),
+            return_type: Type::Optional(Box::new(str_())),
             is_static: false
         },
         "as_bytes" => {
             params: [],
-            return_type: io_result(Type::List(Box::new(int()))),
+            return_type: Type::Optional(Box::new(Type::List(Box::new(int())))),
             is_static: false
         },
         "to_string" => {

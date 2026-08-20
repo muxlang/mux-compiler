@@ -964,6 +964,9 @@ impl<'a> CodeGenerator<'a> {
             "mux_json_field",
             &[i8_ptr.into(), i8_ptr.into()],
         );
+        // The total renders behind `to_string` on Json and Csv (#405).
+        add_i8_fn(module, i8_ptr, "mux_json_to_string", &[i8_ptr.into()]);
+        add_i8_fn(module, i8_ptr, "mux_csv_render", &[i8_ptr.into()]);
         // CSV helpers
         // One map per row keyed by header, so a named column can be read
         // without finding its index per row in generated code.
