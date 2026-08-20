@@ -676,6 +676,21 @@ impl<'a> CodeGenerator<'a> {
                             .build_store(field_ptr, zero)
                             .map_err(|e| e.to_string())?;
                     }
+                } else if !self.type_map.contains_key(&class_name) {
+                    // An opaque stdlib type - `Json`, `TcpListener`, `Csv`,
+                    // `sql.Value`. These are runtime-registered handles with no
+                    // Mux layout, so there is no constructor to call and no
+                    // struct to zero; the slot holds a pointer and starts null.
+                    //
+                    // Constructing them unconditionally made a field of such a
+                    // type an internal compiler error on a three-line program
+                    // (#408). Null matches what an uninitialized `string` field
+                    // already does, and `mux_rc_dec` is null-safe, so teardown
+                    // is unaffected.
+                    let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+                    self.builder
+                        .build_store(field_ptr, null_ptr)
+                        .map_err(|e| e.to_string())?;
                 } else {
                     // recursively call constructor for nested classes
                     let nested_obj =

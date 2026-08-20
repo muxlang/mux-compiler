@@ -3128,8 +3128,8 @@ impl<'a> CodeGenerator<'a> {
         // Synthesized deserializers are emitted on first use, not for every
         // class: a class this cannot read yet is legal until something asks it
         // to deserialize.
-        if field == "from_json" {
-            self.ensure_deserializer(class_name)?;
+        if matches!(field, "from_json" | "list_from_json" | "list_from_csv") {
+            self.ensure_deserializer(class_name, field)?;
         }
 
         let Some(method) = class_symbol.methods.get(field) else {

@@ -330,6 +330,7 @@ impl<'a> CodeGenerator<'a> {
             "mux_string_to_string",
             "mux_string_to_int",
             "mux_string_to_float",
+            "mux_string_to_bool",
             "mux_string_to_char",
             "mux_list_to_string",
             "mux_list_value",
@@ -964,6 +965,9 @@ impl<'a> CodeGenerator<'a> {
             &[i8_ptr.into(), i8_ptr.into()],
         );
         // CSV helpers
+        // One map per row keyed by header, so a named column can be read
+        // without finding its index per row in generated code.
+        add_i8_fn(module, i8_ptr, "mux_csv_rows_as_maps", &[i8_ptr.into()]);
         add_i8_fn(module, i8_ptr, "mux_csv_parse", &[i8_ptr.into()]);
         add_i8_fn(
             module,

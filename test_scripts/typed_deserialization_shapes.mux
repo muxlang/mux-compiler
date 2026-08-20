@@ -1,0 +1,68 @@
+// The shapes a document can take, read into declared types.
+//
+// Flat fields are covered by typed_deserialization.mux; this is the nesting:
+// a class inside a class, lists of primitives, a list of classes, an optional
+// that may be absent or explicitly null, and `Json` for the parts whose shape
+// is not known (muxlang/mux-compiler#404).
+
+import std.data.json
+
+class Item {
+    string sku
+    int qty
+}
+
+class Order {
+    int id
+    Item first
+    list<int> codes
+    list<string> tags
+    list<Item> items
+    optional<string> note
+    list<Json> mixed
+}
+
+func main() returns void {
+    // Parenthesised so the expression can span lines - a newline inside an open
+    // bracket does not end the statement.
+    auto text = (
+        "{\"id\":7,"
+        + "\"first\":{\"sku\":\"a\",\"qty\":1},"
+        + "\"codes\":[1,2,3],"
+        + "\"tags\":[\"x\",\"y\"],"
+        + "\"items\":[{\"sku\":\"b\",\"qty\":2},{\"sku\":\"c\",\"qty\":3}],"
+        + "\"mixed\":[1,\"two\",true]}"
+    )
+
+    match Order.from_json(text) {
+        ok(o) {
+            print("id " + o.id.to_string())
+            print("first " + o.first.sku + " x" + o.first.qty.to_string())
+            print("codes " + o.codes.to_string())
+            print("tags " + o.tags.to_string())
+            print("items " + o.items.len().to_string() + " last " + o.items[1].sku)
+
+            // `note` was not in the document, and it is optional.
+            match o.note {
+                some(n) { print("note " + n) }
+                none { print("note absent") }
+            }
+
+            // A heterogeneous array: each entry is read on its own terms.
+            match o.mixed[1].as_string() {
+                some(s) { print("mixed[1] " + s) }
+                none { print("mixed[1] not a string") }
+            }
+        }
+        err(e) { print("err: " + e) }
+    }
+
+    // An error inside a nested class names the field that was wrong, not the
+    // outer one that contained it.
+    match Order.from_json("{\"id\":1,\"first\":{\"sku\":\"a\"},\"codes\":[],\"tags\":[],\"items\":[],\"mixed\":[]}") {
+        ok(o) { print("unexpected ok") }
+        err(e) { print("nested: " + e) }
+    }
+
+    return
+}
