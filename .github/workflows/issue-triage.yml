@@ -124,9 +124,8 @@ jobs:
                 assignees: ['DerekCorniello'],
               });
             }
-            const title = context.payload.issue.title;
-            const body = context.payload.issue.body || '';
-            if (/^docs?[:/\s]/i.test(title) || /documentation/i.test(title + ' ' + body) || /What is wrong|Expected content|Page URL/i.test(body)) {
-              await ensureLabel('documentation', '0075ca', 'Improvements or additions to documentation');
-              await applyLabelIfMissing('documentation');
-            }
+            // No `documentation` label. Kind is an issue type now, set by the
+            // form at filing time, and a label that restates the type is the
+            // thing the governance doc forbids. Guessing it from the title also
+            // could not tell a docs REQUEST from a bug report that happens to
+            // mention documentation.
