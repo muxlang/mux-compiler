@@ -1,0 +1,18 @@
+// The deserializers are synthesized on every class, so their names are reserved.
+//
+// Declaring one would be silently replaced by the synthesized method - and
+// worse, an INSTANCE method of that name picked up `is_static`, turning a legal
+// call into an internal compiler error. Rejecting it at the declaration says
+// what is wrong where it is written, the same way `new` already does.
+
+class Config {
+    int port = 0
+
+    func from_json(string text) returns int {
+        return 0
+    }
+}
+
+func main() returns void {
+    return
+}

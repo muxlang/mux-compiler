@@ -330,6 +330,7 @@ impl<'a> CodeGenerator<'a> {
             "mux_string_to_string",
             "mux_string_to_int",
             "mux_string_to_float",
+            "mux_string_to_bool",
             "mux_string_to_char",
             "mux_list_to_string",
             "mux_list_value",
@@ -953,7 +954,23 @@ impl<'a> CodeGenerator<'a> {
             context.bool_type().fn_type(&[i8_ptr.into()], false),
             None,
         );
+        // One field of a JSON object by name, as an owned optional<Json>.
+        // `none` means absent or not an object; a field holding null comes back
+        // as some(null), which is what keeps the two apart for a deserializer
+        // that must reject a missing required field but accept an explicit one.
+        add_i8_fn(
+            module,
+            i8_ptr,
+            "mux_json_field",
+            &[i8_ptr.into(), i8_ptr.into()],
+        );
+        // The total renders behind `to_string` on Json and Csv (#405).
+        add_i8_fn(module, i8_ptr, "mux_json_to_string", &[i8_ptr.into()]);
+        add_i8_fn(module, i8_ptr, "mux_csv_render", &[i8_ptr.into()]);
         // CSV helpers
+        // One map per row keyed by header, so a named column can be read
+        // without finding its index per row in generated code.
+        add_i8_fn(module, i8_ptr, "mux_csv_rows_as_maps", &[i8_ptr.into()]);
         add_i8_fn(module, i8_ptr, "mux_csv_parse", &[i8_ptr.into()]);
         add_i8_fn(
             module,

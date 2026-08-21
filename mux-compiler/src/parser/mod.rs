@@ -22,6 +22,26 @@ pub struct Parser<'a> {
     loop_depth: usize,
 }
 
+/// Why `name` cannot be declared as a class method, if it cannot.
+///
+/// The compiler synthesizes these on every class - `new` builds an instance,
+/// the deserializers build one from a document - so a user-declared method of
+/// the same name would be silently replaced by the synthesized one. Rejecting
+/// it at the declaration says so, rather than letting a method that looks
+/// defined behave as something else entirely.
+fn reserved_class_method_error(name: &str) -> Option<String> {
+    let purpose = match name {
+        "new" => "class constructors",
+        "from_json" => "building an instance from a JSON object",
+        "list_from_json" => "building a list of instances from a JSON array",
+        "list_from_csv" => "building a list of instances from CSV rows",
+        _ => return None,
+    };
+    Some(format!(
+        "'{name}' is reserved for {purpose} and cannot be defined as a class method"
+    ))
+}
+
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token]) -> Self {
         Self {
@@ -511,11 +531,9 @@ impl<'a> Parser<'a> {
                 let name_span = self.peek_ahead(1).map(|t| t.span);
                 let func_node = self.function_declaration(false)?;
                 if let AstNode::Function(func) = func_node {
-                    if func.name == "new" {
-                        self.errors.push(ParserError::new(
-                            "'new' is reserved for class constructors and cannot be defined as a class method",
-                            name_span.unwrap_or(func.span),
-                        ));
+                    if let Some(message) = reserved_class_method_error(&func.name) {
+                        self.errors
+                            .push(ParserError::new(&message, name_span.unwrap_or(func.span)));
                         return Ok(());
                     }
                     methods.push(func);
@@ -528,11 +546,9 @@ impl<'a> Parser<'a> {
                 let name_span = self.peek_ahead(1).map(|t| t.span);
                 let func_node = self.function_declaration(true)?;
                 if let AstNode::Function(func) = func_node {
-                    if func.name == "new" {
-                        self.errors.push(ParserError::new(
-                            "'new' is reserved for class constructors and cannot be defined as a class method",
-                            name_span.unwrap_or(func.span),
-                        ));
+                    if let Some(message) = reserved_class_method_error(&func.name) {
+                        self.errors
+                            .push(ParserError::new(&message, name_span.unwrap_or(func.span)));
                         return Ok(());
                     }
                     methods.push(func);
