@@ -74,11 +74,18 @@ jobs:
             // (muxlang/mux-context#19).
             //
             // author_association is on the payload and needs no extra API call
-            // or token scope. MEMBER and OWNER are the org roles; COLLABORATOR
-            // is repo-level and counts too, since it carries write access and
-            // therefore the ability to triage.
+            // or token scope.
+            //
+            // OWNER and MEMBER only. COLLABORATOR looks like it belongs here but
+            // does not: it means "invited to this repo", which can be read-only
+            // or triage-level, so it does not imply the ability to set priority
+            // and status. Treating it as an insider would drop a read-only
+            // collaborator's issue out of the triage queue - the one outcome
+            // this must not cause. Leaving the label on someone who could have
+            // triaged it costs a maintainer one click; the reverse loses the
+            // issue.
             const association = context.payload.issue.author_association;
-            const isInsider = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(association);
+            const isInsider = ['OWNER', 'MEMBER'].includes(association);
 
             const removeLabelIfPresent = async (name) => {
               const names = context.payload.issue.labels.map((label) => label.name);
