@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-08-20
+
+### Changed
+
+- **BREAKING: typed accessors return `result`, not `optional`.** `Json.as_int`,
+  `as_string`, `as_float`, `as_bool`, `as_list`, `as_map` and every
+  `SqlValue.as_*` now answer `result<T, string>`, and the error names what was
+  actually there:
+
+  ```
+  expected an int, found a string
+  ```
+
+  `none` left a reader unable to tell a string from a null from something else -
+  exactly the information needed when a document is not the shape you expected.
+  The prompting case was a config with `"port": "8080"` quoted.
+
+  On the SQL side the message already existed and was being discarded with
+  `.ok()`, and the declaration said `result` while the runtime returned
+  `optional`, so `ok`/`err` had only ever worked by coincidence of
+  representation.
+
+  **Migration:** `match v.as_int() { some(n) ... none ... }` becomes
+  `match v.as_int() { ok(n) ... err(e) ... }` (#404).
+
+### Added
+
+- **Parse a document straight into a class.** Every class is given
+  `from_json`, `list_from_json` and `list_from_csv`, synthesized the way `new`
+  is:
+
+  ```mux
+  class Config { int port  string host  optional<string> note }
+
+  match Config.from_json(text) {
+      ok(cfg) { print(cfg.host) }
+      err(e)  { print(e) }        // field 'port': expected an int
+  }
+  ```
+
+  The shape check happens once at the boundary instead of an `as_int()` at every
+  field. `Json` exists because Mux containers are homogeneous - `{"port": 8080,
+  "host": "localhost"}` is a type error as a Mux map - and this removes the need
+  to work at that level for any document whose shape can be described.
+
+  A missing required field is an error naming it; `optional<T>` accepts absent
+  **or** explicit `null`, both meaning `none`; a wrong kind names the field and
+  the type expected; fields the class does not declare are ignored, so a server
+  adding one does not break a reader.
+
+  Nested classes, `list<T>` of primitives and of classes, and `optional<T>` are
+  supported. An error inside a nested class names the field that was wrong, not
+  the one containing it. `Json` and `list<Json>` are the escape hatch for what
+  cannot be declared - `[1, "two", true]` is legal JSON that no Mux list holds.
+
+  CSV differs because a cell is always text: an `int` column is *parsed* rather
+  than type-checked, so a column can only be a primitive or an optional of one,
+  and `optional` there means the **column** may be missing from the header.
+  There is deliberately no singular `from_csv` - a CSV document is a table
+  (#404).
+
+- **`to_string` on `Json` and `Csv`.** The total render every other type has.
+  `stringify` stays as the configurable form: it takes an indent and returns a
+  `result`, so it cannot satisfy `Stringable`. Rendering a document no longer
+  needs a four-line `match` (#405).
+
+### Fixed
+
+- **A class field of an opaque stdlib type is no longer an internal compiler
+  error.** `class Holder { Json raw }` and `class Server { TcpListener listener }`
+  failed to compile: field initialization constructed any named type, and these
+  are runtime-registered handles with no Mux layout. They now start null, which
+  is what an uninitialized `string` field already does. This is what allows a
+  bare `Json` field as the deserialization escape hatch (#408).
+
 ## [0.9.0] - 2026-08-14
 
 ### Added
