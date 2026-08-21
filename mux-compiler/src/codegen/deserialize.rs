@@ -188,16 +188,7 @@ impl<'a> CodeGenerator<'a> {
         // The parameter arrives as a Mux string, which is a reference-counted
         // `*mut Value`; `mux_json_parse` reads a C string. Extracting yields an
         // owned buffer that has to be freed after the parse.
-        let cstr = self.extract_c_string_from_value(text)?;
-        let parsed = self.call_returning_ptr("mux_json_parse", &[cstr.into()])?;
-        let free = self
-            .runtime_function("mux_free_string")
-            .ok_or("mux_free_string not found")?;
-        self.builder
-            .build_call(free, &[cstr.into()], "free_json_text")
-            .map_err(|e| e.to_string())?;
-
-        let document = self.unwrap_result_or_return(function, parsed, "parse")?;
+        let document = self.emit_parse_document(function, text, "mux_json_parse", "parse")?;
         let built = self.call_returning_ptr(&Self::from_value_name(name), &[document.into()])?;
         self.emit_value_decref(document)?;
         self.builder
@@ -213,6 +204,102 @@ impl<'a> CodeGenerator<'a> {
     /// Named for what it returns. `from_json` gives one instance and this gives
     /// many, so the caller can see which they are getting without checking the
     /// signature.
+    /// Parse `text` with `parse_fn` and hand back the payload, returning the
+    /// error unchanged when parsing fails.
+    ///
+    /// Shared by the three entry points, which differ only in which parser they
+    /// call. The parameter arrives as a Mux string - a reference-counted
+    /// `*mut Value` - while the parsers read a C string, so the extracted
+    /// buffer is owned and freed here.
+    fn emit_parse_document(
+        &mut self,
+        function: FunctionValue<'a>,
+        text: PointerValue<'a>,
+        parse_fn: &str,
+        label: &str,
+    ) -> Result<PointerValue<'a>, String> {
+        let cstr = self.extract_c_string_from_value(text)?;
+        let parsed = self.call_returning_ptr(parse_fn, &[cstr.into()])?;
+        let free = self
+            .runtime_function("mux_free_string")
+            .ok_or("mux_free_string not found")?;
+        self.builder
+            .build_call(free, &[cstr.into()], "free_source_text")
+            .map_err(|e| e.to_string())?;
+        self.unwrap_result_or_return(function, parsed, label)
+    }
+
+    /// Emit `for i in 0..count`, with `body` generating the loop body.
+    ///
+    /// `body` runs with the builder in the body block and is handed the current
+    /// index; it must leave the builder somewhere that can fall through to the
+    /// increment. Extracted because two loops here own a mix of raw and
+    /// reference-counted handles across four exit paths, and keeping the
+    /// scaffolding in one place is what stops a fix landing in only one of them.
+    fn emit_index_loop<F>(
+        &mut self,
+        function: FunctionValue<'a>,
+        label: &str,
+        count: inkwell::values::IntValue<'a>,
+        body: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(&mut Self, inkwell::values::IntValue<'a>) -> Result<(), String>,
+    {
+        let i64_type = self.context.i64_type();
+        let index = self
+            .builder
+            .build_alloca(i64_type, &format!("{label}_index"))
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(index, i64_type.const_zero())
+            .map_err(|e| e.to_string())?;
+
+        let head = self
+            .context
+            .append_basic_block(function, &format!("{label}_head"));
+        let body_block = self
+            .context
+            .append_basic_block(function, &format!("{label}_body"));
+        let done = self
+            .context
+            .append_basic_block(function, &format!("{label}_done"));
+        self.builder
+            .build_unconditional_branch(head)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(head);
+        let current = self
+            .builder
+            .build_load(i64_type, index, "i")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let more = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SLT, current, count, "more")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(more, body_block, done)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(body_block);
+        body(self, current)?;
+
+        let next = self
+            .builder
+            .build_int_add(current, i64_type.const_int(1, false), "next")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(index, next)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(head)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(done);
+        Ok(())
+    }
+
     /// Build `result<list<Class>, string>` by running `builder` over every entry
     /// of `items`, which is a `Value` holding a list.
     ///
@@ -235,93 +322,50 @@ impl<'a> CodeGenerator<'a> {
             .call_returning_value("mux_value_list_length", &[items.into()])?
             .into_int_value();
         let out = self.call_returning_ptr("mux_new_list", &[])?;
+        let owned = owned.to_vec();
 
-        let i64_type = self.context.i64_type();
-        let index = self
-            .builder
-            .build_alloca(i64_type, &format!("{label}_index"))
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(index, i64_type.const_zero())
-            .map_err(|e| e.to_string())?;
+        self.emit_index_loop(function, label, count, |emitter, current| {
+            let entry = emitter
+                .call_returning_ptr("mux_value_list_get_value", &[items.into(), current.into()])?;
+            let built = emitter.call_returning_ptr(builder, &[entry.into()])?;
+            emitter.emit_value_decref(entry)?;
 
-        let head = self
-            .context
-            .append_basic_block(function, &format!("{label}_head"));
-        let body = self
-            .context
-            .append_basic_block(function, &format!("{label}_body"));
-        let done = self
-            .context
-            .append_basic_block(function, &format!("{label}_done"));
-        self.builder
-            .build_unconditional_branch(head)
-            .map_err(|e| e.to_string())?;
+            let built_ok = emitter
+                .call_returning_value("mux_result_is_ok", &[built.into()])?
+                .into_int_value();
+            let kept = emitter
+                .context
+                .append_basic_block(function, &format!("{label}_entry_ok"));
+            let failed = emitter
+                .context
+                .append_basic_block(function, &format!("{label}_entry_failed"));
+            emitter
+                .builder
+                .build_conditional_branch(built_ok, kept, failed)
+                .map_err(|e| e.to_string())?;
 
-        self.builder.position_at_end(head);
-        let current = self
-            .builder
-            .build_load(i64_type, index, "i")
-            .map_err(|e| e.to_string())?
-            .into_int_value();
-        let more = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::SLT, current, count, "more")
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_conditional_branch(more, body, done)
-            .map_err(|e| e.to_string())?;
+            emitter.builder.position_at_end(failed);
+            emitter.emit_list_free(out)?;
+            for owned_ptr in &owned {
+                emitter.emit_value_decref(*owned_ptr)?;
+            }
+            emitter
+                .builder
+                .build_return(Some(&built))
+                .map_err(|e| e.to_string())?;
 
-        self.builder.position_at_end(body);
-        let entry =
-            self.call_returning_ptr("mux_value_list_get_value", &[items.into(), current.into()])?;
-        let built = self.call_returning_ptr(builder, &[entry.into()])?;
-        self.emit_value_decref(entry)?;
+            emitter.builder.position_at_end(kept);
+            let object = emitter.call_returning_ptr("mux_result_data", &[built.into()])?;
+            emitter.emit_value_decref(built)?;
+            // `push_back` clones what it is given.
+            emitter
+                .call_returning_value("mux_list_push_back", &[out.into(), object.into()])
+                .ok();
+            emitter.emit_value_decref(object)
+        })?;
 
-        let built_ok = self
-            .call_returning_value("mux_result_is_ok", &[built.into()])?
-            .into_int_value();
-        let kept = self
-            .context
-            .append_basic_block(function, &format!("{label}_entry_ok"));
-        let failed = self
-            .context
-            .append_basic_block(function, &format!("{label}_entry_failed"));
-        self.builder
-            .build_conditional_branch(built_ok, kept, failed)
-            .map_err(|e| e.to_string())?;
-
-        self.builder.position_at_end(failed);
-        self.emit_list_free(out)?;
-        for owned_ptr in owned {
-            self.emit_value_decref(*owned_ptr)?;
-        }
-        self.builder
-            .build_return(Some(&built))
-            .map_err(|e| e.to_string())?;
-
-        self.builder.position_at_end(kept);
-        let object = self.call_returning_ptr("mux_result_data", &[built.into()])?;
-        self.emit_value_decref(built)?;
-        // `push_back` clones what it is given.
-        self.call_returning_value("mux_list_push_back", &[out.into(), object.into()])
-            .ok();
-        self.emit_value_decref(object)?;
-
-        let next = self
-            .builder
-            .build_int_add(current, i64_type.const_int(1, false), "next")
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(index, next)
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_unconditional_branch(head)
-            .map_err(|e| e.to_string())?;
-
-        self.builder.position_at_end(done);
         let list_value = self.call_returning_ptr("mux_list_value", &[out.into()])?;
-        for owned_ptr in owned {
+        for owned_ptr in &owned {
             self.emit_value_decref(*owned_ptr)?;
         }
         let ok = self.call_returning_ptr("mux_result_ok_value", &[list_value.into()])?;
@@ -349,15 +393,7 @@ impl<'a> CodeGenerator<'a> {
             .ok_or("list_from_json takes the document text")?
             .into_pointer_value();
 
-        let cstr = self.extract_c_string_from_value(text)?;
-        let parsed = self.call_returning_ptr("mux_json_parse", &[cstr.into()])?;
-        let free = self
-            .runtime_function("mux_free_string")
-            .ok_or("mux_free_string not found")?;
-        self.builder
-            .build_call(free, &[cstr.into()], "free_json_text")
-            .map_err(|e| e.to_string())?;
-        let document = self.unwrap_result_or_return(function, parsed, "parse")?;
+        let document = self.emit_parse_document(function, text, "mux_json_parse", "parse")?;
 
         // A document that parsed but is not an array is the mistake worth
         // naming: `from_json` was probably meant.
@@ -577,15 +613,8 @@ impl<'a> CodeGenerator<'a> {
             .ok_or("list_from_csv takes the document text")?
             .into_pointer_value();
 
-        let cstr = self.extract_c_string_from_value(text)?;
-        let parsed = self.call_returning_ptr("mux_csv_parse_with_headers", &[cstr.into()])?;
-        let free = self
-            .runtime_function("mux_free_string")
-            .ok_or("mux_free_string not found")?;
-        self.builder
-            .build_call(free, &[cstr.into()], "free_csv_text")
-            .map_err(|e| e.to_string())?;
-        let table = self.unwrap_result_or_return(function, parsed, "csv")?;
+        let table =
+            self.emit_parse_document(function, text, "mux_csv_parse_with_headers", "csv")?;
 
         let as_rows = self.call_returning_ptr("mux_csv_rows_as_maps", &[table.into()])?;
         let paired = self
@@ -852,63 +881,18 @@ impl<'a> CodeGenerator<'a> {
             .into_int_value();
         let out = self.call_returning_ptr("mux_new_list", &[])?;
 
-        let i64_type = self.context.i64_type();
-        let index = self
-            .builder
-            .build_alloca(i64_type, &format!("{label}_i"))
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(index, i64_type.const_zero())
-            .map_err(|e| e.to_string())?;
+        self.emit_index_loop(function, label, count, |emitter, current| {
+            let entry = emitter
+                .call_returning_ptr("mux_value_list_get_value", &[items.into(), current.into()])?;
+            let converted =
+                emitter.convert_json_value(function, label, element, entry, instance)?;
+            // `push_back` clones, so the converted element is still ours.
+            emitter
+                .call_returning_value("mux_list_push_back", &[out.into(), converted.into()])
+                .ok();
+            emitter.emit_value_decref(converted)
+        })?;
 
-        let head = self
-            .context
-            .append_basic_block(function, &format!("{label}_head"));
-        let body = self
-            .context
-            .append_basic_block(function, &format!("{label}_body"));
-        let done = self
-            .context
-            .append_basic_block(function, &format!("{label}_end"));
-        self.builder
-            .build_unconditional_branch(head)
-            .map_err(|e| e.to_string())?;
-
-        self.builder.position_at_end(head);
-        let current = self
-            .builder
-            .build_load(i64_type, index, "i")
-            .map_err(|e| e.to_string())?
-            .into_int_value();
-        let more = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::SLT, current, count, "more")
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_conditional_branch(more, body, done)
-            .map_err(|e| e.to_string())?;
-
-        self.builder.position_at_end(body);
-        let entry =
-            self.call_returning_ptr("mux_value_list_get_value", &[items.into(), current.into()])?;
-        let converted = self.convert_json_value(function, label, element, entry, instance)?;
-        // `push_back` clones, so the converted element is still ours.
-        self.call_returning_value("mux_list_push_back", &[out.into(), converted.into()])
-            .ok();
-        self.emit_value_decref(converted)?;
-
-        let next = self
-            .builder
-            .build_int_add(current, i64_type.const_int(1, false), "next")
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(index, next)
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_unconditional_branch(head)
-            .map_err(|e| e.to_string())?;
-
-        self.builder.position_at_end(done);
         self.emit_value_decref(items)?;
         self.call_returning_ptr("mux_list_value", &[out.into()])
     }
