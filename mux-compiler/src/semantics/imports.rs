@@ -1229,6 +1229,15 @@ impl SemanticAnalyzer {
 
     pub(super) fn make_csv_symbol(span: Span) -> Symbol {
         let mut methods = std::collections::HashMap::new();
+        // The total render, as on Json (#405).
+        methods.insert(
+            "to_string".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Type::Primitive(PrimitiveType::Str),
+                is_static: false,
+            },
+        );
         methods.insert(
             "stringify".to_string(),
             MethodSig {
@@ -1271,10 +1280,23 @@ impl SemanticAnalyzer {
             },
         );
 
-        // Typed accessors, each returning `optional<T>` - `none` when the value
-        // is a different kind. Without these `stringify` was the only way to
-        // inspect a value, so a string field came back JSON-encoded with its
-        // quotes and nothing could strip them (#392).
+        // Typed accessors, each returning `result<T, string>` - the error names
+        // what was actually there, so "not an int" says whether it was a string,
+        // a null, or something else. Without these `stringify` was the only way
+        // to inspect a value, so a string field came back JSON-encoded with its
+        // quotes and nothing could strip them (#392, #404).
+        // The total render every other type has. `stringify` stays for the
+        // configurable form - it takes an indent and returns a result, so it
+        // cannot satisfy Stringable (#405).
+        methods.insert(
+            "to_string".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Type::Primitive(PrimitiveType::Str),
+                is_static: false,
+            },
+        );
+
         let json = Type::Named("Json".to_string(), Vec::new());
         for (name, inner) in [
             ("as_string", Type::Primitive(PrimitiveType::Str)),
@@ -1294,7 +1316,10 @@ impl SemanticAnalyzer {
                 name.to_string(),
                 MethodSig {
                     params: vec![],
-                    return_type: Type::Optional(Box::new(inner)),
+                    return_type: Type::Result(
+                        Box::new(inner),
+                        Box::new(Type::Primitive(PrimitiveType::Str)),
+                    ),
                     is_static: false,
                 },
             );

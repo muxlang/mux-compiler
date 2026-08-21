@@ -1230,6 +1230,10 @@ impl<'a> CodeGenerator<'a> {
                 }
                 self.call_runtime_function("mux_csv_to_string", &[obj_value])
             }
+            "to_string" => {
+                self.ensure_no_args("to_string", args)?;
+                self.call_runtime_function("mux_csv_render", &[obj_value])
+            }
             _ => Err(format!("Method {} not implemented for Csv", method_name)),
         }
     }
@@ -1252,6 +1256,14 @@ impl<'a> CodeGenerator<'a> {
                     self.call_runtime_function("mux_json_stringify", &[obj_value, indent_arg])?;
                 // mux_json_stringify returns an owned result<string,...>; register
                 // it for statement-end release unless ownership is transferred.
+                self.register_temp(result);
+                Ok(result)
+            }
+            // The total render. Returns an owned string, released at the end of
+            // the statement like any other temporary.
+            "to_string" => {
+                self.ensure_no_args("to_string", args)?;
+                let result = self.call_runtime_function("mux_json_to_string", &[obj_value])?;
                 self.register_temp(result);
                 Ok(result)
             }

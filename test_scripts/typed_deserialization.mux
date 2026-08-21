@@ -1,0 +1,42 @@
+// Parsing a document straight into a class, instead of reading it field by
+// field out of a `Json`.
+//
+// `Json` exists because Mux containers are homogeneous - `{"port": 8080,
+// "host": "localhost"}` is a type error as a Mux map - so reading a document
+// meant an `as_int()` at every field. `from_json` moves that shape check to the
+// boundary: declare what you expect, and get it or an error saying what was
+// wrong (muxlang/mux-compiler#404).
+//
+// The rules being exercised: a missing REQUIRED field is an error naming it, a
+// field of the wrong kind is an error naming the type expected, a malformed
+// document keeps the parser's own message, and fields the class does not
+// declare are ignored so a server adding one does not break the reader.
+
+class Config {
+    int port = 0
+    string host = ""
+    bool debug = false
+}
+
+func describe(string label, string text) returns void {
+    match Config.from_json(text) {
+        ok(cfg) {
+            print(label + ": ok " + cfg.host + ":" + cfg.port.to_string()
+                + " debug=" + cfg.debug.to_string())
+        }
+        err(e) { print(label + ": " + e) }
+    }
+    return
+}
+
+func main() returns void {
+    describe("complete", "{\"port\":8080,\"host\":\"localhost\",\"debug\":true}")
+    describe("missing", "{\"port\":8080,\"debug\":false}")
+    describe("wrong kind", "{\"port\":\"8080\",\"host\":\"a\",\"debug\":false}")
+    describe("malformed", "{not json")
+
+    // An unknown field is skipped rather than rejected.
+    describe("extra field", "{\"port\":1,\"host\":\"b\",\"debug\":false,\"added_later\":9}")
+
+    return
+}

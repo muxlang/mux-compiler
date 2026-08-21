@@ -1,0 +1,9 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+complete: ok localhost:8080 debug=true
+missing: missing required field 'host'
+wrong kind: field 'port': expected an int
+malformed: key must be a string at line 1 column 2
+extra field: ok b:1 debug=false

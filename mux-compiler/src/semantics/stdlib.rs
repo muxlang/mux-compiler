@@ -517,6 +517,9 @@ fn sql_value_methods() -> HashMap<String, MethodSig> {
             return_type: bool_(),
             is_static: false
         },
+        // Result, so a caller is told what the column actually held rather
+        // than just "not that kind". The conversion helpers already produce a
+        // message; the accessors used to discard it with `.ok()` (#404).
         "as_bool" => {
             params: [],
             return_type: io_result(bool_()),

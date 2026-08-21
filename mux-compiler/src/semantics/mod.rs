@@ -1788,7 +1788,14 @@ impl SemanticAnalyzer {
         let ExpressionKind::FieldAccess { expr, field } = &func.kind else {
             return Ok(());
         };
-        if field != "new" {
+        // Every synthesized static builds an instance, so each one needs the
+        // type arguments for the same reason `new` does: without them the
+        // instantiation was never laid out, and codegen builds an object
+        // against a layout that does not exist (issue #360).
+        if !matches!(
+            field.as_str(),
+            "new" | "from_json" | "list_from_json" | "list_from_csv"
+        ) {
             return Ok(());
         }
         let ExpressionKind::Identifier(class_name) = &expr.kind else {
@@ -1814,11 +1821,10 @@ impl SemanticAnalyzer {
         }
         Err(SemanticError::with_help(
             format!(
-                "'{}' is generic, so '{}.new()' does not say what it holds",
-                class_name, class_name
+                "'{class_name}' is generic, so '{class_name}.{field}()' does not say what it holds"
             ),
             span,
-            format!("Name the type arguments, as in {}<int>.new().", class_name),
+            format!("Name the type arguments, as in {class_name}<int>.{field}()."),
         ))
     }
 

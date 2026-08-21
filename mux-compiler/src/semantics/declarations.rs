@@ -475,6 +475,42 @@ impl SemanticAnalyzer {
             is_static: true,
         };
         methods_map.insert("new".to_string(), new_sig);
+
+        // Deserializers, synthesized for every class the way `new` is.
+        //
+        // The name states the shape it returns: `from_json` gives one object,
+        // `list_from_json` gives a JSON array, `list_from_csv` gives the rows of
+        // a table. There is deliberately no singular `from_csv` - a CSV document
+        // IS a table, so a singular form would only work for a file with exactly
+        // one row and would read as a promise the format cannot keep.
+        //
+        // Whether a class can actually be deserialized (every field a type with
+        // a JSON representation) is reported by codegen against the specific
+        // field, not by withholding the method - a missing method says nothing
+        // about which field is the problem.
+        let self_type = Type::Named(
+            class_name.to_string(),
+            type_params
+                .iter()
+                .map(|(p, _)| Type::Variable(p.clone()))
+                .collect(),
+        );
+        let str_type = Type::Primitive(crate::ast::PrimitiveType::Str);
+        for (name, ok_type) in [
+            ("from_json", self_type.clone()),
+            ("list_from_json", Type::List(Box::new(self_type.clone()))),
+            ("list_from_csv", Type::List(Box::new(self_type.clone()))),
+        ] {
+            methods_map.insert(
+                name.to_string(),
+                MethodSig {
+                    params: vec![str_type.clone()],
+                    return_type: Type::Result(Box::new(ok_type), Box::new(str_type.clone())),
+                    is_static: true,
+                },
+            );
+        }
+
         Ok(methods_map)
     }
 
