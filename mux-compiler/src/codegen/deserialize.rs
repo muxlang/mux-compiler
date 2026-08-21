@@ -25,6 +25,18 @@ use crate::semantics::Type;
 use inkwell::AddressSpace;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 
+/// A field that was present: its value, and where the read rejoins.
+struct FieldLookup<'a> {
+    raw: PointerValue<'a>,
+    done_block: inkwell::basic_block::BasicBlock<'a>,
+}
+
+/// A freshly opened deserializer: the function and its single parameter.
+struct DeserializerEntry<'a> {
+    function: FunctionValue<'a>,
+    argument: PointerValue<'a>,
+}
+
 /// How a CSV cell becomes a declared type: the runtime parser to call and the
 /// word for the error message. `None` means the field is already a string.
 type CellCoercion = Option<(&'static str, &'static str)>;
@@ -126,6 +138,27 @@ impl<'a> CodeGenerator<'a> {
         result
     }
 
+    /// Declare a `fn(ptr) -> ptr` deserializer, open its entry block, and hand
+    /// back the function and its single parameter.
+    ///
+    /// Every one of these takes one pointer and returns a `result`, so the
+    /// prologue is identical five times over; only what the parameter MEANS
+    /// differs - document text for the entry points, an already-parsed value
+    /// for the recursive core.
+    fn begin_deserializer(&mut self, full_name: &str) -> Result<DeserializerEntry<'a>, String> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let function =
+            self.module
+                .add_function(full_name, ptr_type.fn_type(&[ptr_type.into()], false), None);
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let argument = function
+            .get_nth_param(0)
+            .ok_or_else(|| format!("{full_name} takes one argument"))?
+            .into_pointer_value();
+        Ok(DeserializerEntry { function, argument })
+    }
+
     /// `<Class>!from_value(json)` - build an instance from an already-parsed
     /// value. This is the recursive core: a nested class field has a `Json` in
     /// hand, not text, so the part that reads fields cannot be the part that
@@ -136,20 +169,10 @@ impl<'a> CodeGenerator<'a> {
     /// recursing forever.
     fn emit_from_value(&mut self, name: &str, fields: &[Field]) -> Result<(), String> {
         let full_name = Self::from_value_name(name);
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let function = self.module.add_function(
-            &full_name,
-            ptr_type.fn_type(&[ptr_type.into()], false),
-            None,
-        );
-
-        let entry = self.context.append_basic_block(function, "entry");
-        self.builder.position_at_end(entry);
-
-        let document = function
-            .get_nth_param(0)
-            .ok_or("from_value takes the parsed document")?
-            .into_pointer_value();
+        let DeserializerEntry {
+            function,
+            argument: document,
+        } = self.begin_deserializer(&full_name)?;
 
         let instance = self.call_returning_ptr(&format!("{}.new", name), &[])?;
 
@@ -170,20 +193,10 @@ impl<'a> CodeGenerator<'a> {
     /// `<Class>.from_json(text)` - parse, then hand the value to the core.
     fn emit_from_json(&mut self, name: &str) -> Result<(), String> {
         let full_name = format!("{}.from_json", name);
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let function = self.module.add_function(
-            &full_name,
-            ptr_type.fn_type(&[ptr_type.into()], false),
-            None,
-        );
-
-        let entry = self.context.append_basic_block(function, "entry");
-        self.builder.position_at_end(entry);
-
-        let text = function
-            .get_nth_param(0)
-            .ok_or("from_json takes the document text")?
-            .into_pointer_value();
+        let DeserializerEntry {
+            function,
+            argument: text,
+        } = self.begin_deserializer(&full_name)?;
 
         // The parameter arrives as a Mux string, which is a reference-counted
         // `*mut Value`; `mux_json_parse` reads a C string. Extracting yields an
@@ -378,20 +391,10 @@ impl<'a> CodeGenerator<'a> {
 
     fn emit_list_from_json(&mut self, name: &str) -> Result<(), String> {
         let full_name = format!("{}.list_from_json", name);
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let function = self.module.add_function(
-            &full_name,
-            ptr_type.fn_type(&[ptr_type.into()], false),
-            None,
-        );
-
-        let entry = self.context.append_basic_block(function, "entry");
-        self.builder.position_at_end(entry);
-
-        let text = function
-            .get_nth_param(0)
-            .ok_or("list_from_json takes the document text")?
-            .into_pointer_value();
+        let DeserializerEntry {
+            function,
+            argument: text,
+        } = self.begin_deserializer(&full_name)?;
 
         let document = self.emit_parse_document(function, text, "mux_json_parse", "parse")?;
 
@@ -434,20 +437,10 @@ impl<'a> CodeGenerator<'a> {
     /// wrong kind. Same field lookup, different conversion.
     fn emit_from_row(&mut self, name: &str, fields: &[Field]) -> Result<(), String> {
         let full_name = Self::from_row_name(name);
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let function = self.module.add_function(
-            &full_name,
-            ptr_type.fn_type(&[ptr_type.into()], false),
-            None,
-        );
-
-        let entry = self.context.append_basic_block(function, "entry");
-        self.builder.position_at_end(entry);
-
-        let row = function
-            .get_nth_param(0)
-            .ok_or("from_row takes the row map")?
-            .into_pointer_value();
+        let DeserializerEntry {
+            function,
+            argument: row,
+        } = self.begin_deserializer(&full_name)?;
 
         let instance = self.call_returning_ptr(&format!("{}.new", name), &[])?;
 
@@ -464,31 +457,38 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// One column of one row, coerced to the declared field type.
-    fn read_cell_into(
+    /// Look one field up by name and branch on whether it is there.
+    ///
+    /// Returns the blocks to continue in and the raw value, with the absent
+    /// path already emitted: `none` for an optional field (`new` left `none` in
+    /// the slot, so there is nothing to store), an error naming the field for a
+    /// required one. JSON and CSV differ only in what they do with the value
+    /// once they have it, and in whether the thing missing is called a field or
+    /// a column.
+    fn emit_field_lookup(
         &mut self,
         function: FunctionValue<'a>,
-        class_name: &str,
+        source: PointerValue<'a>,
         field: &Field,
-        row: PointerValue<'a>,
         instance: PointerValue<'a>,
-    ) -> Result<(), String> {
-        let (coercion, optional) = Self::cell_coercion(class_name, field)?;
-
+        optional: bool,
+        missing: &str,
+    ) -> Result<FieldLookup<'a>, String> {
         let key = self.build_global_cstring(&field.name)?;
-        let found = self.call_returning_ptr("mux_json_field", &[row.into(), key.into()])?;
+        let found = self.call_returning_ptr("mux_json_field", &[source.into(), key.into()])?;
         let present = self
             .call_returning_value("mux_optional_is_some", &[found.into()])?
             .into_int_value();
 
         let present_block = self
             .context
-            .append_basic_block(function, &format!("{}_cell", field.name));
+            .append_basic_block(function, &format!("{}_present", field.name));
         let absent_block = self
             .context
-            .append_basic_block(function, &format!("{}_no_cell", field.name));
+            .append_basic_block(function, &format!("{}_absent", field.name));
         let done_block = self
             .context
-            .append_basic_block(function, &format!("{}_cell_done", field.name));
+            .append_basic_block(function, &format!("{}_done", field.name));
         self.builder
             .build_conditional_branch(present, present_block, absent_block)
             .map_err(|e| e.to_string())?;
@@ -501,12 +501,28 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         } else {
             self.emit_value_decref(instance)?;
-            self.return_error(&format!("missing required column '{}'", field.name))?;
+            self.return_error(&format!("missing required {missing} '{}'", field.name))?;
         }
 
         self.builder.position_at_end(present_block);
-        let cell = self.call_returning_ptr("mux_optional_get_value", &[found.into()])?;
+        let raw = self.call_returning_ptr("mux_optional_get_value", &[found.into()])?;
         self.emit_value_decref(found)?;
+        Ok(FieldLookup { raw, done_block })
+    }
+
+    fn read_cell_into(
+        &mut self,
+        function: FunctionValue<'a>,
+        class_name: &str,
+        field: &Field,
+        row: PointerValue<'a>,
+        instance: PointerValue<'a>,
+    ) -> Result<(), String> {
+        let (coercion, optional) = Self::cell_coercion(class_name, field)?;
+        let FieldLookup {
+            raw: cell,
+            done_block,
+        } = self.emit_field_lookup(function, row, field, instance, optional, "column")?;
 
         let value = match coercion {
             // A string column is already what the field wants.
@@ -598,20 +614,10 @@ impl<'a> CodeGenerator<'a> {
     /// read as a promise the format cannot keep.
     fn emit_list_from_csv(&mut self, name: &str) -> Result<(), String> {
         let full_name = format!("{}.list_from_csv", name);
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let function = self.module.add_function(
-            &full_name,
-            ptr_type.fn_type(&[ptr_type.into()], false),
-            None,
-        );
-
-        let entry = self.context.append_basic_block(function, "entry");
-        self.builder.position_at_end(entry);
-
-        let text = function
-            .get_nth_param(0)
-            .ok_or("list_from_csv takes the document text")?
-            .into_pointer_value();
+        let DeserializerEntry {
+            function,
+            argument: text,
+        } = self.begin_deserializer(&full_name)?;
 
         let table =
             self.emit_parse_document(function, text, "mux_csv_parse_with_headers", "csv")?;
@@ -722,44 +728,8 @@ impl<'a> CodeGenerator<'a> {
         instance: PointerValue<'a>,
     ) -> Result<(), String> {
         let (reader, optional) = Self::field_reader(class_name, field)?;
-
-        let key = self.build_global_cstring(&field.name)?;
-        let found = self.call_returning_ptr("mux_json_field", &[document.into(), key.into()])?;
-        let present = self
-            .call_returning_value("mux_optional_is_some", &[found.into()])?
-            .into_int_value();
-
-        let present_block = self
-            .context
-            .append_basic_block(function, &format!("{}_present", field.name));
-        let absent_block = self
-            .context
-            .append_basic_block(function, &format!("{}_absent", field.name));
-        let done_block = self
-            .context
-            .append_basic_block(function, &format!("{}_done", field.name));
-
-        self.builder
-            .build_conditional_branch(present, present_block, absent_block)
-            .map_err(|e| e.to_string())?;
-
-        // Absent. An optional field is already `none` from `new`, so there is
-        // nothing to store; a required one is an error naming the field, which
-        // is the only thing the caller can act on.
-        self.builder.position_at_end(absent_block);
-        self.emit_value_decref(found)?;
-        if optional {
-            self.builder
-                .build_unconditional_branch(done_block)
-                .map_err(|e| e.to_string())?;
-        } else {
-            self.emit_value_decref(instance)?;
-            self.return_error(&format!("missing required field '{}'", field.name))?;
-        }
-
-        self.builder.position_at_end(present_block);
-        let raw = self.call_returning_ptr("mux_optional_get_value", &[found.into()])?;
-        self.emit_value_decref(found)?;
+        let FieldLookup { raw, done_block } =
+            self.emit_field_lookup(function, document, field, instance, optional, "field")?;
 
         // An `optional<T>` field accepts an explicit `null` as well as absence,
         // and both mean `none`. `new` already left `none` in the slot, so the
