@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-08-21
+
+### Fixed
+
+- **`mux version` reports the runtime it is actually built against.** The 0.10.0
+  pin named the commit before mux-runtime closed its changelog at 0.6.0, so the
+  binary said `runtime v0.5.0` while the runtime repo said 0.6.0. The pinned
+  code was identical - that commit changed only docs and the version field - so
+  this corrects a version string, not behaviour.
+
 ## [0.10.0] - 2026-08-20
 
 ### Changed
