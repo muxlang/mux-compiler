@@ -260,9 +260,8 @@ impl<'a> CodeGenerator<'a> {
         self.builder.position_at_end(array_block);
         let items = self.call_returning_ptr("mux_result_data", &[as_list.into()])?;
         self.emit_value_decref(as_list)?;
-        let source = self.call_returning_ptr("mux_value_get_list", &[items.into()])?;
         let count = self
-            .call_returning_value("mux_list_length", &[source.into()])?
+            .call_returning_value("mux_value_list_length", &[items.into()])?
             .into_int_value();
         let out = self.call_returning_ptr("mux_new_list", &[])?;
 
@@ -298,7 +297,7 @@ impl<'a> CodeGenerator<'a> {
 
         self.builder.position_at_end(body);
         let element =
-            self.call_returning_ptr("mux_list_get_value", &[source.into(), current.into()])?;
+            self.call_returning_ptr("mux_value_list_get_value", &[items.into(), current.into()])?;
         let built = self.call_returning_ptr(&Self::from_value_name(name), &[element.into()])?;
         self.emit_value_decref(element)?;
 
@@ -315,6 +314,7 @@ impl<'a> CodeGenerator<'a> {
         // Returning a partial list would hand back data the document does not
         // contain.
         self.builder.position_at_end(failed);
+        self.emit_list_free(out)?;
         self.emit_value_decref(items)?;
         self.emit_value_decref(document)?;
         self.builder
@@ -571,9 +571,8 @@ impl<'a> CodeGenerator<'a> {
         self.builder.position_at_end(rows_block);
         let rows = self.call_returning_ptr("mux_result_data", &[as_rows.into()])?;
         self.emit_value_decref(as_rows)?;
-        let source = self.call_returning_ptr("mux_value_get_list", &[rows.into()])?;
         let count = self
-            .call_returning_value("mux_list_length", &[source.into()])?
+            .call_returning_value("mux_value_list_length", &[rows.into()])?
             .into_int_value();
         let out = self.call_returning_ptr("mux_new_list", &[])?;
 
@@ -609,7 +608,7 @@ impl<'a> CodeGenerator<'a> {
 
         self.builder.position_at_end(body);
         let row =
-            self.call_returning_ptr("mux_list_get_value", &[source.into(), current.into()])?;
+            self.call_returning_ptr("mux_value_list_get_value", &[rows.into(), current.into()])?;
         let built = self.call_returning_ptr(&Self::from_row_name(name), &[row.into()])?;
         self.emit_value_decref(row)?;
 
@@ -625,6 +624,7 @@ impl<'a> CodeGenerator<'a> {
         // One bad row fails the call. A partial list would be data the file
         // does not contain.
         self.builder.position_at_end(failed);
+        self.emit_list_free(out)?;
         self.emit_value_decref(rows)?;
         self.emit_value_decref(table)?;
         self.builder
@@ -660,6 +660,21 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| e.to_string())?;
 
         self.constructors.insert(full_name, function);
+        Ok(())
+    }
+
+    /// Free a raw `List` handle from `mux_new_list`.
+    ///
+    /// Not reference counted, so `mux_rc_dec` does not reach it and
+    /// `rc-leak-check` cannot see it leak - only valgrind does. An early return
+    /// that abandons a half-built list has to free it explicitly.
+    fn emit_list_free(&mut self, list: PointerValue<'a>) -> Result<(), String> {
+        let free = self
+            .runtime_function("mux_free_list")
+            .ok_or("mux_free_list not found")?;
+        self.builder
+            .build_call(free, &[list.into()], "free_partial_list")
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -875,9 +890,8 @@ impl<'a> CodeGenerator<'a> {
         self.builder.position_at_end(ok_block);
         let items = self.call_returning_ptr("mux_result_data", &[as_list.into()])?;
         self.emit_value_decref(as_list)?;
-        let source = self.call_returning_ptr("mux_value_get_list", &[items.into()])?;
         let count = self
-            .call_returning_value("mux_list_length", &[source.into()])?
+            .call_returning_value("mux_value_list_length", &[items.into()])?
             .into_int_value();
         let out = self.call_returning_ptr("mux_new_list", &[])?;
 
@@ -919,7 +933,7 @@ impl<'a> CodeGenerator<'a> {
 
         self.builder.position_at_end(body);
         let entry =
-            self.call_returning_ptr("mux_list_get_value", &[source.into(), current.into()])?;
+            self.call_returning_ptr("mux_value_list_get_value", &[items.into(), current.into()])?;
         let converted = self.convert_json_value(function, label, element, entry, instance)?;
         // `push_back` clones, so the converted element is still ours.
         self.call_returning_value("mux_list_push_back", &[out.into(), converted.into()])
