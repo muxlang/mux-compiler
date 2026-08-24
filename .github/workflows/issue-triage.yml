@@ -67,8 +67,66 @@ jobs:
             // creates the label: the template's request was already dropped, and
             // creating the label now does not retroactively label the issue that
             // triggered this run. Every later issue gets it from its template.
+            // An insider files with priority and status already in hand, so
+            // `needs triage` would only ask a maintainer to review their own
+            // issue. The template applies it before this workflow runs, so the
+            // fix is to take it off again rather than to not add it
+            // (muxlang/mux-context#19).
+            //
+            // Whether the filer can act on their own issue decides everything,
+            // and association strings are unreliable proxies for it: MEMBER
+            // says nothing about access to THIS repository, COLLABORATOR
+            // includes read-only invites, and a private org member can surface
+            // as CONTRIBUTOR. The permission API does not lie, so ask it
+            // instead of guessing from the association. OWNER is the repository
+            // owner and always admin.
+            //
+            // Fail safe: on any error the label stays. A maintainer removing
+            // one extra label costs a click; an issue silently dropped from
+            // the queue loses work - the one outcome this must not cause.
+            const isInsider = await (async () => {
+              if (context.payload.issue.author_association === 'OWNER') {
+                return true;
+              }
+              try {
+                const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  username: context.payload.issue.user.login,
+                });
+                return permission.permission === 'admin' || permission.permission === 'write';
+              } catch (permissionError) {
+                return false;
+              }
+            })();
+
+            const removeLabelIfPresent = async (name) => {
+              const names = context.payload.issue.labels.map((label) => label.name);
+              if (!names.includes(name)) {
+                return;
+              }
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.issue.number,
+                  name,
+                });
+              } catch (removeError) {
+                // 404 means it was already gone - a concurrent run, or a
+                // maintainer who got there first. Not a failure.
+                if (removeError.status !== 404) {
+                  throw removeError;
+                }
+              }
+            };
+
+            // ensureLabel still runs for an insider's issue: the label has to
+            // exist in the repo for everyone else's template to apply it.
             const createdTriageLabel = await ensureLabel(labelName, 'ededed', 'Not yet reviewed or categorized');
-            if (createdTriageLabel) {
+            if (isInsider) {
+              await removeLabelIfPresent(labelName);
+            } else if (createdTriageLabel) {
               await applyLabelIfMissing(labelName);
             }
             if (!context.payload.issue.assignee) {
@@ -79,9 +137,8 @@ jobs:
                 assignees: ['DerekCorniello'],
               });
             }
-            const title = context.payload.issue.title;
-            const body = context.payload.issue.body || '';
-            if (/^docs?[:/\s]/i.test(title) || /documentation/i.test(title + ' ' + body) || /What is wrong|Expected content|Page URL/i.test(body)) {
-              await ensureLabel('documentation', '0075ca', 'Improvements or additions to documentation');
-              await applyLabelIfMissing('documentation');
-            }
+            // No `documentation` label. Kind is an issue type now, set by the
+            // form at filing time, and a label that restates the type is the
+            // thing the governance doc forbids. Guessing it from the title also
+            // could not tell a docs REQUEST from a bug report that happens to
+            // mention documentation.
