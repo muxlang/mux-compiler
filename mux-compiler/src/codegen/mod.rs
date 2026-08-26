@@ -18,6 +18,7 @@ use std::io::Write;
 
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
+use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
@@ -67,6 +68,13 @@ impl<'a> RcSlot<'a> {
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct LoopTargets<'a> {
+    break_bb: BasicBlock<'a>,
+    continue_bb: BasicBlock<'a>,
+    temp_mark: (usize, usize, usize),
 }
 
 pub struct CodeGenerator<'a> {
@@ -178,6 +186,7 @@ pub struct CodeGenerator<'a> {
     /// `mux_closure_release` when the scope ends. Pushed/popped in lock-step
     /// with `rc_scope_stack`.
     closure_scope_stack: Vec<Vec<(String, PointerValue<'a>)>>,
+    loop_targets: Vec<LoopTargets<'a>>,
     source_name: String,
     /// ABI type sizing used to pick a union slot large enough for every variant
     /// at a heterogeneous enum payload position (issue #309). Built from LLVM's
@@ -839,6 +848,7 @@ impl<'a> CodeGenerator<'a> {
             closure_temp_values: Vec::new(),
             enum_temp_values: Vec::new(),
             closure_scope_stack: Vec::new(),
+            loop_targets: Vec::new(),
             source_name: source_name.to_string(),
             target_data: inkwell::targets::TargetData::create(""),
         }

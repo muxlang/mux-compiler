@@ -8,8 +8,9 @@
 //! - Expression statements
 
 use inkwell::AddressSpace;
+use inkwell::basic_block::BasicBlock;
 use inkwell::types::{BasicType, BasicTypeEnum};
-use inkwell::values::{BasicValueEnum, FunctionValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 
 use crate::ast::{
     EnumVariantField, ExpressionKind, ExpressionNode, LiteralNode, PatternNode, PrimitiveType,
@@ -17,7 +18,16 @@ use crate::ast::{
 };
 use crate::semantics::{Type, Type as ResolvedType};
 
-use super::CodeGenerator;
+use super::{CodeGenerator, LoopTargets};
+
+struct ForLoopIteration<'a> {
+    index_alloca: PointerValue<'a>,
+    index_load: BasicValueEnum<'a>,
+    header_bb: BasicBlock<'a>,
+    continue_bb: BasicBlock<'a>,
+    break_cleanup_bb: BasicBlock<'a>,
+    exit_bb: BasicBlock<'a>,
+}
 
 impl<'a> CodeGenerator<'a> {
     fn declare_variable(
@@ -317,27 +327,36 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         function: &FunctionValue<'a>,
         body: &[StatementNode],
-        index_alloca: inkwell::values::PointerValue<'a>,
-        index_load: BasicValueEnum<'a>,
-        header_bb: inkwell::basic_block::BasicBlock<'a>,
+        iteration: ForLoopIteration<'a>,
     ) -> Result<(), String> {
         let temp_mark = self.temp_mark();
+        self.push_loop_targets(iteration.break_cleanup_bb, iteration.continue_bb, temp_mark);
         for stmt in body {
             self.generate_statement(stmt, Some(function))?;
         }
+        self.pop_loop_targets();
         if self.current_block_is_live() {
-            self.emit_loop_iteration_cleanup(temp_mark)?;
+            self.builder
+                .build_unconditional_branch(iteration.continue_bb)
+                .map_err(|e| e.to_string())?;
         }
+        self.builder.position_at_end(iteration.continue_bb);
+        self.emit_loop_iteration_cleanup(temp_mark)?;
         let one = self.context.i64_type().const_int(1, false);
         let new_index = self
             .builder
-            .build_int_add(index_load.into_int_value(), one, "inc")
+            .build_int_add(iteration.index_load.into_int_value(), one, "inc")
             .map_err(|e| e.to_string())?;
         self.builder
-            .build_store(index_alloca, new_index)
+            .build_store(iteration.index_alloca, new_index)
             .map_err(|e| e.to_string())?;
         self.builder
-            .build_unconditional_branch(header_bb)
+            .build_unconditional_branch(iteration.header_bb)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(iteration.break_cleanup_bb);
+        self.emit_loop_iteration_cleanup(temp_mark)?;
+        self.builder
+            .build_unconditional_branch(iteration.exit_bb)
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -398,6 +417,12 @@ impl<'a> CodeGenerator<'a> {
         let exit_bb = self
             .context
             .append_basic_block(*function, &format!("for_exit_{}", label_id));
+        let continue_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_continue_{}", label_id));
+        let break_cleanup_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_break_{}", label_id));
         self.builder
             .build_unconditional_branch(header_bb)
             .map_err(|e| e.to_string())?;
@@ -427,7 +452,15 @@ impl<'a> CodeGenerator<'a> {
         // releasing the previous iteration's boxed index so the loop
         // does not accumulate leaks.
         self.overwrite_slot_of_type(var_alloca, slot_type, index_load2, &resolved_var_type)?;
-        self.close_loop_iteration(function, body, index_alloca, index_load2, header_bb)?;
+        let iteration = ForLoopIteration {
+            index_alloca,
+            index_load: index_load2,
+            header_bb,
+            continue_bb,
+            break_cleanup_bb,
+            exit_bb,
+        };
+        self.close_loop_iteration(function, body, iteration)?;
         self.builder.position_at_end(exit_bb);
         Ok(())
     }
@@ -495,6 +528,12 @@ impl<'a> CodeGenerator<'a> {
         let exit_bb = self
             .context
             .append_basic_block(*function, &format!("for_exit_{}", label_id));
+        let continue_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_continue_{}", label_id));
+        let break_cleanup_bb = self
+            .context
+            .append_basic_block(*function, &format!("for_break_{}", label_id));
         self.builder
             .build_unconditional_branch(header_bb)
             .map_err(|e| e.to_string())?;
@@ -541,15 +580,16 @@ impl<'a> CodeGenerator<'a> {
         // element so long-running loops do not accumulate leaks.
         self.register_temp(value_ptr.into());
         self.overwrite_slot_of_type(var_alloca, slot_type, value_ptr.into(), &resolved_var_type)?;
-        self.close_loop_iteration(function, body, index_alloca, index_load2, header_bb)?;
-        let continue_bb = self
-            .context
-            .append_basic_block(*function, &format!("for_continue_{}", label_id));
+        let iteration = ForLoopIteration {
+            index_alloca,
+            index_load: index_load2,
+            header_bb,
+            continue_bb,
+            break_cleanup_bb,
+            exit_bb,
+        };
+        self.close_loop_iteration(function, body, iteration)?;
         self.builder.position_at_end(exit_bb);
-        self.builder
-            .build_unconditional_branch(continue_bb)
-            .map_err(|e| e.to_string())?;
-        self.builder.position_at_end(continue_bb);
         Ok(())
     }
 
@@ -1132,7 +1172,9 @@ impl<'a> CodeGenerator<'a> {
         for stmt in then_block {
             self.generate_statement(stmt, Some(function))?;
         }
-        if !then_ends_with_return && let Some(merge_bb) = merge_bb {
+        if self.current_block_is_live()
+            && let Some(merge_bb) = merge_bb
+        {
             self.builder
                 .build_unconditional_branch(merge_bb)
                 .map_err(|e| e.to_string())?;
@@ -1144,7 +1186,9 @@ impl<'a> CodeGenerator<'a> {
                 self.generate_statement(stmt, Some(function))?;
             }
         }
-        if !else_ends_with_return && let Some(merge_bb) = merge_bb {
+        if self.current_block_is_live()
+            && let Some(merge_bb) = merge_bb
+        {
             self.builder
                 .build_unconditional_branch(merge_bb)
                 .map_err(|e| e.to_string())?;
@@ -1166,6 +1210,8 @@ impl<'a> CodeGenerator<'a> {
         let header_bb = self.context.append_basic_block(*function, "while_header");
         let body_bb = self.context.append_basic_block(*function, "while_body");
         let exit_bb = self.context.append_basic_block(*function, "while_exit");
+        let continue_bb = self.context.append_basic_block(*function, "while_continue");
+        let break_cleanup_bb = self.context.append_basic_block(*function, "while_break");
         self.builder
             .build_unconditional_branch(header_bb)
             .map_err(|e| e.to_string())?;
@@ -1179,17 +1225,69 @@ impl<'a> CodeGenerator<'a> {
 
         self.builder.position_at_end(body_bb);
         let temp_mark = self.temp_mark();
+        self.push_loop_targets(break_cleanup_bb, continue_bb, temp_mark);
         for stmt in body {
             self.generate_statement(stmt, Some(function))?;
         }
+        self.pop_loop_targets();
         if self.current_block_is_live() {
-            self.emit_loop_iteration_cleanup(temp_mark)?;
+            self.builder
+                .build_unconditional_branch(continue_bb)
+                .map_err(|e| e.to_string())?;
         }
+        self.builder.position_at_end(continue_bb);
+        self.emit_loop_iteration_cleanup(temp_mark)?;
         self.builder
             .build_unconditional_branch(header_bb)
             .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(break_cleanup_bb);
+        self.emit_loop_iteration_cleanup(temp_mark)?;
+        self.builder
+            .build_unconditional_branch(exit_bb)
+            .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(exit_bb);
+        Ok(())
+    }
+
+    fn push_loop_targets(
+        &mut self,
+        break_bb: BasicBlock<'a>,
+        continue_bb: BasicBlock<'a>,
+        temp_mark: (usize, usize, usize),
+    ) {
+        self.loop_targets.push(LoopTargets {
+            break_bb,
+            continue_bb,
+            temp_mark,
+        });
+    }
+
+    fn pop_loop_targets(&mut self) {
+        self.loop_targets.pop();
+    }
+
+    fn generate_break_statement(&mut self) -> Result<(), String> {
+        let target = *self
+            .loop_targets
+            .last()
+            .ok_or("break statement not in loop")?;
+        self.emit_temps_since_mark(target.temp_mark)?;
+        self.builder
+            .build_unconditional_branch(target.break_bb)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn generate_continue_statement(&mut self) -> Result<(), String> {
+        let target = *self
+            .loop_targets
+            .last()
+            .ok_or("continue statement not in loop")?;
+        self.emit_temps_since_mark(target.temp_mark)?;
+        self.builder
+            .build_unconditional_branch(target.continue_bb)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1284,7 +1382,10 @@ impl<'a> CodeGenerator<'a> {
         // decremented here. `Return` manages its own temporaries (it must retain
         // the returned value across cleanup), so it is exempt.
         let temp_mark = self.temp_mark();
-        let is_return = matches!(stmt.kind, StatementKind::Return(_));
+        let is_terminator = matches!(
+            stmt.kind,
+            StatementKind::Return(_) | StatementKind::Break | StatementKind::Continue
+        );
         match &stmt.kind {
             StatementKind::AutoDecl(name, _, expr) => {
                 self.generate_auto_decl_statement(name, expr, function)?;
@@ -1304,6 +1405,12 @@ impl<'a> CodeGenerator<'a> {
             StatementKind::Return(None) => {
                 self.generate_all_scopes_cleanup()?;
                 self.builder.build_return(None).map_err(|e| e.to_string())?;
+            }
+            StatementKind::Break => {
+                self.generate_break_statement()?;
+            }
+            StatementKind::Continue => {
+                self.generate_continue_statement()?;
             }
             StatementKind::If {
                 cond,
@@ -1346,7 +1453,7 @@ impl<'a> CodeGenerator<'a> {
             }
             _ => {} // skip other statement types for now
         }
-        if !is_return {
+        if !is_terminator {
             self.cleanup_temps_to(temp_mark)?;
         }
         Ok(())
