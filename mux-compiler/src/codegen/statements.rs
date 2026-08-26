@@ -1781,18 +1781,45 @@ impl<'a> CodeGenerator<'a> {
         let boxed = self.box_value(data_val);
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let alloca = self.create_entry_alloca(ptr_type.into(), var)?;
+
+        // A scalar payload arrives as a freshly boxed statement temporary while
+        // the binding aliases the same box - two readers of one reference with
+        // only one owner. Writing through `&binding` then released the box at
+        // the slot while the temporary set still owned it, corrupting the heap
+        // (issue #414).
+        //
+        // Every payload shape arrives owned here: `mux_optional_data`/
+        // `mux_result_data` clone collection and nested payloads into a fresh
+        // allocation, and scalar payloads are freshly boxed by `box_value`
+        // (which registers them as statement temporaries). So give the slot
+        // sole ownership: unregister the statement temporary if there is one,
+        // track the slot so scopes unwind release it exactly once, and drop
+        // the previous occupant first (null-safe on the first pass, and it
+        // keeps a loop body whose match re-runs every iteration from leaking
+        // all but the last binding - issue #290's pattern).
+        //
+        // This used to be a raw store that left the binding aliasing a box the
+        // temporary set still owned: two readers of one reference. Writing
+        // through `&binding` released it at the slot and the match boundary
+        // released it again, corrupting the heap (issue #414).
+        self.track_rc_variable(var, alloca);
+
+        let old_occupant = self
+            .builder
+            .build_load(ptr_type, alloca, &format!("{var}_old"))
+            .map_err(|e| e.to_string())?;
+        let rc_dec = self
+            .runtime_function("mux_rc_dec")
+            .ok_or("mux_rc_dec not found")?;
+        self.builder
+            .build_call(rc_dec, &[old_occupant.into()], &format!("{var}_old_dec"))
+            .map_err(|e| e.to_string())?;
+
+        self.untrack_temp(boxed.into());
+
         self.builder
             .build_store(alloca, boxed)
             .map_err(|e| e.to_string())?;
-
-        // The bound payload is an owned (+1) value: scalar payloads are freshly
-        // boxed here, and complex payloads (string/list/...) were cloned by the
-        // `mux_*_data` extraction. `box_value` already registers freshly boxed
-        // scalars as statement temporaries, but returns already-boxed pointers
-        // untracked - so register the binding to guarantee it is released at the
-        // end of the match statement (or brought down to caller-owned on a
-        // returning arm). Dedups if already tracked.
-        self.register_temp(boxed.into());
 
         self.variables
             .insert(var.clone(), (alloca, ptr_type.into(), resolved_type));
@@ -1966,21 +1993,39 @@ impl<'a> CodeGenerator<'a> {
                         .map_err(|e| e.to_string())?;
                     let boxed = self.box_value(data_val);
                     let ptr_type = self.context.ptr_type(AddressSpace::default());
-                    let alloca = self
-                        .builder
-                        .build_alloca(ptr_type, var)
-                        .map_err(|e| e.to_string())?;
+
+                    let alloca = self.create_entry_alloca(ptr_type.into(), var)?;
+
+                    // A scalar payload arrives as a freshly boxed statement temporary while
+                    // the binding aliases the same box - two readers of one reference with
+                    // only one owner. Writing through `&binding` then released the box at
+                    // the slot while the temporary set still owned it, corrupting the heap
+                    // (issue #414): transfer ownership into a tracked binding slot instead,
+                    // dropping the previous occupant first (null-safe on the first pass).
+                    //
+                    // Any other pointer payload (string, list) is a borrow of the subject
+                    // enum's own storage: the subject owns it and outlives the arm, so the
+                    // binding stays an untracked borrow exactly as before.
+                    let transferred = self.untrack_temp(boxed.into());
+                    if transferred {
+                        self.track_rc_variable(var, alloca);
+
+                        let old_occupant = self
+                            .builder
+                            .build_load(ptr_type, alloca, &format!("{var}_old"))
+                            .map_err(|e| e.to_string())?;
+                        let rc_dec = self
+                            .runtime_function("mux_rc_dec")
+                            .ok_or("mux_rc_dec not found")?;
+                        self.builder
+                            .build_call(rc_dec, &[old_occupant.into()], &format!("{var}_old_dec"))
+                            .map_err(|e| e.to_string())?;
+                    }
                     self.builder
                         .build_store(alloca, boxed)
                         .map_err(|e| e.to_string())?;
                     (alloca, ptr_type.into())
                 };
-
-                // Note: for custom enums the payload is loaded directly from the
-                // enum struct (a borrow), so it is intentionally NOT registered
-                // as an owned temporary here - the enum owns it. Only scalar
-                // payloads, which `box_value` freshly boxes and self-registers,
-                // are released as temporaries.
                 self.variables
                     .insert(var.clone(), (alloca, stored_type, resolved_type));
             }
