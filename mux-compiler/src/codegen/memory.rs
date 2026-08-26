@@ -2042,6 +2042,17 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    /// Release all per-iteration temporaries accumulated during a single loop
+    /// body pass. Cleans up statement temporaries (pointer and enum), and
+    /// closure temporaries registered since `mark`, then truncates so the next
+    /// iteration starts with a clean set. Skips emission in a dead block.
+    pub(super) fn emit_loop_iteration_cleanup(
+        &mut self,
+        mark: (usize, usize, usize),
+    ) -> Result<(), String> {
+        self.cleanup_temps_to(mark)
+    }
+
     /// Release the inline-enum temporaries registered since `mark`, dropping each
     /// via `emit_enum_drop` and then zeroing its spill slot so a later blanket
     /// cleanup or a loop iteration reusing the slot does not drop it again. Skips
