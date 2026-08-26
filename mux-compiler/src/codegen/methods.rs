@@ -6,10 +6,12 @@
 //! - Collection method calls (list, map, set)
 //! - Optional method calls
 
+use inkwell::AddressSpace;
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum};
 
 use crate::ast::{ExpressionNode, PrimitiveType};
 use crate::semantics::Type;
+use crate::semantics::format::format_type;
 
 use super::CodeGenerator;
 
@@ -897,9 +899,33 @@ impl<'a> CodeGenerator<'a> {
             }
             Type::Optional(_) => self.generate_optional_method_call(obj_value, method_name, args),
             Type::Result(_, _) => self.generate_result_method_call(obj_value, method_name, args),
+            Type::Reference(inner) => {
+                // Load the *mut Value box through the reference slot, then
+                // extract the raw scalar for primitives (matching the
+                // generate_deref_unary_expression pattern).
+                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                let boxed_ptr = self
+                    .builder
+                    .build_load(ptr_type, obj_value.into_pointer_value(), "ref_load")
+                    .map_err(|e| e.to_string())?;
+                let loaded = match inner.as_ref() {
+                    Type::Primitive(PrimitiveType::Int) => {
+                        self.get_raw_int_value(boxed_ptr).map(Into::into)?
+                    }
+                    Type::Primitive(PrimitiveType::Float) => {
+                        self.get_raw_float_value(boxed_ptr).map(Into::into)?
+                    }
+                    Type::Primitive(PrimitiveType::Bool) => {
+                        self.get_raw_bool_value(boxed_ptr).map(Into::into)?
+                    }
+                    _ => boxed_ptr,
+                };
+                self.generate_method_call(loaded, inner, method_name, args)
+            }
             _ => Err(format!(
-                "Method {} not implemented for type {:?}",
-                method_name, resolved_obj_type
+                "Method {} not implemented for type {}",
+                method_name,
+                format_type(&resolved_obj_type)
             )),
         }
     }

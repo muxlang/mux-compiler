@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Matches the compiler-source location embedded in a panic's internal-error
 /// report, e.g. `(at mux-compiler/src/codegen/memory.rs:42:9)`. The line and
@@ -209,6 +210,37 @@ fn process_test_file(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
             panic!("Executable test failed while processing: {}", file_name);
         }
     }
+}
+
+#[test]
+fn reference_to_temporary_in_loop_releases_each_previous_value() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the Unix epoch")
+        .as_nanos();
+    let source_path =
+        std::env::temp_dir().join(format!("mux_ref_loop_{}_{}.mux", std::process::id(), nonce));
+    fs::write(
+        &source_path,
+        r#"func main() returns void {
+    list<int> xs = [2, 1, 5]
+    for int x in xs {
+        auto ref = &xs[0]
+        print(ref.to_string())
+    }
+    return
+}
+"#,
+    )
+    .expect("temporary Mux source should be writable");
+
+    let (stdout, stderr) = compile_and_execute_file(&source_path);
+    fs::remove_file(&source_path).expect("temporary Mux source should be removable");
+
+    // CI runs this test again with MUX_RUNTIME_LIB set to the rc-leak-check
+    // runtime. Any box left alive then exits 101 and makes these assertions fail.
+    assert!(stderr.is_empty(), "program wrote to stderr: {stderr}");
+    assert_eq!(stdout, "2\n2\n2\n");
 }
 
 #[test]
