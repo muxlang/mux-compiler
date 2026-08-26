@@ -1267,14 +1267,18 @@ impl<'a> CodeGenerator<'a> {
         // is dominance- and null-safe (the reference may be produced inside
         // conditional control flow).
         let temp = self.create_entry_alloca(ptr_type.into(), "ref_temp")?;
-        self.builder
-            .build_store(temp, boxed_val)
-            .map_err(|e| e.to_string())?;
         // The temporary that this reference owns is released when the enclosing
-        // scope ends (after all uses of the reference). Borrowed targets are not
-        // owned here and are freed by whatever binding owns them.
+        // scope ends (after all uses of the reference). An entry-block slot is
+        // reused when this expression executes again in a loop, so replacing an
+        // owned target must release the previous iteration's occupant first.
+        // Borrowed targets are not owned here and are freed by their binding.
         if owned {
+            self.overwrite_owned_boxed_slot(temp, boxed_val)?;
             self.track_rc_variable("ref_temp", temp);
+        } else {
+            self.builder
+                .build_store(temp, boxed_val)
+                .map_err(|e| e.to_string())?;
         }
         Ok(temp.into())
     }

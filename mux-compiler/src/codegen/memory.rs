@@ -2259,6 +2259,29 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    /// Replace the contents of a slot that uniquely owns a boxed value.
+    ///
+    /// The caller must already have transferred ownership of `boxed` out of
+    /// temporary tracking. Releasing the old occupant here is safe because this
+    /// slot, unlike a borrowed reference slot, owns exactly one reference.
+    pub(super) fn overwrite_owned_boxed_slot(
+        &self,
+        slot: PointerValue<'a>,
+        boxed: PointerValue<'a>,
+    ) -> Result<(), String> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let old = self
+            .builder
+            .build_load(ptr_type, slot, "old_owned_boxed_slot")
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+        self.emit_value_decref(old)?;
+        self.builder
+            .build_store(slot, boxed)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Overwrite a variable slot that holds an owned boxed pointer with a new
     /// boxed value, transferring the new value's ownership into the slot so it
     /// is not also freed as a statement temporary. Only valid for slots that
