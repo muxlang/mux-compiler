@@ -605,8 +605,16 @@ fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
 
-    let target = target.encode_wide().chain(Some(0)).collect::<Vec<_>>();
-    let replacement = replacement.encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let replacement = replacement
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
     let result = unsafe {
         ReplaceFileW(
             target.as_ptr(),

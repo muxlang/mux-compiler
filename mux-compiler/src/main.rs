@@ -1118,6 +1118,80 @@ fn validate_staged_sources(
     }
 }
 
+fn parse_fix_source(
+    source: &str,
+    file_id: FileId,
+) -> Result<(Vec<ast::AstNode>, RecoveryIntervals, Vec<Diagnostic>), Vec<Diagnostic>> {
+    let mut source_cursor = Source::from_string(source.to_string());
+    let mut lexer = lexer::Lexer::new(&mut source_cursor);
+    let tokens = lexer
+        .lex_all()
+        .map_err(|error| vec![error.to_diagnostic(file_id)])?;
+
+    let mut parser = parser::Parser::new(&tokens);
+    match parser.parse() {
+        Ok(nodes) => Ok((nodes, RecoveryIntervals::new(), Vec::new())),
+        Err((partial_nodes, errors)) => {
+            let mut recovery = RecoveryIntervals::new();
+            let diagnostics = errors
+                .into_iter()
+                .map(|error| {
+                    if let Ok(range) = fix::source_range_for_span(source, error.span) {
+                        recovery.add(file_id, range);
+                    }
+                    error.to_diagnostic(file_id)
+                })
+                .collect();
+            for span in parser.recovery_spans() {
+                if let Ok(range) = fix::source_range_for_span(source, *span) {
+                    recovery.add(file_id, range);
+                }
+            }
+            Ok((partial_nodes, recovery, diagnostics))
+        }
+    }
+}
+
+fn analyze_fix_source(
+    file_path: &Path,
+    source: &str,
+    file_id: FileId,
+    files: &mut Files,
+) -> Result<(RecoveryIntervals, Vec<Diagnostic>), Vec<Diagnostic>> {
+    let (nodes, mut recovery, mut diagnostics) = parse_fix_source(source, file_id)?;
+    let base_path = file_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let resolver = Rc::new(RefCell::new(ModuleResolver::new(base_path)));
+    resolver.borrow_mut().set_emit_diagnostics(false);
+    let mut analyzer = semantics::SemanticAnalyzer::new_with_resolver(resolver.clone());
+    analyzer.set_current_file_id(file_id);
+    let errors = analyzer.analyze(&nodes, Some(files));
+    let imported_errors = analyzer.take_imported_errors();
+    let (module_diagnostics, module_recovery) = {
+        let mut resolver = resolver.borrow_mut();
+        (
+            resolver.take_diagnostics(),
+            resolver.take_recovery_intervals(),
+        )
+    };
+    recovery.extend(module_recovery);
+    diagnostics.extend(module_diagnostics);
+    diagnostics.extend(
+        errors
+            .iter()
+            .map(|error| error.to_diagnostic(file_id))
+            .chain(
+                imported_errors
+                    .iter()
+                    .map(|error| error.to_diagnostic(file_id)),
+            )
+            .filter(|diagnostic| !diagnostic_touches_recovery(diagnostic, files, &recovery)),
+    );
+    Ok((recovery, diagnostics))
+}
+
 fn run_fix_command(
     file_path: &Path,
     dry_run: bool,
@@ -1147,72 +1221,14 @@ fn run_fix_command(
 
     let mut files = Files::new();
     let file_id = files.add(file_path, source.clone());
-    let mut recovery = RecoveryIntervals::new();
-    let mut diagnostics = Vec::new();
-
-    let mut source_cursor = Source::from_string(source.clone());
-    let mut lexer = lexer::Lexer::new(&mut source_cursor);
-    let tokens = match lexer.lex_all() {
-        Ok(tokens) => tokens,
-        Err(error) => {
-            diagnostics.push(error.to_diagnostic(file_id));
-            emit_fix_diagnostics(format, &diagnostics, &files, 0);
-            return 1;
-        }
-    };
-
-    let mut parser = parser::Parser::new(&tokens);
-    let nodes = match parser.parse() {
-        Ok(nodes) => nodes,
-        Err((partial_nodes, errors)) => {
-            for error in errors {
-                if let Ok(range) = fix::source_range_for_span(&source, error.span) {
-                    recovery.add(file_id, range);
-                }
-                diagnostics.push(error.to_diagnostic(file_id));
+    let (recovery, mut diagnostics) =
+        match analyze_fix_source(file_path, &source, file_id, &mut files) {
+            Ok(result) => result,
+            Err(diagnostics) => {
+                emit_fix_diagnostics(format, &diagnostics, &files, 0);
+                return 1;
             }
-            for span in parser.recovery_spans() {
-                if let Ok(range) = fix::source_range_for_span(&source, *span) {
-                    recovery.add(file_id, range);
-                }
-            }
-            // Analyze declarations that parser recovery was able to preserve.
-            // The syntax errors still make the command fail, but independent
-            // diagnostics remain available and derived cascades are filtered
-            // below when they point into recovered source.
-            partial_nodes
-        }
-    };
-    let base_path = file_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    let resolver = Rc::new(RefCell::new(ModuleResolver::new(base_path)));
-    resolver.borrow_mut().set_emit_diagnostics(false);
-    let mut analyzer = semantics::SemanticAnalyzer::new_with_resolver(resolver.clone());
-    analyzer.set_current_file_id(file_id);
-    let errors = analyzer.analyze(&nodes, Some(&mut files));
-    let imported_errors = analyzer.take_imported_errors();
-    let (module_diagnostics, module_recovery) = {
-        let mut resolver = resolver.borrow_mut();
-        (
-            resolver.take_diagnostics(),
-            resolver.take_recovery_intervals(),
-        )
-    };
-    recovery.extend(module_recovery);
-    diagnostics.extend(module_diagnostics);
-    let semantic_diagnostics = errors
-        .iter()
-        .map(|error| error.to_diagnostic(file_id))
-        .chain(
-            imported_errors
-                .iter()
-                .map(|error| error.to_diagnostic(file_id)),
-        )
-        .filter(|diagnostic| !diagnostic_touches_recovery(diagnostic, &files, &recovery))
-        .collect::<Vec<_>>();
-    diagnostics.extend(semantic_diagnostics);
+        };
     sort_fix_diagnostics(&mut diagnostics, &files);
 
     let has_blocking_diagnostics = diagnostics.iter().any(|diagnostic| {

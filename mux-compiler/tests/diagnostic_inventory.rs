@@ -31,14 +31,7 @@ fn matching_parenthesis(source: &str, open: usize) -> usize {
     let mut escaped = false;
     for (offset, byte) in source.as_bytes()[open..].iter().enumerate() {
         let ch = *byte as char;
-        if let Some(active_quote) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == active_quote {
-                quote = None;
-            }
+        if update_quote_state(ch, &mut quote, &mut escaped) {
             continue;
         }
         if ch == '"' || ch == '\'' {
@@ -53,6 +46,20 @@ fn matching_parenthesis(source: &str, open: usize) -> usize {
         }
     }
     panic!("unclosed constructor at byte {open}");
+}
+
+fn update_quote_state(ch: char, quote: &mut Option<char>, escaped: &mut bool) -> bool {
+    let Some(active_quote) = *quote else {
+        return false;
+    };
+    if *escaped {
+        *escaped = false;
+    } else if ch == '\\' {
+        *escaped = true;
+    } else if ch == active_quote {
+        *quote = None;
+    }
+    true
 }
 
 #[test]

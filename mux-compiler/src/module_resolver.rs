@@ -168,7 +168,7 @@ impl ModuleResolver {
     ) -> Result<PathBuf, ModuleResolutionError> {
         if module_path.starts_with("./") || module_path.starts_with("../") {
             // Relative import - resolve relative to current file
-            let current_dir = current_file.and_then(|p| p.parent()).ok_or_else(|| {
+            let current_dir = current_file.and_then(Path::parent).ok_or_else(|| {
                 ModuleResolutionError::new(
                     DiagnosticCode::ImportFailure,
                     "Cannot resolve relative import: no current file",
@@ -359,17 +359,35 @@ impl ModuleResolver {
         files: &mut Files,
         source_override: Option<&str>,
     ) -> Result<Vec<AstNode>, String> {
-        let source_str = if let Some(src) = source_override {
-            src.to_string()
-        } else {
-            std::fs::read_to_string(file_path)
-                .map_err(|e| format!("Failed to open module: {}", e))?
-        };
-
+        let source_str = self.read_module_source(file_path, source_override)?;
         let file_id = files.add(file_path, source_str.clone());
         let mut src = Source::from_string(source_str);
+        let tokens = self.lex_module(file_path, file_id, files, &mut src)?;
+        self.parse_module_tokens(file_path, file_id, files, &tokens)
+    }
 
-        let mut lex = Lexer::new(&mut src);
+    fn read_module_source(
+        &self,
+        file_path: &Path,
+        source_override: Option<&str>,
+    ) -> Result<String, String> {
+        source_override.map_or_else(
+            || {
+                std::fs::read_to_string(file_path)
+                    .map_err(|e| format!("Failed to open module: {e}"))
+            },
+            |source| Ok(source.to_string()),
+        )
+    }
+
+    fn lex_module(
+        &mut self,
+        file_path: &Path,
+        file_id: FileId,
+        files: &Files,
+        source: &mut Source,
+    ) -> Result<Vec<crate::lexer::Token>, String> {
+        let mut lex = Lexer::new(source);
         let tokens = match lex.lex_all() {
             Ok(t) => t,
             Err(e) => {
@@ -388,8 +406,17 @@ impl ModuleResolver {
                 return Err(format!("Lexer error in module {}", file_path.display()));
             }
         };
+        Ok(tokens)
+    }
 
-        let mut parser = Parser::new(&tokens);
+    fn parse_module_tokens(
+        &mut self,
+        file_path: &Path,
+        file_id: FileId,
+        files: &Files,
+        tokens: &[crate::lexer::Token],
+    ) -> Result<Vec<AstNode>, String> {
+        let mut parser = Parser::new(tokens);
         match parser.parse() {
             Ok(nodes) => Ok(nodes),
             Err((_, errors)) => {
