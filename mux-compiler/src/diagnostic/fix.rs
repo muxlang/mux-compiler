@@ -510,15 +510,32 @@ fn stage_targets<'a>(
 }
 
 fn create_staged_file(
-    temp: &PathBuf,
+    temp: &Path,
     contents: &str,
     permissions: &fs::Permissions,
 ) -> Result<(), FixError> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(temp)?;
+    let mut file = create_transaction_file(temp, permissions)?;
     file.write_all(contents.as_bytes())?;
     file.sync_all()?;
-    file.set_permissions(permissions.clone())?;
     Ok(())
+}
+
+fn create_transaction_file(path: &Path, permissions: &fs::Permissions) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(permissions.mode() & 0o7777);
+
+    let file = options.open(path)?;
+    if let Err(error) = file.set_permissions(permissions.clone()) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(file)
 }
 
 fn backup_targets<'a>(
@@ -547,13 +564,9 @@ fn create_backup_file(
     // including a symlink, so a concurrent user cannot redirect the backup
     // contents into an unrelated file.
     let mut source_file = fs::File::open(source)?;
-    let mut backup_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(backup)?;
+    let mut backup_file = create_transaction_file(backup, permissions)?;
     let result = (|| {
         io::copy(&mut source_file, &mut backup_file)?;
-        backup_file.set_permissions(permissions.clone())?;
         backup_file.sync_all()
     })();
     if result.is_err() {
