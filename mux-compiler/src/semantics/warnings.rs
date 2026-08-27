@@ -44,7 +44,7 @@ fn collect_block(statements: &[StatementNode], warnings: &mut Vec<SemanticError>
         }
 
         collect_statement(statement, warnings);
-        reachable = statement_can_fall_through(statement);
+        reachable &= statement_can_fall_through(statement);
     }
 }
 
@@ -65,52 +65,13 @@ fn collect_statement(statement: &StatementNode, warnings: &mut Vec<SemanticError
             cond,
             then_block,
             else_block,
-        } => {
-            warn_constant_condition(cond, warnings);
-            collect_expression(cond, warnings);
-            match fold(cond) {
-                Some(ConstValue::Bool(true)) => {
-                    collect_block(then_block, warnings);
-                    if let Some(else_block) = else_block {
-                        collect_unreachable_block(else_block, warnings);
-                    }
-                }
-                Some(ConstValue::Bool(false)) => {
-                    collect_unreachable_block(then_block, warnings);
-                    if let Some(else_block) = else_block {
-                        collect_block(else_block, warnings);
-                    }
-                }
-                _ => {
-                    collect_block(then_block, warnings);
-                    if let Some(else_block) = else_block {
-                        collect_block(else_block, warnings);
-                    }
-                }
-            }
-        }
-        StatementKind::While { cond, body } => {
-            warn_constant_condition(cond, warnings);
-            collect_expression(cond, warnings);
-            if matches!(fold(cond), Some(ConstValue::Bool(false))) {
-                collect_unreachable_block(body, warnings);
-            } else {
-                collect_block(body, warnings);
-            }
-        }
+        } => collect_if_statement(cond, then_block, else_block.as_deref(), warnings),
+        StatementKind::While { cond, body } => collect_while_statement(cond, body, warnings),
         StatementKind::For { iter, body, .. } => {
             collect_expression(iter, warnings);
             collect_block(body, warnings);
         }
-        StatementKind::Match { expr, arms } => {
-            collect_expression(expr, warnings);
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    collect_expression(guard, warnings);
-                }
-                collect_block(&arm.body, warnings);
-            }
-        }
+        StatementKind::Match { expr, arms } => collect_match_statement(expr, arms, warnings),
         StatementKind::Return(Some(expression)) => collect_expression(expression, warnings),
         StatementKind::Expression(expression)
         | StatementKind::AutoDecl(_, _, expression)
@@ -123,6 +84,64 @@ fn collect_statement(statement: &StatementNode, warnings: &mut Vec<SemanticError
         | StatementKind::Return(None)
         | StatementKind::Break
         | StatementKind::Continue => {}
+    }
+}
+
+fn collect_if_statement(
+    cond: &ExpressionNode,
+    then_block: &[StatementNode],
+    else_block: Option<&[StatementNode]>,
+    warnings: &mut Vec<SemanticError>,
+) {
+    warn_constant_condition(cond, warnings);
+    collect_expression(cond, warnings);
+    match fold(cond) {
+        Some(ConstValue::Bool(true)) => {
+            collect_block(then_block, warnings);
+            if let Some(else_block) = else_block {
+                collect_unreachable_block(else_block, warnings);
+            }
+        }
+        Some(ConstValue::Bool(false)) => {
+            collect_unreachable_block(then_block, warnings);
+            if let Some(else_block) = else_block {
+                collect_block(else_block, warnings);
+            }
+        }
+        _ => {
+            collect_block(then_block, warnings);
+            if let Some(else_block) = else_block {
+                collect_block(else_block, warnings);
+            }
+        }
+    }
+}
+
+fn collect_while_statement(
+    cond: &ExpressionNode,
+    body: &[StatementNode],
+    warnings: &mut Vec<SemanticError>,
+) {
+    warn_constant_condition(cond, warnings);
+    collect_expression(cond, warnings);
+    if matches!(fold(cond), Some(ConstValue::Bool(false))) {
+        collect_unreachable_block(body, warnings);
+    } else {
+        collect_block(body, warnings);
+    }
+}
+
+fn collect_match_statement(
+    expr: &ExpressionNode,
+    arms: &[crate::ast::MatchArm],
+    warnings: &mut Vec<SemanticError>,
+) {
+    collect_expression(expr, warnings);
+    for arm in arms {
+        if let Some(guard) = &arm.guard {
+            collect_expression(guard, warnings);
+        }
+        collect_block(&arm.body, warnings);
     }
 }
 
@@ -140,9 +159,20 @@ fn collect_expression(expression: &ExpressionNode, warnings: &mut Vec<SemanticEr
                 collect_expression(arg, warnings);
             }
         }
-        ExpressionKind::FieldAccess { expr, .. }
-        | ExpressionKind::ListAccess { expr, .. }
-        | ExpressionKind::Slice { expr, .. } => collect_expression(expr, warnings),
+        ExpressionKind::FieldAccess { expr, .. } => collect_expression(expr, warnings),
+        ExpressionKind::ListAccess { expr, index } => {
+            collect_expression(expr, warnings);
+            collect_expression(index, warnings);
+        }
+        ExpressionKind::Slice { expr, start, end } => {
+            collect_expression(expr, warnings);
+            if let Some(start) = start {
+                collect_expression(start, warnings);
+            }
+            if let Some(end) = end {
+                collect_expression(end, warnings);
+            }
+        }
         ExpressionKind::ListLiteral(elements)
         | ExpressionKind::SetLiteral(elements)
         | ExpressionKind::TupleLiteral(elements) => {
@@ -254,7 +284,7 @@ fn block_may_break_loop(statements: &[StatementNode]) -> bool {
         if reachable && statement_may_break_loop(statement) {
             return true;
         }
-        reachable = statement_can_fall_through(statement);
+        reachable &= statement_can_fall_through(statement);
     }
     false
 }

@@ -991,7 +991,7 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         if type_args.len() != 2 {
             return Err(SemanticError::with_help(
-                DiagnosticCode::WrongArgumentCount,
+                DiagnosticCode::InvalidTypeArguments,
                 format!(
                     "Tuple type requires exactly 2 type arguments, got {}",
                     type_args.len()

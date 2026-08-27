@@ -1,7 +1,8 @@
 use crate::ast::AstNode;
 use crate::diagnostic::fix::{self, RecoveryIntervals};
 use crate::diagnostic::{
-    ColorConfig, Diagnostic, DiagnosticEmitter, FileId, Files, StandardEmitter, ToDiagnostic,
+    ColorConfig, Diagnostic, DiagnosticCode, DiagnosticEmitter, FileId, Files, StandardEmitter,
+    ToDiagnostic,
 };
 use crate::embedded_std::embedded_std_sources;
 use crate::lexer::Lexer;
@@ -9,6 +10,35 @@ use crate::parser::Parser;
 use crate::source::Source;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+pub struct ModuleResolutionError {
+    pub code: DiagnosticCode,
+    pub message: String,
+}
+
+impl ModuleResolutionError {
+    fn new(code: DiagnosticCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<String> for ModuleResolutionError {
+    fn from(message: String) -> Self {
+        Self::new(DiagnosticCode::ImportFailure, message)
+    }
+}
+
+impl std::fmt::Display for ModuleResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ModuleResolutionError {}
 
 pub struct ModuleResolver {
     base_path: PathBuf,
@@ -90,7 +120,7 @@ impl ModuleResolver {
         &mut self,
         module_path: &str,
         files: &mut Files,
-    ) -> Result<Option<Vec<AstNode>>, String> {
+    ) -> Result<Option<Vec<AstNode>>, ModuleResolutionError> {
         if let Some(embedded_key) = self.resolve_embedded_key(module_path) {
             let embedded_key = embedded_key.to_string();
             let cache_key = self.normalize_module_key(module_path).to_string();
@@ -100,20 +130,25 @@ impl ModuleResolver {
             }
 
             if self.being_imported.contains(&cache_key) {
-                return Err(format!(
-                    "Circular import detected: {} -> {}",
-                    self.import_stack.join(" -> "),
-                    cache_key
+                return Err(ModuleResolutionError::new(
+                    DiagnosticCode::ImportFailure,
+                    format!(
+                        "Circular import detected: {} -> {}",
+                        self.import_stack.join(" -> "),
+                        cache_key
+                    ),
                 ));
             }
 
             self.being_imported.insert(cache_key.clone());
             self.import_stack.push(cache_key.clone());
 
-            let source = self
-                .embedded_sources
-                .get(&embedded_key)
-                .ok_or_else(|| format!("Embedded module not found: {}", module_path))?;
+            let source = self.embedded_sources.get(&embedded_key).ok_or_else(|| {
+                ModuleResolutionError::new(
+                    DiagnosticCode::ModuleNotFound,
+                    format!("Embedded module not found: {module_path}"),
+                )
+            })?;
 
             let virtual_path =
                 PathBuf::from(format!("<embedded>/{}.mux", embedded_key.replace('.', "/")));
@@ -130,12 +165,15 @@ impl ModuleResolver {
         &self,
         module_path: &str,
         current_file: Option<&Path>,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<PathBuf, ModuleResolutionError> {
         if module_path.starts_with("./") || module_path.starts_with("../") {
             // Relative import - resolve relative to current file
-            let current_dir = current_file
-                .and_then(|p| p.parent())
-                .ok_or("Cannot resolve relative import: no current file")?;
+            let current_dir = current_file.and_then(|p| p.parent()).ok_or_else(|| {
+                ModuleResolutionError::new(
+                    DiagnosticCode::ImportFailure,
+                    "Cannot resolve relative import: no current file",
+                )
+            })?;
 
             let relative_path = module_path.trim_start_matches("./");
             let mut path = current_dir.to_path_buf();
@@ -167,7 +205,7 @@ impl ModuleResolver {
         module_path: &str,
         current_file: Option<&Path>,
         files: &mut Files,
-    ) -> Result<Vec<AstNode>, String> {
+    ) -> Result<Vec<AstNode>, ModuleResolutionError> {
         if let Some(nodes) = self.resolve_embedded_module_if_any(module_path, files)? {
             return Ok(nodes);
         }
@@ -175,9 +213,12 @@ impl ModuleResolver {
         let file_path = self.determine_file_path(module_path, current_file)?;
 
         // Canonicalize for cache key
-        let canonical_path = file_path
-            .canonicalize()
-            .map_err(|e| format!("Cannot resolve module path {}: {}", module_path, e))?;
+        let canonical_path = file_path.canonicalize().map_err(|e| {
+            ModuleResolutionError::new(
+                DiagnosticCode::ImportFailure,
+                format!("Cannot resolve module path {module_path}: {e}"),
+            )
+        })?;
 
         // Check cache by canonical path
         if let Some(cached_module_path) = self.canonical_cache.get(&canonical_path)
@@ -192,7 +233,8 @@ impl ModuleResolver {
                 "Circular import detected: {} -> {}",
                 self.import_stack.join(" -> "),
                 module_path
-            ));
+            )
+            .into());
         }
 
         // Mark as being imported
@@ -294,7 +336,7 @@ impl ModuleResolver {
         Ok(result)
     }
 
-    fn module_path_to_file(&self, module_path: &str) -> Result<PathBuf, String> {
+    fn module_path_to_file(&self, module_path: &str) -> Result<PathBuf, ModuleResolutionError> {
         let mut path = self.base_path.clone();
         for part in module_path.split('.') {
             path.push(part);
@@ -302,9 +344,9 @@ impl ModuleResolver {
         path.set_extension("mux");
 
         if !path.exists() {
-            return Err(format!(
-                "Module not found: {} (looked for {:?})",
-                module_path, path
+            return Err(ModuleResolutionError::new(
+                DiagnosticCode::ModuleNotFound,
+                format!("Module not found: {module_path} (looked for {path:?})"),
             ));
         }
 
@@ -361,6 +403,11 @@ impl ModuleResolver {
                         error.to_diagnostic(file_id)
                     })
                     .collect();
+                for span in parser.recovery_spans() {
+                    if let Ok(range) = fix::source_range_for_span(source, *span) {
+                        self.recovery_intervals.add(file_id, range);
+                    }
+                }
                 if self.emit_diagnostics {
                     crate::spinner::stop();
                     let emitter = StandardEmitter::new(ColorConfig::Auto);
@@ -400,12 +447,12 @@ mod tests {
         let err = resolver
             .resolve_import_path("badlex", None, &mut files)
             .expect_err("lex error module must fail");
-        assert!(err.contains("Lexer error in module"), "got: {err}");
+        assert!(err.message.contains("Lexer error in module"), "got: {err}");
 
         let err = resolver
             .resolve_import_path("badparse", None, &mut files)
             .expect_err("parse error module must fail");
-        assert!(err.contains("Parse error in module"), "got: {err}");
+        assert!(err.message.contains("Parse error in module"), "got: {err}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

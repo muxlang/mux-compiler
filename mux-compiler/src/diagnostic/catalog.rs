@@ -28,6 +28,8 @@ pub enum DiagnosticCode {
     CannotAssign,
     UnknownMember,
     InvalidOperation,
+    DivisionByZero,
+    NestedFunctionCapture,
     InvalidPattern,
     InvalidTypeArguments,
     UninitializedReadError,
@@ -84,16 +86,27 @@ impl DiagnosticCode {
             Self::InvalidPattern,
             Self::InvalidTypeArguments,
             Self::UninitializedReadError,
+            Self::DivisionByZero,
+            Self::NestedFunctionCapture,
             Self::ModuleNotFound,
             Self::ImportFailure,
             Self::InternalCompiler,
-            Self::UnusedBinding,
-            Self::ShadowedBinding,
             Self::UnreachableCode,
-            Self::DeadAssignment,
-            Self::UninitializedRead,
             Self::ConstantCondition,
             Self::RedundantConstruct,
+        ]
+    }
+
+    /// Allocated codes whose producers are not yet part of the public
+    /// diagnostic contract. Keeping these out of `all` prevents `explain` and
+    /// synchronization tests from promising diagnostics the compiler cannot
+    /// currently emit.
+    pub const fn reserved() -> &'static [Self] {
+        &[
+            Self::UnusedBinding,
+            Self::ShadowedBinding,
+            Self::DeadAssignment,
+            Self::UninitializedRead,
         ]
     }
 
@@ -121,6 +134,8 @@ impl DiagnosticCode {
             Self::CannotAssign => "E0306",
             Self::UnknownMember => "E0307",
             Self::InvalidOperation => "E0308",
+            Self::DivisionByZero => "E0312",
+            Self::NestedFunctionCapture => "E0313",
             Self::InvalidPattern => "E0309",
             Self::InvalidTypeArguments => "E0310",
             Self::UninitializedReadError => "E0311",
@@ -307,6 +322,20 @@ impl DiagnosticCode {
                 "Operators have explicit type rules and do not coerce operands.",
                 "Use compatible operands or a supported operation.",
             ),
+            Self::DivisionByZero => (
+                "division by zero",
+                "A division or modulo operation has a divisor provably equal to zero.",
+                "10 / 0",
+                "The operation would panic on every execution.",
+                "Use a non-zero divisor or handle the zero case before dividing.",
+            ),
+            Self::NestedFunctionCapture => (
+                "nested function captures a local",
+                "A named nested function refers to a local binding from its enclosing function.",
+                "func outer() returns void { int value = 1\nfunc inner() returns void { print(value) } }",
+                "Named nested functions do not carry a captured environment.",
+                "Pass the value as a parameter or use a capturing lambda.",
+            ),
             Self::InvalidPattern => (
                 "invalid pattern",
                 "A match pattern does not fit its matched value.",
@@ -440,6 +469,14 @@ mod tests {
             assert!(!info.example.is_empty());
             assert!(!info.explanation.is_empty());
             assert!(!info.fix.is_empty());
+        }
+    }
+
+    #[test]
+    fn reserved_codes_are_not_published_as_emitted_diagnostics() {
+        let emitted = DiagnosticCode::all();
+        for code in DiagnosticCode::reserved() {
+            assert!(!emitted.contains(code), "{} is reserved and emitted", code);
         }
     }
 }

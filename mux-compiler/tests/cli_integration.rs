@@ -160,6 +160,24 @@ fn build_reports_semantic_error() {
 }
 
 #[test]
+fn build_reports_missing_module_with_module_code() {
+    let dir = unique_tmp_dir("missing_module");
+    let file = write_file(
+        &dir,
+        "bad.mux",
+        "import missing\nfunc main() returns void { return }\n",
+    );
+    let out = mux()
+        .args(["build", file.to_str().unwrap()])
+        .output()
+        .expect("spawn mux build");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("E0400"), "stderr: {stderr}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn explain_prints_registry_metadata() {
     let out = mux()
         .args(["explain", "e0302"])
@@ -349,7 +367,7 @@ fn fix_applies_a_proven_safe_boolean_simplification() {
     let file = write_file(
         &dir,
         "program.mux",
-        "func main() returns void {\n    auto value = true\n    if value && true {\n        return\n    } else {\n        return\n    }\n}\n",
+        "func main() returns void {\n    auto value = true\n    if 1 == 1 {\n        print(\"constant\")\n    } else {\n        print(\"never\")\n    }\n    if value && true {\n        return\n    } else {\n        return\n    }\n}\n",
     );
     let out = mux()
         .args(["fix", file.to_str().unwrap(), "--format", "json"])
@@ -369,6 +387,7 @@ fn fix_applies_a_proven_safe_boolean_simplification() {
         stdout.contains("\"applicability\":\"machine-applicable\""),
         "stdout: {stdout}"
     );
+    assert!(stdout.contains("W0305"), "stdout: {stdout}");
     assert!(
         std::fs::read_to_string(&file)
             .unwrap()

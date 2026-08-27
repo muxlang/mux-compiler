@@ -44,7 +44,7 @@ impl SemanticError {
         let mut edits = self
             .span_edits
             .take()
-            .map_or_else(Vec::new, |edits| edits.into_vec());
+            .map_or_else(Vec::new, <[SpanEdit]>::into_vec);
         edits.push(edit);
         self.span_edits = Some(edits.into_boxed_slice());
         self

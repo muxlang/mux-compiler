@@ -1000,7 +1000,7 @@ impl SemanticAnalyzer {
         // or has the wrong number of type arguments (issue #289).
         if let Some(required) = builtin_generic_arity(name) {
             return Err(SemanticError::with_help(
-                DiagnosticCode::WrongArgumentCount,
+                DiagnosticCode::InvalidTypeArguments,
                 format!(
                     "'{}' requires {} type argument{}, got {}",
                     name,
@@ -1093,7 +1093,7 @@ impl SemanticAnalyzer {
                     if let Some(required) = builtin_generic_arity(name) {
                         if args.len() != required {
                             return Err(SemanticError::with_help(
-                                DiagnosticCode::WrongArgumentCount,
+                                DiagnosticCode::InvalidTypeArguments,
                                 format!(
                                     "'{}' requires {} type argument{}, got {}",
                                     name,
@@ -1622,7 +1622,7 @@ impl SemanticAnalyzer {
         let actual_count = type_args.len();
         if expected_count != actual_count {
             return Err(SemanticError::with_help(
-                DiagnosticCode::WrongArgumentCount,
+                DiagnosticCode::InvalidTypeArguments,
                 format!(
                     "Generic type '{}' requires {} type argument(s), got {}",
                     lookup_name, expected_count, actual_count

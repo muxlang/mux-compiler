@@ -20,6 +20,7 @@ pub struct Parser<'a> {
     tokens: Vec<&'a Token>,
     current: usize,
     pub errors: Vec<ParserError>,
+    recovery_spans: Vec<Span>,
     loop_depth: usize,
     stopped: bool,
 }
@@ -58,6 +59,7 @@ impl<'a> Parser<'a> {
                 .collect(),
             current: 0,
             errors: Vec::new(),
+            recovery_spans: Vec::new(),
             loop_depth: 0,
             stopped: false,
         }
@@ -196,6 +198,14 @@ impl<'a> Parser<'a> {
         } else {
             Err((nodes, all_errors))
         }
+    }
+
+    /// Spans consumed while skipping malformed input during recovery.
+    ///
+    /// Callers use these intervals to suppress diagnostics derived from
+    /// tokens the parser deliberately discarded.
+    pub fn recovery_spans(&self) -> &[Span] {
+        &self.recovery_spans
     }
 
     fn declaration(&mut self) -> ParserResult<Option<AstNode>> {
@@ -2241,11 +2251,12 @@ impl<'a> Parser<'a> {
     }
 
     fn synchronize(&mut self) {
+        let start = self.current;
         while !self.is_at_end() {
             match self.peek().token_type {
                 TokenType::NewLine => {
                     self.current += 1;
-                    return;
+                    break;
                 }
                 TokenType::Func
                 | TokenType::Auto
@@ -2254,7 +2265,7 @@ impl<'a> Parser<'a> {
                 | TokenType::Interface
                 | TokenType::Enum
                 | TokenType::Import => {
-                    return;
+                    break;
                 }
                 TokenType::If
                 | TokenType::Else
@@ -2262,21 +2273,27 @@ impl<'a> Parser<'a> {
                 | TokenType::For
                 | TokenType::Match
                 | TokenType::Return => {
-                    return;
+                    break;
                 }
                 TokenType::OpenBrace | TokenType::CloseBrace => {
-                    return;
+                    break;
                 }
                 TokenType::OpenParen | TokenType::CloseParen => {
-                    return;
+                    break;
                 }
                 TokenType::OpenBracket | TokenType::CloseBracket => {
-                    return;
+                    break;
                 }
                 _ => {
                     self.current += 1;
                 }
             }
+        }
+        if self.current > start {
+            let span = self.tokens[start]
+                .span
+                .combine(&self.tokens[self.current - 1].span);
+            self.recovery_spans.push(span);
         }
     }
 
@@ -3603,6 +3620,23 @@ mod tests {
         assert_eq!(
             errors.last().map(|error| error.code),
             Some(DiagnosticCode::ParseErrorLimit)
+        );
+    }
+
+    #[test]
+    fn recovery_records_tokens_skipped_between_errors() {
+        let mut parser = create_parser("auto x = 1 ) auto y = 2\n");
+        parser.parser.current = parser
+            .parser
+            .tokens
+            .iter()
+            .position(|token| token.token_type == TokenType::CloseParen)
+            .expect("test source should contain a closing parenthesis")
+            .saturating_sub(1);
+        parser.parser.synchronize();
+        assert!(
+            !parser.parser.recovery_spans().is_empty(),
+            "parser recovery must expose discarded source intervals"
         );
     }
 

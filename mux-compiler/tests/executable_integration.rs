@@ -195,6 +195,10 @@ fn process_test_file(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
+    if is_network_fixture(file_name) && std::env::var_os("MUX_RUN_NETWORK_TESTS").is_none() {
+        println!("Skipping network fixture {file_name}; set MUX_RUN_NETWORK_TESTS=1 to run it");
+        return;
+    }
     println!("\n=== Testing executable for file: {} ===", file_name);
 
     match std::panic::catch_unwind(|| {
@@ -210,6 +214,13 @@ fn process_test_file(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
             panic!("Executable test failed while processing: {}", file_name);
         }
     }
+}
+
+fn is_network_fixture(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        "test_std_http.mux" | "test_std_http_server.mux" | "test_std_tcp.mux" | "test_std_udp.mux"
+    )
 }
 
 #[test]

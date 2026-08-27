@@ -2,11 +2,12 @@
 
 use super::{Applicability, FileId, Files, SourceRange, TextEdit};
 use crate::lexer::Span;
+use fs2::FileExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_width::UnicodeWidthChar;
 
@@ -198,29 +199,7 @@ pub fn apply_in_memory(
     let mut by_file: BTreeMap<FileId, Vec<&TextEdit>> = BTreeMap::new();
 
     for edit in edits {
-        if !edit.is_machine_applicable() {
-            return Err(FixError::NonMachineApplicable {
-                code: edit.diagnostic_code,
-                applicability: edit.applicability,
-            });
-        }
-
-        let source = files
-            .source(edit.file_id)
-            .ok_or(FixError::UnknownFile(edit.file_id))?;
-        let path = files
-            .path(edit.file_id)
-            .ok_or(FixError::UnknownFile(edit.file_id))?;
-        if path.to_string_lossy().starts_with("<embedded>/") {
-            return Err(FixError::EmbeddedFile(edit.file_id));
-        }
-        validate_range(edit.file_id, edit.range, source)?;
-        if recovery.touches(edit.file_id, edit.range) {
-            return Err(FixError::RecoveryRange {
-                file_id: edit.file_id,
-                range: edit.range,
-            });
-        }
+        validate_edit(files, edit, recovery)?;
         by_file.entry(edit.file_id).or_default().push(edit);
     }
 
@@ -254,6 +233,42 @@ pub fn apply_in_memory(
         files: updated,
         changed_files,
     })
+}
+
+fn validate_edit(
+    files: &Files,
+    edit: &TextEdit,
+    recovery: &RecoveryIntervals,
+) -> Result<(), FixError> {
+    if !edit.is_machine_applicable() {
+        return Err(FixError::NonMachineApplicable {
+            code: edit.diagnostic_code,
+            applicability: edit.applicability,
+        });
+    }
+
+    let source = files
+        .source(edit.file_id)
+        .ok_or(FixError::UnknownFile(edit.file_id))?;
+    let path = files
+        .path(edit.file_id)
+        .ok_or(FixError::UnknownFile(edit.file_id))?;
+    reject_embedded_file(edit.file_id, path)?;
+    validate_range(edit.file_id, edit.range, source)?;
+    if recovery.touches(edit.file_id, edit.range) {
+        return Err(FixError::RecoveryRange {
+            file_id: edit.file_id,
+            range: edit.range,
+        });
+    }
+    Ok(())
+}
+
+fn reject_embedded_file(file_id: FileId, path: &std::path::Path) -> Result<(), FixError> {
+    if path.to_string_lossy().starts_with("<embedded>/") {
+        return Err(FixError::EmbeddedFile(file_id));
+    }
+    Ok(())
 }
 
 /// Stage edits and validate the complete staged source set before returning it.
@@ -359,118 +374,26 @@ fn append_diff_line(output: &mut String, prefix: char, line: &str, has_newline: 
 
 /// Atomically write all changed files, following symlinks to their targets.
 ///
-/// Every temporary file is created beside its target. Originals are moved to
+/// Every temporary file is created beside its target. Originals are copied to
 /// private backups before replacement; if any later replacement fails, all
 /// already-replaced files are restored before the error is returned.
 pub fn write_transaction(
     files: &Files,
     updates: &BTreeMap<FileId, String>,
 ) -> Result<Vec<PathBuf>, FixError> {
-    let mut changed_updates = Vec::new();
-    for (file_id, contents) in updates {
-        let original = files
-            .source(*file_id)
-            .ok_or(FixError::UnknownFile(*file_id))?;
-        if original != contents {
-            changed_updates.push((file_id, contents));
-        }
-    }
+    let changed_updates = changed_updates(files, updates)?;
     if changed_updates.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut targets = Vec::new();
-    let mut seen_targets = HashSet::new();
-    for (file_id, contents) in changed_updates {
-        let displayed_path = files
-            .path(*file_id)
-            .ok_or(FixError::UnknownFile(*file_id))?;
-        if displayed_path.to_string_lossy().starts_with("<embedded>/") {
-            return Err(FixError::EmbeddedFile(*file_id));
-        }
-        let target = fs::canonicalize(displayed_path)?;
-        if !seen_targets.insert(target.clone()) {
-            return Err(FixError::Transaction(format!(
-                "multiple edits resolve to the same file: {}",
-                target.display()
-            )));
-        }
-        let metadata = fs::metadata(&target)?;
-        if !metadata.is_file() {
-            return Err(FixError::Transaction(format!(
-                "{} is not a regular file",
-                target.display()
-            )));
-        }
-        targets.push((*file_id, target, contents, metadata.permissions()));
-    }
+    let targets = resolve_targets(files, &changed_updates)?;
 
     let transaction_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
-    let mut staged = Vec::new();
-    for (index, (_, target, contents, permissions)) in targets.iter().enumerate() {
-        let temp = target.with_file_name(format!(
-            ".{}.mux-fix-{}-{}.tmp",
-            target.file_name().unwrap_or_default().to_string_lossy(),
-            std::process::id(),
-            transaction_id + index as u128
-        ));
-        let result = (|| -> Result<(), FixError> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
-            file.write_all(contents.as_bytes())?;
-            file.sync_all()?;
-            file.set_permissions(permissions.clone())?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temp);
-            for path in staged {
-                let _ = fs::remove_file(path);
-            }
-            return Err(error);
-        }
-        staged.push(temp);
-    }
-
-    let mut backups = Vec::new();
-    for (index, (_, target, _, _)) in targets.iter().enumerate() {
-        let backup = target.with_file_name(format!(
-            ".{}.mux-fix-{}-{}.bak",
-            target.file_name().unwrap_or_default().to_string_lossy(),
-            std::process::id(),
-            transaction_id + index as u128
-        ));
-        if let Err(error) = fs::rename(target, &backup) {
-            rollback_staged(&staged);
-            if let Err(rollback_error) = rollback_backups(&backups) {
-                return Err(FixError::Transaction(format!(
-                    "could not move {} to its backup: {error}; rollback also failed: {rollback_error}",
-                    target.display()
-                )));
-            }
-            return Err(FixError::Io(error));
-        }
-        backups.push((target.clone(), backup));
-    }
-
-    for (index, (target, _backup)) in backups.iter().enumerate() {
-        if let Err(error) = fs::rename(&staged[index], target) {
-            for remaining in staged.iter().skip(index) {
-                let _ = fs::remove_file(remaining);
-            }
-            if let Err(rollback_error) = rollback_backups(&backups) {
-                return Err(FixError::Transaction(format!(
-                    "could not replace {}: {error}; rollback also failed: {rollback_error}",
-                    target.display()
-                )));
-            }
-            return Err(FixError::Io(error));
-        }
-    }
+    let staged = stage_targets(&targets, transaction_id)?;
+    let backups = backup_targets(&targets, &staged, transaction_id)?;
+    replace_targets(&targets, &backups, &staged)?;
 
     // Replacement is already committed at this point. Backup cleanup is
     // deliberately best-effort: reporting cleanup as a failed transaction
@@ -478,10 +401,242 @@ pub fn write_transaction(
     for (_, backup) in &backups {
         let _ = fs::remove_file(backup);
     }
-    Ok(targets
-        .into_iter()
-        .map(|(_, target, _, _)| target)
-        .collect())
+    Ok(targets.into_iter().map(|target| target.path).collect())
+}
+
+struct Target<'a> {
+    path: PathBuf,
+    replacement: &'a str,
+    original: &'a str,
+    permissions: fs::Permissions,
+    _lock: fs::File,
+}
+
+fn changed_updates<'a>(
+    files: &Files,
+    updates: &'a BTreeMap<FileId, String>,
+) -> Result<Vec<(FileId, &'a String)>, FixError> {
+    let mut changed = Vec::new();
+    for (file_id, contents) in updates {
+        let original = files
+            .source(*file_id)
+            .ok_or(FixError::UnknownFile(*file_id))?;
+        if original != contents {
+            changed.push((*file_id, contents));
+        }
+    }
+    Ok(changed)
+}
+
+fn resolve_targets<'a>(
+    files: &'a Files,
+    changed_updates: &[(FileId, &'a String)],
+) -> Result<Vec<Target<'a>>, FixError> {
+    let mut targets = Vec::new();
+    let mut seen_targets = HashSet::new();
+    for (file_id, contents) in changed_updates {
+        let displayed_path = files
+            .path(*file_id)
+            .ok_or(FixError::UnknownFile(*file_id))?;
+        reject_embedded_file(*file_id, displayed_path)?;
+        let target = fs::canonicalize(displayed_path)?;
+        reject_duplicate_target(&mut seen_targets, &target)?;
+        let metadata = fs::metadata(&target)?;
+        reject_non_file(&target, &metadata)?;
+        let original = files
+            .source(*file_id)
+            .ok_or(FixError::UnknownFile(*file_id))?;
+        let lock = OpenOptions::new().read(true).open(&target)?;
+        lock.try_lock_exclusive().map_err(|error| {
+            FixError::Transaction(format!(
+                "could not lock {} for editing: {error}",
+                target.display()
+            ))
+        })?;
+        if fs::read(&target)? != original.as_bytes() {
+            return Err(FixError::Transaction(format!(
+                "{} changed after analysis; refusing to overwrite it",
+                target.display()
+            )));
+        }
+        targets.push(Target {
+            path: target,
+            replacement: contents,
+            original,
+            permissions: metadata.permissions(),
+            _lock: lock,
+        });
+    }
+    targets.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(targets)
+}
+
+fn reject_duplicate_target(seen: &mut HashSet<PathBuf>, target: &Path) -> Result<(), FixError> {
+    if !seen.insert(target.to_path_buf()) {
+        return Err(FixError::Transaction(format!(
+            "multiple edits resolve to the same file: {}",
+            target.display()
+        )));
+    }
+    Ok(())
+}
+
+fn reject_non_file(target: &Path, metadata: &fs::Metadata) -> Result<(), FixError> {
+    if !metadata.is_file() {
+        return Err(FixError::Transaction(format!(
+            "{} is not a regular file",
+            target.display()
+        )));
+    }
+    Ok(())
+}
+
+fn stage_targets<'a>(
+    targets: &[Target<'a>],
+    transaction_id: u128,
+) -> Result<Vec<PathBuf>, FixError> {
+    let mut staged = Vec::new();
+    for (index, target) in targets.iter().enumerate() {
+        let temp = transaction_path(&target.path, "tmp", transaction_id, index);
+        let result = create_staged_file(&temp, target.replacement, &target.permissions);
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temp);
+            rollback_staged(&staged);
+            return Err(error);
+        }
+        staged.push(temp);
+    }
+    Ok(staged)
+}
+
+fn create_staged_file(
+    temp: &PathBuf,
+    contents: &str,
+    permissions: &fs::Permissions,
+) -> Result<(), FixError> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(temp)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
+    file.set_permissions(permissions.clone())?;
+    Ok(())
+}
+
+fn backup_targets<'a>(
+    targets: &[Target<'a>],
+    staged: &[PathBuf],
+    transaction_id: u128,
+) -> Result<Vec<(PathBuf, PathBuf)>, FixError> {
+    let mut backups = Vec::new();
+    for (index, target) in targets.iter().enumerate() {
+        let backup = transaction_path(&target.path, "bak", transaction_id, index);
+        if let Err(error) = fs::copy(&target.path, &backup) {
+            rollback_staged(staged);
+            return Err(rollback_error(&backups, &target.path, error, "back up"));
+        }
+        backups.push((target.path.clone(), backup));
+    }
+    Ok(backups)
+}
+
+fn transaction_path(target: &Path, suffix: &str, transaction_id: u128, index: usize) -> PathBuf {
+    target.with_file_name(format!(
+        ".{}.mux-fix-{}-{}.{}",
+        target.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id(),
+        transaction_id + index as u128,
+        suffix
+    ))
+}
+
+fn replace_targets(
+    targets: &[Target<'_>],
+    backups: &[(PathBuf, PathBuf)],
+    staged: &[PathBuf],
+) -> Result<(), FixError> {
+    for (index, target) in targets.iter().enumerate() {
+        if fs::read(&target.path)? != target.original.as_bytes() {
+            return Err(abort_stale_transaction(
+                &backups[..index],
+                &backups[index..],
+                staged,
+                &target.path,
+            ));
+        }
+        if let Err(error) = atomic_replace(&staged[index], &target.path) {
+            for remaining in staged.iter().skip(index) {
+                let _ = fs::remove_file(remaining);
+            }
+            return Err(rollback_error(backups, &target.path, error, "replace"));
+        }
+    }
+    Ok(())
+}
+
+fn abort_stale_transaction(
+    replaced_backups: &[(PathBuf, PathBuf)],
+    pending_backups: &[(PathBuf, PathBuf)],
+    staged: &[PathBuf],
+    target: &Path,
+) -> FixError {
+    rollback_staged(staged);
+    let rollback = rollback_backups(replaced_backups);
+    for (_, backup) in pending_backups {
+        let _ = fs::remove_file(backup);
+    }
+    match rollback {
+        Ok(()) => FixError::Transaction(format!(
+            "{} changed during fix; refusing to overwrite it",
+            target.display()
+        )),
+        Err(error) => FixError::Transaction(format!(
+            "{} changed during fix; refusing to overwrite it; rollback also failed: {error}",
+            target.display()
+        )),
+    }
+}
+
+#[cfg(unix)]
+fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(replacement, target)
+}
+
+#[cfg(windows)]
+fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
+
+    let target = target.encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let replacement = replacement.encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let result = unsafe {
+        ReplaceFileW(
+            target.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn rollback_error(
+    backups: &[(PathBuf, PathBuf)],
+    target: &Path,
+    error: std::io::Error,
+    operation: &str,
+) -> FixError {
+    if let Err(rollback_error) = rollback_backups(backups) {
+        return FixError::Transaction(format!(
+            "could not {operation} {}: {error}; rollback also failed: {rollback_error}",
+            target.display()
+        ));
+    }
+    FixError::Io(error)
 }
 
 fn rollback_staged(staged: &[PathBuf]) {
@@ -592,6 +747,7 @@ mod tests {
             replacement: "x".into(),
             applicability: Applicability::MaybeIncorrect,
             diagnostic_code: DiagnosticCode::RedundantConstruct,
+            solution_id: None,
         };
         assert!(matches!(
             apply_in_memory(&files, &[edit], &recovery),
@@ -730,6 +886,41 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "abc");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_overwrite_source_changed_after_analysis() {
+        let directory = std::env::temp_dir().join(format!(
+            "mux_fix_stale_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("program.mux");
+        std::fs::write(&path, "abc").unwrap();
+
+        let mut files = Files::new();
+        let file_id = files.add(&path, "abc".to_string());
+        let edit = TextEdit::machine_applicable(
+            file_id,
+            SourceRange::new(0, 3),
+            "xyz",
+            DiagnosticCode::RedundantConstruct,
+        );
+        let applied = apply_in_memory(&files, &[edit], &RecoveryIntervals::new()).unwrap();
+        std::fs::write(&path, "external").unwrap();
+
+        let result = write_transaction(&files, &applied.files);
+        assert!(matches!(
+            result,
+            Err(FixError::Transaction(message)) if message.contains("changed after analysis")
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

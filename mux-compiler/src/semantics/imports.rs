@@ -340,10 +340,10 @@ impl SemanticAnalyzer {
             .resolve_import_path(module_path, self.current_file.as_deref(), files)
             .map_err(|e| {
                 SemanticError::with_help(
-                    DiagnosticCode::ImportFailure,
+                    e.code,
                     format!("Failed to import module '{}'", module_path),
                     span,
-                    e.to_string(),
+                    e.message,
                 )
             })?;
 
@@ -381,10 +381,10 @@ impl SemanticAnalyzer {
             .resolve_import_path(submodule_path, self.current_file.as_deref(), files)
             .map_err(|e| {
                 SemanticError::with_help(
-                    DiagnosticCode::ImportFailure,
+                    e.code,
                     format!("Failed to import submodule '{}'", submodule_path),
                     span,
-                    e.to_string(),
+                    e.message,
                 )
             })?;
 

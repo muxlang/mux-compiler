@@ -29,7 +29,7 @@ pub enum Level {
 }
 
 /// The style of a label (primary or secondary).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[allow(dead_code)]
 pub enum LabelStyle {
     Primary,
@@ -53,6 +53,43 @@ impl Label {
             style: LabelStyle::Primary,
         }
     }
+}
+
+type DiagnosticSortKey = (
+    String,
+    (usize, usize),
+    Level,
+    DiagnosticCode,
+    String,
+    Option<String>,
+    Vec<(Span, Option<String>, LabelStyle)>,
+);
+
+pub(crate) fn sort_key(diagnostic: &Diagnostic, files: &Files) -> DiagnosticSortKey {
+    let path = diagnostic
+        .file_id
+        .and_then(|file_id| files.path(file_id))
+        .map_or_else(String::new, |path| path.display().to_string());
+    let position = diagnostic
+        .labels
+        .first()
+        .map_or((usize::MAX, usize::MAX), |label| {
+            (label.span.row_start, label.span.col_start)
+        });
+    let labels = diagnostic
+        .labels
+        .iter()
+        .map(|label| (label.span, label.message.clone(), label.style))
+        .collect();
+    (
+        path,
+        position,
+        diagnostic.level,
+        diagnostic.code,
+        diagnostic.message.clone(),
+        diagnostic.help.clone(),
+        labels,
+    )
 }
 
 /// A diagnostic message with associated labels and help text.

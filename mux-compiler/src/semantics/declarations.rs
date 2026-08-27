@@ -749,7 +749,7 @@ impl SemanticAnalyzer {
                 continue;
             }
             self.errors.push(SemanticError::with_help(
-                DiagnosticCode::WrongArgumentCount,
+                DiagnosticCode::InvalidTypeArguments,
                 format!(
                     "Enum '{}' contains itself with different type arguments",
                     enum_name

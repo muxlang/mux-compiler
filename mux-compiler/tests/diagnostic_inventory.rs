@@ -57,30 +57,41 @@ fn matching_parenthesis(source: &str, open: usize) -> usize {
 
 #[test]
 fn every_frontend_constructor_selects_a_typed_code() {
+    for file in frontend_rust_files() {
+        assert_file_constructors_are_typed(&file);
+    }
+}
+
+fn frontend_rust_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
     rust_files(
         &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
         &mut files,
     );
+    files
+}
 
-    for file in files {
-        let source = fs::read_to_string(&file).expect("read Rust source");
-        for constructor in CONSTRUCTORS {
-            let mut cursor = 0;
-            while let Some(relative) = source[cursor..].find(constructor) {
-                let start = cursor + relative;
-                let open = start + constructor.len() - 1;
-                let end = matching_parenthesis(&source, open);
-                let call = &source[start..=end];
-                assert!(
-                    call.contains("DiagnosticCode::"),
-                    "{} at byte {} has no typed diagnostic code",
-                    file.display(),
-                    start
-                );
-                cursor = end + 1;
-            }
-        }
+fn assert_file_constructors_are_typed(file: &Path) {
+    let source = fs::read_to_string(file).expect("read Rust source");
+    for constructor in CONSTRUCTORS {
+        assert_constructor_calls_are_typed(file, &source, constructor);
+    }
+}
+
+fn assert_constructor_calls_are_typed(file: &Path, source: &str, constructor: &str) {
+    let mut cursor = 0;
+    while let Some(relative) = source[cursor..].find(constructor) {
+        let start = cursor + relative;
+        let open = start + constructor.len() - 1;
+        let end = matching_parenthesis(source, open);
+        let call = &source[start..=end];
+        assert!(
+            call.contains("DiagnosticCode::") || call.contains(".code"),
+            "{} at byte {} has no typed diagnostic code",
+            file.display(),
+            start
+        );
+        cursor = end + 1;
     }
 }
 

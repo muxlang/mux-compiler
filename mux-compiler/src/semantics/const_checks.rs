@@ -358,7 +358,7 @@ impl SemanticAnalyzer {
                         "modulo"
                     };
                     return Err(SemanticError::with_help(
-                        DiagnosticCode::InvalidOperation,
+                        DiagnosticCode::DivisionByZero,
                         format!("{} by zero", operation),
                         *op_span,
                         "The divisor is always zero, so this operation would panic on every execution",

@@ -463,7 +463,7 @@ impl SemanticAnalyzer {
     fn analyze_return_with_value(&mut self, expr: &ExpressionNode) -> Result<(), SemanticError> {
         if self.current_return_type.is_none() {
             return Err(SemanticError::with_help(
-                DiagnosticCode::MissingReturn,
+                DiagnosticCode::ParseReturnOutsideFunction,
                 "Cannot use 'return' outside of a function",
                 expr.span,
                 "'return' can only be used inside a function body",
@@ -491,7 +491,7 @@ impl SemanticAnalyzer {
     fn analyze_return_without_value(&mut self, span: Span) -> Result<(), SemanticError> {
         if self.current_return_type.is_none() {
             return Err(SemanticError::with_help(
-                DiagnosticCode::MissingReturn,
+                DiagnosticCode::ParseReturnOutsideFunction,
                 "Cannot use 'return' outside of a function",
                 span,
                 "'return' can only be used inside a function body",
@@ -641,7 +641,7 @@ impl SemanticAnalyzer {
                 continue;
             }
             return Err(SemanticError::with_help(
-                DiagnosticCode::MissingReturn,
+                DiagnosticCode::NestedFunctionCapture,
                 format!(
                     "nested function '{}' cannot use '{}' from the function around it",
                     func.name, name

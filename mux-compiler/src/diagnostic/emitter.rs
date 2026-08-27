@@ -220,21 +220,7 @@ impl StandardEmitter {
         files: &Files,
     ) -> Vec<&'a Diagnostic> {
         let mut ordered: Vec<&Diagnostic> = diagnostics.iter().collect();
-        ordered.sort_by_key(|diagnostic| {
-            let path = diagnostic
-                .file_id
-                .and_then(|file_id| files.get(file_id))
-                .map(|file| file.path.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let span = diagnostic.labels.first().map(|label| label.span);
-            (
-                path,
-                span.map_or(usize::MAX, |value| value.row_start),
-                span.map_or(usize::MAX, |value| value.col_start),
-                diagnostic.level,
-                diagnostic.code,
-            )
-        });
+        ordered.sort_by_key(|diagnostic| super::sort_key(diagnostic, files));
         ordered
     }
 }
