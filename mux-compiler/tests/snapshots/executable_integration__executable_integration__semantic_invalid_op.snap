@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Operator '+' is not supported between types string and int
+error: 1 error found
+
+error[E0308]: Operator '+' is not supported between types string and int
 --> test_scripts/error_cases/semantic_invalid_op.mux:2:18
    |
  2 | auto a = "str" + 1

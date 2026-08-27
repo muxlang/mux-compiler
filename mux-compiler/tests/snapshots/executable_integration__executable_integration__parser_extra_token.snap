@@ -1,16 +1,16 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
 error: 2 errors found
 
-error: Expected newline after statement
+error[E0200]: Expected newline after statement
 --> test_scripts/error_cases/parser_extra_token.mux:2:12
    |
  2 | auto x = 5 }
    |            ^
 
-error: Expected expression, found '}'
+error[E0201]: Expected expression, found '}'
 --> test_scripts/error_cases/parser_extra_token.mux:2:12
    |
  2 | auto x = 5 }

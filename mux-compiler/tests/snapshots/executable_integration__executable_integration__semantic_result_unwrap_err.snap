@@ -1,10 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
 error: 2 errors found
 
-error: match cannot be used as an expression; it can only be used as a statement
+error[E0200]: match cannot be used as an expression; it can only be used as a statement
 --> test_scripts/error_cases/semantic_result_unwrap_err.mux:6:10
    |
  6 | auto x = match res {
@@ -12,7 +12,7 @@ error: match cannot be used as an expression; it can only be used as a statement
    |
 = help: Use 'match' as a standalone statement with 'return' in each arm, or use an if/else expression for inline conditionals.
 
-error: Expected newline before statement
+error[E0200]: Expected newline before statement
 --> test_scripts/error_cases/semantic_result_unwrap_err.mux:6:20
    |
  6 | auto x = match res {

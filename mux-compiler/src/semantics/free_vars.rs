@@ -2,6 +2,7 @@ use super::{SemanticAnalyzer, SemanticError, SymbolKind, Type};
 use crate::ast::{
     ExpressionKind, ExpressionNode, MatchArm, Param, PatternNode, StatementKind, StatementNode,
 };
+use crate::diagnostic::DiagnosticCode;
 use crate::lexer::Span;
 
 impl SemanticAnalyzer {
@@ -476,6 +477,7 @@ impl SemanticAnalyzer {
                 && symbol.kind == SymbolKind::Constant
             {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
                     format!("Cannot modify constant '{}'", name),
                     *op_span,
                     "Constants cannot be modified after initialization",
@@ -493,6 +495,7 @@ impl SemanticAnalyzer {
                 && *is_const
             {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::UnknownMember,
                     format!("Cannot modify const field '{}'", field),
                     *op_span,
                     "Const fields cannot be modified after initialization. Remove the 'const' modifier from the field declaration if mutation is needed.",

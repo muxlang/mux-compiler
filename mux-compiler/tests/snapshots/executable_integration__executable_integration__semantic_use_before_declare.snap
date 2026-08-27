@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Undefined variable 'y'
+error: 1 error found
+
+error[E0300]: Undefined variable 'y'
 --> test_scripts/error_cases/semantic_use_before_declare.mux:3:9
    |
  3 |   print(y)

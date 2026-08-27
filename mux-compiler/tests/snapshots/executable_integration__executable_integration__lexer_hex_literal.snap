@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Invalid integer literal: 0xGHI
+error: 1 error found
+
+error[E0104]: Invalid integer literal: 0xGHI
 --> test_scripts/error_cases/lexer_hex_literal.mux:2:10
    |
  2 | auto x = 0xGHI

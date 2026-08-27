@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use super::const_fold::{self, ConstValue};
 use super::{SemanticAnalyzer, SemanticError, SymbolKind, Type};
 use crate::ast::{AstNode, BinaryOp, EnumVariant, ExpressionKind, ExpressionNode, FunctionNode};
+use crate::diagnostic::DiagnosticCode;
 use crate::lexer::Span;
 
 /// A function's or method's `where` predicates with what a call site needs to
@@ -322,6 +323,7 @@ impl SemanticAnalyzer {
                 && const_fold::fold_with_env(predicate, env) == Some(ConstValue::Bool(false))
             {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::WrongArgumentCount,
                     message(),
                     span,
                     format!(
@@ -356,6 +358,7 @@ impl SemanticAnalyzer {
                         "modulo"
                     };
                     return Err(SemanticError::with_help(
+                        DiagnosticCode::DivisionByZero,
                         format!("{} by zero", operation),
                         *op_span,
                         "The divisor is always zero, so this operation would panic on every execution",
@@ -401,6 +404,7 @@ impl SemanticAnalyzer {
         for predicate in &invariants {
             if const_fold::fold_with_env(predicate, &env) == Some(ConstValue::Bool(false)) {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::CannotAssign,
                     format!(
                         "assignment violates where constraint of '{}.{}'",
                         class_name, field
@@ -442,6 +446,7 @@ impl SemanticAnalyzer {
                     let effective = if value < 0 { len + value } else { value };
                     if effective < 0 || effective >= len {
                         return Err(SemanticError::with_help(
+                            DiagnosticCode::InvalidOperation,
                             format!("list index out of bounds: index {}, length {}", value, len),
                             index.span,
                             "The index is always outside this list, so the access would panic on every execution",
@@ -482,6 +487,7 @@ impl SemanticAnalyzer {
             return Ok(());
         }
         Err(SemanticError::with_help(
+            DiagnosticCode::InvalidOperation,
             format!("key not found in map: key {}", lookup),
             index.span,
             "The key is never present in this map literal, so the lookup would panic on every execution",

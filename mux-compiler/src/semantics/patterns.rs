@@ -1,5 +1,6 @@
 use super::{SemanticAnalyzer, SemanticError, Symbol, SymbolKind, Type, format_type};
 use crate::ast::{LiteralNode, PatternNode, PrimitiveType};
+use crate::diagnostic::DiagnosticCode;
 use crate::lexer::Span;
 use std::collections::HashMap;
 
@@ -46,7 +47,11 @@ impl SemanticAnalyzer {
                 .lookup(name)
                 .and_then(|s| s.type_.clone())
                 .ok_or_else(|| {
-                    SemanticError::new(format!("Constant '{}' has no type information", name), span)
+                    SemanticError::new(
+                        DiagnosticCode::InvalidOperation,
+                        format!("Constant '{}' has no type information", name),
+                        span,
+                    )
                 })?;
             self.check_type_compatibility(&const_type, expected_type, span)?;
         } else {
@@ -90,6 +95,7 @@ impl SemanticAnalyzer {
                 self.match_enum_variant(name, args, enum_name, &symbol, type_args, span)
             }
             _ => Err(SemanticError::with_help(
+                DiagnosticCode::InvalidPattern,
                 format!(
                     "Enum variant patterns are not supported for type {}",
                     format_type(expected_type)
@@ -114,6 +120,7 @@ impl SemanticAnalyzer {
             Ok(())
         } else {
             Err(SemanticError::with_help(
+                DiagnosticCode::InvalidPattern,
                 format!(
                     "Pattern '{}' does not match type {}",
                     name,
@@ -141,6 +148,7 @@ impl SemanticAnalyzer {
             Ok(())
         } else {
             Err(SemanticError::with_help(
+                DiagnosticCode::InvalidPattern,
                 format!(
                     "Pattern '{}' does not match type {}",
                     name,
@@ -183,6 +191,7 @@ impl SemanticAnalyzer {
             Type::EmptyList => Type::Void,
             _ => {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidPattern,
                     format!(
                         "List pattern cannot match type {}",
                         format_type(expected_type)
@@ -215,11 +224,13 @@ impl SemanticAnalyzer {
             let available_variants: Vec<&String> = symbol.methods.keys().collect();
             if available_variants.is_empty() {
                 SemanticError::new(
+                    DiagnosticCode::InvalidOperation,
                     format!("Unknown variant '{}' for enum '{}'", name, enum_name),
                     span,
                 )
             } else {
                 SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
                     format!("Unknown variant '{}' for enum '{}'", name, enum_name),
                     span,
                     format!(
@@ -235,6 +246,7 @@ impl SemanticAnalyzer {
         })?;
         if args.len() != sig.params.len() {
             return Err(SemanticError::with_help(
+                DiagnosticCode::WrongArgumentCount,
                 format!(
                     "Variant '{}' expects {} argument{}, but pattern provides {}",
                     name,

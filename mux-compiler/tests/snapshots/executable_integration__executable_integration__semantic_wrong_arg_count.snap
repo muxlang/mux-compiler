@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: 'foo' expects 2 argument(s), but 1 was provided
+error: 1 error found
+
+error[E0303]: 'foo' expects 2 argument(s), but 1 was provided
 --> test_scripts/error_cases/semantic_wrong_arg_count.mux:5:10
    |
  5 | auto x = foo(1)

@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Unknown escape sequence: \x
+error: 1 error found
+
+error[E0102]: Unknown escape sequence: \x
 --> test_scripts/error_cases/lexer_invalid_escape_in_char.mux:2:12
    |
  2 | auto c = '\x'

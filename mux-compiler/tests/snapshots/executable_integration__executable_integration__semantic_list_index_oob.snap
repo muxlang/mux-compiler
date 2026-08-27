@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: list index out of bounds: index 5, length 3
+error: 1 error found
+
+error[E0308]: list index out of bounds: index 5, length 3
 --> test_scripts/error_cases/semantic_list_index_oob.mux:4:17
    |
  4 | print([1, 2, 3][5].to_string())

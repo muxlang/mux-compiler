@@ -12,6 +12,7 @@ use crate::ast::{
     SpanExt, Spanned, StatementKind, StatementNode, TraitBound, TraitRef, TypeKind, TypeNode,
     UnaryOp, WhereClause,
 };
+use crate::diagnostic::DiagnosticCode;
 use crate::lexer::{Span, Token, TokenType};
 
 #[derive(Debug)]
@@ -19,7 +20,9 @@ pub struct Parser<'a> {
     tokens: Vec<&'a Token>,
     current: usize,
     pub errors: Vec<ParserError>,
+    recovery_spans: Vec<Span>,
     loop_depth: usize,
+    stopped: bool,
 }
 
 /// Why `name` cannot be declared as a class method, if it cannot.
@@ -56,7 +59,27 @@ impl<'a> Parser<'a> {
                 .collect(),
             current: 0,
             errors: Vec::new(),
+            recovery_spans: Vec::new(),
             loop_depth: 0,
+            stopped: false,
+        }
+    }
+
+    const MAX_ERRORS: usize = 100;
+
+    fn record_error(&mut self, error: ParserError) {
+        if self.stopped {
+            return;
+        }
+        if self.errors.len() + 1 == Self::MAX_ERRORS {
+            self.errors.push(ParserError::new(
+                DiagnosticCode::ParseErrorLimit,
+                "too many parse errors; recovery stopped",
+                error.span,
+            ));
+            self.stopped = true;
+        } else {
+            self.errors.push(error);
         }
     }
 
@@ -115,6 +138,7 @@ impl<'a> Parser<'a> {
                 && next_token.token_type != TokenType::Eof
             {
                 return Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
                     "Expected newline before statement".to_string(),
                     next_token.span,
                 ));
@@ -125,7 +149,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse(&mut self) -> Result<Vec<AstNode>, (Vec<AstNode>, Vec<ParserError>)> {
         let mut nodes = Vec::new();
-        while !self.is_at_end() {
+        while !self.is_at_end() && !self.stopped {
             if self.is_at_end() {
                 break;
             }
@@ -148,7 +172,7 @@ impl<'a> Parser<'a> {
                     );
 
                     if should_check_termination && let Err(e) = self.check_statement_termination() {
-                        self.errors.push(e);
+                        self.record_error(e);
                         self.synchronize();
                     }
 
@@ -160,7 +184,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Err(e) => {
-                    self.errors.push(e);
+                    self.record_error(e);
                     self.synchronize();
                 }
             }
@@ -176,6 +200,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Spans consumed while skipping malformed input during recovery.
+    ///
+    /// Callers use these intervals to suppress diagnostics derived from
+    /// tokens the parser deliberately discarded.
+    pub fn recovery_spans(&self) -> &[Span] {
+        &self.recovery_spans
+    }
+
     fn declaration(&mut self) -> ParserResult<Option<AstNode>> {
         let _ = self.skip_newlines();
         if self.is_at_end() {
@@ -186,7 +218,7 @@ impl<'a> Parser<'a> {
         while self.matches(&[TokenType::NewLine]) {}
 
         if let Err(ref e) = result {
-            self.errors.push(e.clone());
+            self.record_error(e.clone());
             // Retry the next declaration to recover, but stop at a closing brace:
             // that terminates the enclosing block or class body, and retrying
             // there would parse '}' as a stray declaration and cascade a spurious
@@ -262,7 +294,7 @@ impl<'a> Parser<'a> {
                     "must be terminated with a newline" | "expected newline after statement"
                 ) =>
             {
-                self.errors.push(e);
+                self.record_error(e);
                 self.synchronize();
                 Ok(None)
             }
@@ -290,6 +322,7 @@ impl<'a> Parser<'a> {
                     && !matches!(self.tokens[self.current - 1].token_type, TokenType::NewLine)
                 {
                     return Err(ParserError::new(
+                        DiagnosticCode::ParseExpectedToken,
                         "Expected newline after statement".to_string(),
                         next_token.span,
                     ));
@@ -477,7 +510,7 @@ impl<'a> Parser<'a> {
             if let Err(e) =
                 self.parse_class_member(type_params, start_span, &mut fields, &mut methods)
             {
-                self.errors.push(e);
+                self.record_error(e);
                 self.current = member_start;
                 self.recover_class_member();
                 if self.current == member_start {
@@ -532,13 +565,20 @@ impl<'a> Parser<'a> {
                 let func_node = self.function_declaration(false)?;
                 if let AstNode::Function(func) = func_node {
                     if let Some(message) = reserved_class_method_error(&func.name) {
-                        self.errors
-                            .push(ParserError::new(&message, name_span.unwrap_or(func.span)));
+                        self.record_error(ParserError::new(
+                            DiagnosticCode::ParseExpectedToken,
+                            &message,
+                            name_span.unwrap_or(func.span),
+                        ));
                         return Ok(());
                     }
                     methods.push(func);
                 } else {
-                    return Err(ParserError::new("Expected function in class", start_span));
+                    return Err(ParserError::new(
+                        DiagnosticCode::ParseExpectedToken,
+                        "Expected function in class",
+                        start_span,
+                    ));
                 }
             }
             TokenType::Common => {
@@ -547,13 +587,20 @@ impl<'a> Parser<'a> {
                 let func_node = self.function_declaration(true)?;
                 if let AstNode::Function(func) = func_node {
                     if let Some(message) = reserved_class_method_error(&func.name) {
-                        self.errors
-                            .push(ParserError::new(&message, name_span.unwrap_or(func.span)));
+                        self.record_error(ParserError::new(
+                            DiagnosticCode::ParseExpectedToken,
+                            &message,
+                            name_span.unwrap_or(func.span),
+                        ));
                         return Ok(());
                     }
                     methods.push(func);
                 } else {
-                    return Err(ParserError::new("Expected function in class", start_span));
+                    return Err(ParserError::new(
+                        DiagnosticCode::ParseExpectedToken,
+                        "Expected function in class",
+                        start_span,
+                    ));
                 }
             }
             TokenType::Id(_) | TokenType::Const => {
@@ -566,6 +613,7 @@ impl<'a> Parser<'a> {
             _ => {
                 let token_desc = Self::describe_token(&self.peek().token_type);
                 return Err(ParserError::with_help(
+                    DiagnosticCode::ParseExpectedToken,
                     format!(
                         "Expected field or method declaration in class body, found {}",
                         token_desc
@@ -675,6 +723,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 return Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
                     "Expected field or function declaration in interface",
                     self.peek().span,
                 ));
@@ -1098,6 +1147,7 @@ impl<'a> Parser<'a> {
         if !self.matches(&[TokenType::Eq]) {
             if *has_default {
                 return Err(ParserError::with_help(
+                    DiagnosticCode::ParseExpectedToken,
                     "Required parameter cannot follow a parameter with a default value",
                     self.previous().span,
                     "Move all parameters with default values to the end of the parameter list",
@@ -1108,6 +1158,7 @@ impl<'a> Parser<'a> {
         let default_expr = self.parse_expression()?;
         if !Self::is_literal_expression(&default_expr) {
             return Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
                 "Default parameter values must be literals",
                 default_expr.span,
                 "Only literal values (int, float, string, bool, char) are allowed as default parameter values. Example: func foo(int x = 10) returns void { ... }",
@@ -1174,6 +1225,7 @@ impl<'a> Parser<'a> {
         let span = start_span.combine(&end_span);
         if predicates.is_empty() {
             return Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
                 "Empty 'where' block",
                 span,
                 "A where block must contain at least one boolean predicate. Example: where { value > 0 }",
@@ -1187,6 +1239,7 @@ impl<'a> Parser<'a> {
             self.parse_type()
         } else {
             Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
                 format!(
                     "Expected 'returns' before return type, found {}",
                     Self::describe_token(&self.peek().token_type)
@@ -1205,6 +1258,7 @@ impl<'a> Parser<'a> {
                 ..
             }) => Ok(block),
             _ => Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
                 "Expected block statement for function body",
                 start_span,
             )),
@@ -1247,7 +1301,7 @@ impl<'a> Parser<'a> {
             )
             && let Err(e) = self.check_statement_termination()
         {
-            self.errors.push(e);
+            self.record_error(e);
         }
 
         Ok(result)
@@ -1346,6 +1400,7 @@ impl<'a> Parser<'a> {
             }) => block,
             _ => {
                 return Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
                     "Expected block after if condition",
                     self.peek().span,
                 ));
@@ -1390,6 +1445,7 @@ impl<'a> Parser<'a> {
                 Ok((Some(vec![stmt]), end_span))
             }
             _ => Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
                 "Expected statement after else if",
                 self.previous().span,
             )),
@@ -1400,6 +1456,7 @@ impl<'a> Parser<'a> {
         // Check for opening brace first with proper error message
         if !self.check(TokenType::OpenBrace) {
             return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
                 "Expected '{' after else",
                 self.peek().span,
             ));
@@ -1412,6 +1469,7 @@ impl<'a> Parser<'a> {
             }) => block,
             _ => {
                 return Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
                     "Expected block after else",
                     self.peek().span,
                 ));
@@ -1444,6 +1502,7 @@ impl<'a> Parser<'a> {
             },
             _ => {
                 return Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
                     "Expected statement after while condition",
                     start_span,
                 ));
@@ -1492,6 +1551,7 @@ impl<'a> Parser<'a> {
             },
             _ => {
                 return Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
                     "Expected statement after for loop",
                     start_span,
                 ));
@@ -1580,6 +1640,7 @@ impl<'a> Parser<'a> {
                 _ => Ok(vec![stmt]),
             },
             _ => Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
                 "Expected statement for match arm body",
                 start_span,
             )),
@@ -1642,6 +1703,7 @@ impl<'a> Parser<'a> {
 
         if self.loop_depth == 0 {
             return Err(ParserError::with_help(
+                DiagnosticCode::ParseControlFlowOutsideLoop,
                 "Cannot use 'break' outside of a loop",
                 start_span,
                 "'break' can only be used inside a 'for' or 'while' loop",
@@ -1659,6 +1721,7 @@ impl<'a> Parser<'a> {
 
         if self.loop_depth == 0 {
             return Err(ParserError::with_help(
+                DiagnosticCode::ParseControlFlowOutsideLoop,
                 "Cannot use 'continue' outside of a loop",
                 start_span,
                 "'continue' can only be used inside a 'for' or 'while' loop",
@@ -1696,6 +1759,7 @@ impl<'a> Parser<'a> {
             self.consume_token(TokenType::CloseBrace, "Expected '}' after block")?
         } else {
             return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
                 "Expected '}' after block".to_string(),
                 self.peek().span,
             ));
@@ -1739,7 +1803,7 @@ impl<'a> Parser<'a> {
                 }
             }
             Err(e) => {
-                self.errors.push(e);
+                self.record_error(e);
                 self.synchronize();
                 let current_pos = self.current;
                 if self.current == current_pos && !self.is_at_end() {
@@ -1775,6 +1839,7 @@ impl<'a> Parser<'a> {
             let next_token = &self.tokens[self.current];
             if self.is_statement_starter(&next_token.token_type) {
                 return Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
                     "Expected newline before statement".to_string(),
                     next_token.span,
                 ));
@@ -1867,6 +1932,7 @@ impl<'a> Parser<'a> {
     ) -> ParserResult<()> {
         if postfix && matches!(op, UnaryOp::Incr | UnaryOp::Decr) {
             return Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
                 "Increment/Decrement operator can only be used as a standalone statement",
                 span,
                 "Expressions like 'x + y++' are not supported. Use 'y++' as a separate statement before the expression.",
@@ -2097,7 +2163,11 @@ impl<'a> Parser<'a> {
             TokenType::Bool(b) => Ok(PatternNode::Literal(LiteralNode::Boolean(*b))),
             TokenType::Char(c) => Ok(PatternNode::Literal(LiteralNode::Char(*c))),
             TokenType::Str(s) => Ok(PatternNode::Literal(LiteralNode::String(s.clone()))),
-            _ => Err(ParserError::from_token("Expected pattern", token)),
+            _ => Err(ParserError::from_token(
+                DiagnosticCode::InvalidPattern,
+                "Expected pattern",
+                token,
+            )),
         }
     }
 
@@ -2158,7 +2228,11 @@ impl<'a> Parser<'a> {
                     span: start_span,
                 })
             }
-            _ => Err(ParserError::from_token("Expected type", token)),
+            _ => Err(ParserError::from_token(
+                DiagnosticCode::ParseExpectedType,
+                "Expected type",
+                token,
+            )),
         }
     }
 
@@ -2177,11 +2251,12 @@ impl<'a> Parser<'a> {
     }
 
     fn synchronize(&mut self) {
+        let start = self.current;
         while !self.is_at_end() {
             match self.peek().token_type {
                 TokenType::NewLine => {
                     self.current += 1;
-                    return;
+                    break;
                 }
                 TokenType::Func
                 | TokenType::Auto
@@ -2190,7 +2265,7 @@ impl<'a> Parser<'a> {
                 | TokenType::Interface
                 | TokenType::Enum
                 | TokenType::Import => {
-                    return;
+                    break;
                 }
                 TokenType::If
                 | TokenType::Else
@@ -2198,21 +2273,27 @@ impl<'a> Parser<'a> {
                 | TokenType::For
                 | TokenType::Match
                 | TokenType::Return => {
-                    return;
+                    break;
                 }
                 TokenType::OpenBrace | TokenType::CloseBrace => {
-                    return;
+                    break;
                 }
                 TokenType::OpenParen | TokenType::CloseParen => {
-                    return;
+                    break;
                 }
                 TokenType::OpenBracket | TokenType::CloseBracket => {
-                    return;
+                    break;
                 }
                 _ => {
                     self.current += 1;
                 }
             }
+        }
+        if self.current > start {
+            let span = self.tokens[start]
+                .span
+                .combine(&self.tokens[self.current - 1].span);
+            self.recovery_spans.push(span);
         }
     }
 
@@ -2300,6 +2381,7 @@ impl<'a> Parser<'a> {
             // Reject prefix ++ and --
             if matches!(op_token.token_type, TokenType::Incr | TokenType::Decr) {
                 return Err(ParserError::with_help(
+                    DiagnosticCode::ParseExpectedToken,
                     "Increment/Decrement operator can only be used in the postfix position",
                     op_token.span,
                     "Place the operator after the variable: 'x++' or 'x--' instead of '++x' or '--x'",
@@ -2495,6 +2577,7 @@ impl<'a> Parser<'a> {
         if self.check(TokenType::CloseParen) {
             self.consume_token(TokenType::CloseParen, "Expected ')' after expression")?;
             return Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
                 "Tuple must have exactly 2 elements, found empty parentheses",
                 start_span.combine(&self.previous().span),
                 "Tuples are created with two elements: (value1, value2). Example: auto pair = (1, \"hello\")",
@@ -2510,6 +2593,7 @@ impl<'a> Parser<'a> {
             if self.check(TokenType::CloseParen) {
                 self.consume_token(TokenType::CloseParen, "Expected ')' after tuple elements")?;
                 return Err(ParserError::with_help(
+                    DiagnosticCode::ParseExpectedToken,
                     "Tuple must have exactly 2 elements, found only 1",
                     start_span.combine(&self.previous().span),
                     "Tuples require exactly two elements: (value1, value2). A trailing comma after a single value is not allowed.",
@@ -2613,6 +2697,7 @@ impl<'a> Parser<'a> {
                 let param_name = self.consume_identifier("Expected parameter name")?;
                 if self.matches(&[TokenType::Eq]) {
                     return Err(ParserError::with_help(
+                        DiagnosticCode::ParseExpectedToken,
                         "Default arguments are not supported in lambda expressions",
                         self.previous().span,
                         "Lambda parameters cannot have default values. Define a named function instead if you need default parameters.",
@@ -2642,6 +2727,7 @@ impl<'a> Parser<'a> {
             self.parse_type()?
         } else {
             return Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
                 format!(
                     "Expected 'returns' after lambda parameters, found {}",
                     Self::describe_token(&self.peek().token_type)
@@ -2659,6 +2745,7 @@ impl<'a> Parser<'a> {
             },
             _ => {
                 return Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
                     "Expected block statement for lambda body",
                     start_span,
                 ));
@@ -2743,6 +2830,7 @@ impl<'a> Parser<'a> {
 
         if matches!(token_type, TokenType::Match) {
             return ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
                 "match cannot be used as an expression; it can only be used as a statement",
                 token_span,
                 "Use 'match' as a standalone statement with 'return' in each arm, or use an if/else expression for inline conditionals.",
@@ -2751,6 +2839,7 @@ impl<'a> Parser<'a> {
 
         if matches!(token_type, TokenType::Return) {
             return ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
                 "Unexpected 'return' statement",
                 token_span,
                 "'return' can only be used inside a function body",
@@ -2758,6 +2847,7 @@ impl<'a> Parser<'a> {
         }
 
         ParserError::from_token(
+            DiagnosticCode::ParseExpectedExpression,
             format!("Expected expression, found {}", token_desc),
             &Token {
                 token_type,
@@ -2776,6 +2866,7 @@ impl<'a> Parser<'a> {
                 col_end: None,
             });
             return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedExpression,
                 "Expected expression, found end of input",
                 error_span,
             ));
@@ -3137,6 +3228,7 @@ impl<'a> Parser<'a> {
     fn consume_token(&mut self, expected: TokenType, error_msg: &str) -> ParserResult<Span> {
         if self.is_at_end() {
             return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
                 format!("{}, but reached end of file", error_msg),
                 self.tokens.last().map(|t| t.span).unwrap_or_else(|| Span {
                     row_start: 1,
@@ -3154,6 +3246,7 @@ impl<'a> Parser<'a> {
         } else {
             let found_desc = Self::describe_token(&token.token_type);
             Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
                 format!("{}, found {}", error_msg, found_desc),
                 token.span,
             ))
@@ -3163,6 +3256,7 @@ impl<'a> Parser<'a> {
     fn consume_identifier(&mut self, error_msg: &str) -> ParserResult<String> {
         if self.is_at_end() {
             return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
                 format!("{}, but reached end of file", error_msg),
                 self.peek().span,
             ));
@@ -3182,6 +3276,7 @@ impl<'a> Parser<'a> {
             _ => {
                 let found_desc = Self::describe_token(&self.peek().token_type);
                 Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
                     format!("{}, found {}", error_msg, found_desc),
                     self.peek().span,
                 ))
@@ -3408,6 +3503,7 @@ impl<'a> Parser<'a> {
         // For const fields, require a default value
         if is_const && default_value.is_none() {
             return Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
                 "Const fields must have a default value",
                 self.previous().span,
                 "Add a default value to the const field. Example: const int MAX_SIZE = 100",
@@ -3510,6 +3606,38 @@ mod tests {
         }
 
         tokens
+    }
+
+    #[test]
+    fn parser_caps_recovery_errors() {
+        let source = (0..110).map(|_| "func main( {\n").collect::<String>();
+        let mut parser = create_parser(&source);
+        let Err((_, errors)) = parser.parse() else {
+            panic!("malformed source unexpectedly parsed");
+        };
+
+        assert_eq!(errors.len(), Parser::MAX_ERRORS);
+        assert_eq!(
+            errors.last().map(|error| error.code),
+            Some(DiagnosticCode::ParseErrorLimit)
+        );
+    }
+
+    #[test]
+    fn recovery_records_tokens_skipped_between_errors() {
+        let mut parser = create_parser("auto x = 1 ) auto y = 2\n");
+        parser.parser.current = parser
+            .parser
+            .tokens
+            .iter()
+            .position(|token| token.token_type == TokenType::CloseParen)
+            .expect("test source should contain a closing parenthesis")
+            .saturating_sub(1);
+        parser.parser.synchronize();
+        assert!(
+            !parser.parser.recovery_spans().is_empty(),
+            "parser recovery must expose discarded source intervals"
+        );
     }
 
     fn create_parser(source: &str) -> TestParser {

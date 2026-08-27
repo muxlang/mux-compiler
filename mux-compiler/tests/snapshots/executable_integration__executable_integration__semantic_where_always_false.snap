@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: where predicate is always false
+error: 1 error found
+
+error[E0308]: where predicate is always false
 --> test_scripts/error_cases/semantic_where_always_false.mux:4:23
    |
  4 | func f(int a) where { 1 > 2 } returns int {

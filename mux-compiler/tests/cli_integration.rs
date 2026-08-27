@@ -109,6 +109,11 @@ fn build_reports_lex_error() {
         .expect("spawn mux build");
     assert!(!out.status.success());
     assert!(!out.stderr.is_empty());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("E0101"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -123,6 +128,11 @@ fn build_reports_parse_error() {
         .expect("spawn mux build");
     assert!(!out.status.success());
     assert!(!out.stderr.is_empty());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("E0202"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -141,6 +151,304 @@ fn build_reports_semantic_error() {
         .expect("spawn mux build");
     assert!(!out.status.success());
     assert!(!out.stderr.is_empty());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("E0300"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn build_reports_missing_module_with_module_code() {
+    let dir = unique_tmp_dir("missing_module");
+    let file = write_file(
+        &dir,
+        "bad.mux",
+        "import missing\nfunc main() returns void { return }\n",
+    );
+    let out = mux()
+        .args(["build", file.to_str().unwrap()])
+        .output()
+        .expect("spawn mux build");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("E0400"), "stderr: {stderr}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn explain_prints_registry_metadata() {
+    let out = mux()
+        .args(["explain", "e0302"])
+        .output()
+        .expect("spawn mux explain");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E0302: type mismatch"), "stdout: {stdout}");
+    assert!(stdout.contains("Fix:"), "stdout: {stdout}");
+}
+
+#[test]
+fn explain_rejects_unknown_codes() {
+    let out = mux()
+        .args(["explain", "E9999"])
+        .output()
+        .expect("spawn mux explain");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Unknown diagnostic code"));
+}
+
+#[test]
+fn fix_valid_source_is_a_noop_with_machine_readable_output() {
+    let dir = unique_tmp_dir("fix_noop");
+    let file = write_file(
+        &dir,
+        "program.mux",
+        "func main() returns void {\n    return\n}\n",
+    );
+    let original = std::fs::read_to_string(&file).unwrap();
+    let out = mux()
+        .args([
+            "fix",
+            file.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn mux fix");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("\"status\":\"no_changes\""));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn fix_rejects_syntax_errors_without_writing() {
+    let dir = unique_tmp_dir("fix_parse");
+    let file = write_file(&dir, "broken.mux", "func main( {\n    return\n}\n");
+    let original = std::fs::read_to_string(&file).unwrap();
+    let out = mux()
+        .args(["fix", file.to_str().unwrap(), "--format", "json"])
+        .output()
+        .expect("spawn mux fix");
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("\"status\":\"error\""), "stdout: {stdout}");
+    assert!(stdout.contains("E0202"), "stdout: {stdout}");
+    assert!(stdout.contains("\"level\":\"error\""), "stdout: {stdout}");
+    assert!(!stdout.contains("\"level\":\"Error\""), "stdout: {stdout}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn fix_json_preserves_imported_diagnostic_file() {
+    let dir = unique_tmp_dir("fix_import_file");
+    write_file(
+        &dir,
+        "broken.mux",
+        "func broken() returns int {\n    return \"wrong\"\n}\n",
+    );
+    let file = write_file(
+        &dir,
+        "program.mux",
+        "import broken\n\nfunc main() returns void {\n    return\n}\n",
+    );
+    let out = mux()
+        .args([
+            "fix",
+            file.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn mux fix");
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E0302"), "stdout: {stdout}");
+    assert!(stdout.contains("broken.mux"), "stdout: {stdout}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn fix_reports_imported_syntax_diagnostic_with_its_file() {
+    let dir = unique_tmp_dir("fix_import_parse");
+    write_file(&dir, "broken.mux", "func broken( {\n    return\n}\n");
+    let file = write_file(
+        &dir,
+        "program.mux",
+        "import broken\n\nfunc main() returns void {\n    return\n}\n",
+    );
+    let out = mux()
+        .args([
+            "fix",
+            file.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn mux fix");
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E0202"), "stdout: {stdout}");
+    assert!(stdout.contains("broken.mux"), "stdout: {stdout}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn fix_continues_after_recoverable_syntax_error() {
+    let dir = unique_tmp_dir("fix_recovery");
+    let file = write_file(
+        &dir,
+        "program.mux",
+        "func broken( {\n    return\n}\n\nfunc independent() returns void {\n    print(missing_name)\n    return\n}\n",
+    );
+    let out = mux()
+        .args([
+            "fix",
+            file.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn mux fix");
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E0202"), "stdout: {stdout}");
+    assert!(stdout.contains("E0300"), "stdout: {stdout}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn fix_reports_provable_warnings_without_failing_valid_source() {
+    let dir = unique_tmp_dir("fix_warning");
+    let file = write_file(
+        &dir,
+        "program.mux",
+        "func main() returns void {\n    if true {\n        return\n    } else {\n        return\n    }\n}\n",
+    );
+    let out = mux()
+        .args([
+            "fix",
+            file.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn mux fix");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("\"code\":\"W0305\""), "stdout: {stdout}");
+    assert!(stdout.contains("\"level\":\"warning\""), "stdout: {stdout}");
+    assert!(
+        stdout.contains("\"status\":\"no_changes\""),
+        "stdout: {stdout}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn fix_applies_a_proven_safe_boolean_simplification() {
+    let dir = unique_tmp_dir("fix_boolean");
+    let file = write_file(
+        &dir,
+        "program.mux",
+        "func main() returns void {\n    auto value = true\n    if 1 == 1 {\n        print(\"constant\")\n    } else {\n        print(\"never\")\n    }\n    if value && true {\n        return\n    } else {\n        return\n    }\n}\n",
+    );
+    let out = mux()
+        .args(["fix", file.to_str().unwrap(), "--format", "json"])
+        .output()
+        .expect("spawn mux fix");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"status\":\"applied\""),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"applicability\":\"machine-applicable\""),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("W0305"), "stdout: {stdout}");
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("if value {")
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn fix_does_not_call_a_breaking_loop_unreachable() {
+    let dir = unique_tmp_dir("fix_break");
+    let file = write_file(
+        &dir,
+        "program.mux",
+        "func main() returns void {\n    while true {\n        break\n    }\n    return\n}\n",
+    );
+    let out = mux()
+        .args([
+            "fix",
+            file.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn mux fix");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("W0305"), "stdout: {stdout}");
+    assert!(!stdout.contains("W0302"), "stdout: {stdout}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn fix_deny_warnings_does_not_write_safe_edits() {
+    let dir = unique_tmp_dir("fix_deny_warning");
+    let file = write_file(
+        &dir,
+        "program.mux",
+        "func main() returns void {\n    auto value = true\n    if value && true {\n        return\n    } else {\n        return\n    }\n}\n",
+    );
+    let original = std::fs::read_to_string(&file).unwrap();
+    let out = mux()
+        .args([
+            "--deny-warnings",
+            "fix",
+            file.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("spawn mux fix");
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("W0306"), "stdout: {stdout}");
+    assert!(stdout.contains("\"status\":\"error\""), "stdout: {stdout}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
     std::fs::remove_dir_all(&dir).ok();
 }
 

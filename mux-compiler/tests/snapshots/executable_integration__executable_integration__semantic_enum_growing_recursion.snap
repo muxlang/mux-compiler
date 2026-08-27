@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Enum 'Nest' contains itself with different type arguments
+error: 1 error found
+
+error[E0310]: Enum 'Nest' contains itself with different type arguments
 --> test_scripts/error_cases/semantic_enum_growing_recursion.mux:6:7
    |
  6 |     N(Nest<list<T>> inner)

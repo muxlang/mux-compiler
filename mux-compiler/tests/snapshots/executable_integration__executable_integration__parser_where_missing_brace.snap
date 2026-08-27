@@ -4,19 +4,19 @@ expression: normalized
 ---
 error: 3 errors found
 
-error: Expected '{' after 'where', found identifier 'a'
+error[E0200]: Expected '{' after 'where', found identifier 'a'
 --> test_scripts/error_cases/parser_where_missing_brace.mux:3:21
    |
  3 | func f(int a) where a > 0 returns int {
    |                     ^
 
-error: Expected expression, found 'returns' keyword
+error[E0201]: Expected expression, found 'returns' keyword
 --> test_scripts/error_cases/parser_where_missing_brace.mux:3:27
    |
  3 | func f(int a) where a > 0 returns int {
    |                           ^^^^^^^
 
-error: Expected newline before statement
+error[E0200]: Expected newline before statement
 --> test_scripts/error_cases/parser_where_missing_brace.mux:3:39
    |
  3 | func f(int a) where a > 0 returns int {

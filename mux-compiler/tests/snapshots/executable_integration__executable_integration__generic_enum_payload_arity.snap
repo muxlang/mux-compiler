@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Generic type 'Pair' requires 2 type argument(s), got 1
+error: 1 error found
+
+error[E0310]: Generic type 'Pair' requires 2 type argument(s), got 1
 --> test_scripts/error_cases/generic_enum_payload_arity.mux:3:19
    |
  3 | enum Wrapper { Of(Pair<int> pair) }

@@ -13,6 +13,7 @@ use crate::ast::{
     AstNode, EnumVariant, ExpressionKind, ExpressionNode, Field, FunctionNode, PrimitiveType,
     TraitBound, TraitRef, WhereClause,
 };
+use crate::diagnostic::DiagnosticCode;
 use std::collections::{HashMap, HashSet};
 
 /// A class constraint from a field-level or class-level `where`, ready for
@@ -46,6 +47,7 @@ impl SemanticAnalyzer {
                 Ok(Type::Primitive(PrimitiveType::Bool)) => {
                     if const_fold::fold(predicate) == Some(ConstValue::Bool(false)) {
                         self.errors.push(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                             "where predicate is always false",
                             predicate.span,
                             "This predicate can never hold, so every check of it would panic. Fix the condition or remove it.",
@@ -53,6 +55,7 @@ impl SemanticAnalyzer {
                     }
                 }
                 Ok(other) => self.errors.push(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                     format!(
                         "where predicate must be a bool, got {}",
                         format_type(&other)
@@ -209,6 +212,7 @@ impl SemanticAnalyzer {
                         == Some(ConstValue::Bool(false))
                 {
                     self.errors.push(SemanticError::with_help(
+                DiagnosticCode::UnknownMember,
                         "field defaults violate this where constraint at construction",
                         predicate.span,
                         "Invariants are checked when .new() runs, after field defaults are applied, so every construction would panic. Give the constrained fields defaults that satisfy this predicate.",

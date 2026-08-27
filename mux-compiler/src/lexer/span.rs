@@ -1,7 +1,7 @@
 //! Source location tracking for tokens and errors.
 
 /// Represents a source location span.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Span {
     pub row_start: usize,
     pub row_end: Option<usize>,

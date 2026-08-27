@@ -16,6 +16,7 @@ pub mod stdlib;
 pub mod symbol_table;
 pub mod types;
 pub mod unifier;
+mod warnings;
 pub mod where_clause;
 
 // Re-exports for public API
@@ -30,7 +31,7 @@ use crate::ast::{
     AstNode, BinaryOp, ExpressionKind, ExpressionNode, Param, PrimitiveType, StatementKind,
     StatementNode, TraitBound, TypeKind, TypeNode, UnaryOp,
 };
-use crate::diagnostic::Files;
+use crate::diagnostic::{DiagnosticCode, Files};
 use crate::lexer::Span;
 use crate::semantics::std_registry::std_module_registry;
 use std::cell::RefCell;
@@ -76,6 +77,11 @@ pub struct SemanticAnalyzer {
     /// this is how a name in it is known to be one rather than an unknown type.
     signature_type_params: std::collections::HashSet<String>,
     errors: Vec<SemanticError>,
+    /// Errors from imported modules are retained for structured consumers
+    /// such as `mux fix`, which must preserve the originating file. The
+    /// ordinary compiler path continues to report the existing import error
+    /// wrapper and can ignore this auxiliary collection.
+    imported_errors: Vec<SemanticError>,
     is_in_static_method: bool,
     pub current_self_type: Option<Type>,
     pub module_resolver: Option<Rc<RefCell<crate::module_resolver::ModuleResolver>>>,
@@ -90,6 +96,7 @@ pub struct SemanticAnalyzer {
     pub all_module_asts: std::collections::BTreeMap<String, Vec<AstNode>>,
     pub module_dependencies: Vec<String>,
     pub(super) current_file: Option<std::path::PathBuf>, // Track current file for relative imports
+    pub(super) current_file_id: Option<crate::diagnostic::FileId>,
     pub lambda_captures: std::collections::HashMap<Span, Vec<(String, Type)>>, // Track captured variables for each lambda
     pub current_return_type: Option<Type>, // Track current function/lambda return type
     pub current_class_type_params: Option<Vec<(String, GenericBounds)>>, // Track class-level type params with bounds for method analysis
@@ -146,6 +153,7 @@ impl SemanticAnalyzer {
             current_bounds: std::collections::HashMap::new(),
             signature_type_params: std::collections::HashSet::new(),
             errors: Vec::new(),
+            imported_errors: Vec::new(),
             is_in_static_method: false,
             current_self_type: None,
             module_resolver: None,
@@ -153,6 +161,7 @@ impl SemanticAnalyzer {
             all_module_asts: std::collections::BTreeMap::new(),
             module_dependencies: Vec::new(),
             current_file: None,
+            current_file_id: None,
             lambda_captures: std::collections::HashMap::new(),
             current_return_type: None,
             current_class_type_params: None,
@@ -286,6 +295,14 @@ impl SemanticAnalyzer {
 
     pub fn set_current_file(&mut self, file: std::path::PathBuf) {
         self.current_file = Some(file);
+    }
+
+    pub fn set_current_file_id(&mut self, file_id: crate::diagnostic::FileId) {
+        self.current_file_id = Some(file_id);
+    }
+
+    pub fn take_imported_errors(&mut self) -> Vec<SemanticError> {
+        std::mem::take(&mut self.imported_errors)
     }
 
     pub fn symbol_table(&self) -> &SymbolTable {
@@ -438,12 +455,17 @@ impl SemanticAnalyzer {
     fn undefined_symbol_error(&self, kind: &str, name: &str, span: Span) -> SemanticError {
         if let Some(suggestion) = self.symbol_table.find_similar(name) {
             SemanticError::with_help(
+                DiagnosticCode::UndefinedName,
                 format!("Undefined {} '{}'", kind, name),
                 span,
                 format!("Did you mean '{}'?", suggestion),
             )
         } else {
-            SemanticError::new(format!("Undefined {} '{}'", kind, name), span)
+            SemanticError::new(
+                DiagnosticCode::UndefinedName,
+                format!("Undefined {} '{}'", kind, name),
+                span,
+            )
         }
     }
 
@@ -463,7 +485,11 @@ impl SemanticAnalyzer {
     {
         let available_items = get_available(type_name);
         if available_items.is_empty() {
-            SemanticError::new(message_format(item_type, item, type_name), span)
+            SemanticError::new(
+                DiagnosticCode::UnknownMember,
+                message_format(item_type, item, type_name),
+                span,
+            )
         } else {
             let threshold = calculate_similarity_threshold(item);
             let suggestion = available_items
@@ -475,6 +501,7 @@ impl SemanticAnalyzer {
             let available = available_items.join(", ");
             if let Some(similar) = suggestion {
                 SemanticError::with_help(
+                    DiagnosticCode::UnknownMember,
                     message_format(item_type, item, type_name),
                     span,
                     format!(
@@ -486,6 +513,7 @@ impl SemanticAnalyzer {
                 )
             } else {
                 SemanticError::with_help(
+                    DiagnosticCode::UnknownMember,
                     message_format(item_type, item, type_name),
                     span,
                     format!("Available {}s: {}", item_type.to_lowercase(), available),
@@ -691,6 +719,7 @@ impl SemanticAnalyzer {
                     continue;
                 }
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
                     format!("'{}' does not satisfy '{}'", format_type(concrete), bound),
                     span,
                     Self::unsatisfied_bound_help(bound, concrete, param_name),
@@ -751,8 +780,19 @@ impl SemanticAnalyzer {
         // recorded twice. Collapse exact duplicates - identical message and
         // span - so each distinct problem is reported once.
         let mut errors = std::mem::take(&mut self.errors);
+        let has_errors = errors
+            .iter()
+            .any(|error| error.code.level() == crate::diagnostic::Level::Error);
+        if !has_errors {
+            errors.extend(warnings::collect(ast));
+        }
         let mut seen = HashSet::new();
-        errors.retain(|e| seen.insert((e.message.clone(), e.span)));
+        errors.retain(|e| seen.insert((e.code, e.message.clone(), e.span, e.file_id)));
+        for error in &mut errors {
+            if error.file_id.is_none() {
+                error.file_id = self.current_file_id;
+            }
+        }
         errors
     }
 
@@ -804,6 +844,7 @@ impl SemanticAnalyzer {
                 }
                 crate::ast::PrimitiveType::Void => Ok(Type::Void),
                 crate::ast::PrimitiveType::Auto => Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
                     "The 'auto' type is not allowed in this context",
                     type_node.span,
                     "Use an explicit type annotation instead of 'auto'",
@@ -851,10 +892,12 @@ impl SemanticAnalyzer {
             }
 
             TypeKind::TraitObject(_) => Err(SemanticError::new(
+                DiagnosticCode::InvalidOperation,
                 "Trait objects are not yet supported",
                 type_node.span,
             )),
             TypeKind::Auto => Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 "The 'auto' type is not allowed in this context",
                 type_node.span,
                 "Use an explicit type annotation instead of 'auto'",
@@ -893,6 +936,7 @@ impl SemanticAnalyzer {
             return Some(self.resolve_named_type(bare, type_args, span));
         }
         Some(Err(SemanticError::new(
+            DiagnosticCode::UndefinedName,
             format!("Undefined type '{name}'"),
             span,
         )))
@@ -937,6 +981,7 @@ impl SemanticAnalyzer {
             );
             if !err_is_type_param && !self.type_implements_interface(&resolved_err, "Error") {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
                     format!(
                         "Result error type must implement Error, but found {}",
                         format_type(&resolved_err)
@@ -955,6 +1000,7 @@ impl SemanticAnalyzer {
         // or has the wrong number of type arguments (issue #289).
         if let Some(required) = builtin_generic_arity(name) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidTypeArguments,
                 format!(
                     "'{}' requires {} type argument{}, got {}",
                     name,
@@ -1000,6 +1046,7 @@ impl SemanticAnalyzer {
                 .is_some_and(|symbol| matches!(symbol.kind, SymbolKind::Interface))
         {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "'{}' is an interface and cannot be used as a value type",
                     name
@@ -1046,6 +1093,7 @@ impl SemanticAnalyzer {
                     if let Some(required) = builtin_generic_arity(name) {
                         if args.len() != required {
                             return Err(SemanticError::with_help(
+                                DiagnosticCode::InvalidTypeArguments,
                                 format!(
                                     "'{}' requires {} type argument{}, got {}",
                                     name,
@@ -1184,6 +1232,7 @@ impl SemanticAnalyzer {
                 // the variant's constructor and failing in codegen, where there
                 // is no span to point at.
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::UnknownMember,
                     format!(
                         "'{}' is a variant of enum '{}', not a field on a value of it",
                         field, enum_name
@@ -1302,6 +1351,7 @@ impl SemanticAnalyzer {
                 "left" => Ok(*left_type.clone()),
                 "right" => Ok(*right_type.clone()),
                 _ => Err(SemanticError::with_help(
+                    DiagnosticCode::UnknownMember,
                     format!("Unknown field '{}' on tuple type", field),
                     span,
                     "Tuples only have two fields: 'left' and 'right'. Example: auto pair = (1, 2); print(int_to_string(pair.left))",
@@ -1324,11 +1374,13 @@ impl SemanticAnalyzer {
             // Indexing a string yields a character, matching iteration.
             Type::Primitive(PrimitiveType::Str) => Ok(Type::Primitive(PrimitiveType::Char)),
             Type::EmptyMap => Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 "Cannot index empty map",
                 span,
                 "The map type is unknown. Provide type annotations or add entries to the map literal.",
             )),
             _ => Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 "Cannot index non-list type",
                 span,
                 "Only lists, maps and strings can be indexed with '[]'. Examples: my_list[0], my_map['key'], text[0]",
@@ -1351,6 +1403,7 @@ impl SemanticAnalyzer {
                 .is_err()
             {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::TypeMismatch,
                     format!(
                         "List element type mismatch: expected {}, but element at index {} has type {}",
                         format_type(&first_type),
@@ -1390,6 +1443,7 @@ impl SemanticAnalyzer {
             Ok(then_type)
         } else {
             Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 "If expression branches must have the same type",
                 span,
                 format!(
@@ -1480,6 +1534,7 @@ impl SemanticAnalyzer {
     ) -> Result<Type, SemanticError> {
         if elements.len() != 2 {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "Tuple must have exactly 2 elements, found {}",
                     elements.len()
@@ -1518,6 +1573,7 @@ impl SemanticAnalyzer {
     ) -> Result<Type, SemanticError> {
         if type_args.len() != 2 {
             return Err(SemanticError::with_help(
+                DiagnosticCode::TypeMismatch,
                 format!(
                     "Tuple type requires exactly 2 type arguments, got {}",
                     type_args.len()
@@ -1566,6 +1622,7 @@ impl SemanticAnalyzer {
         let actual_count = type_args.len();
         if expected_count != actual_count {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidTypeArguments,
                 format!(
                     "Generic type '{}' requires {} type argument(s), got {}",
                     lookup_name, expected_count, actual_count
@@ -1602,6 +1659,7 @@ impl SemanticAnalyzer {
                     Type::Primitive(crate::ast::PrimitiveType::Int)
                     | Type::Primitive(crate::ast::PrimitiveType::Float) => Ok(operand_type),
                     _ => Err(SemanticError::with_help(
+                        DiagnosticCode::InvalidOperation,
                         format!(
                             "Negation operator '-' requires a numeric operand, found {}",
                             format_type(&operand_type)
@@ -1621,6 +1679,7 @@ impl SemanticAnalyzer {
                     Ok(*inner)
                 } else {
                     Err(SemanticError::with_help(
+                        DiagnosticCode::InvalidOperation,
                         format!(
                             "Cannot dereference type {}, which is not a reference",
                             format_type(&operand_type)
@@ -1636,6 +1695,7 @@ impl SemanticAnalyzer {
                 match operand_type {
                     Type::Primitive(crate::ast::PrimitiveType::Int) => Ok(operand_type),
                     _ => Err(SemanticError::with_help(
+                        DiagnosticCode::InvalidOperation,
                         format!(
                             "Increment/decrement operators require an int operand, found {}",
                             format_type(&operand_type)
@@ -1658,6 +1718,7 @@ impl SemanticAnalyzer {
     ) -> SemanticError {
         let plural = if arity == 1 { "" } else { "s" };
         SemanticError::with_help(
+            DiagnosticCode::WrongArgumentCount,
             format!(
                 "Enum variant '{}.{}' carries a payload and cannot be used on its own",
                 enum_name, variant
@@ -1696,6 +1757,7 @@ impl SemanticAnalyzer {
 
         if arity == 0 {
             return Some(Err(SemanticError::with_help(
+                DiagnosticCode::WrongArgumentCount,
                 format!(
                     "Enum variant '{}.{}' carries no payload and is not called",
                     enum_name, field
@@ -1763,6 +1825,7 @@ impl SemanticAnalyzer {
                 expr_span,
             ),
             _ => Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 "Cannot call non-function type",
                 expr_span,
                 "Only functions can be called with '()'. Ensure the expression before '()' is a function.",
@@ -1820,6 +1883,7 @@ impl SemanticAnalyzer {
             return Ok(());
         }
         Err(SemanticError::with_help(
+            DiagnosticCode::WrongArgumentCount,
             format!(
                 "'{class_name}' is generic, so '{class_name}.{field}()' does not say what it holds"
             ),
@@ -2054,6 +2118,7 @@ impl SemanticAnalyzer {
 
         if actual_default_count > 0 {
             Err(SemanticError::with_help(
+                DiagnosticCode::WrongArgumentCount,
                 format!(
                     "{} expects {} to {} arguments, but {} {} provided",
                     func_name,
@@ -2070,6 +2135,7 @@ impl SemanticAnalyzer {
             ))
         } else {
             Err(SemanticError::with_help(
+                DiagnosticCode::WrongArgumentCount,
                 format!(
                     "{} expects {} argument(s), but {} {} provided",
                     func_name,
@@ -2109,7 +2175,11 @@ impl SemanticAnalyzer {
 
         if let Some(symbol) = symbol {
             let type_ = symbol.type_.clone().ok_or_else(|| {
-                SemanticError::new(format!("Symbol '{}' has no type information", name), span)
+                SemanticError::new(
+                    DiagnosticCode::InvalidOperation,
+                    format!("Symbol '{}' has no type information", name),
+                    span,
+                )
             })?;
             let type_ = match &type_ {
                 Type::Generic(n) if n == name => Type::Variable(name.to_string()),
@@ -2186,6 +2256,7 @@ impl SemanticAnalyzer {
                 return Ok(result_type);
             }
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "Operator '{}' is not supported between types {} and {}",
                     format_binary_op(&base_op),
@@ -2202,6 +2273,7 @@ impl SemanticAnalyzer {
         }
 
         Err(SemanticError::with_help(
+            DiagnosticCode::InvalidOperation,
             format!(
                 "Operator '{}' is not supported between types {} and {}",
                 format_binary_op(op),
@@ -2237,6 +2309,7 @@ impl SemanticAnalyzer {
                 expr: target_expr, ..
             } => self.validate_index_assignment_target(target_expr, right_type, expr_span),
             _ => Err(SemanticError::with_help(
+                DiagnosticCode::CannotAssign,
                 "Cannot assign to this expression",
                 expr_span,
                 "Only variables, fields, dereferences, and indexed expressions can be assigned to",
@@ -2267,6 +2340,7 @@ impl SemanticAnalyzer {
             && *is_const
         {
             return Err(SemanticError::with_help(
+                DiagnosticCode::CannotAssign,
                 format!("Cannot assign to const field '{}'", field),
                 expr_span,
                 "Const fields cannot be modified after initialization. Remove the 'const' modifier from the field declaration if mutation is needed.",
@@ -2289,6 +2363,7 @@ impl SemanticAnalyzer {
 
         if symbol.kind == SymbolKind::Constant {
             return Err(SemanticError::with_help(
+                DiagnosticCode::CannotAssign,
                 format!("Cannot assign to constant '{}'", name),
                 expr_span,
                 "Constants cannot be modified after initialization",
@@ -2297,6 +2372,7 @@ impl SemanticAnalyzer {
 
         let var_type = symbol.type_.as_ref().ok_or_else(|| {
             SemanticError::new(
+                DiagnosticCode::InvalidOperation,
                 format!("Variable '{}' has no type information", name),
                 left_span,
             )
@@ -2344,6 +2420,7 @@ impl SemanticAnalyzer {
                 self.check_type_compatibility(value_type, right_type, expr_span)
             }
             _ => Err(SemanticError::with_help(
+                DiagnosticCode::CannotAssign,
                 format!(
                     "Cannot assign to index on type {}",
                     format_type(&target_type)
@@ -2395,6 +2472,7 @@ impl SemanticAnalyzer {
 
         if symbol.kind == SymbolKind::Constant {
             return Err(SemanticError::with_help(
+                DiagnosticCode::CannotAssign,
                 format!("Cannot modify constant '{}'", name),
                 expr_span,
                 "Constants cannot be modified after initialization. Declare the variable with 'auto' instead of 'const' if you need to change its value.",
@@ -2428,6 +2506,7 @@ impl SemanticAnalyzer {
         if let Some((_field_type, is_const)) = symbol.fields.get(field) {
             if *is_const {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::CannotAssign,
                     format!("Cannot modify const field '{}'", field),
                     expr_span,
                     "Const fields cannot be modified after initialization. Remove the 'const' modifier from the field declaration if mutation is needed.",
@@ -2438,6 +2517,7 @@ impl SemanticAnalyzer {
             self.resolve_binary_operator(left_type, right_type, &base_op)
                 .ok_or_else(|| {
                     SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                         format!(
                             "Operator '{}' is not supported between types {} and {}",
                             format_binary_op(&base_op),
@@ -2479,6 +2559,7 @@ impl SemanticAnalyzer {
     ) -> Result<Type, SemanticError> {
         let module_symbols = self.imported_symbols.get(module_name).ok_or_else(|| {
             SemanticError::with_help(
+                DiagnosticCode::ImportFailure,
                 format!("Module '{}' not found in imports", module_name),
                 span,
                 format!(
@@ -2491,6 +2572,7 @@ impl SemanticAnalyzer {
             let available: Vec<&String> = module_symbols.keys().collect();
             if available.is_empty() {
                 SemanticError::new(
+                    DiagnosticCode::UnknownMember,
                     format!(
                         "Module '{}' has no exported symbol '{}'",
                         module_name, field
@@ -2499,6 +2581,7 @@ impl SemanticAnalyzer {
                 )
             } else {
                 SemanticError::with_help(
+                    DiagnosticCode::UnknownMember,
                     format!(
                         "Module '{}' has no exported symbol '{}'",
                         module_name, field
@@ -2517,6 +2600,7 @@ impl SemanticAnalyzer {
         })?;
         symbol.type_.clone().ok_or_else(|| {
             SemanticError::new(
+                DiagnosticCode::UnknownMember,
                 format!(
                     "Symbol '{}' in module '{}' has no type information",
                     field, module_name
@@ -2556,6 +2640,7 @@ impl SemanticAnalyzer {
             });
         }
         Err(SemanticError::with_help(
+            DiagnosticCode::UnknownMember,
             format!(
                 "Cannot access field '{}' on type {}",
                 field,
@@ -2657,6 +2742,7 @@ impl SemanticAnalyzer {
         let mut temp_unifier = Unifier::new();
         temp_unifier.unify(expected, actual, span).map_err(|_| {
             SemanticError::new(
+                DiagnosticCode::TypeMismatch,
                 format!(
                     "Type mismatch: expected {}, got {}",
                     format_type(expected),
@@ -2762,6 +2848,7 @@ impl SemanticAnalyzer {
             .unify(&interface_sig.return_type, &class_sig.return_type, span)
             .map_err(|e| {
                 SemanticError::with_help(
+                    DiagnosticCode::TypeMismatch,
                     format!(
                         "Return type mismatch in interface implementation: {}",
                         e.message
@@ -2773,6 +2860,7 @@ impl SemanticAnalyzer {
         // Unify params
         if interface_sig.params.len() != class_sig.params.len() {
             return Err(SemanticError::with_help(
+                DiagnosticCode::TypeMismatch,
                 format!(
                     "Parameter count mismatch: interface expects {} parameter{}, class provides {}",
                     interface_sig.params.len(),
@@ -2795,6 +2883,7 @@ impl SemanticAnalyzer {
         {
             unifier.unify(int_param, class_param, span).map_err(|e| {
                 SemanticError::with_help(
+                    DiagnosticCode::TypeMismatch,
                     format!(
                         "Parameter {} type mismatch in interface implementation: {}",
                         i, e.message
@@ -2823,6 +2912,7 @@ impl SemanticAnalyzer {
             .ok_or_else(|| self.undefined_symbol_error("type", name, span))?;
         if symbol.kind != SymbolKind::Class {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!("'{}' is not a class", name),
                 span,
                 format!(
@@ -2847,6 +2937,7 @@ impl SemanticAnalyzer {
             .collect::<Result<Vec<_>, _>>()?;
         if resolved_args.len() != symbol.type_params.len() {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidTypeArguments,
                 format!(
                     "Expected {} type argument(s) for '{}', got {}",
                     symbol.type_params.len(),
@@ -2869,6 +2960,7 @@ impl SemanticAnalyzer {
             ));
         }
         let new_sig = symbol.methods.get("new").ok_or_else(|| SemanticError::with_help(
+                DiagnosticCode::UnknownMember,
             format!("Class '{}' has no constructor", name),
             span,
             format!(

@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Default value type mismatch for field 'count': expected int, got string
+error: 1 error found
+
+error[E0302]: Default value type mismatch for field 'count': expected int, got string
 --> test_scripts/error_cases/field_default_type_mismatch.mux:6:17
    |
  6 |     int count = "not a number"

@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Undefined variable 'TcpListener'
+error: 1 error found
+
+error[E0300]: Undefined variable 'TcpListener'
 --> test_scripts/error_cases/namespace_import_bare_class.mux:16:11
    |
 16 |     match TcpListener.bind("127.0.0.1:PORT") {

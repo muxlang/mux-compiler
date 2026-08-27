@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Enum variant 'Color.Red' carries no payload and is not called
+error: 1 error found
+
+error[E0303]: Enum variant 'Color.Red' carries no payload and is not called
 --> test_scripts/error_cases/semantic_enum_variant_called.mux:4:10
    |
  4 | auto a = Color.Red()

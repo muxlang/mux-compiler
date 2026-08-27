@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Function 'main' must return void, not 'int'
+error: 1 error found
+
+error[E0304]: Function 'main' must return void, not 'int'
 --> test_scripts/error_cases/semantic_main_returns_value.mux:2:21
    |
  2 | func main() returns int {

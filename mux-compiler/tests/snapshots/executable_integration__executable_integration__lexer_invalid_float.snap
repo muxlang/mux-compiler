@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Invalid float literal: 1.2.3
+error: 1 error found
+
+error[E0104]: Invalid float literal: 1.2.3
 --> test_scripts/error_cases/lexer_invalid_float.mux:2:10
    |
  2 | auto x = 1.2.3

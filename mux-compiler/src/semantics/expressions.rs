@@ -5,6 +5,7 @@ use crate::ast::{
     ExpressionKind, ExpressionNode, LiteralNode, Param, PrimitiveType, StatementKind,
     StatementNode, TypeNode, UnaryOp,
 };
+use crate::diagnostic::DiagnosticCode;
 use crate::lexer::Span;
 use crate::semantics::std_registry::std_module_registry;
 use std::collections::HashMap;
@@ -117,6 +118,7 @@ impl SemanticAnalyzer {
                 )
             };
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!("'{}' is a type, not a value", name),
                 expr.span,
                 help,
@@ -131,6 +133,7 @@ impl SemanticAnalyzer {
             // spelling that is not in scope.
             if let Some(namespace) = self.stdlib_namespace_holding_class(name) {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::UndefinedName,
                     format!("Undefined variable '{}'", name),
                     expr.span,
                     format!(
@@ -145,6 +148,7 @@ impl SemanticAnalyzer {
                 && let Some(help) = collection_new_hint(name)
             {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::UndefinedName,
                     format!("Undefined variable '{}'", name),
                     expr.span,
                     help,
@@ -238,6 +242,7 @@ impl SemanticAnalyzer {
     fn analyze_self_identifier(&self, expr: &ExpressionNode) -> Result<(), SemanticError> {
         if self.is_in_static_method {
             return Err(SemanticError::with_help(
+                DiagnosticCode::UnknownMember,
                 "Cannot use 'self' in a common method",
                 expr.span,
                 "Common (static) methods do not have access to 'self'. Remove the 'common' modifier or access the class through a parameter instead.",
@@ -245,6 +250,7 @@ impl SemanticAnalyzer {
         }
         if self.current_self_type.is_none() {
             return Err(SemanticError::with_help(
+                DiagnosticCode::UnknownMember,
                 "Cannot use 'self' outside of a method",
                 expr.span,
                 "'self' is only available inside instance methods of a class",
@@ -304,6 +310,7 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         if !matches!(operand_type, Type::Primitive(PrimitiveType::Bool)) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "Logical 'not' operator requires a boolean operand, found {}",
                     format_type(operand_type)
@@ -325,6 +332,7 @@ impl SemanticAnalyzer {
             Type::Primitive(PrimitiveType::Int) | Type::Primitive(PrimitiveType::Float)
         ) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "Negation operator '-' requires a numeric operand, found {}",
                     format_type(operand_type)
@@ -343,6 +351,7 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         if !matches!(operand_type, Type::Primitive(PrimitiveType::Int)) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "Increment/decrement operators require an int operand, found {}",
                     format_type(operand_type)
@@ -364,6 +373,7 @@ impl SemanticAnalyzer {
             && symbol.kind == SymbolKind::Constant
         {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!("Cannot modify constant '{}'", name),
                 op_span,
                 "Constants cannot be modified after initialization",
@@ -382,6 +392,7 @@ impl SemanticAnalyzer {
                 && *is_const
             {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::UnknownMember,
                     format!("Cannot modify const field '{}'", field),
                     op_span,
                     "Const fields cannot be modified after initialization. Remove the 'const' modifier from the field declaration if mutation is needed.",
@@ -432,6 +443,7 @@ impl SemanticAnalyzer {
                 ),
             };
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!("'{}' is a type and cannot be called", name),
                 func.span,
                 help,
@@ -470,6 +482,7 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         if args.len() != 1 {
             return Err(SemanticError::with_help(
+                DiagnosticCode::WrongArgumentCount,
                 format!("Some() takes exactly 1 argument, got {}", args.len()),
                 expr.span,
                 "Wrap a single value in Some(), e.g. Some(42)",
@@ -478,6 +491,7 @@ impl SemanticAnalyzer {
         let arg_type = self.get_expression_type(&args[0])?;
         if let Type::Optional(_) = arg_type {
             return Err(SemanticError::with_help(
+                DiagnosticCode::WrongArgumentCount,
                 "Some() cannot wrap an Optional value",
                 expr.span,
                 "The argument to Some() must not be Optional. Remove the nested Some() or unwrap the inner value first.",
@@ -500,6 +514,7 @@ impl SemanticAnalyzer {
             Type::List(_) => {
                 if !matches!(index_type, Type::Primitive(PrimitiveType::Int)) {
                     return Err(SemanticError::with_help(
+                        DiagnosticCode::InvalidOperation,
                         format!(
                             "List index must be an integer, found {}",
                             format_type(&index_type)
@@ -512,6 +527,7 @@ impl SemanticAnalyzer {
             Type::Map(expected_key_type, _) => {
                 if index_type != **expected_key_type {
                     return Err(SemanticError::with_help(
+                        DiagnosticCode::TypeMismatch,
                         format!(
                             "Map key type mismatch: expected {}, found {}",
                             format_type(expected_key_type),
@@ -530,6 +546,7 @@ impl SemanticAnalyzer {
             Type::Primitive(PrimitiveType::Str) => {
                 if !matches!(index_type, Type::Primitive(PrimitiveType::Int)) {
                     return Err(SemanticError::with_help(
+                        DiagnosticCode::InvalidOperation,
                         format!(
                             "String index must be an integer, found {}",
                             format_type(&index_type)
@@ -540,6 +557,7 @@ impl SemanticAnalyzer {
                 }
                 if is_assignment_target {
                     return Err(SemanticError::with_help(
+                        DiagnosticCode::CannotAssign,
                         "Cannot assign to a character of a string",
                         expr.span,
                         "Strings are immutable. Build a new one, e.g. with substring and '+'.",
@@ -548,6 +566,7 @@ impl SemanticAnalyzer {
             }
             Type::EmptyMap => {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
                     "Cannot index empty map",
                     expr.span,
                     "The map type is unknown. Provide type annotations or add entries to the map literal.",
@@ -555,6 +574,7 @@ impl SemanticAnalyzer {
             }
             _ => {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
                     "Cannot index non-list type",
                     expr.span,
                     "Only lists, maps and strings can be indexed with '[]'. Examples: my_list[0], my_map['key'], text[0]",
@@ -584,6 +604,7 @@ impl SemanticAnalyzer {
             Type::List(_) | Type::Primitive(PrimitiveType::Str)
         ) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!("Cannot slice type {}", format_type(&target_type)),
                 expr.span,
                 "Only lists and strings can be sliced. Examples: items[1:3], text[:4]",
@@ -595,6 +616,7 @@ impl SemanticAnalyzer {
             let bound_type = self.get_expression_type(bound)?;
             if !matches!(bound_type, Type::Primitive(PrimitiveType::Int)) {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
                     format!(
                         "Slice bound must be an integer, found {}",
                         format_type(&bound_type)
@@ -620,6 +642,7 @@ impl SemanticAnalyzer {
                 let elem_type = self.get_expression_type(elem)?;
                 if elem_type != first_type {
                     return Err(SemanticError::with_help(
+                        DiagnosticCode::TypeMismatch,
                         format!(
                             "List element type mismatch: expected {}, found {}",
                             format_type(&first_type),
@@ -663,6 +686,7 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         if !self.is_hashable_type(key_type) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "Map keys must be a hashable type, found '{}'",
                     format_type(key_type)
@@ -721,6 +745,7 @@ impl SemanticAnalyzer {
         let v_type = self.get_expression_type(value)?;
         if k_type != *expected_key {
             return Err(SemanticError::with_help(
+                DiagnosticCode::TypeMismatch,
                 format!(
                     "Map key type mismatch: expected {}, found {}",
                     format_type(expected_key),
@@ -732,6 +757,7 @@ impl SemanticAnalyzer {
         }
         if v_type != *expected_value {
             return Err(SemanticError::with_help(
+                DiagnosticCode::TypeMismatch,
                 format!(
                     "Map value type mismatch: expected {}, found {}",
                     format_type(expected_value),
@@ -757,6 +783,7 @@ impl SemanticAnalyzer {
                 let elem_type = self.get_expression_type(elem)?;
                 if elem_type != first_type {
                     return Err(SemanticError::with_help(
+                        DiagnosticCode::TypeMismatch,
                         format!(
                             "Set element type mismatch: expected {}, found {}",
                             format_type(&first_type),
@@ -778,6 +805,7 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         if elements.len() != 2 {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "Tuple must have exactly 2 elements, found {}",
                     elements.len()
@@ -804,6 +832,7 @@ impl SemanticAnalyzer {
         let cond_type = self.get_expression_type(cond)?;
         if !matches!(cond_type, Type::Primitive(PrimitiveType::Bool)) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "If condition must be boolean, found {}",
                     format_type(&cond_type)
@@ -906,7 +935,12 @@ impl SemanticAnalyzer {
                         .to_string(),
                 )
             };
-            return Err(SemanticError::with_help(msg, expr.span, help));
+            return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
+                msg,
+                expr.span,
+                help,
+            ));
         }
         if let Some(last_stmt) = body.last()
             && let StatementKind::Return(Some(ret_expr)) = &last_stmt.kind
@@ -930,6 +964,7 @@ impl SemanticAnalyzer {
             && let Some(help) = collection_new_hint(name)
         {
             return Err(SemanticError::with_help(
+                DiagnosticCode::UndefinedName,
                 format!("Undefined type '{}'", name),
                 expr.span,
                 help,
@@ -956,6 +991,7 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         if type_args.len() != 2 {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidTypeArguments,
                 format!(
                     "Tuple type requires exactly 2 type arguments, got {}",
                     type_args.len()
@@ -980,6 +1016,7 @@ impl SemanticAnalyzer {
                 LiteralNode::Char(_) => Ok(Type::Primitive(PrimitiveType::Char)),
             },
             _ => Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 "Expected a literal expression",
                 expr.span,
                 "Only literal values (integers, floats, strings, booleans, chars) are allowed here",

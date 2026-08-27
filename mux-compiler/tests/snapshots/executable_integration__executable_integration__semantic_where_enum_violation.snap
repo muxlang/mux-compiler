@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: arguments to 'Status.Code' violate its where constraint
+error: 1 error found
+
+error[E0303]: arguments to 'Status.Code' violate its where constraint
 --> test_scripts/error_cases/semantic_where_enum_violation.mux:9:12
    |
  9 | auto bad = Status.Code(9999)

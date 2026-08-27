@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Unknown escape sequence: \z
+error: 1 error found
+
+error[E0102]: Unknown escape sequence: \z
 --> test_scripts/error_cases/lexer_unknown_escape.mux:2:12
    |
  2 | auto = "hi\z"

@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 'from_json' is reserved for building an instance from a JSON object and cannot be defined as a class method
+error: 1 error found
+
+error[E0200]: 'from_json' is reserved for building an instance from a JSON object and cannot be defined as a class method
 --> test_scripts/error_cases/reserved_deserializer_method.mux:11:10
    |
 11 |     func from_json(string text) returns int {

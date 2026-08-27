@@ -1,10 +1,14 @@
 //! Diagnostic emitter for formatted error output.
 
-use super::{ColorConfig, Diagnostic, Files, LabelStyle, Level, Styles};
+use super::{
+    ColorConfig, Diagnostic, DiagnosticCode, Files, LabelStyle, Level, MAX_DIAGNOSTICS, Styles,
+};
 use crate::lexer::Span;
 use anstream::eprintln;
 use std::cmp::{max, min};
 
+/// Keep noisy recovery output useful without hiding the fact that more
+/// diagnostics existed.
 /// Trait for emitting diagnostics to output.
 pub trait DiagnosticEmitter {
     fn emit(&self, diagnostic: &Diagnostic, files: &Files);
@@ -107,11 +111,14 @@ impl StandardEmitter {
         let level_str = match diagnostic.level {
             Level::Error => self.styles.error("error"),
             Level::Warning => self.styles.warning("warning"),
-            Level::Note => self.styles.note("note"),
-            Level::Help => self.styles.help("help"),
         };
 
-        eprintln!("{}: {}", level_str, self.styles.bold(&diagnostic.message));
+        eprintln!(
+            "{}[{}]: {}",
+            level_str,
+            diagnostic.code,
+            self.styles.bold(&diagnostic.message)
+        );
     }
 
     fn label_line_range(&self, diagnostic: &Diagnostic) -> (usize, usize) {
@@ -209,6 +216,29 @@ impl StandardEmitter {
             );
         }
     }
+
+    fn emit_invalid_provenance(&self, reason: &str) {
+        let diagnostic = Diagnostic::new(DiagnosticCode::InternalCompiler).with_message(format!(
+            "internal compiler error while rendering a diagnostic: {reason}"
+        ));
+        self.emit_header(&diagnostic);
+        eprintln!(
+            "{} {}",
+            self.styles.line_number("="),
+            self.styles
+                .help("help: please report this compiler error to the Mux maintainers")
+        );
+        eprintln!();
+    }
+
+    fn ordered_diagnostics<'a>(
+        diagnostics: &'a [Diagnostic],
+        files: &Files,
+    ) -> Vec<&'a Diagnostic> {
+        let mut ordered: Vec<&Diagnostic> = diagnostics.iter().collect();
+        ordered.sort_by_key(|diagnostic| super::sort_key(diagnostic, files));
+        ordered
+    }
 }
 
 impl Default for StandardEmitter {
@@ -219,8 +249,14 @@ impl Default for StandardEmitter {
 
 impl DiagnosticEmitter for StandardEmitter {
     fn emit(&self, diagnostic: &Diagnostic, files: &Files) {
-        let file_id = diagnostic.file_id.expect("Diagnostic must have a file_id");
-        let file_info = files.get(file_id).expect("FileId must exist in Files");
+        let Some(file_id) = diagnostic.file_id else {
+            self.emit_invalid_provenance("diagnostic has no source file");
+            return;
+        };
+        let Some(file_info) = files.get(file_id) else {
+            self.emit_invalid_provenance("diagnostic refers to an unknown source file");
+            return;
+        };
         let file_path = file_info.path.to_string_lossy();
         let source = &file_info.source;
 
@@ -228,42 +264,102 @@ impl DiagnosticEmitter for StandardEmitter {
     }
 
     fn emit_batch(&self, diagnostics: &[Diagnostic], files: &Files) {
-        // Group diagnostics by file
-        use std::collections::HashMap;
-        let mut by_file: HashMap<String, Vec<&Diagnostic>> = HashMap::new();
+        let ordered = Self::ordered_diagnostics(diagnostics, files);
 
-        for diagnostic in diagnostics {
-            if let Some(file_id) = diagnostic.file_id
-                && let Some(file_info) = files.get(file_id)
-            {
-                let file = file_info.path.to_string_lossy().to_string();
-                by_file.entry(file).or_default().push(diagnostic);
-            }
-        }
+        let error_count = ordered.iter().filter(|d| d.level == Level::Error).count();
+        let warning_count = ordered.iter().filter(|d| d.level == Level::Warning).count();
 
-        // Count total errors
-        let error_count = diagnostics
-            .iter()
-            .filter(|d| d.level == Level::Error)
-            .count();
-
-        if error_count > 1 {
+        if error_count > 0 {
             eprintln!(
-                "{}: {} errors found\n",
+                "{}: {} error{} found\n",
                 self.styles.error("error"),
-                error_count
+                error_count,
+                if error_count == 1 { "" } else { "s" }
+            );
+        }
+        if warning_count > 0 {
+            eprintln!(
+                "{}: {} warning{}\n",
+                self.styles.warning("warning"),
+                warning_count,
+                if warning_count == 1 { "" } else { "s" }
             );
         }
 
-        // Emit diagnostics grouped by file
-        for (file_path, file_diagnostics) in by_file {
-            for diagnostic in file_diagnostics {
-                if let Some(file_id) = diagnostic.file_id
-                    && let Some(file_info) = files.get(file_id)
-                {
-                    self.emit_single(diagnostic, &file_info.source, &file_path);
-                }
-            }
+        for diagnostic in ordered.iter().take(MAX_DIAGNOSTICS) {
+            let Some(file_id) = diagnostic.file_id else {
+                self.emit_invalid_provenance("diagnostic has no source file");
+                continue;
+            };
+            let Some(file_info) = files.get(file_id) else {
+                self.emit_invalid_provenance("diagnostic refers to an unknown source file");
+                continue;
+            };
+            let file_path = file_info.path.to_string_lossy();
+            self.emit_single(diagnostic, &file_info.source, &file_path);
         }
+
+        if ordered.len() > MAX_DIAGNOSTICS {
+            eprintln!(
+                "{}: output truncated; {} additional diagnostics omitted (maximum is {})",
+                self.styles.warning("warning"),
+                ordered.len() - MAX_DIAGNOSTICS,
+                MAX_DIAGNOSTICS
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DiagnosticEmitter, MAX_DIAGNOSTICS, StandardEmitter};
+    use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, Label};
+    use crate::lexer::Span;
+
+    fn diagnostic(
+        code: DiagnosticCode,
+        file_id: crate::diagnostic::FileId,
+        row: usize,
+    ) -> Diagnostic {
+        Diagnostic::new(code)
+            .with_label(Label::primary(Span::new(row, 1), ""))
+            .with_file_id(file_id)
+    }
+
+    #[test]
+    fn batch_order_is_stable_across_input_order() {
+        let mut files = Files::new();
+        let b = files.add("b.mux", "x\n".to_owned());
+        let a = files.add("a.mux", "x\n".to_owned());
+        let diagnostics = vec![
+            diagnostic(DiagnosticCode::ImportFailure, b, 1),
+            diagnostic(DiagnosticCode::UnusedBinding, a, 1),
+            diagnostic(DiagnosticCode::UndefinedName, a, 1),
+        ];
+
+        let ordered = StandardEmitter::ordered_diagnostics(&diagnostics, &files);
+        let codes: Vec<_> = ordered.iter().map(|diagnostic| diagnostic.code).collect();
+        assert_eq!(
+            codes,
+            vec![
+                DiagnosticCode::UndefinedName,
+                DiagnosticCode::UnusedBinding,
+                DiagnosticCode::ImportFailure,
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_limit_is_explicit_and_bounded() {
+        assert_eq!(MAX_DIAGNOSTICS, 100);
+    }
+
+    #[test]
+    fn invalid_provenance_emits_a_controlled_internal_error() {
+        let emitter = StandardEmitter::new(super::ColorConfig::Auto);
+        let files = Files::new();
+        let diagnostic = Diagnostic::new(DiagnosticCode::UndefinedName);
+
+        assert!(std::panic::catch_unwind(|| emitter.emit(&diagnostic, &files)).is_ok());
     }
 }

@@ -1,7 +1,7 @@
 mod ast;
 mod build_config;
 mod codegen;
-mod diagnostic;
+pub mod diagnostic;
 mod embedded_std {
     include!(concat!(env!("OUT_DIR"), "/embedded_std.rs"));
 }
@@ -14,8 +14,12 @@ mod spinner;
 
 use anstream::{eprintln, println, stdout};
 use anstyle::AnsiColor;
-use clap::{Parser as ClapParser, Subcommand};
-use diagnostic::{ColorConfig, DiagnosticEmitter, FileId, Files, StandardEmitter, ToDiagnostic};
+use clap::{Parser as ClapParser, Subcommand, ValueEnum};
+use diagnostic::{
+    ColorConfig, Diagnostic, DiagnosticCode, DiagnosticEmitter, FileId, Files, MAX_DIAGNOSTICS,
+    StandardEmitter, ToDiagnostic,
+    fix::{self, RecoveryIntervals},
+};
 use module_resolver::ModuleResolver;
 use source::Source;
 use std::cell::RefCell;
@@ -36,12 +40,25 @@ const HELP_STYLES: clap::builder::styling::Styles = clap::builder::styling::Styl
     .literal(AnsiColor::Cyan.on_default().bold())
     .placeholder(AnsiColor::Cyan.on_default());
 
-fn emit_diagnostics<E: ToDiagnostic>(files: &Files, file_id: FileId, errors: &[E]) {
+fn emit_diagnostics<E: ToDiagnostic>(
+    files: &Files,
+    file_id: FileId,
+    errors: &[E],
+    deny_warnings: bool,
+) -> bool {
+    let diagnostics: Vec<_> = errors.iter().map(|e| e.to_diagnostic(file_id)).collect();
+    emit_diagnostic_batch(files, &diagnostics, deny_warnings)
+}
+
+fn emit_diagnostic_batch(files: &Files, diagnostics: &[Diagnostic], deny_warnings: bool) -> bool {
     // Clear any in-progress spinner line before printing diagnostics.
     spinner::stop();
     let emitter = StandardEmitter::new(ColorConfig::Auto);
-    let diagnostics: Vec<_> = errors.iter().map(|e| e.to_diagnostic(file_id)).collect();
-    emitter.emit_batch(&diagnostics, files);
+    emitter.emit_batch(diagnostics, files);
+    diagnostics.iter().any(|diagnostic| {
+        diagnostic.level == diagnostic::Level::Error
+            || (deny_warnings && diagnostic.level == diagnostic::Level::Warning)
+    })
 }
 
 /// Mux compiler CLI
@@ -57,6 +74,10 @@ struct Cli {
     /// Emit intermediate LLVM IR (.ll)
     #[arg(short, long)]
     intermediate: bool,
+
+    /// Treat warnings as compilation failures while preserving their codes.
+    #[arg(long, global = true)]
+    deny_warnings: bool,
 
     /// The command to run
     #[command(subcommand)]
@@ -91,6 +112,27 @@ enum Commands {
     },
     /// Print the Mux version
     Version {},
+    /// Explain a compiler diagnostic code
+    Explain {
+        /// A code such as E0302 or W0300
+        code: String,
+    },
+    /// Apply proven machine-applicable compiler fixes
+    Fix {
+        file: PathBuf,
+        /// Show the proposed diff without changing files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Select human-readable or machine-readable output.
+        #[arg(long, value_enum, default_value_t = FixOutputFormat::Text)]
+        format: FixOutputFormat,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum FixOutputFormat {
+    Text,
+    Json,
 }
 
 fn find_linker_command() -> Option<String> {
@@ -760,7 +802,7 @@ fn banner_settled_frame(combined: &[Vec<char>], settled: &anstyle::Style) -> Str
     buf
 }
 
-fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool) {
+fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
     let cli = Cli::parse();
     match &cli.command {
         Commands::Version {} => {
@@ -771,21 +813,606 @@ fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool) {
             run_doctor(*dev);
             process::exit(0);
         }
+        Commands::Explain { code } => {
+            explain_diagnostic(code);
+            process::exit(0);
+        }
+        Commands::Fix {
+            file,
+            dry_run,
+            format,
+        } => {
+            let status = run_fix_command(file, *dry_run, *format, cli.deny_warnings);
+            process::exit(status);
+        }
         Commands::Build {
             file,
             output,
             intermediate,
-        } => (file.clone(), false, output.clone(), *intermediate),
+        } => (
+            file.clone(),
+            false,
+            output.clone(),
+            *intermediate,
+            cli.deny_warnings,
+        ),
         Commands::Run {
             file,
             output,
             intermediate,
-        } => (file.clone(), true, output.clone(), *intermediate),
+        } => (
+            file.clone(),
+            true,
+            output.clone(),
+            *intermediate,
+            cli.deny_warnings,
+        ),
         Commands::Format { file } => {
             eprintln!("formatting is not yet implemented for {}", file.display());
             process::exit(1);
         }
     }
+}
+
+fn fix_json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_control() => {
+                escaped.push_str(&format!("\\u{:04x}", character as u32));
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn print_fix_json(
+    status: &str,
+    dry_run: bool,
+    diagnostics: &[Diagnostic],
+    edits: &[diagnostic::TextEdit],
+    changed_files: &[FileId],
+    files: &Files,
+    error: Option<&str>,
+) {
+    print_fix_json_with_truncation(
+        status,
+        dry_run,
+        diagnostics,
+        edits,
+        changed_files,
+        files,
+        FixJsonMeta {
+            error,
+            truncated_count: 0,
+        },
+    );
+}
+
+struct FixJsonMeta<'a> {
+    error: Option<&'a str>,
+    truncated_count: usize,
+}
+
+fn print_fix_json_with_truncation(
+    status: &str,
+    dry_run: bool,
+    diagnostics: &[Diagnostic],
+    edits: &[diagnostic::TextEdit],
+    changed_files: &[FileId],
+    files: &Files,
+    meta: FixJsonMeta<'_>,
+) {
+    let diagnostics = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let level = match diagnostic.level {
+                diagnostic::Level::Error => "error",
+                diagnostic::Level::Warning => "warning",
+            };
+            let file = diagnostic
+                .file_id
+                .and_then(|file_id| files.path(file_id))
+                .map_or_else(String::new, |path| path.display().to_string());
+            format!(
+                "{{\"code\":\"{}\",\"level\":\"{}\",\"file\":\"{}\",\"message\":\"{}\"}}",
+                diagnostic.code,
+                level,
+                fix_json_escape(&file),
+                fix_json_escape(&diagnostic.message)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let edits = edits
+        .iter()
+        .map(|edit| {
+            let path = files
+                .path(edit.file_id)
+                .map_or_else(String::new, |path| path.display().to_string());
+            format!(
+                "{{\"code\":\"{}\",\"file\":\"{}\",\"start_byte\":{},\"end_byte\":{},\"replacement\":\"{}\",\"applicability\":\"{}\",\"solution_id\":{}}}",
+                edit.diagnostic_code,
+                fix_json_escape(&path),
+                edit.range.start_byte,
+                edit.range.end_byte,
+                fix_json_escape(&edit.replacement),
+                edit.applicability.as_str(),
+                edit.solution_id
+                    .map_or_else(|| "null".to_string(), |id| id.to_string())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let changed_files = changed_files
+        .iter()
+        .filter_map(|file_id| files.path(*file_id))
+        .map(|path| format!("\"{}\"", fix_json_escape(&path.display().to_string())))
+        .collect::<Vec<_>>()
+        .join(",");
+    let error = meta.error.map_or_else(
+        || "null".to_string(),
+        |error| format!("\"{}\"", fix_json_escape(error)),
+    );
+    println!(
+        "{{\"status\":\"{}\",\"dry_run\":{},\"diagnostics\":[{}],\"edits\":[{}],\"changed_files\":[{}],\"truncated_count\":{},\"error\":{}}}",
+        status, dry_run, diagnostics, edits, changed_files, meta.truncated_count, error
+    );
+}
+
+fn sort_fix_diagnostics(diagnostics: &mut [Diagnostic], files: &Files) {
+    diagnostics.sort_by_key(|diagnostic| diagnostic::sort_key(diagnostic, files));
+}
+
+fn diagnostic_touches_recovery(
+    diagnostic: &Diagnostic,
+    files: &Files,
+    recovery: &RecoveryIntervals,
+) -> bool {
+    let Some(file_id) = diagnostic.file_id else {
+        return false;
+    };
+    let Some(source) = files.source(file_id) else {
+        return false;
+    };
+    diagnostic.labels.iter().any(|label| {
+        fix::source_range_for_span(source, label.span)
+            .is_ok_and(|range| recovery.touches(file_id, range))
+    })
+}
+
+fn materialize_span_edits(
+    diagnostics: &[Diagnostic],
+    files: &Files,
+) -> Result<Vec<diagnostic::TextEdit>, String> {
+    let mut edits = Vec::new();
+    for diagnostic in diagnostics {
+        for edit in &diagnostic.span_edits {
+            if !matches!(
+                edit.applicability,
+                diagnostic::Applicability::MachineApplicable
+            ) {
+                continue;
+            }
+            let target_file = edit.target_file.or(diagnostic.file_id).ok_or_else(|| {
+                format!(
+                    "{} supplied an edit without an originating file",
+                    diagnostic.code
+                )
+            })?;
+            let target_source = files.source(target_file).ok_or_else(|| {
+                format!(
+                    "{} supplied an edit for an unknown target file",
+                    diagnostic.code
+                )
+            })?;
+            let target = fix::source_range_for_span(target_source, edit.target)
+                .map_err(|error| format!("{}: {error}", diagnostic.code))?;
+            let replacement = match &edit.replacement {
+                diagnostic::EditReplacement::Text(text) => text.clone(),
+                diagnostic::EditReplacement::Source(source_span) => {
+                    let replacement_file = edit.replacement_file.unwrap_or(target_file);
+                    let replacement_source = files.source(replacement_file).ok_or_else(|| {
+                        format!(
+                            "{} supplied an unknown source replacement file",
+                            diagnostic.code
+                        )
+                    })?;
+                    let source_range = fix::source_range_for_span(replacement_source, *source_span)
+                        .map_err(|error| format!("{}: {error}", diagnostic.code))?;
+                    replacement_source
+                        .get(source_range.start_byte..source_range.end_byte)
+                        .ok_or_else(|| {
+                            format!(
+                                "{} supplied a source replacement outside the file",
+                                diagnostic.code
+                            )
+                        })?
+                        .to_string()
+                }
+            };
+            edits.push(
+                diagnostic::TextEdit::machine_applicable(
+                    target_file,
+                    target,
+                    replacement,
+                    edit.diagnostic_code,
+                )
+                .with_solution(edit.solution_id),
+            );
+        }
+    }
+    Ok(edits)
+}
+
+fn validate_staged_sources(
+    root_path: &Path,
+    root_file_id: FileId,
+    files: &Files,
+    updates: &std::collections::BTreeMap<FileId, String>,
+) -> Result<(), String> {
+    let mut staged_files = Files::new();
+    let mut source_by_path = std::collections::HashMap::new();
+    for (file_id, path, source) in files.iter() {
+        let staged_source = updates.get(&file_id).map_or(source, String::as_str);
+        staged_files.add(path, staged_source.to_string());
+        if !path.to_string_lossy().starts_with("<embedded>/")
+            && let Ok(canonical) = fs::canonicalize(path)
+        {
+            source_by_path.insert(canonical, staged_source.to_string());
+        }
+    }
+
+    let root_source = updates
+        .get(&root_file_id)
+        .map(String::as_str)
+        .or_else(|| files.source(root_file_id))
+        .ok_or_else(|| format!("root file {} is not registered", root_path.display()))?;
+
+    let mut source = Source::from_string(root_source.to_string());
+    let mut lexer = lexer::Lexer::new(&mut source);
+    let tokens = lexer.lex_all().map_err(|error| error.message.to_string())?;
+    let mut parser = parser::Parser::new(&tokens);
+    let nodes = parser.parse().map_err(|(_, errors)| {
+        errors
+            .into_iter()
+            .map(|error| error.message)
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
+
+    let base_path = root_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let resolver = Rc::new(RefCell::new(ModuleResolver::new(base_path)));
+    let mut resolver_state = resolver.borrow_mut();
+    resolver_state.set_source_overrides(source_by_path);
+    resolver_state.set_emit_diagnostics(false);
+    drop(resolver_state);
+    let mut analyzer = semantics::SemanticAnalyzer::new_with_resolver(resolver);
+    if let Some(staged_root_id) = staged_files.id_for_path(root_path) {
+        analyzer.set_current_file_id(staged_root_id);
+    }
+    let errors = analyzer.analyze(&nodes, Some(&mut staged_files));
+    let imported_errors = analyzer.take_imported_errors();
+    let blocking = errors
+        .iter()
+        .chain(imported_errors.iter())
+        .filter(|error| error.code.level() == diagnostic::Level::Error)
+        .collect::<Vec<_>>();
+    if blocking.is_empty() {
+        Ok(())
+    } else {
+        let messages = blocking
+            .iter()
+            .map(|error| error.message.clone())
+            .collect::<Vec<_>>();
+        Err(messages.join("; "))
+    }
+}
+
+fn parse_fix_source(
+    source: &str,
+    file_id: FileId,
+) -> Result<(Vec<ast::AstNode>, RecoveryIntervals, Vec<Diagnostic>), Vec<Diagnostic>> {
+    let mut source_cursor = Source::from_string(source.to_string());
+    let mut lexer = lexer::Lexer::new(&mut source_cursor);
+    let tokens = lexer
+        .lex_all()
+        .map_err(|error| vec![error.to_diagnostic(file_id)])?;
+
+    let mut parser = parser::Parser::new(&tokens);
+    match parser.parse() {
+        Ok(nodes) => Ok((nodes, RecoveryIntervals::new(), Vec::new())),
+        Err((partial_nodes, errors)) => {
+            let mut recovery = RecoveryIntervals::new();
+            let diagnostics = errors
+                .into_iter()
+                .map(|error| {
+                    if let Ok(range) = fix::source_range_for_span(source, error.span) {
+                        recovery.add(file_id, range);
+                    }
+                    error.to_diagnostic(file_id)
+                })
+                .collect();
+            for span in parser.recovery_spans() {
+                if let Ok(range) = fix::source_range_for_span(source, *span) {
+                    recovery.add(file_id, range);
+                }
+            }
+            Ok((partial_nodes, recovery, diagnostics))
+        }
+    }
+}
+
+fn analyze_fix_source(
+    file_path: &Path,
+    source: &str,
+    file_id: FileId,
+    files: &mut Files,
+) -> Result<(RecoveryIntervals, Vec<Diagnostic>), Vec<Diagnostic>> {
+    let (nodes, mut recovery, mut diagnostics) = parse_fix_source(source, file_id)?;
+    let base_path = file_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let resolver = Rc::new(RefCell::new(ModuleResolver::new(base_path)));
+    resolver.borrow_mut().set_emit_diagnostics(false);
+    let mut analyzer = semantics::SemanticAnalyzer::new_with_resolver(resolver.clone());
+    analyzer.set_current_file_id(file_id);
+    let errors = analyzer.analyze(&nodes, Some(files));
+    let imported_errors = analyzer.take_imported_errors();
+    let (module_diagnostics, module_recovery) = {
+        let mut resolver = resolver.borrow_mut();
+        (
+            resolver.take_diagnostics(),
+            resolver.take_recovery_intervals(),
+        )
+    };
+    recovery.extend(module_recovery);
+    diagnostics.extend(module_diagnostics);
+    diagnostics.extend(
+        errors
+            .iter()
+            .map(|error| error.to_diagnostic(file_id))
+            .chain(
+                imported_errors
+                    .iter()
+                    .map(|error| error.to_diagnostic(file_id)),
+            )
+            .filter(|diagnostic| !diagnostic_touches_recovery(diagnostic, files, &recovery)),
+    );
+    Ok((recovery, diagnostics))
+}
+
+fn run_fix_command(
+    file_path: &Path,
+    dry_run: bool,
+    format: FixOutputFormat,
+    deny_warnings: bool,
+) -> i32 {
+    if !file_path.to_string_lossy().ends_with(".mux") {
+        report_fix_error(
+            format,
+            dry_run,
+            &[],
+            &[],
+            &Files::new(),
+            "Input file must have a .mux extension.",
+        );
+        return 1;
+    }
+
+    let source = match fs::read_to_string(file_path) {
+        Ok(source) => source,
+        Err(error) => {
+            let message = format!("Error opening file: {error}");
+            report_fix_error(format, dry_run, &[], &[], &Files::new(), &message);
+            return 1;
+        }
+    };
+
+    let mut files = Files::new();
+    let file_id = files.add(file_path, source.clone());
+    let (recovery, mut diagnostics) =
+        match analyze_fix_source(file_path, &source, file_id, &mut files) {
+            Ok(result) => result,
+            Err(diagnostics) => {
+                emit_fix_diagnostics(format, &diagnostics, &files, 0);
+                return 1;
+            }
+        };
+    sort_fix_diagnostics(&mut diagnostics, &files);
+
+    let has_blocking_diagnostics = diagnostics.iter().any(|diagnostic| {
+        diagnostic.level == diagnostic::Level::Error
+            || (deny_warnings && diagnostic.level == diagnostic::Level::Warning)
+    });
+    let truncated_count = diagnostics.len().saturating_sub(MAX_DIAGNOSTICS);
+    diagnostics.truncate(MAX_DIAGNOSTICS);
+    let edits = match collect_fix_edits(&diagnostics, &files) {
+        Ok(edits) => edits,
+        Err(error) => {
+            report_fix_error(format, dry_run, &diagnostics, &[], &files, &error);
+            return 1;
+        }
+    };
+    emit_fix_diagnostics(format, &diagnostics, &files, truncated_count);
+
+    if has_blocking_diagnostics {
+        if matches!(format, FixOutputFormat::Json) {
+            print_fix_json("error", dry_run, &diagnostics, &edits, &[], &files, None);
+        }
+        return 1;
+    }
+
+    let (applied, diff) =
+        match apply_fix_transaction(file_path, file_id, &files, &edits, &recovery, dry_run) {
+            Ok(result) => result,
+            Err(error) => {
+                report_fix_error(format, dry_run, &diagnostics, &edits, &files, &error);
+                return 1;
+            }
+        };
+
+    emit_fix_result(
+        format,
+        dry_run,
+        FixResult {
+            diagnostics: &diagnostics,
+            edits: &edits,
+            files: &files,
+            applied: &applied,
+            diff: &diff,
+            truncated_count,
+        },
+    );
+    0
+}
+
+fn report_fix_error(
+    format: FixOutputFormat,
+    dry_run: bool,
+    diagnostics: &[Diagnostic],
+    edits: &[diagnostic::TextEdit],
+    files: &Files,
+    error: &str,
+) {
+    if matches!(format, FixOutputFormat::Json) {
+        print_fix_json(
+            "error",
+            dry_run,
+            diagnostics,
+            edits,
+            &[],
+            files,
+            Some(error),
+        );
+    } else {
+        eprintln!("mux fix: {error}");
+    }
+}
+
+fn emit_fix_diagnostics(
+    format: FixOutputFormat,
+    diagnostics: &[Diagnostic],
+    files: &Files,
+    truncated_count: usize,
+) {
+    if matches!(format, FixOutputFormat::Text) && !diagnostics.is_empty() {
+        StandardEmitter::new(ColorConfig::Auto).emit_batch(diagnostics, files);
+        if truncated_count > 0 {
+            eprintln!(
+                "warning: output truncated; {truncated_count} additional diagnostics omitted (maximum is {MAX_DIAGNOSTICS})"
+            );
+        }
+    }
+}
+
+fn collect_fix_edits(
+    diagnostics: &[Diagnostic],
+    files: &Files,
+) -> Result<Vec<diagnostic::TextEdit>, String> {
+    let mut edits = diagnostics
+        .iter()
+        .flat_map(|diagnostic| diagnostic.edits.iter().cloned())
+        .collect::<Vec<_>>();
+    edits.extend(materialize_span_edits(diagnostics, files)?);
+    edits.sort_by_key(|edit| {
+        (
+            edit.file_id,
+            edit.range.start_byte,
+            edit.range.end_byte,
+            edit.diagnostic_code,
+        )
+    });
+    Ok(edits)
+}
+
+fn apply_fix_transaction(
+    file_path: &Path,
+    file_id: FileId,
+    files: &Files,
+    edits: &[diagnostic::TextEdit],
+    recovery: &RecoveryIntervals,
+    dry_run: bool,
+) -> Result<(fix::AppliedEdits, String), String> {
+    let applied = fix::apply_and_validate(files, edits, recovery, |updates| {
+        validate_staged_sources(file_path, file_id, files, updates)
+    })
+    .map_err(|error| error.to_string())?;
+    let diff = fix::unified_diff(files, &applied);
+    if !dry_run && !applied.changed_files.is_empty() {
+        fix::write_transaction(files, &applied.files).map_err(|error| error.to_string())?;
+    }
+    Ok((applied, diff))
+}
+
+struct FixResult<'a> {
+    diagnostics: &'a [Diagnostic],
+    edits: &'a [diagnostic::TextEdit],
+    files: &'a Files,
+    applied: &'a fix::AppliedEdits,
+    diff: &'a str,
+    truncated_count: usize,
+}
+
+fn emit_fix_result(format: FixOutputFormat, dry_run: bool, result: FixResult<'_>) {
+    if matches!(format, FixOutputFormat::Json) {
+        let status = if result.applied.changed_files.is_empty() {
+            "no_changes"
+        } else if dry_run {
+            "dry_run"
+        } else {
+            "applied"
+        };
+        print_fix_json_with_truncation(
+            status,
+            dry_run,
+            result.diagnostics,
+            result.edits,
+            &result.applied.changed_files,
+            result.files,
+            FixJsonMeta {
+                error: None,
+                truncated_count: result.truncated_count,
+            },
+        );
+    } else if result.applied.changed_files.is_empty() {
+        println!("No machine-applicable fixes available.");
+    } else {
+        print!("{}", result.diff);
+        let action = if dry_run { "Would apply" } else { "Applied" };
+        println!(
+            "{action} {} edit(s) to {} file(s).",
+            result.edits.len(),
+            result.applied.changed_files.len()
+        );
+    }
+}
+
+fn explain_diagnostic(value: &str) {
+    let Some(code) = DiagnosticCode::parse(&value.to_ascii_uppercase()) else {
+        eprintln!("Unknown diagnostic code '{value}'. Use a code such as E0302 or W0300.");
+        process::exit(2);
+    };
+    let info = code.info();
+    println!("{}: {}", info.code, info.title);
+    println!();
+    println!("When: {}", info.trigger);
+    if !info.example.is_empty() {
+        println!("Example:\n{}", info.example);
+    }
+    println!("Why: {}", info.explanation);
+    println!("Fix: {}", info.fix);
+    println!("Docs: https://mux-lang.dev/docs/reference/diagnostics/");
 }
 
 fn ensure_mux_extension_or_exit(file_path: &Path) {
@@ -811,7 +1438,7 @@ fn lex_source_or_exit(file_id: FileId, files: &Files, source: String) -> Vec<lex
     match lex.lex_all() {
         Ok(tokens) => tokens,
         Err(err) => {
-            emit_diagnostics(files, file_id, &[err]);
+            emit_diagnostics(files, file_id, &[err], false);
             process::exit(1);
         }
     }
@@ -826,7 +1453,7 @@ fn parse_tokens_or_exit(
     match parser.parse() {
         Ok(nodes) => nodes,
         Err((_, errors)) => {
-            emit_diagnostics(files, file_id, &errors);
+            emit_diagnostics(files, file_id, &errors, false);
             process::exit(1);
         }
     }
@@ -837,10 +1464,19 @@ fn analyze_semantics_or_exit(
     nodes: &[ast::AstNode],
     file_id: FileId,
     files: &mut Files,
+    deny_warnings: bool,
 ) {
     let errors = analyzer.analyze(nodes, Some(files));
-    if !errors.is_empty() {
-        emit_diagnostics(files, file_id, &errors);
+    let imported_errors = analyzer.take_imported_errors();
+    let mut diagnostics = errors
+        .iter()
+        .chain(imported_errors.iter())
+        .map(|error| error.to_diagnostic(file_id))
+        .collect::<Vec<_>>();
+    if let Some(resolver) = analyzer.module_resolver.as_ref() {
+        diagnostics.extend(resolver.borrow_mut().take_diagnostics());
+    }
+    if !diagnostics.is_empty() && emit_diagnostic_batch(files, &diagnostics, deny_warnings) {
         process::exit(1);
     }
 }
@@ -1176,7 +1812,10 @@ fn internal_compiler_error_report(
     file: Option<&str>,
     show_backtrace_hint: bool,
 ) -> String {
-    let mut out = String::from("\nerror: internal compiler error\n");
+    let mut out = format!(
+        "\nerror[{}]: internal compiler error\n",
+        DiagnosticCode::InternalCompiler
+    );
     if !detail.is_empty() {
         // Indent every line: a linking failure feeds multi-line clang/linker
         // stderr in as `detail`, and indenting only the first line would leave
@@ -1398,7 +2037,7 @@ fn build_linker_args_for(
 
 fn main() {
     install_internal_error_panic_hook();
-    let (file_path, do_run, output, intermediate) = parse_args_or_exit();
+    let (file_path, do_run, output, intermediate, deny_warnings) = parse_args_or_exit();
     set_compiling_file(&file_path);
 
     ensure_mux_extension_or_exit(&file_path);
@@ -1419,9 +2058,10 @@ fn main() {
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
     let resolver = Rc::new(RefCell::new(ModuleResolver::new(base_path)));
+    resolver.borrow_mut().set_emit_diagnostics(false);
 
     let mut analyzer = semantics::SemanticAnalyzer::new_with_resolver(resolver);
-    analyze_semantics_or_exit(&mut analyzer, &nodes, file_id, &mut files);
+    analyze_semantics_or_exit(&mut analyzer, &nodes, file_id, &mut files, deny_warnings);
 
     let context = inkwell::context::Context::create();
     let source_name = file_path
@@ -1544,12 +2184,37 @@ mod tests {
         REQUIRED_LLVM_MAJOR, build_linker_args, build_linker_args_for, clang_failure_detail,
         clang_version_output, compiling_file, dir_holding_runtime_lib, extract_clang_major,
         find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
-        llvm_config_candidates, native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict,
-        print_version_banner, relativize_to_cwd, report_clang_for_doctor,
+        llvm_config_candidates, materialize_span_edits, native_runtime_deps, pick_llvm_for_dev,
+        print_doctor_verdict, print_version_banner, relativize_to_cwd, report_clang_for_doctor,
         report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
         status_marker, validate_llvm_for_doctor,
     };
+    use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, SpanEdit};
+    use crate::lexer::Span;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn materializes_text_span_edits_against_the_current_source() {
+        let mut files = Files::new();
+        let file_id = files.add("program.mux", "abc\n".to_string());
+        let diagnostic = Diagnostic::new(DiagnosticCode::RedundantConstruct)
+            .with_file_id(file_id)
+            .with_span_edit(SpanEdit::machine_applicable_text(
+                Span {
+                    row_start: 1,
+                    row_end: Some(1),
+                    col_start: 2,
+                    col_end: Some(3),
+                },
+                "X",
+                DiagnosticCode::RedundantConstruct,
+            ));
+
+        let edits = materialize_span_edits(&[diagnostic], &files).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].replacement, "X");
+        assert_eq!(edits[0].range, crate::diagnostic::SourceRange::new(1, 2));
+    }
 
     #[test]
     fn internal_error_report_names_the_file_when_present() {

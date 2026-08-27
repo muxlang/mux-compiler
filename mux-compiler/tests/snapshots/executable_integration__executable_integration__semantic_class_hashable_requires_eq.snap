@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Class 'K' does not implement method 'eq' required by interface 'Hashable'
+error: 1 error found
+
+error[E0307]: Class 'K' does not implement method 'eq' required by interface 'Hashable'
 --> test_scripts/error_cases/semantic_class_hashable_requires_eq.mux:5:1
    |
  5 | class K is Hashable {

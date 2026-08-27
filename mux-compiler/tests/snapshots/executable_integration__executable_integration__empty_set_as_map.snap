@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Expected map<string, int>, found an empty set literal
+error: 1 error found
+
+error[E0308]: Expected map<string, int>, found an empty set literal
 --> test_scripts/error_cases/empty_set_as_map.mux:4:26
    |
  4 |     map<string, int> m = {}

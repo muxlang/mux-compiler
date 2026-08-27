@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Type mismatch: expected int, got string
+error: 1 error found
+
+error[E0302]: Type mismatch: expected int, got string
 --> test_scripts/error_cases/semantic_type_mismatch.mux:2:9
    |
  2 | int n = "hello"

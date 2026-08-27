@@ -3,6 +3,7 @@ use crate::ast::{
     ExpressionKind, ExpressionNode, ImportSpec, PatternNode, PrimitiveType, StatementKind,
     StatementNode, TypeNode,
 };
+use crate::diagnostic::DiagnosticCode;
 use crate::diagnostic::Files;
 use crate::lexer::Span;
 
@@ -77,6 +78,7 @@ impl SemanticAnalyzer {
             if let Some(read) = super::definite_assignment::first_read_before_assignment(rest, name)
             {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::UninitializedReadError,
                     format!("'{}' is read before it is assigned", name),
                     read.span,
                     format!(
@@ -105,6 +107,7 @@ impl SemanticAnalyzer {
                 _ => unreachable!(),
             };
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!("Cannot infer type for empty {} literal", collection_type),
                 expr.span,
                 format!("Use an explicit type annotation, e.g. {}", example),
@@ -112,6 +115,7 @@ impl SemanticAnalyzer {
         }
         if Self::type_contains_empty_collection(&expr_type) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 "Cannot infer type for expression containing an empty collection literal"
                     .to_string(),
                 expr.span,
@@ -195,6 +199,7 @@ impl SemanticAnalyzer {
     fn reject_empty_set_as_map(expected_type: &Type, span: Span) -> Result<(), SemanticError> {
         if matches!(expected_type, Type::Map(_, _)) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "Expected {}, found an empty set literal",
                     format_type(expected_type)
@@ -209,6 +214,7 @@ impl SemanticAnalyzer {
     fn reject_empty_map_as_set(expected_type: &Type, span: Span) -> Result<(), SemanticError> {
         if matches!(expected_type, Type::Set(_)) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
                 format!(
                     "Expected {}, found an empty map literal",
                     format_type(expected_type)
@@ -284,6 +290,7 @@ impl SemanticAnalyzer {
             return Ok(());
         }
         Err(SemanticError::with_help(
+            DiagnosticCode::InvalidOperation,
             format!(
                 "{} condition must be boolean, found {}",
                 construct,
@@ -339,6 +346,7 @@ impl SemanticAnalyzer {
             Type::Primitive(PrimitiveType::Str) => Type::Primitive(PrimitiveType::Char),
             _ => {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
                     format!("Cannot iterate over type {}", format_type(&iter_type)),
                     iter.span,
                     "The 'for' loop can only iterate over lists and strings. Use .to_list() for sets. For maps, use .get_keys(), .get_values(), or .get_pairs() to get a list. For numeric ranges, use range(start, end).",
@@ -407,6 +415,7 @@ impl SemanticAnalyzer {
                 .is_err()
             {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::MissingReturn,
                     format!(
                         "Match arms have incompatible return types: first arm returns '{}', but arm {} returns '{}'",
                         format_type(first_type),
@@ -454,6 +463,7 @@ impl SemanticAnalyzer {
     fn analyze_return_with_value(&mut self, expr: &ExpressionNode) -> Result<(), SemanticError> {
         if self.current_return_type.is_none() {
             return Err(SemanticError::with_help(
+                DiagnosticCode::ParseReturnOutsideFunction,
                 "Cannot use 'return' outside of a function",
                 expr.span,
                 "'return' can only be used inside a function body",
@@ -464,6 +474,7 @@ impl SemanticAnalyzer {
 
         if matches!(self.current_return_type, Some(Type::Void)) {
             return Err(SemanticError::with_help(
+                DiagnosticCode::MissingReturn,
                 "Cannot return a value from a void function",
                 expr.span,
                 "This function is declared as 'returns void'. Either remove the return value or change the function's return type.",
@@ -480,6 +491,7 @@ impl SemanticAnalyzer {
     fn analyze_return_without_value(&mut self, span: Span) -> Result<(), SemanticError> {
         if self.current_return_type.is_none() {
             return Err(SemanticError::with_help(
+                DiagnosticCode::ParseReturnOutsideFunction,
                 "Cannot use 'return' outside of a function",
                 span,
                 "'return' can only be used inside a function body",
@@ -490,6 +502,7 @@ impl SemanticAnalyzer {
             && let Some(expected_type) = &self.current_return_type
         {
             return Err(SemanticError::with_help(
+                DiagnosticCode::MissingReturn,
                 format!(
                     "Missing return value; function expects '{}', but return has no value",
                     format_type(expected_type)
@@ -518,6 +531,7 @@ impl SemanticAnalyzer {
 
         let files = files.ok_or_else(|| {
             SemanticError::new(
+                DiagnosticCode::ImportFailure,
                 "Files registry must be available for import processing",
                 span,
             )
@@ -627,6 +641,7 @@ impl SemanticAnalyzer {
                 continue;
             }
             return Err(SemanticError::with_help(
+                DiagnosticCode::NestedFunctionCapture,
                 format!(
                     "nested function '{}' cannot use '{}' from the function around it",
                     func.name, name
@@ -688,6 +703,7 @@ impl SemanticAnalyzer {
             missing.push("err");
         }
         Err(SemanticError::with_help(
+            DiagnosticCode::NonExhaustiveMatch,
             format!(
                 "Non-exhaustive match: missing pattern{} for Result: {}",
                 if missing.len() > 1 { "s" } else { "" },
@@ -731,6 +747,7 @@ impl SemanticAnalyzer {
             missing.push("none");
         }
         Err(SemanticError::with_help(
+            DiagnosticCode::NonExhaustiveMatch,
             format!(
                 "Non-exhaustive match: missing pattern{} for Optional: {}",
                 if missing.len() > 1 { "s" } else { "" },
@@ -777,6 +794,7 @@ impl SemanticAnalyzer {
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(SemanticError::with_help(
+                DiagnosticCode::NonExhaustiveMatch,
                 format!(
                     "Non-exhaustive match: missing variant{} of '{}': {}",
                     if uncovered.len() > 1 { "s" } else { "" },
@@ -861,6 +879,7 @@ impl SemanticAnalyzer {
             return Ok(());
         }
         Err(SemanticError::with_help(
+            DiagnosticCode::NonExhaustiveMatch,
             format!("Non-exhaustive match on type '{}'", format_type(expr_type)),
             expr_span,
             "End the match with an unguarded '_' arm, or a bare name that binds the value; a guarded arm can fail its guard at runtime",

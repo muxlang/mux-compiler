@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 'Green' is a variant of enum 'Color', not a field on a value of it
+error: 1 error found
+
+error[E0307]: 'Green' is a variant of enum 'Color', not a field on a value of it
 --> test_scripts/error_cases/semantic_enum_variant_on_value.mux:6:14
    |
  6 |     auto d = c.Green

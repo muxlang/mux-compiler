@@ -1,5 +1,9 @@
 use crate::ast::AstNode;
-use crate::diagnostic::{ColorConfig, DiagnosticEmitter, Files, StandardEmitter, ToDiagnostic};
+use crate::diagnostic::fix::{self, RecoveryIntervals};
+use crate::diagnostic::{
+    ColorConfig, Diagnostic, DiagnosticCode, DiagnosticEmitter, FileId, Files, StandardEmitter,
+    ToDiagnostic,
+};
 use crate::embedded_std::embedded_std_sources;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -7,12 +11,46 @@ use crate::source::Source;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
+pub struct ModuleResolutionError {
+    pub code: DiagnosticCode,
+    pub message: String,
+}
+
+impl ModuleResolutionError {
+    fn new(code: DiagnosticCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<String> for ModuleResolutionError {
+    fn from(message: String) -> Self {
+        Self::new(DiagnosticCode::ImportFailure, message)
+    }
+}
+
+impl std::fmt::Display for ModuleResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ModuleResolutionError {}
+
 pub struct ModuleResolver {
     base_path: PathBuf,
     compiled_modules: HashMap<String, Vec<AstNode>>,
     import_stack: Vec<String>,
     being_imported: HashSet<String>,
     canonical_cache: HashMap<PathBuf, String>, // canonical path -> module_path
+    source_overrides: HashMap<PathBuf, String>,
+    module_file_ids: HashMap<String, FileId>,
+    diagnostics: Vec<Diagnostic>,
+    recovery_intervals: RecoveryIntervals,
+    emit_diagnostics: bool,
     embedded_sources: &'static HashMap<String, String>,
 }
 
@@ -24,6 +62,11 @@ impl ModuleResolver {
             import_stack: Vec::new(),
             being_imported: HashSet::new(),
             canonical_cache: HashMap::new(),
+            source_overrides: HashMap::new(),
+            module_file_ids: HashMap::new(),
+            diagnostics: Vec::new(),
+            recovery_intervals: RecoveryIntervals::new(),
+            emit_diagnostics: true,
             embedded_sources: embedded_std_sources(),
         }
     }
@@ -47,11 +90,37 @@ impl ModuleResolver {
         self.resolve_embedded_key(module_path).is_some()
     }
 
+    /// Use staged source for a local module during fix validation.
+    pub fn set_source_overrides(&mut self, overrides: HashMap<PathBuf, String>) {
+        self.source_overrides = overrides;
+    }
+
+    /// Control direct diagnostic emission while a caller is collecting a
+    /// structured result such as `--format json`.
+    pub fn set_emit_diagnostics(&mut self, emit: bool) {
+        self.emit_diagnostics = emit;
+    }
+
+    pub fn take_diagnostics(&mut self) -> Vec<Diagnostic> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    pub fn take_recovery_intervals(&mut self) -> RecoveryIntervals {
+        std::mem::take(&mut self.recovery_intervals)
+    }
+
+    /// Return the source file loaded for a resolved module.
+    pub fn file_id_for_module(&self, module_path: &str) -> Option<FileId> {
+        self.module_file_ids
+            .get(self.normalize_module_key(module_path))
+            .copied()
+    }
+
     fn resolve_embedded_module_if_any(
         &mut self,
         module_path: &str,
         files: &mut Files,
-    ) -> Result<Option<Vec<AstNode>>, String> {
+    ) -> Result<Option<Vec<AstNode>>, ModuleResolutionError> {
         if let Some(embedded_key) = self.resolve_embedded_key(module_path) {
             let embedded_key = embedded_key.to_string();
             let cache_key = self.normalize_module_key(module_path).to_string();
@@ -61,24 +130,32 @@ impl ModuleResolver {
             }
 
             if self.being_imported.contains(&cache_key) {
-                return Err(format!(
-                    "Circular import detected: {} -> {}",
-                    self.import_stack.join(" -> "),
-                    cache_key
+                return Err(ModuleResolutionError::new(
+                    DiagnosticCode::ImportFailure,
+                    format!(
+                        "Circular import detected: {} -> {}",
+                        self.import_stack.join(" -> "),
+                        cache_key
+                    ),
                 ));
             }
 
             self.being_imported.insert(cache_key.clone());
             self.import_stack.push(cache_key.clone());
 
-            let source = self
-                .embedded_sources
-                .get(&embedded_key)
-                .ok_or_else(|| format!("Embedded module not found: {}", module_path))?;
+            let source = self.embedded_sources.get(&embedded_key).ok_or_else(|| {
+                ModuleResolutionError::new(
+                    DiagnosticCode::ModuleNotFound,
+                    format!("Embedded module not found: {module_path}"),
+                )
+            })?;
 
             let virtual_path =
                 PathBuf::from(format!("<embedded>/{}.mux", embedded_key.replace('.', "/")));
             let nodes = self.parse_module(&virtual_path, files, Some(source.as_str()))?;
+            if let Some(file_id) = files.id_for_path(&virtual_path) {
+                self.module_file_ids.insert(cache_key.clone(), file_id);
+            }
             return Ok(Some(nodes));
         }
         Ok(None)
@@ -88,12 +165,15 @@ impl ModuleResolver {
         &self,
         module_path: &str,
         current_file: Option<&Path>,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<PathBuf, ModuleResolutionError> {
         if module_path.starts_with("./") || module_path.starts_with("../") {
             // Relative import - resolve relative to current file
-            let current_dir = current_file
-                .and_then(|p| p.parent())
-                .ok_or("Cannot resolve relative import: no current file")?;
+            let current_dir = current_file.and_then(Path::parent).ok_or_else(|| {
+                ModuleResolutionError::new(
+                    DiagnosticCode::ImportFailure,
+                    "Cannot resolve relative import: no current file",
+                )
+            })?;
 
             let relative_path = module_path.trim_start_matches("./");
             let mut path = current_dir.to_path_buf();
@@ -125,7 +205,7 @@ impl ModuleResolver {
         module_path: &str,
         current_file: Option<&Path>,
         files: &mut Files,
-    ) -> Result<Vec<AstNode>, String> {
+    ) -> Result<Vec<AstNode>, ModuleResolutionError> {
         if let Some(nodes) = self.resolve_embedded_module_if_any(module_path, files)? {
             return Ok(nodes);
         }
@@ -133,9 +213,12 @@ impl ModuleResolver {
         let file_path = self.determine_file_path(module_path, current_file)?;
 
         // Canonicalize for cache key
-        let canonical_path = file_path
-            .canonicalize()
-            .map_err(|e| format!("Cannot resolve module path {}: {}", module_path, e))?;
+        let canonical_path = file_path.canonicalize().map_err(|e| {
+            ModuleResolutionError::new(
+                DiagnosticCode::ImportFailure,
+                format!("Cannot resolve module path {module_path}: {e}"),
+            )
+        })?;
 
         // Check cache by canonical path
         if let Some(cached_module_path) = self.canonical_cache.get(&canonical_path)
@@ -150,7 +233,8 @@ impl ModuleResolver {
                 "Circular import detected: {} -> {}",
                 self.import_stack.join(" -> "),
                 module_path
-            ));
+            )
+            .into());
         }
 
         // Mark as being imported
@@ -158,7 +242,12 @@ impl ModuleResolver {
         self.import_stack.push(module_path.to_string());
 
         // Parse module
-        let nodes = self.parse_module(&canonical_path, files, None)?;
+        let source_override = self.source_overrides.get(&canonical_path).cloned();
+        let nodes = self.parse_module(&canonical_path, files, source_override.as_deref())?;
+        if let Some(file_id) = files.id_for_path(&canonical_path) {
+            self.module_file_ids
+                .insert(module_path.to_string(), file_id);
+        }
 
         // Cache the canonical path
         self.canonical_cache
@@ -247,7 +336,7 @@ impl ModuleResolver {
         Ok(result)
     }
 
-    fn module_path_to_file(&self, module_path: &str) -> Result<PathBuf, String> {
+    fn module_path_to_file(&self, module_path: &str) -> Result<PathBuf, ModuleResolutionError> {
         let mut path = self.base_path.clone();
         for part in module_path.split('.') {
             path.push(part);
@@ -255,9 +344,9 @@ impl ModuleResolver {
         path.set_extension("mux");
 
         if !path.exists() {
-            return Err(format!(
-                "Module not found: {} (looked for {:?})",
-                module_path, path
+            return Err(ModuleResolutionError::new(
+                DiagnosticCode::ModuleNotFound,
+                format!("Module not found: {module_path} (looked for {path:?})"),
             ));
         }
 
@@ -265,40 +354,93 @@ impl ModuleResolver {
     }
 
     fn parse_module(
-        &self,
+        &mut self,
         file_path: &Path,
         files: &mut Files,
         source_override: Option<&str>,
     ) -> Result<Vec<AstNode>, String> {
-        let source_str = if let Some(src) = source_override {
-            src.to_string()
-        } else {
-            std::fs::read_to_string(file_path)
-                .map_err(|e| format!("Failed to open module: {}", e))?
-        };
-
+        let source_str = self.read_module_source(file_path, source_override)?;
         let file_id = files.add(file_path, source_str.clone());
         let mut src = Source::from_string(source_str);
+        let tokens = self.lex_module(file_path, file_id, files, &mut src)?;
+        self.parse_module_tokens(file_path, file_id, files, &tokens)
+    }
 
-        let mut lex = Lexer::new(&mut src);
+    fn read_module_source(
+        &self,
+        file_path: &Path,
+        source_override: Option<&str>,
+    ) -> Result<String, String> {
+        source_override.map_or_else(
+            || {
+                std::fs::read_to_string(file_path)
+                    .map_err(|e| format!("Failed to open module: {e}"))
+            },
+            |source| Ok(source.to_string()),
+        )
+    }
+
+    fn lex_module(
+        &mut self,
+        file_path: &Path,
+        file_id: FileId,
+        files: &Files,
+        source: &mut Source,
+    ) -> Result<Vec<crate::lexer::Token>, String> {
+        let mut lex = Lexer::new(source);
         let tokens = match lex.lex_all() {
             Ok(t) => t,
             Err(e) => {
-                crate::spinner::stop();
-                let emitter = StandardEmitter::new(ColorConfig::Auto);
-                emitter.emit(&e.to_diagnostic(file_id), files);
+                let diagnostic = e.to_diagnostic(file_id);
+                if self.emit_diagnostics {
+                    crate::spinner::stop();
+                    let emitter = StandardEmitter::new(ColorConfig::Auto);
+                    emitter.emit(&diagnostic, files);
+                }
+                if let Ok(range) =
+                    fix::source_range_for_span(files.source(file_id).unwrap_or_default(), e.span)
+                {
+                    self.recovery_intervals.add(file_id, range);
+                }
+                self.diagnostics.push(diagnostic);
                 return Err(format!("Lexer error in module {}", file_path.display()));
             }
         };
+        Ok(tokens)
+    }
 
-        let mut parser = Parser::new(&tokens);
+    fn parse_module_tokens(
+        &mut self,
+        file_path: &Path,
+        file_id: FileId,
+        files: &Files,
+        tokens: &[crate::lexer::Token],
+    ) -> Result<Vec<AstNode>, String> {
+        let mut parser = Parser::new(tokens);
         match parser.parse() {
             Ok(nodes) => Ok(nodes),
             Err((_, errors)) => {
-                crate::spinner::stop();
-                let emitter = StandardEmitter::new(ColorConfig::Auto);
-                let diagnostics: Vec<_> = errors.iter().map(|e| e.to_diagnostic(file_id)).collect();
-                emitter.emit_batch(&diagnostics, files);
+                let source = files.source(file_id).unwrap_or_default();
+                let diagnostics: Vec<_> = errors
+                    .iter()
+                    .map(|error| {
+                        if let Ok(range) = fix::source_range_for_span(source, error.span) {
+                            self.recovery_intervals.add(file_id, range);
+                        }
+                        error.to_diagnostic(file_id)
+                    })
+                    .collect();
+                for span in parser.recovery_spans() {
+                    if let Ok(range) = fix::source_range_for_span(source, *span) {
+                        self.recovery_intervals.add(file_id, range);
+                    }
+                }
+                if self.emit_diagnostics {
+                    crate::spinner::stop();
+                    let emitter = StandardEmitter::new(ColorConfig::Auto);
+                    emitter.emit_batch(&diagnostics, files);
+                }
+                self.diagnostics.extend(diagnostics);
                 Err(format!("Parse error in module {}", file_path.display()))
             }
         }
@@ -332,12 +474,12 @@ mod tests {
         let err = resolver
             .resolve_import_path("badlex", None, &mut files)
             .expect_err("lex error module must fail");
-        assert!(err.contains("Lexer error in module"), "got: {err}");
+        assert!(err.message.contains("Lexer error in module"), "got: {err}");
 
         let err = resolver
             .resolve_import_path("badparse", None, &mut files)
             .expect_err("parse error module must fail");
-        assert!(err.contains("Parse error in module"), "got: {err}");
+        assert!(err.message.contains("Parse error in module"), "got: {err}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

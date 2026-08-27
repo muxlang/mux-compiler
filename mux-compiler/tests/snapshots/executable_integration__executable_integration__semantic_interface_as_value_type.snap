@@ -4,7 +4,7 @@ expression: normalized
 ---
 error: 2 errors found
 
-error: 'Shape' is an interface and cannot be used as a value type
+error[E0308]: 'Shape' is an interface and cannot be used as a value type
 --> test_scripts/error_cases/semantic_interface_as_value_type.mux:21:12
    |
 21 | func takes(Shape s) returns float {
@@ -12,7 +12,7 @@ error: 'Shape' is an interface and cannot be used as a value type
    |
 = help: Take it as a bound instead, e.g. 'func f<T is Shape>(T value)'. A class still implements it with 'is Shape'.
 
-error: Undefined function 'takes'
+error[E0300]: Undefined function 'takes'
 --> test_scripts/error_cases/semantic_interface_as_value_type.mux:27:11
    |
 27 |     print(takes(r).to_string())
