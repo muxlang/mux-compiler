@@ -10,6 +10,7 @@ pub use error::LexerError;
 pub use span::Span;
 pub use token::{Token, TokenType};
 
+use crate::diagnostic::DiagnosticCode;
 use crate::source::Source;
 use ordered_float::OrderedFloat;
 
@@ -239,6 +240,7 @@ impl<'a> Lexer<'a> {
             Ok(comment)
         } else {
             Err(LexerError::with_help(
+                DiagnosticCode::LexUnterminatedComment,
                 "Unterminated block comment",
                 start_span,
                 "Add a closing '*/' to end the block comment",
@@ -325,6 +327,7 @@ impl<'a> Lexer<'a> {
                 Some(ch) => comment.push(ch),
                 None => {
                     return Err(LexerError::with_help(
+                        DiagnosticCode::LexUnterminatedComment,
                         "Unterminated block comment",
                         start_span,
                         "Add a closing '*/' to end the block comment",
@@ -415,12 +418,14 @@ impl<'a> Lexer<'a> {
             return Ok(());
         } else if after_dot == Some('.') {
             return Err(LexerError::with_help(
+                DiagnosticCode::LexRangeLiteral,
                 "Mux does not have range literal syntax",
                 Span::new(self.source.line, self.source.col),
                 "Use range(a, b) to iterate over a numeric range, e.g. for int i in range(0, 10)",
             ));
         } else {
             return Err(LexerError::new(
+                DiagnosticCode::LexInvalidNumber,
                 "Expected digit after decimal point",
                 Span::new(self.source.line, self.source.col),
             ));
@@ -429,6 +434,7 @@ impl<'a> Lexer<'a> {
         num.push(self.consume_char());
         if !self.consume_digits_and_underscores(num) {
             return Err(LexerError::new(
+                DiagnosticCode::LexInvalidNumber,
                 "Expected digit after decimal point",
                 Span::new(self.source.line, self.source.col),
             ));
@@ -455,6 +461,7 @@ impl<'a> Lexer<'a> {
 
         if !self.consume_digits_and_underscores(num) {
             return Err(LexerError::with_help(
+                DiagnosticCode::LexInvalidNumber,
                 "Missing exponent in scientific notation",
                 Span::new(self.source.line, self.source.col),
                 "The 'e' notation requires digits after it, e.g. 1e10, 2.5e-3",
@@ -474,6 +481,7 @@ impl<'a> Lexer<'a> {
         {
             self.consume_remaining_invalid(&mut num, &mut start_span);
             return Err(LexerError::with_help(
+                DiagnosticCode::LexInvalidNumber,
                 format!("Invalid float literal: {}", num),
                 start_span,
                 "A number can only have one decimal point. Use separate expressions for chained field access.",
@@ -487,6 +495,7 @@ impl<'a> Lexer<'a> {
         {
             self.consume_remaining_invalid(&mut num, &mut start_span);
             return Err(LexerError::with_help(
+                DiagnosticCode::LexInvalidNumber,
                 format!("Invalid float literal: {}", num),
                 start_span,
                 "Float literals cannot contain letters. Use a space or separate expression.",
@@ -498,7 +507,13 @@ impl<'a> Lexer<'a> {
             .parse::<f64>()
             .map(OrderedFloat)
             .map(|f| Token::new(TokenType::Float(f), start_span))
-            .map_err(|_| LexerError::new(format!("Invalid float literal: {}", num), start_span))
+            .map_err(|_| {
+                LexerError::new(
+                    DiagnosticCode::LexInvalidNumber,
+                    format!("Invalid float literal: {}", num),
+                    start_span,
+                )
+            })
     }
 
     fn parse_int_token(
@@ -513,6 +528,7 @@ impl<'a> Lexer<'a> {
         {
             self.consume_remaining_invalid(&mut num, &mut start_span);
             return Err(LexerError::with_help(
+                DiagnosticCode::LexInvalidNumber,
                 format!("Invalid integer literal: {}", num),
                 start_span,
                 "Integer literals cannot contain letters. Variable names must not start with a digit.",
@@ -525,6 +541,7 @@ impl<'a> Lexer<'a> {
             .map(|i| Token::new(TokenType::Int(i), start_span))
             .map_err(|_| {
                 LexerError::with_help(
+                DiagnosticCode::LexInvalidNumber,
                     format!("Invalid integer literal: {}", num),
                     start_span,
                     "The integer value is out of range. Valid integers are between -9223372036854775808 and 9223372036854775807.",
@@ -557,6 +574,7 @@ impl<'a> Lexer<'a> {
             // decide between the wildcard token and an identifier.
             'a'..='z' | 'A'..='Z' => Ok(self.read_identifier_or_keyword(first_char, start_span)),
             _ => Err(LexerError::with_help(
+                DiagnosticCode::LexUnexpectedCharacter,
                 format!("Unexpected character: '{}'", first_char),
                 start_span,
                 "This character is not recognized as valid Mux syntax. Check for accidental special characters or encoding issues.",
@@ -663,6 +681,7 @@ impl<'a> Lexer<'a> {
             Ok(Token::new(TokenType::Or, span))
         } else {
             Err(LexerError::with_help(
+                DiagnosticCode::LexUnexpectedCharacter,
                 "Unexpected character '|'",
                 start_span,
                 "Single '|' is not a valid operator. Use '||' for logical OR",
@@ -763,6 +782,7 @@ impl<'a> Lexer<'a> {
                 s.push(decoded);
             } else {
                 return Err(LexerError::with_help(
+                    DiagnosticCode::LexUnknownEscape,
                     format!("Unknown escape sequence: \\{}", c),
                     Span::new(self.source.line, self.source.col - 1),
                     "Valid escape sequences: \\n, \\t, \\r, \\0, \\\\, \\', \\\"",
@@ -785,6 +805,7 @@ impl<'a> Lexer<'a> {
         let error_col = start_col + first_newline;
         start_span.complete(self.source.line, error_col);
         Err(LexerError::with_help(
+            DiagnosticCode::LexUnterminatedString,
             "Unterminated string",
             start_span,
             "Make sure to close the string with a matching quote",
@@ -810,6 +831,7 @@ impl<'a> Lexer<'a> {
 
             if chars.len() > 1 && !escaped {
                 return Err(LexerError::with_help(
+                    DiagnosticCode::LexInvalidCharacterLiteral,
                     "Char literal must be exactly one character",
                     Span::new(start_span.row_start, start_col + 1),
                     "Example: 'a', '\\n', '\\''",
@@ -818,6 +840,7 @@ impl<'a> Lexer<'a> {
         }
 
         Err(LexerError::with_help(
+            DiagnosticCode::LexInvalidCharacterLiteral,
             "Unterminated character literal",
             start_span,
             "Make sure to close the character with a matching quote",
@@ -832,6 +855,7 @@ impl<'a> Lexer<'a> {
     ) -> Result<Token, LexerError> {
         if chars.len() != 1 {
             return Err(LexerError::with_help(
+                DiagnosticCode::LexInvalidCharacterLiteral,
                 "Char literal must be exactly one character",
                 Span::new(start_span.row_start, start_col + 1),
                 "Example: 'a', '\\n', '\\''",
@@ -854,6 +878,7 @@ impl<'a> Lexer<'a> {
                 chars.push(decoded);
             } else {
                 return Err(LexerError::with_help(
+                    DiagnosticCode::LexUnknownEscape,
                     format!("Unknown escape sequence: \\{}", c),
                     Span::new(self.source.line, self.source.col - 1),
                     "Valid escape sequences: \\n, \\t, \\r, \\0, \\\\, \\'",
@@ -878,6 +903,7 @@ impl<'a> Lexer<'a> {
             num.push('.');
             if !self.consume_digits_and_underscores(&mut num) {
                 return Err(LexerError::with_help(
+                    DiagnosticCode::LexInvalidNumber,
                     "Expected digit after decimal point",
                     Span::new(self.source.line, self.source.col),
                     "A decimal point must be followed by at least one digit, e.g. 1.0",

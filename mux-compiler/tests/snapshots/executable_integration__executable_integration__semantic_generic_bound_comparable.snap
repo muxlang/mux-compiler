@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 'Point' does not satisfy 'Comparable'
+error: 1 error found
+
+error[E0308]: 'Point' does not satisfy 'Comparable'
 --> test_scripts/error_cases/semantic_generic_bound_comparable.mux:13:14
    |
 13 |     auto r = biggest(Point.new(), Point.new())

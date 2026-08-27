@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: assignment violates where constraint of 'Port.number'
+error: 1 error found
+
+error[E0306]: assignment violates where constraint of 'Port.number'
 --> test_scripts/error_cases/semantic_where_assign_violation.mux:9:12
    |
  9 | p.number = 70000

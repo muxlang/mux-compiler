@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Cannot use 'break' outside of a loop
+error: 1 error found
+
+error[E0203]: Cannot use 'break' outside of a loop
 --> test_scripts/error_cases/parser_break_outside_loop.mux:2:6
    |
  2 | break

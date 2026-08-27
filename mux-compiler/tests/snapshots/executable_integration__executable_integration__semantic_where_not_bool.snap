@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: where predicate must be a bool, got int
+error: 1 error found
+
+error[E0308]: where predicate must be a bool, got int
 --> test_scripts/error_cases/semantic_where_not_bool.mux:3:23
    |
  3 | func f(int a) where { a + 1 } returns int {

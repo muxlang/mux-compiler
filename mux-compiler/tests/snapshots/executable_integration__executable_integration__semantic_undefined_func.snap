@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Undefined function 'foo'
+error: 1 error found
+
+error[E0300]: Undefined function 'foo'
 --> test_scripts/error_cases/semantic_undefined_func.mux:2:1
    |
  2 | foo()

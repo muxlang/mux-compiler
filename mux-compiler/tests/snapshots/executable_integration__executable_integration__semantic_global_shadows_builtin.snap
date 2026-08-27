@@ -4,7 +4,7 @@ expression: normalized
 ---
 error: 2 errors found
 
-error: 'ok' is a built-in function
+error[E0401]: 'ok' is a built-in function
 --> test_scripts/error_cases/semantic_global_shadows_builtin.mux:9:1
    |
  9 | auto ok = add(1, 2)
@@ -12,7 +12,7 @@ error: 'ok' is a built-in function
    |
 = help: Rename this; 'ok' is taken at module scope.
 
-error: Undefined method 'to_string' on type 'fn(T) -> result<T, E>'
+error[E0307]: Undefined method 'to_string' on type 'fn(T) -> result<T, E>'
 --> test_scripts/error_cases/semantic_global_shadows_builtin.mux:10:7
    |
 10 | print(ok.to_string())

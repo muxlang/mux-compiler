@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 'Point' does not satisfy 'Stringable'
+error: 1 error found
+
+error[E0308]: 'Point' does not satisfy 'Stringable'
 --> test_scripts/error_cases/semantic_generic_bound_unsatisfied.mux:12:11
    |
 12 |     print(show(Point.new()))

@@ -1,5 +1,6 @@
 use super::{BuiltInSig, MethodSig, SemanticAnalyzer, SemanticError, Symbol, SymbolKind, Type};
 use crate::ast::{AstNode, ImportSpec, PrimitiveType, StatementKind, StatementNode};
+use crate::diagnostic::DiagnosticCode;
 use crate::diagnostic::Files;
 use crate::lexer::Span;
 use crate::semantics::std_registry::{StdModuleKind, std_module_registry};
@@ -184,14 +185,25 @@ impl SemanticAnalyzer {
         module_analyzer.set_current_file(std::path::PathBuf::from(
             module_path.replace('.', "/") + ".mux",
         ));
+        if let Some(file_id) = resolver.borrow().file_id_for_module(module_path) {
+            module_analyzer.set_current_file_id(file_id);
+        }
         let errors = module_analyzer.analyze(module_nodes, Some(files));
+        self.imported_errors
+            .extend(module_analyzer.take_imported_errors());
         // Codegen queries a single, shared analyzer for expression types
         // (e.g. to disambiguate an empty `{}` literal as a map vs a set), but
         // each imported module is analyzed with its own throwaway analyzer
-        if !errors.is_empty() {
+        let has_errors = errors
+            .iter()
+            .any(|error| error.code.level() == crate::diagnostic::Level::Error);
+        self.imported_errors.extend(errors.iter().cloned());
+        if has_errors {
             resolver.borrow_mut().finish_import(module_path);
-            let error_messages: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
+            let error_messages: Vec<String> =
+                errors.iter().map(|e| e.message.to_string()).collect();
             return Err(SemanticError::with_help(
+                DiagnosticCode::ImportFailure,
                 format!("Errors in imported module '{}'", module_path),
                 span,
                 format!(
@@ -296,14 +308,18 @@ impl SemanticAnalyzer {
         span: Span,
         files: &mut Files,
     ) -> Result<(), SemanticError> {
-        let resolver = self
-            .module_resolver
-            .clone()
-            .ok_or_else(|| SemanticError::new("Module resolver not available", span))?;
+        let resolver = self.module_resolver.clone().ok_or_else(|| {
+            SemanticError::new(
+                DiagnosticCode::ImportFailure,
+                "Module resolver not available",
+                span,
+            )
+        })?;
 
         let (has_file, has_directory) = resolver.borrow().check_module_path(module_path);
         if has_file && has_directory {
             return Err(SemanticError::with_help(
+                DiagnosticCode::ImportFailure,
                 format!("Ambiguous import: '{}'", module_path),
                 span,
                 format!(
@@ -324,6 +340,7 @@ impl SemanticAnalyzer {
             .resolve_import_path(module_path, self.current_file.as_deref(), files)
             .map_err(|e| {
                 SemanticError::with_help(
+                    DiagnosticCode::ImportFailure,
                     format!("Failed to import module '{}'", module_path),
                     span,
                     e.to_string(),
@@ -364,6 +381,7 @@ impl SemanticAnalyzer {
             .resolve_import_path(submodule_path, self.current_file.as_deref(), files)
             .map_err(|e| {
                 SemanticError::with_help(
+                    DiagnosticCode::ImportFailure,
                     format!("Failed to import submodule '{}'", submodule_path),
                     span,
                     e.to_string(),
@@ -374,11 +392,22 @@ impl SemanticAnalyzer {
         submodule_analyzer.set_current_file(std::path::PathBuf::from(
             submodule_path.replace('.', "/") + ".mux",
         ));
+        if let Some(file_id) = resolver.borrow().file_id_for_module(submodule_path) {
+            submodule_analyzer.set_current_file_id(file_id);
+        }
         let errors = submodule_analyzer.analyze(&submodule_nodes, Some(files));
-        if !errors.is_empty() {
+        self.imported_errors
+            .extend(submodule_analyzer.take_imported_errors());
+        let has_errors = errors
+            .iter()
+            .any(|error| error.code.level() == crate::diagnostic::Level::Error);
+        self.imported_errors.extend(errors.iter().cloned());
+        if has_errors {
             resolver.borrow_mut().finish_import(submodule_path);
-            let error_messages: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
+            let error_messages: Vec<String> =
+                errors.iter().map(|e| e.message.to_string()).collect();
             return Err(SemanticError::with_help(
+                DiagnosticCode::ImportFailure,
                 format!("Errors in submodule '{}'", submodule_path),
                 span,
                 format!(
@@ -468,10 +497,13 @@ impl SemanticAnalyzer {
         span: Span,
         resolver: &Rc<RefCell<crate::module_resolver::ModuleResolver>>,
     ) -> Result<Vec<String>, SemanticError> {
-        resolver
-            .borrow()
-            .get_submodules(module_path)
-            .map_err(|e| SemanticError::new(format!("Failed to get submodules: {}", e), span))
+        resolver.borrow().get_submodules(module_path).map_err(|e| {
+            SemanticError::new(
+                DiagnosticCode::ImportFailure,
+                format!("Failed to get submodules: {}", e),
+                span,
+            )
+        })
     }
 
     fn ensure_directory_submodule_exists(
@@ -485,6 +517,7 @@ impl SemanticAnalyzer {
             return Ok(());
         }
         Err(SemanticError::with_help(
+            DiagnosticCode::ImportFailure,
             format!(
                 "Submodule '{}' not found in '{}'",
                 submodule_name, module_path
@@ -632,6 +665,7 @@ impl SemanticAnalyzer {
             let available: Vec<&String> = module_symbols.keys().collect();
             if available.is_empty() {
                 SemanticError::new(
+                    DiagnosticCode::ImportFailure,
                     format!(
                         "Symbol '{}' not found in module '{}'",
                         item_name, module_path
@@ -640,6 +674,7 @@ impl SemanticAnalyzer {
                 )
             } else {
                 SemanticError::with_help(
+                    DiagnosticCode::ImportFailure,
                     format!(
                         "Symbol '{}' not found in module '{}'",
                         item_name, module_path
@@ -748,6 +783,7 @@ impl SemanticAnalyzer {
                 .rsplit_once('.')
                 .map_or(module_path.as_str(), |(head, _)| head);
             self.errors.push(SemanticError::with_help(
+                DiagnosticCode::ImportFailure,
                 format!(
                     "'{}' implements interface '{}', which is not imported",
                     item_name, interface_name
@@ -834,7 +870,11 @@ impl SemanticAnalyzer {
             let (has_file, has_directory) = resolver.borrow().check_module_path(&full_module_path);
             if has_file || has_directory {
                 let files = files.ok_or_else(|| {
-                    SemanticError::new("Files registry must be available for std imports", span)
+                    SemanticError::new(
+                        DiagnosticCode::ImportFailure,
+                        "Files registry must be available for std imports",
+                        span,
+                    )
                 })?;
                 return self.import_module_from_resolver(
                     &full_module_path,
@@ -885,7 +925,13 @@ impl SemanticAnalyzer {
         files: Option<&mut Files>,
         span: Span,
     ) -> Result<&mut Files, SemanticError> {
-        files.ok_or_else(|| SemanticError::new("Files registry must be available", span))
+        files.ok_or_else(|| {
+            SemanticError::new(
+                DiagnosticCode::InvalidOperation,
+                "Files registry must be available",
+                span,
+            )
+        })
     }
 
     fn import_registry_std_module(

@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Invalid integer literal: 123abc
+error: 1 error found
+
+error[E0104]: Invalid integer literal: 123abc
 --> test_scripts/error_cases/lexer_invalid_int.mux:2:10
    |
  2 | auto n = 123abc

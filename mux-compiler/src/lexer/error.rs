@@ -1,26 +1,37 @@
 //! Error types for the lexer.
 
 use super::span::Span;
-use crate::diagnostic::{self, Diagnostic, FileId, ToDiagnostic};
+use crate::diagnostic::{self, Diagnostic, DiagnosticCode, FileId, ToDiagnostic};
 
 /// An error that occurred during lexical analysis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LexerError {
+    pub code: DiagnosticCode,
     pub message: String,
+    pub help: Option<String>,
     pub span: Span,
 }
 
 impl LexerError {
-    pub fn new(message: impl Into<String>, span: Span) -> Self {
+    pub fn new(code: DiagnosticCode, message: impl Into<String>, span: Span) -> Self {
         Self {
+            code,
             message: message.into(),
+            help: None,
             span,
         }
     }
 
-    pub fn with_help(message: impl Into<String>, span: Span, help: impl Into<String>) -> Self {
+    pub fn with_help(
+        code: DiagnosticCode,
+        message: impl Into<String>,
+        span: Span,
+        help: impl Into<String>,
+    ) -> Self {
         Self {
-            message: diagnostic::format_with_help(message, help),
+            code,
+            message: message.into(),
+            help: Some(help.into()),
             span,
         }
     }
@@ -28,7 +39,13 @@ impl LexerError {
 
 impl ToDiagnostic for LexerError {
     fn to_diagnostic(&self, file_id: FileId) -> Diagnostic {
-        diagnostic::error_diagnostic(&self.message, self.span, file_id)
+        diagnostic::diagnostic_from_parts_with_help(
+            self.code,
+            &self.message,
+            self.help.as_deref(),
+            self.span,
+            file_id,
+        )
     }
 }
 

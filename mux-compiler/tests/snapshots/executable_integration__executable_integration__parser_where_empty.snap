@@ -4,7 +4,7 @@ expression: normalized
 ---
 error: 3 errors found
 
-error: Empty 'where' block
+error[E0200]: Empty 'where' block
 --> test_scripts/error_cases/parser_where_empty.mux:4:15
    |
  4 | func f(int a) where { } returns int {
@@ -12,13 +12,13 @@ error: Empty 'where' block
    |
 = help: A where block must contain at least one boolean predicate. Example: where { value > 0 }
 
-error: Expected expression, found 'returns' keyword
+error[E0201]: Expected expression, found 'returns' keyword
 --> test_scripts/error_cases/parser_where_empty.mux:4:25
    |
  4 | func f(int a) where { } returns int {
    |                         ^^^^^^^
 
-error: Expected newline before statement
+error[E0200]: Expected newline before statement
 --> test_scripts/error_cases/parser_where_empty.mux:4:37
    |
  4 | func f(int a) where { } returns int {

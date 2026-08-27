@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: key not found in map: key c
+error: 1 error found
+
+error[E0308]: key not found in map: key c
 --> test_scripts/error_cases/semantic_map_key_not_found.mux:4:24
    |
  4 | print({"a": 1, "b": 2}["c"].to_string())

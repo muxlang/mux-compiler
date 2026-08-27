@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Cannot return a value from a void function
+error: 1 error found
+
+error[E0304]: Cannot return a value from a void function
 --> test_scripts/error_cases/semantic_return_void.mux:3:10
    |
  3 |   return 1

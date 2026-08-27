@@ -6,6 +6,7 @@ use crate::ast::{
     AstNode, EnumVariant, ExpressionKind, ExpressionNode, Field, FunctionNode, LiteralNode,
     Spanned, StatementKind, StatementNode, TraitBound, TraitRef, TypeKind, TypeNode, WhereClause,
 };
+use crate::diagnostic::DiagnosticCode;
 use crate::diagnostic::Files;
 use crate::lexer::Span;
 use std::collections::HashMap;
@@ -86,6 +87,7 @@ impl SemanticAnalyzer {
     fn collect_function_symbol(&mut self, func: &FunctionNode) -> Result<(), SemanticError> {
         if func.is_common {
             return Err(SemanticError::with_help(
+                DiagnosticCode::UnknownMember,
                 "Common methods are only allowed in classes",
                 func.span,
                 "The 'common' modifier creates a static method. Move this function inside a class definition, or remove the 'common' keyword.",
@@ -184,6 +186,7 @@ impl SemanticAnalyzer {
             return None;
         }
         Some(SemanticError::with_help(
+            DiagnosticCode::InvalidOperation,
             format!("Cannot declare {} named '{}'", kind, name),
             *span,
             format!("'{}' is a built-in type. Choose another name.", name),
@@ -329,6 +332,7 @@ impl SemanticAnalyzer {
             return None;
         }
         Some(SemanticError::with_help(
+            DiagnosticCode::TypeMismatch,
             format!(
                 "Generic class '{}' cannot implement '{}'",
                 class_name, interface
@@ -419,6 +423,7 @@ impl SemanticAnalyzer {
         for field in fields {
             if fields_map.contains_key(&field.name) {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::DuplicateDeclaration,
                     format!("Duplicate field '{}' in class '{}'", field.name, name),
                     field.type_.span,
                     "Each field name must be unique within a class. Rename or remove the duplicate field.",
@@ -549,6 +554,7 @@ impl SemanticAnalyzer {
                 }
             } else {
                 self.errors.push(SemanticError::with_help(
+                DiagnosticCode::UnknownMember,
                     format!(
                         "Class '{}' does not implement method '{}' required by interface '{}'",
                         class_name, method_name, interface_name
@@ -589,6 +595,7 @@ impl SemanticAnalyzer {
                     );
                 } else {
                     self.errors.push(SemanticError::with_help(
+                        DiagnosticCode::UnknownMember,
                         format!(
                             "Class '{}' is missing required field '{}' from interface '{}'",
                             class_name, field_name, interface_name
@@ -617,6 +624,7 @@ impl SemanticAnalyzer {
     ) {
         if !self.types_compatible(class_field_type, interface_field_type) {
             self.errors.push(SemanticError::with_help(
+                DiagnosticCode::TypeMismatch,
                 format!(
                     "Field '{}' type mismatch in class '{}': class has {}, interface '{}' requires {}",
                     field_name,
@@ -642,6 +650,7 @@ impl SemanticAnalyzer {
     ) {
         if interface_is_const && !class_is_const {
             self.errors.push(SemanticError::with_help(
+                DiagnosticCode::UnknownMember,
                 format!(
                     "Field '{}' must be const in class '{}' to implement interface '{}'",
                     field_name, class_name, interface_name
@@ -676,6 +685,7 @@ impl SemanticAnalyzer {
                 continue;
             }
             self.errors.push(SemanticError::with_help(
+                DiagnosticCode::UnknownMember,
                 format!(
                     "Payload field of '{}.{}' needs a name",
                     enum_name, variant.name
@@ -739,6 +749,7 @@ impl SemanticAnalyzer {
                 continue;
             }
             self.errors.push(SemanticError::with_help(
+                DiagnosticCode::WrongArgumentCount,
                 format!(
                     "Enum '{}' contains itself with different type arguments",
                     enum_name
@@ -862,6 +873,7 @@ impl SemanticAnalyzer {
                     && !self.types_compatible(&default_type, &field_type)
                 {
                     self.errors.push(SemanticError::with_help(
+                        DiagnosticCode::TypeMismatch,
                         format!(
                             "Default value type mismatch for field '{}': expected {}, got {}",
                             field.name,
@@ -922,6 +934,7 @@ impl SemanticAnalyzer {
             AstNode::Function(func) => {
                 if func.is_common {
                     return Err(SemanticError::with_help(
+                        DiagnosticCode::UnknownMember,
                         "Common methods are only allowed inside class definitions",
                         func.span,
                         "The 'common' modifier creates static methods on a class. Remove 'common' for standalone functions.",
@@ -933,6 +946,7 @@ impl SemanticAnalyzer {
                     let return_type = self.resolve_type(&func.return_type)?;
                     if !matches!(return_type, Type::Void) {
                         return Err(SemanticError::with_help(
+                            DiagnosticCode::MissingReturn,
                             format!(
                                 "Function 'main' must return void, not '{}'",
                                 format_type(&return_type)
@@ -1460,7 +1474,12 @@ impl SemanticAnalyzer {
                     .to_string(),
             )
         };
-        Err(SemanticError::with_help(msg, func.span, help))
+        Err(SemanticError::with_help(
+            DiagnosticCode::InvalidOperation,
+            msg,
+            func.span,
+            help,
+        ))
     }
 
     #[allow(clippy::only_used_in_recursion)]
@@ -1531,6 +1550,7 @@ impl SemanticAnalyzer {
                 .is_err()
             {
                 self.errors.push(SemanticError::with_help(
+                    DiagnosticCode::TypeMismatch,
                     format!(
                         "Default value type mismatch for field '{}': expected {}, got {}",
                         field.name,

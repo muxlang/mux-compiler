@@ -1,3 +1,4 @@
+use crate::diagnostic::DiagnosticCode;
 use crate::lexer::Span;
 use crate::semantics::error::SemanticError;
 use crate::semantics::types::{Symbol, SymbolKind};
@@ -106,8 +107,12 @@ impl SymbolTable {
     pub fn pop_scope(&mut self) -> Result<(), SemanticError> {
         if self.scopes.len() <= 1 {
             return Err(SemanticError {
+                code: DiagnosticCode::InternalCompiler,
                 message: "Cannot pop the global scope".into(),
+                help: None,
                 span: Span::new(0, 0), // Internal error, no user span available
+                file_id: None,
+                span_edits: None,
             });
         }
         self.scopes.pop();
@@ -125,8 +130,12 @@ impl SymbolTable {
     ) -> Result<(), SemanticError> {
         if self.scopes.is_empty() {
             return Err(SemanticError {
+                code: DiagnosticCode::InternalCompiler,
                 message: "No active scope".into(),
+                help: None,
                 span: Span::new(0, 0), // Internal error, no user span available
+                file_id: None,
+                span_edits: None,
             });
         }
 
@@ -160,14 +169,19 @@ impl SymbolTable {
             let is_global_scope = self.scopes.len() == 1;
             if is_global_scope && crate::semantics::stdlib::BUILT_IN_FUNCTIONS.contains_key(name) {
                 return Err(SemanticError::with_help(
+                    DiagnosticCode::ImportFailure,
                     format!("'{}' is a built-in function", name),
                     symbol.span,
                     format!("Rename this; '{}' is taken at module scope.", name),
                 ));
             }
             return Err(SemanticError {
-                message: format!("Duplicate declaration of '{}'", name),
+                code: DiagnosticCode::DuplicateDeclaration,
+                message: format!("Duplicate declaration of '{}'", name).into_boxed_str(),
+                help: None,
                 span: symbol.span,
+                file_id: None,
+                span_edits: None,
             });
         }
 
@@ -206,6 +220,7 @@ impl SymbolTable {
             _ => return None,
         };
         Some(SemanticError::with_help(
+            DiagnosticCode::InvalidOperation,
             format!("Cannot declare a variable named '{}'", name),
             symbol.span,
             format!(

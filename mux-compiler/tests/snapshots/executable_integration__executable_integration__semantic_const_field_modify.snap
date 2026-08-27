@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Cannot assign to const field 'x'
+error: 1 error found
+
+error[E0306]: Cannot assign to const field 'x'
 --> test_scripts/error_cases/semantic_const_field_modify.mux:6:1
    |
  6 | c.x = 10

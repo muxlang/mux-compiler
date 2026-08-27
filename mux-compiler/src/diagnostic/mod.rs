@@ -3,27 +3,29 @@
 //! Provides centralized diagnostics inspired by Rust's error formatting.
 //! Supports color-coded output, multi-line span highlighting, and grouped error reporting.
 
+pub mod catalog;
+mod edit;
 mod emitter;
 mod files;
+pub mod fix;
 mod styles;
 
+pub use catalog::DiagnosticCode;
+pub use edit::{Applicability, EditReplacement, SourceRange, SpanEdit, TextEdit};
 pub use emitter::{DiagnosticEmitter, StandardEmitter};
 pub use files::{FileId, Files};
 pub use styles::{ColorConfig, Styles};
 
 use crate::lexer::Span;
 
-/// Help text separator embedded in error messages.
-const HELP_SEPARATOR: &str = "\n  = help: ";
+/// Maximum number of diagnostics presented for one analysis.
+pub const MAX_DIAGNOSTICS: usize = 100;
 
 /// The severity level of a diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
     Error,
     Warning,
-    Note,
-    Help,
 }
 
 /// The style of a label (primary or secondary).
@@ -56,47 +58,30 @@ impl Label {
 /// A diagnostic message with associated labels and help text.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
+    pub code: DiagnosticCode,
     pub level: Level,
     pub message: String,
     pub labels: Vec<Label>,
     pub help: Option<String>,
     pub file_id: Option<FileId>,
+    pub edits: Vec<TextEdit>,
+    pub span_edits: Vec<SpanEdit>,
 }
 
 impl Diagnostic {
-    pub fn error() -> Self {
+    pub fn new(code: DiagnosticCode) -> Self {
         Self {
-            level: Level::Error,
+            code,
+            level: code.level(),
             message: String::new(),
             labels: Vec::new(),
             help: None,
             file_id: None,
+            edits: Vec::new(),
+            span_edits: Vec::new(),
         }
     }
 
-    // the next two functions are not currently used, but they are provided for completeness and
-    // future use, do not remove them
-    #[allow(dead_code)]
-    pub fn warning() -> Self {
-        Self {
-            level: Level::Warning,
-            message: String::new(),
-            labels: Vec::new(),
-            help: None,
-            file_id: None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn note() -> Self {
-        Self {
-            level: Level::Note,
-            message: String::new(),
-            labels: Vec::new(),
-            help: None,
-            file_id: None,
-        }
-    }
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = message.into();
         self
@@ -116,6 +101,16 @@ impl Diagnostic {
         self.file_id = Some(file_id);
         self
     }
+
+    pub fn with_span_edit(mut self, edit: SpanEdit) -> Self {
+        self.span_edits.push(edit);
+        self
+    }
+
+    pub fn with_span_edits(mut self, edits: impl IntoIterator<Item = SpanEdit>) -> Self {
+        self.span_edits.extend(edits);
+        self
+    }
 }
 
 /// Trait for types that can be converted to a diagnostic.
@@ -123,23 +118,16 @@ pub trait ToDiagnostic {
     fn to_diagnostic(&self, file_id: FileId) -> Diagnostic;
 }
 
-/// Build a diagnostic from a message+span pair, splitting embedded help text.
-pub fn error_diagnostic(message: &str, span: Span, file_id: FileId) -> Diagnostic {
-    let (main_message, help_message) = split_help_text(message);
-    Diagnostic::error()
-        .with_message(main_message)
+pub fn diagnostic_from_parts_with_help(
+    code: DiagnosticCode,
+    message: &str,
+    help: Option<&str>,
+    span: Span,
+    file_id: FileId,
+) -> Diagnostic {
+    Diagnostic::new(code)
+        .with_message(message)
         .with_label(Label::primary(span, ""))
-        .with_help(help_message)
+        .with_help(help.map(str::to_owned))
         .with_file_id(file_id)
-}
-
-/// Format a message string with embedded help text (using the `\n  = help: ` separator).
-pub fn format_with_help(message: impl Into<String>, help: impl Into<String>) -> String {
-    format!("{}{}{}", message.into(), HELP_SEPARATOR, help.into())
-}
-
-/// Split a message string into the main message and optional help text.
-fn split_help_text(message: &str) -> (&str, Option<&str>) {
-    let parts: Vec<&str> = message.splitn(2, HELP_SEPARATOR).collect();
-    (parts[0], parts.get(1).copied())
 }

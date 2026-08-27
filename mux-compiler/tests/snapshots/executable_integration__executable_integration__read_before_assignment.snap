@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 'n' is read before it is assigned
+error: 1 error found
+
+error[E0311]: 'n' is read before it is assigned
 --> test_scripts/error_cases/read_before_assignment.mux:13:21
    |
 13 |     print("n is " + n.to_string())

@@ -1,7 +1,7 @@
 //! Parser error types.
 
 use crate::ast::ParseError;
-use crate::diagnostic::{self, Diagnostic, FileId, ToDiagnostic};
+use crate::diagnostic::{self, Diagnostic, DiagnosticCode, FileId, ToDiagnostic};
 use crate::lexer::{Span, Token};
 
 /// The result type for parser operations.
@@ -10,28 +10,41 @@ pub type ParserResult<T> = Result<T, ParserError>;
 /// An error that occurred during parsing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParserError {
+    pub code: DiagnosticCode,
     pub message: String,
+    pub help: Option<String>,
     pub span: Span,
 }
 
 impl ParserError {
-    pub fn new(message: impl Into<String>, span: Span) -> Self {
+    pub fn new(code: DiagnosticCode, message: impl Into<String>, span: Span) -> Self {
         Self {
+            code,
             message: message.into(),
+            help: None,
             span,
         }
     }
 
-    pub fn from_token(message: impl Into<String>, token: &Token) -> Self {
+    pub fn from_token(code: DiagnosticCode, message: impl Into<String>, token: &Token) -> Self {
         Self {
+            code,
             message: message.into(),
+            help: None,
             span: token.span,
         }
     }
 
-    pub fn with_help(message: impl Into<String>, span: Span, help: impl Into<String>) -> Self {
+    pub fn with_help(
+        code: DiagnosticCode,
+        message: impl Into<String>,
+        span: Span,
+        help: impl Into<String>,
+    ) -> Self {
         Self {
-            message: diagnostic::format_with_help(message, help),
+            code,
+            message: message.into(),
+            help: Some(help.into()),
             span,
         }
     }
@@ -39,7 +52,13 @@ impl ParserError {
 
 impl ToDiagnostic for ParserError {
     fn to_diagnostic(&self, file_id: FileId) -> Diagnostic {
-        diagnostic::error_diagnostic(&self.message, self.span, file_id)
+        diagnostic::diagnostic_from_parts_with_help(
+            self.code,
+            &self.message,
+            self.help.as_deref(),
+            self.span,
+            file_id,
+        )
     }
 }
 
@@ -58,7 +77,9 @@ impl std::error::Error for ParserError {}
 impl From<ParseError> for ParserError {
     fn from(err: ParseError) -> Self {
         Self {
+            code: DiagnosticCode::ParseExpectedToken,
             message: err.message,
+            help: None,
             span: err.span,
         }
     }

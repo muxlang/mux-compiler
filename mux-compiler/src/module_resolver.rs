@@ -1,5 +1,8 @@
 use crate::ast::AstNode;
-use crate::diagnostic::{ColorConfig, DiagnosticEmitter, Files, StandardEmitter, ToDiagnostic};
+use crate::diagnostic::fix::{self, RecoveryIntervals};
+use crate::diagnostic::{
+    ColorConfig, Diagnostic, DiagnosticEmitter, FileId, Files, StandardEmitter, ToDiagnostic,
+};
 use crate::embedded_std::embedded_std_sources;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -13,6 +16,11 @@ pub struct ModuleResolver {
     import_stack: Vec<String>,
     being_imported: HashSet<String>,
     canonical_cache: HashMap<PathBuf, String>, // canonical path -> module_path
+    source_overrides: HashMap<PathBuf, String>,
+    module_file_ids: HashMap<String, FileId>,
+    diagnostics: Vec<Diagnostic>,
+    recovery_intervals: RecoveryIntervals,
+    emit_diagnostics: bool,
     embedded_sources: &'static HashMap<String, String>,
 }
 
@@ -24,6 +32,11 @@ impl ModuleResolver {
             import_stack: Vec::new(),
             being_imported: HashSet::new(),
             canonical_cache: HashMap::new(),
+            source_overrides: HashMap::new(),
+            module_file_ids: HashMap::new(),
+            diagnostics: Vec::new(),
+            recovery_intervals: RecoveryIntervals::new(),
+            emit_diagnostics: true,
             embedded_sources: embedded_std_sources(),
         }
     }
@@ -45,6 +58,32 @@ impl ModuleResolver {
 
     pub fn has_embedded_module(&self, module_path: &str) -> bool {
         self.resolve_embedded_key(module_path).is_some()
+    }
+
+    /// Use staged source for a local module during fix validation.
+    pub fn set_source_overrides(&mut self, overrides: HashMap<PathBuf, String>) {
+        self.source_overrides = overrides;
+    }
+
+    /// Control direct diagnostic emission while a caller is collecting a
+    /// structured result such as `--format json`.
+    pub fn set_emit_diagnostics(&mut self, emit: bool) {
+        self.emit_diagnostics = emit;
+    }
+
+    pub fn take_diagnostics(&mut self) -> Vec<Diagnostic> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    pub fn take_recovery_intervals(&mut self) -> RecoveryIntervals {
+        std::mem::take(&mut self.recovery_intervals)
+    }
+
+    /// Return the source file loaded for a resolved module.
+    pub fn file_id_for_module(&self, module_path: &str) -> Option<FileId> {
+        self.module_file_ids
+            .get(self.normalize_module_key(module_path))
+            .copied()
     }
 
     fn resolve_embedded_module_if_any(
@@ -79,6 +118,9 @@ impl ModuleResolver {
             let virtual_path =
                 PathBuf::from(format!("<embedded>/{}.mux", embedded_key.replace('.', "/")));
             let nodes = self.parse_module(&virtual_path, files, Some(source.as_str()))?;
+            if let Some(file_id) = files.id_for_path(&virtual_path) {
+                self.module_file_ids.insert(cache_key.clone(), file_id);
+            }
             return Ok(Some(nodes));
         }
         Ok(None)
@@ -158,7 +200,12 @@ impl ModuleResolver {
         self.import_stack.push(module_path.to_string());
 
         // Parse module
-        let nodes = self.parse_module(&canonical_path, files, None)?;
+        let source_override = self.source_overrides.get(&canonical_path).cloned();
+        let nodes = self.parse_module(&canonical_path, files, source_override.as_deref())?;
+        if let Some(file_id) = files.id_for_path(&canonical_path) {
+            self.module_file_ids
+                .insert(module_path.to_string(), file_id);
+        }
 
         // Cache the canonical path
         self.canonical_cache
@@ -265,7 +312,7 @@ impl ModuleResolver {
     }
 
     fn parse_module(
-        &self,
+        &mut self,
         file_path: &Path,
         files: &mut Files,
         source_override: Option<&str>,
@@ -284,9 +331,18 @@ impl ModuleResolver {
         let tokens = match lex.lex_all() {
             Ok(t) => t,
             Err(e) => {
-                crate::spinner::stop();
-                let emitter = StandardEmitter::new(ColorConfig::Auto);
-                emitter.emit(&e.to_diagnostic(file_id), files);
+                let diagnostic = e.to_diagnostic(file_id);
+                if self.emit_diagnostics {
+                    crate::spinner::stop();
+                    let emitter = StandardEmitter::new(ColorConfig::Auto);
+                    emitter.emit(&diagnostic, files);
+                }
+                if let Ok(range) =
+                    fix::source_range_for_span(files.source(file_id).unwrap_or_default(), e.span)
+                {
+                    self.recovery_intervals.add(file_id, range);
+                }
+                self.diagnostics.push(diagnostic);
                 return Err(format!("Lexer error in module {}", file_path.display()));
             }
         };
@@ -295,10 +351,22 @@ impl ModuleResolver {
         match parser.parse() {
             Ok(nodes) => Ok(nodes),
             Err((_, errors)) => {
-                crate::spinner::stop();
-                let emitter = StandardEmitter::new(ColorConfig::Auto);
-                let diagnostics: Vec<_> = errors.iter().map(|e| e.to_diagnostic(file_id)).collect();
-                emitter.emit_batch(&diagnostics, files);
+                let source = files.source(file_id).unwrap_or_default();
+                let diagnostics: Vec<_> = errors
+                    .iter()
+                    .map(|error| {
+                        if let Ok(range) = fix::source_range_for_span(source, error.span) {
+                            self.recovery_intervals.add(file_id, range);
+                        }
+                        error.to_diagnostic(file_id)
+                    })
+                    .collect();
+                if self.emit_diagnostics {
+                    crate::spinner::stop();
+                    let emitter = StandardEmitter::new(ColorConfig::Auto);
+                    emitter.emit_batch(&diagnostics, files);
+                }
+                self.diagnostics.extend(diagnostics);
                 Err(format!("Parse error in module {}", file_path.display()))
             }
         }

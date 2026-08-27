@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Char literal must be exactly one character
+error: 1 error found
+
+error[E0106]: Char literal must be exactly one character
 --> test_scripts/error_cases/lexer_char_too_long.mux:2:11
    |
  2 | auto c = 'ab'

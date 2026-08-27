@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Generic type 'MyBox' requires 1 type argument(s), got 2
+error: 1 error found
+
+error[E0303]: Generic type 'MyBox' requires 1 type argument(s), got 2
 --> test_scripts/error_cases/generic_enum_arity.mux:6:5
    |
  6 |     MyBox<int, string> b

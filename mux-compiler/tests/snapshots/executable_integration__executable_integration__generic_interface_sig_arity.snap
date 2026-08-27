@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Generic type 'Pair' requires 2 type argument(s), got 1
+error: 1 error found
+
+error[E0303]: Generic type 'Pair' requires 2 type argument(s), got 1
 --> test_scripts/error_cases/generic_interface_sig_arity.mux:4:25
    |
  4 |     func make() returns Pair<int>

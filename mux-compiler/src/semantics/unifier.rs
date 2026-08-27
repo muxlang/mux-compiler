@@ -1,3 +1,4 @@
+use crate::diagnostic::DiagnosticCode;
 use crate::lexer::Span;
 use crate::semantics::error::SemanticError;
 use crate::semantics::format::format_type;
@@ -30,12 +31,17 @@ impl Unifier {
                     // occurs check, ensure var not in t (but not if t is the same variable)
                     if self.occurs(var, t) {
                         return Err(SemanticError {
+                            code: DiagnosticCode::TypeMismatch,
                             message: format!(
                                 "Recursive type: {} occurs in {}",
                                 var,
                                 format_type(t)
-                            ),
+                            )
+                            .into_boxed_str(),
+                            help: None,
                             span,
+                            file_id: None,
+                            span_edits: None,
                         });
                     }
                     self.substitutions.insert(var.clone(), t.clone());
@@ -94,6 +100,7 @@ impl Unifier {
             (_, Type::Never) => {}
             _ => {
                 return Err(SemanticError::new(
+                    DiagnosticCode::TypeMismatch,
                     format!(
                         "Type mismatch: expected {}, got {}",
                         format_type(a),

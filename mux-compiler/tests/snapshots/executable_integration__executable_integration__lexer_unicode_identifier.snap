@@ -1,8 +1,10 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-error: Unexpected character: 'é'
+error: 1 error found
+
+error[E0100]: Unexpected character: 'é'
 --> test_scripts/error_cases/lexer_unicode_identifier.mux:2:9
    |
  2 | auto café = 5

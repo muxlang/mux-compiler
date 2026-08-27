@@ -8,7 +8,6 @@ use anstyle::{AnsiColor, Color, RgbColor, Style};
 
 const ERROR: Style = AnsiColor::Red.on_default().bold();
 const WARNING: Style = AnsiColor::Yellow.on_default().bold();
-const NOTE: Style = AnsiColor::Cyan.on_default().bold();
 const HELP: Style = AnsiColor::Cyan.on_default().bold();
 const BOLD: Style = Style::new().bold();
 const LOCATION: Style = AnsiColor::Cyan.on_default();
@@ -48,10 +47,6 @@ impl Styles {
         Self::styled(WARNING, text)
     }
 
-    pub fn note(&self, text: &str) -> String {
-        Self::styled(NOTE, text)
-    }
-
     pub fn help(&self, text: &str) -> String {
         Self::styled(HELP, text)
     }
@@ -88,7 +83,6 @@ mod tests {
         let styles = Styles;
         assert_eq!(styles.error("e"), "\u{1b}[1m\u{1b}[31me\u{1b}[0m");
         assert_eq!(styles.warning("w"), "\u{1b}[1m\u{1b}[33mw\u{1b}[0m");
-        assert_eq!(styles.note("n"), "\u{1b}[1m\u{1b}[36mn\u{1b}[0m");
         assert_eq!(styles.help("h"), "\u{1b}[1m\u{1b}[36mh\u{1b}[0m");
     }
 

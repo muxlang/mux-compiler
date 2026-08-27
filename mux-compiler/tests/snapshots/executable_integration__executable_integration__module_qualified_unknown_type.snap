@@ -2,7 +2,9 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: Undefined type 'graph.Heap'
+error: 1 error found
+
+error[E0300]: Undefined type 'graph.Heap'
 --> test_scripts/error_cases/module_qualified_unknown_type.mux:11:5
    |
 11 |     graph.Heap<string> h = graph.Graph<string>.new()

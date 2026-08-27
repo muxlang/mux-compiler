@@ -1,28 +1,28 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
 error: 4 errors found
 
-error: Expected ')' after parameters, found identifier 'int'
+error[E0200]: Expected ')' after parameters, found identifier 'int'
 --> test_scripts/error_cases/parser_missing_comma_params.mux:2:16
    |
  2 | func foo(int a int b) returns int {
    |                ^^^
 
-error: Expected expression, found ')'
+error[E0201]: Expected expression, found ')'
 --> test_scripts/error_cases/parser_missing_comma_params.mux:2:21
    |
  2 | func foo(int a int b) returns int {
    |                     ^
 
-error: Expected expression, found 'returns' keyword
+error[E0201]: Expected expression, found 'returns' keyword
 --> test_scripts/error_cases/parser_missing_comma_params.mux:2:23
    |
  2 | func foo(int a int b) returns int {
    |                       ^^^^^^^
 
-error: Expected newline before statement
+error[E0200]: Expected newline before statement
 --> test_scripts/error_cases/parser_missing_comma_params.mux:2:35
    |
  2 | func foo(int a int b) returns int {
