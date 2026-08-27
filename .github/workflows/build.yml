@@ -68,6 +68,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: actionlint + shellcheck
         run: ./scripts/ci/lint-workflows.sh
+      - name: Install Ruff
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+        with:
+          version: "0.16.4"
+          args: "--version"
+      - name: Ruff
+        run: |
+          ruff format --check scripts/generate-programs.py scripts/run-generated-programs.py scripts/tests
+          ruff check scripts/generate-programs.py scripts/run-generated-programs.py scripts/tests
+      - name: Generated program tooling tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
   format:
     # Formatting only. Clippy is its own job below: it compiles the crate, so
@@ -709,6 +720,25 @@ jobs:
         # exits 101 with a diagnostic, so its snapshot no longer matches and the
         # suite fails.
         run: cargo test -p mux-lang --test executable_integration
+      - name: Generated program campaign under leak-check runtime
+        # One full scheduled feature cycle from scripts/generate-programs.py.
+        # The campaign is deterministic, so a failing seed can be rerun locally
+        # with the same --seed and the preserved source/output artifacts.
+        run: |
+          set -euo pipefail
+          scripts/run-generated-programs.py \
+            --mux target/debug/mux \
+            --runtime-lib "$MUX_RUNTIME_LIB" \
+            --count 12 \
+            --start-seed 1 \
+            --keep-failures generated-program-failures
+      - name: Upload generated program failures
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: generated-program-failures
+          path: generated-program-failures
+          if-no-files-found: ignore
   sonarqube:
     name: SonarQube
     # Runs on every push and pull request (no path gating): SonarQube analyzes

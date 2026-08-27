@@ -1772,9 +1772,8 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Emit `mux_closure_release` for each closure temporary registered since
-    /// `mark`, then truncate. The statement-boundary sibling of
-    /// `cleanup_temps_to`.
-    pub(super) fn cleanup_closure_temps_to(&mut self, mark: usize) -> Result<(), String> {
+    /// `mark`, without mutating the pending-temporary list.
+    fn emit_closure_temps_since(&mut self, mark: usize) -> Result<(), String> {
         if self.closure_temp_values.len() <= mark {
             return Ok(());
         }
@@ -1805,7 +1804,6 @@ impl<'a> CodeGenerator<'a> {
                     .map_err(|e| e.to_string())?;
             }
         }
-        self.closure_temp_values.truncate(mark);
         Ok(())
     }
 
@@ -2003,13 +2001,13 @@ impl<'a> CodeGenerator<'a> {
         false
     }
 
-    /// Emit `mux_rc_dec` for every temporary registered since `mark` by loading
-    /// its slot (null-safe), then truncate the list back to `mark`. Call at
-    /// statement boundaries. Skips emission when the current block already has a
-    /// terminator (dead code).
-    pub(super) fn cleanup_temps_to(&mut self, mark: (usize, usize, usize)) -> Result<(), String> {
-        self.cleanup_closure_temps_to(mark.1)?;
-        if self.temp_values.len() > mark.0 {
+    /// Emit `mux_rc_dec` for every pointer temporary registered since `mark` by
+    /// loading its slot, then null the slot so later path cleanup is harmless.
+    /// This does not mutate the pending-temporary list: branch paths can emit
+    /// the same cleanup from the saved slots, while fallthrough statement
+    /// cleanup decides when the compile-time list is truncated.
+    fn emit_pointer_temps_since(&mut self, mark: usize) -> Result<(), String> {
+        if self.temp_values.len() > mark {
             let live = self.current_block_is_live();
             if live {
                 let rc_dec = self
@@ -2017,7 +2015,7 @@ impl<'a> CodeGenerator<'a> {
                     .ok_or("mux_rc_dec not found")?;
                 let ptr_type = self.context.ptr_type(AddressSpace::default());
                 let null_ptr = ptr_type.const_null();
-                let slots: Vec<PointerValue<'a>> = self.temp_values[mark.0..]
+                let slots: Vec<PointerValue<'a>> = self.temp_values[mark..]
                     .iter()
                     .map(|(_, slot)| *slot)
                     .collect();
@@ -2036,9 +2034,33 @@ impl<'a> CodeGenerator<'a> {
                         .map_err(|e| e.to_string())?;
                 }
             }
-            self.temp_values.truncate(mark.0);
         }
-        self.cleanup_enum_temps_to(mark.2)?;
+        Ok(())
+    }
+
+    /// Emit all temporary cleanup registered since `mark` without mutating the
+    /// pending lists. Used by non-fallthrough loop exits (`break`/`continue`):
+    /// those branches jump around the surrounding statement's fallthrough
+    /// cleanup, but still have to release temporaries created earlier in that
+    /// statement, such as a `match accept()` result wrapper.
+    pub(super) fn emit_temps_since_mark(
+        &mut self,
+        mark: (usize, usize, usize),
+    ) -> Result<(), String> {
+        self.emit_closure_temps_since(mark.1)?;
+        self.emit_pointer_temps_since(mark.0)?;
+        self.emit_enum_temps_since(mark.2)
+    }
+
+    /// Emit `mux_rc_dec` for every temporary registered since `mark` by loading
+    /// its slot (null-safe), then truncate the list back to `mark`. Call at
+    /// statement boundaries. Skips emission when the current block already has a
+    /// terminator (dead code).
+    pub(super) fn cleanup_temps_to(&mut self, mark: (usize, usize, usize)) -> Result<(), String> {
+        self.emit_temps_since_mark(mark)?;
+        self.closure_temp_values.truncate(mark.1);
+        self.temp_values.truncate(mark.0);
+        self.enum_temp_values.truncate(mark.2);
         Ok(())
     }
 
@@ -2057,7 +2079,7 @@ impl<'a> CodeGenerator<'a> {
     /// via `emit_enum_drop` and then zeroing its spill slot so a later blanket
     /// cleanup or a loop iteration reusing the slot does not drop it again. Skips
     /// emission in an already-terminated block, mirroring the pointer path.
-    fn cleanup_enum_temps_to(&mut self, mark: usize) -> Result<(), String> {
+    fn emit_enum_temps_since(&mut self, mark: usize) -> Result<(), String> {
         if self.enum_temp_values.len() <= mark {
             return Ok(());
         }
@@ -2077,7 +2099,6 @@ impl<'a> CodeGenerator<'a> {
                 }
             }
         }
-        self.enum_temp_values.truncate(mark);
         Ok(())
     }
 

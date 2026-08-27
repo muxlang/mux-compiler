@@ -189,6 +189,36 @@ We generally don't accept contributions that:
 - Compiler profiling: external tools only
 - Runtime profiling: external tools only
 
+### Generated program campaigns
+
+The [issue #386](https://github.com/muxlang/mux-compiler/issues/386) generator
+composes bindings, blocks, closures, references, collections, optionals,
+results, tuples, generics, enum payloads, loop exits, and early returns into
+deterministic Mux programs. Build the compiler, then run a campaign:
+
+```bash
+cargo build
+scripts/run-generated-programs.py --count 100 --start-seed 1
+```
+
+Each seed reproduces exactly. Rerun one failure and keep its source and output:
+
+```bash
+scripts/run-generated-programs.py --seed 1143 --keep-failures /tmp/mux-failures
+```
+
+The runner rejects compile errors, crashes, timeouts, incomplete output, and
+wrong answers. The generator writes a `.json` manifest beside each `.mux` file;
+the runner uses it to require the seed's final oracle, compare oracle output
+against the exact value the generator intended, and fail multi-seed campaigns
+that miss a core feature bucket.
+
+Pass an `rc-leak-check` runtime archive with `--runtime-lib PATH` to make live
+reference-counted blocks fail too. Add `--check-ir-determinism` when you want
+the campaign to build each generated program twice with `--intermediate` and
+compare the emitted LLVM IR. That mode is intentionally opt-in because generic
+method emission has a known nondeterministic ordering gap tracked separately.
+
 ---
 
 ## Issue & PR Guidelines
