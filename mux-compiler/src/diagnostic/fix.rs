@@ -6,7 +6,7 @@ use fs2::FileExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_width::UnicodeWidthChar;
@@ -529,13 +529,37 @@ fn backup_targets<'a>(
     let mut backups = Vec::new();
     for (index, target) in targets.iter().enumerate() {
         let backup = transaction_path(&target.path, "bak", transaction_id, index);
-        if let Err(error) = fs::copy(&target.path, &backup) {
+        if let Err(error) = create_backup_file(&target.path, &backup, &target.permissions) {
             rollback_staged(staged);
             return Err(rollback_error(&backups, &target.path, error, "back up"));
         }
         backups.push((target.path.clone(), backup));
     }
     Ok(backups)
+}
+
+fn create_backup_file(
+    source: &Path,
+    backup: &Path,
+    permissions: &fs::Permissions,
+) -> io::Result<()> {
+    // `create_new` maps to O_EXCL|O_CREAT. It refuses an existing path,
+    // including a symlink, so a concurrent user cannot redirect the backup
+    // contents into an unrelated file.
+    let mut source_file = fs::File::open(source)?;
+    let mut backup_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(backup)?;
+    let result = (|| {
+        io::copy(&mut source_file, &mut backup_file)?;
+        backup_file.set_permissions(permissions.clone())?;
+        backup_file.sync_all()
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(backup);
+    }
+    result
 }
 
 fn transaction_path(target: &Path, suffix: &str, transaction_id: u128, index: usize) -> PathBuf {
@@ -686,7 +710,7 @@ mod tests {
 
     #[test]
     fn maps_ascii_and_unicode_spans_to_utf8_bytes() {
-        let source = "auto x = こんにちは\nvalue\n";
+        let source = "auto x = \u{3053}\u{3093}\u{306B}\u{3061}\u{306F}\nvalue\n";
         let span = Span {
             row_start: 1,
             row_end: Some(1),
@@ -694,7 +718,10 @@ mod tests {
             col_end: Some(20),
         };
         let range = source_range_for_span(source, span).unwrap();
-        assert_eq!(&source[range.start_byte..range.end_byte], "こんにちは");
+        assert_eq!(
+            &source[range.start_byte..range.end_byte],
+            "\u{3053}\u{3093}\u{306B}\u{3061}\u{306F}"
+        );
 
         let second_line = Span {
             row_start: 2,
@@ -861,6 +888,35 @@ mod tests {
             original_mode
         );
         assert!(!path.with_file_name(".program.mux-fix").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_creation_rejects_symlink_redirection() {
+        use std::os::unix::fs::symlink;
+
+        let directory = std::env::temp_dir().join(format!(
+            "mux_fix_backup_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("source.mux");
+        let backup = directory.join("backup");
+        let redirected = directory.join("redirected");
+        std::fs::write(&source, "source").unwrap();
+        std::fs::write(&redirected, "untouched").unwrap();
+        symlink(&redirected, &backup).unwrap();
+
+        let permissions = std::fs::metadata(&source).unwrap().permissions();
+        let result = create_backup_file(&source, &backup, &permissions);
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&redirected).unwrap(), "untouched");
         std::fs::remove_dir_all(directory).unwrap();
     }
 

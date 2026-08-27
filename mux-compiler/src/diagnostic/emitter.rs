@@ -1,6 +1,8 @@
 //! Diagnostic emitter for formatted error output.
 
-use super::{ColorConfig, Diagnostic, Files, LabelStyle, Level, MAX_DIAGNOSTICS, Styles};
+use super::{
+    ColorConfig, Diagnostic, DiagnosticCode, Files, LabelStyle, Level, MAX_DIAGNOSTICS, Styles,
+};
 use crate::lexer::Span;
 use anstream::eprintln;
 use std::cmp::{max, min};
@@ -215,6 +217,20 @@ impl StandardEmitter {
         }
     }
 
+    fn emit_invalid_provenance(&self, reason: &str) {
+        let diagnostic = Diagnostic::new(DiagnosticCode::InternalCompiler).with_message(format!(
+            "internal compiler error while rendering a diagnostic: {reason}"
+        ));
+        self.emit_header(&diagnostic);
+        eprintln!(
+            "{} {}",
+            self.styles.line_number("="),
+            self.styles
+                .help("help: please report this compiler error to the Mux maintainers")
+        );
+        eprintln!();
+    }
+
     fn ordered_diagnostics<'a>(
         diagnostics: &'a [Diagnostic],
         files: &Files,
@@ -233,8 +249,14 @@ impl Default for StandardEmitter {
 
 impl DiagnosticEmitter for StandardEmitter {
     fn emit(&self, diagnostic: &Diagnostic, files: &Files) {
-        let file_id = diagnostic.file_id.expect("Diagnostic must have a file_id");
-        let file_info = files.get(file_id).expect("FileId must exist in Files");
+        let Some(file_id) = diagnostic.file_id else {
+            self.emit_invalid_provenance("diagnostic has no source file");
+            return;
+        };
+        let Some(file_info) = files.get(file_id) else {
+            self.emit_invalid_provenance("diagnostic refers to an unknown source file");
+            return;
+        };
         let file_path = file_info.path.to_string_lossy();
         let source = &file_info.source;
 
@@ -265,12 +287,16 @@ impl DiagnosticEmitter for StandardEmitter {
         }
 
         for diagnostic in ordered.iter().take(MAX_DIAGNOSTICS) {
-            if let Some(file_id) = diagnostic.file_id
-                && let Some(file_info) = files.get(file_id)
-            {
-                let file_path = file_info.path.to_string_lossy();
-                self.emit_single(diagnostic, &file_info.source, &file_path);
-            }
+            let Some(file_id) = diagnostic.file_id else {
+                self.emit_invalid_provenance("diagnostic has no source file");
+                continue;
+            };
+            let Some(file_info) = files.get(file_id) else {
+                self.emit_invalid_provenance("diagnostic refers to an unknown source file");
+                continue;
+            };
+            let file_path = file_info.path.to_string_lossy();
+            self.emit_single(diagnostic, &file_info.source, &file_path);
         }
 
         if ordered.len() > MAX_DIAGNOSTICS {
@@ -286,7 +312,7 @@ impl DiagnosticEmitter for StandardEmitter {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_DIAGNOSTICS, StandardEmitter};
+    use super::{DiagnosticEmitter, MAX_DIAGNOSTICS, StandardEmitter};
     use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, Label};
     use crate::lexer::Span;
 
@@ -326,5 +352,14 @@ mod tests {
     #[test]
     fn batch_limit_is_explicit_and_bounded() {
         assert_eq!(MAX_DIAGNOSTICS, 100);
+    }
+
+    #[test]
+    fn invalid_provenance_emits_a_controlled_internal_error() {
+        let emitter = StandardEmitter::new(super::ColorConfig::Auto);
+        let files = Files::new();
+        let diagnostic = Diagnostic::new(DiagnosticCode::UndefinedName);
+
+        assert!(std::panic::catch_unwind(|| emitter.emit(&diagnostic, &files)).is_ok());
     }
 }
