@@ -297,56 +297,25 @@ fn collect_binding_expression(expression: &ExpressionNode, analysis: &mut Bindin
         ExpressionKind::Identifier(name) => analysis.read(name),
         ExpressionKind::Binary {
             left, op, right, ..
-        } if op.is_assignment() => {
-            if let ExpressionKind::Identifier(name) = &left.kind {
-                if !matches!(op, BinaryOp::Assign) {
-                    analysis.read(name);
-                }
-                collect_binding_expression(right, analysis);
-                analysis.write(name, left.span);
-            } else {
-                collect_binding_expression(left, analysis);
-                collect_binding_expression(right, analysis);
-            }
-        }
+        } if op.is_assignment() => collect_binding_assignment(left, op, right, analysis),
         ExpressionKind::Binary { left, right, .. } => {
             collect_binding_expression(left, analysis);
             collect_binding_expression(right, analysis);
         }
         ExpressionKind::Unary { expr, .. } => collect_binding_expression(expr, analysis),
-        ExpressionKind::Call { func, args } => {
-            collect_binding_expression(func, analysis);
-            for arg in args {
-                collect_binding_expression(arg, analysis);
-            }
-        }
+        ExpressionKind::Call { func, args } => collect_binding_call(func, args, analysis),
         ExpressionKind::FieldAccess { expr, .. } => collect_binding_expression(expr, analysis),
         ExpressionKind::ListAccess { expr, index } => {
             collect_binding_expression(expr, analysis);
             collect_binding_expression(index, analysis);
         }
         ExpressionKind::Slice { expr, start, end } => {
-            collect_binding_expression(expr, analysis);
-            if let Some(start) = start {
-                collect_binding_expression(start, analysis);
-            }
-            if let Some(end) = end {
-                collect_binding_expression(end, analysis);
-            }
+            collect_binding_slice(expr, start.as_deref(), end.as_deref(), analysis)
         }
         ExpressionKind::ListLiteral(elements)
         | ExpressionKind::SetLiteral(elements)
-        | ExpressionKind::TupleLiteral(elements) => {
-            for element in elements {
-                collect_binding_expression(element, analysis);
-            }
-        }
-        ExpressionKind::MapLiteral { entries, .. } => {
-            for (key, value) in entries {
-                collect_binding_expression(key, analysis);
-                collect_binding_expression(value, analysis);
-            }
-        }
+        | ExpressionKind::TupleLiteral(elements) => collect_binding_elements(elements, analysis),
+        ExpressionKind::MapLiteral { entries, .. } => collect_binding_map(entries, analysis),
         ExpressionKind::If {
             cond,
             then_expr,
@@ -357,20 +326,88 @@ fn collect_binding_expression(expression: &ExpressionNode, analysis: &mut Bindin
             collect_binding_expression(else_expr, analysis);
         }
         ExpressionKind::Lambda { params, body, .. } => {
-            // The lambda may execute later, so writes inside it cannot prove
-            // anything about the enclosing function's straight-line store
-            // order. Reads of captured names are still real uses, however.
-            analysis.clear_assignment_tracking();
-            analysis.push_scope();
-            for parameter in params {
-                analysis.declare(&parameter.name, parameter.type_.span);
-            }
-            collect_binding_block(body, analysis);
-            analysis.pop_scope();
-            analysis.clear_assignment_tracking();
+            collect_binding_lambda(params, body, analysis)
         }
         ExpressionKind::Literal(_) | ExpressionKind::None | ExpressionKind::GenericType(_, _) => {}
     }
+}
+
+fn collect_binding_assignment(
+    left: &ExpressionNode,
+    op: &BinaryOp,
+    right: &ExpressionNode,
+    analysis: &mut BindingWarnings,
+) {
+    let ExpressionKind::Identifier(name) = &left.kind else {
+        collect_binding_expression(left, analysis);
+        collect_binding_expression(right, analysis);
+        return;
+    };
+    if !matches!(op, BinaryOp::Assign) {
+        analysis.read(name);
+    }
+    collect_binding_expression(right, analysis);
+    analysis.write(name, left.span);
+}
+
+fn collect_binding_call(
+    func: &ExpressionNode,
+    args: &[ExpressionNode],
+    analysis: &mut BindingWarnings,
+) {
+    collect_binding_expression(func, analysis);
+    for arg in args {
+        collect_binding_expression(arg, analysis);
+    }
+}
+
+fn collect_binding_slice(
+    expr: &ExpressionNode,
+    start: Option<&ExpressionNode>,
+    end: Option<&ExpressionNode>,
+    analysis: &mut BindingWarnings,
+) {
+    collect_binding_expression(expr, analysis);
+    if let Some(start) = start {
+        collect_binding_expression(start, analysis);
+    }
+    if let Some(end) = end {
+        collect_binding_expression(end, analysis);
+    }
+}
+
+fn collect_binding_elements(elements: &[ExpressionNode], analysis: &mut BindingWarnings) {
+    for element in elements {
+        collect_binding_expression(element, analysis);
+    }
+}
+
+fn collect_binding_map(
+    entries: &[(ExpressionNode, ExpressionNode)],
+    analysis: &mut BindingWarnings,
+) {
+    for (key, value) in entries {
+        collect_binding_expression(key, analysis);
+        collect_binding_expression(value, analysis);
+    }
+}
+
+fn collect_binding_lambda(
+    params: &[crate::ast::Param],
+    body: &[StatementNode],
+    analysis: &mut BindingWarnings,
+) {
+    // The lambda may execute later, so writes inside it cannot prove anything
+    // about the enclosing function's straight-line store order. Reads of
+    // captured names are still real uses, however.
+    analysis.clear_assignment_tracking();
+    analysis.push_scope();
+    for parameter in params {
+        analysis.declare(&parameter.name, parameter.type_.span);
+    }
+    collect_binding_block(body, analysis);
+    analysis.pop_scope();
+    analysis.clear_assignment_tracking();
 }
 
 fn collect_function(function: &FunctionNode, warnings: &mut Vec<SemanticError>) {
