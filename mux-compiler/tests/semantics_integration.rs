@@ -2,8 +2,12 @@ use mux_lang::lexer::Lexer;
 use mux_lang::parser::Parser;
 use mux_lang::semantics::SemanticAnalyzer;
 use mux_lang::source::Source;
+use mux_lang::{diagnostic::Files, diagnostic::Level, module_resolver::ModuleResolver};
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn analyze_mux_file(path: &std::path::PathBuf) -> bool {
     println!("=== Testing file: {} ===", path.display());
@@ -23,15 +27,28 @@ fn analyze_mux_file(path: &std::path::PathBuf) -> bool {
     let mut parser = Parser::new(&tokens);
     let ast = parser.parse().expect("Parser error");
 
-    let mut analyzer = SemanticAnalyzer::new();
-    let errors = analyzer.analyze(&ast, None);
+    let mut files = Files::new();
+    let file_id = files.add(path, content);
+    let base_path = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let resolver = Rc::new(RefCell::new(ModuleResolver::new(base_path)));
+    let mut analyzer = SemanticAnalyzer::new_with_resolver(resolver);
+    analyzer.set_current_file(path.clone());
+    analyzer.set_current_file_id(file_id);
+    let diagnostics = analyzer.analyze(&ast, Some(&mut files));
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.level() == Level::Error)
+        .collect();
 
     if errors.is_empty() {
         println!("✓ Successfully analyzed: {}", path.display());
         true
     } else {
         println!("✗ Semantic errors in {}:", path.display());
-        for error in &errors {
+        for error in errors {
             println!(
                 "  {} at {}:{}",
                 error.message, error.span.row_start, error.span.col_start
@@ -41,14 +58,16 @@ fn analyze_mux_file(path: &std::path::PathBuf) -> bool {
     }
 }
 
-fn collect_mux_files_in_dir(test_dir: &Path) -> usize {
+fn collect_mux_files_in_dir(test_dir: &Path, failures: &mut Vec<std::path::PathBuf>) -> usize {
     let mut count = 0;
     for entry in fs::read_dir(test_dir).expect("Failed to read test directory") {
         let entry = entry.expect("Failed to read directory entry");
         let path = entry.path();
 
         if path.extension().and_then(|s| s.to_str()) == Some("mux") {
-            analyze_mux_file(&path);
+            if !analyze_mux_file(&path) {
+                failures.push(path);
+            }
             count += 1;
         }
     }
@@ -64,19 +83,58 @@ fn test_semantic_analysis() {
     }
 
     let mut files_processed = 0;
+    let mut failures = Vec::new();
 
     let operator_test_path = Path::new("tests/operator_overloading.mux");
     if operator_test_path.exists() {
         let path_buf = operator_test_path.to_path_buf();
-        analyze_mux_file(&path_buf);
+        if !analyze_mux_file(&path_buf) {
+            failures.push(path_buf);
+        }
         files_processed += 1;
     }
 
-    files_processed += collect_mux_files_in_dir(test_dir);
+    files_processed += collect_mux_files_in_dir(test_dir, &mut failures);
 
     assert!(
         files_processed > 0,
         "No .mux files found in test directories"
     );
+    assert!(
+        failures.is_empty(),
+        "Semantic analysis failed for: {}",
+        failures
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("Processed {} files", files_processed);
+}
+
+#[test]
+fn semantic_fixture_failures_are_reported() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the Unix epoch")
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "mux_semantics_fixture_{}_{}",
+        std::process::id(),
+        nonce
+    ));
+    fs::create_dir(&temp_dir).expect("temporary fixture directory should be created");
+    let invalid_fixture = temp_dir.join("invalid.mux");
+    fs::write(
+        &invalid_fixture,
+        "func main() returns void {\n    print(missing_name)\n    return\n}\n",
+    )
+    .expect("temporary fixture should be writable");
+
+    let mut failures = Vec::new();
+    let files_processed = collect_mux_files_in_dir(&temp_dir, &mut failures);
+    fs::remove_dir_all(temp_dir).expect("temporary fixture directory should be removable");
+
+    assert_eq!(files_processed, 1);
+    assert_eq!(failures, vec![invalid_fixture]);
 }

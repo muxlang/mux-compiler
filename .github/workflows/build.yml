@@ -80,6 +80,25 @@ jobs:
       - name: Generated program tooling tests
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
+  cargo_deny:
+    name: Cargo dependency policy
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
+        with:
+          toolchain: 1.93.1
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.18.3
+      - name: Check advisories, licenses, and sources
+        run: cargo deny check advisories licenses sources
+
   format:
     # Formatting only. Clippy is its own job below: it compiles the crate, so
     # it needs the LLVM install and the build cache and could never be a fast
