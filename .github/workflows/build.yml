@@ -669,10 +669,36 @@ jobs:
       MUX_RUNTIME_LEAK_FEATURES: core,json,csv,net,sql,sync,rc-leak-check
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve the mux-runtime ref to test
+        id: runtime_ref
+        env:
+          # Labels are read through env because a label is attacker-controlled
+          # on a fork PR and expressions inside run blocks are substituted
+          # before the shell sees them.
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          ref=main
+          paired=$(printf '%s' "$PR_LABELS" \
+            | jq -r 'if type == "array" then .[] else empty end
+                     | select(startswith("paired-runtime:"))
+                     | sub("^paired-runtime:"; "")' \
+            | head -n 1)
+          if [ -n "$paired" ]; then
+            case "$paired" in
+              -* | *..* | *[!A-Za-z0-9._/-]*)
+                echo "::error::paired-runtime label is not a valid branch name: $paired"
+                exit 1
+                ;;
+            esac
+            ref="$paired"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Testing muxlang/mux-runtime@$ref against this compiler."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: muxlang/mux-runtime
-          ref: main
+          ref: ${{ steps.runtime_ref.outputs.ref }}
           path: mux-runtime
       # Toolchain and LLVM 22 both come from the CI image.
       - name: Cache Cargo registry and build artifacts
