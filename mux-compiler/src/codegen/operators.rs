@@ -6,6 +6,7 @@
 //! - Comparison operators (==, !=, <, >, <=, >=)
 //! - The 'in' operator for containment checks
 
+use inkwell::intrinsics::Intrinsic;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 
 use crate::ast::{
@@ -26,6 +27,18 @@ use super::CodeGenerator;
 enum EqualityKind {
     Equal,
     NotEqual,
+}
+
+#[derive(Clone, Copy)]
+enum CheckedArithmeticKind {
+    Subtract,
+    Multiply,
+}
+
+#[derive(Clone, Copy)]
+enum DivisionKind {
+    Divide,
+    Modulo,
 }
 
 impl EqualityKind {
@@ -111,6 +124,77 @@ impl EqualityKind {
 }
 
 impl<'a> CodeGenerator<'a> {
+    pub(super) fn checked_int_operation(
+        &mut self,
+        left: IntValue<'a>,
+        right: IntValue<'a>,
+        intrinsic_name: &str,
+        message: &str,
+        span: Option<&Span>,
+        block_prefix: &str,
+    ) -> Result<IntValue<'a>, String> {
+        let intrinsic = Intrinsic::find(intrinsic_name)
+            .ok_or_else(|| format!("LLVM intrinsic {intrinsic_name} is unavailable"))?;
+        let function = intrinsic
+            .get_declaration(&self.module, &[left.get_type().into()])
+            .ok_or_else(|| format!("cannot declare LLVM intrinsic {intrinsic_name}"))?;
+        let aggregate = self
+            .builder
+            .build_call(function, &[left.into(), right.into()], "checked_int_op")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("checked integer intrinsic returned no value")?
+            .into_struct_value();
+        let result = self
+            .builder
+            .build_extract_value(aggregate, 0, "checked_result")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let overflow = self
+            .builder
+            .build_extract_value(aggregate, 1, "checked_overflow")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        self.emit_checked_failure(
+            overflow,
+            super::runtime::RuntimeErrorCode::IntegerOverflow,
+            message,
+            span,
+            block_prefix,
+        )?;
+        Ok(result)
+    }
+
+    fn emit_checked_failure(
+        &mut self,
+        condition: IntValue<'a>,
+        code: super::runtime::RuntimeErrorCode,
+        message: &str,
+        span: Option<&Span>,
+        block_prefix: &str,
+    ) -> Result<(), String> {
+        let current_function = self
+            .builder
+            .get_insert_block()
+            .ok_or("No current basic block")?
+            .get_parent()
+            .ok_or("No current function")?;
+        let failure_bb = self
+            .context
+            .append_basic_block(current_function, &format!("{block_prefix}_overflow"));
+        let continue_bb = self
+            .context
+            .append_basic_block(current_function, &format!("{block_prefix}_continue"));
+        self.builder
+            .build_conditional_branch(condition, failure_bb, continue_bb)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(failure_bb);
+        self.emit_runtime_fatal(code, message, span, &format!("{block_prefix}_overflow"))?;
+        self.builder.position_at_end(continue_bb);
+        Ok(())
+    }
+
     /// Ensure a value is a pointer, boxing it if necessary.
     pub(super) fn ensure_pointer(&mut self, val: BasicValueEnum<'a>) -> PointerValue<'a> {
         if val.is_pointer_value() {
@@ -692,105 +776,71 @@ impl<'a> CodeGenerator<'a> {
             .get_parent()
             .ok_or("No current function for short-circuit logical operation")?;
 
-        match op {
-            BinaryOp::LogicalAnd => {
-                // Create basic blocks for control flow
-                let eval_right_bb = self
-                    .context
-                    .append_basic_block(current_fn, "and_eval_right");
-                let merge_bb = self.context.append_basic_block(current_fn, "and_merge");
-
-                // Evaluate left operand
-                let left_val = self.generate_expression(left_expr)?;
-                let left_bool = self.get_raw_bool_value(left_val)?;
-                let left_bb = self
-                    .builder
-                    .get_insert_block()
-                    .ok_or("No insert block after evaluating left operand")?;
-
-                // If left is false, skip to merge with false result
-                // If left is true, evaluate right operand
-                self.builder
-                    .build_conditional_branch(left_bool, eval_right_bb, merge_bb)
-                    .map_err(|e| e.to_string())?;
-
-                // eval_right_bb: evaluate right operand
-                self.builder.position_at_end(eval_right_bb);
-                let right_val = self.generate_expression(right_expr)?;
-                let right_bool = self.get_raw_bool_value(right_val)?;
-                let right_bb = self
-                    .builder
-                    .get_insert_block()
-                    .ok_or("No insert block after evaluating right operand")?;
-                self.builder
-                    .build_unconditional_branch(merge_bb)
-                    .map_err(|e| e.to_string())?;
-
-                // merge_bb: phi node combines results
-                self.builder.position_at_end(merge_bb);
-                let phi = self
-                    .builder
-                    .build_phi(self.context.bool_type(), "and_result")
-                    .map_err(|e| e.to_string())?;
-
-                let false_val = self.context.bool_type().const_zero();
-                phi.add_incoming(&[
-                    (&false_val, left_bb),   // Left was false, return false
-                    (&right_bool, right_bb), // Left was true, return right
-                ]);
-
-                Ok(phi.as_basic_value())
+        let is_and = match op {
+            BinaryOp::LogicalAnd => true,
+            BinaryOp::LogicalOr => false,
+            _ => {
+                return Err(
+                    "generate_short_circuit_logical_op called with non-logical operator"
+                        .to_string(),
+                );
             }
-            BinaryOp::LogicalOr => {
-                // Create basic blocks for control flow
-                let eval_right_bb = self.context.append_basic_block(current_fn, "or_eval_right");
-                let merge_bb = self.context.append_basic_block(current_fn, "or_merge");
+        };
+        self.generate_short_circuit_branch(left_expr, right_expr, current_fn, is_and)
+    }
 
-                // Evaluate left operand
-                let left_val = self.generate_expression(left_expr)?;
-                let left_bool = self.get_raw_bool_value(left_val)?;
-                let left_bb = self
-                    .builder
-                    .get_insert_block()
-                    .ok_or("No insert block after evaluating left operand")?;
+    fn generate_short_circuit_branch(
+        &mut self,
+        left_expr: &ExpressionNode,
+        right_expr: &ExpressionNode,
+        current_fn: inkwell::values::FunctionValue<'a>,
+        is_and: bool,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let operation = if is_and { "and" } else { "or" };
+        let eval_right_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{operation}_eval_right"));
+        let merge_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{operation}_merge"));
 
-                // If left is true, skip to merge with true result
-                // If left is false, evaluate right operand
-                self.builder
-                    .build_conditional_branch(left_bool, merge_bb, eval_right_bb)
-                    .map_err(|e| e.to_string())?;
+        let left_val = self.generate_expression(left_expr)?;
+        let left_bool = self.get_raw_bool_value(left_val)?;
+        let left_bb = self
+            .builder
+            .get_insert_block()
+            .ok_or("No insert block after evaluating left operand")?;
+        let (true_target, false_target) = if is_and {
+            (eval_right_bb, merge_bb)
+        } else {
+            (merge_bb, eval_right_bb)
+        };
+        self.builder
+            .build_conditional_branch(left_bool, true_target, false_target)
+            .map_err(|e| e.to_string())?;
 
-                // eval_right_bb: evaluate right operand
-                self.builder.position_at_end(eval_right_bb);
-                let right_val = self.generate_expression(right_expr)?;
-                let right_bool = self.get_raw_bool_value(right_val)?;
-                let right_bb = self
-                    .builder
-                    .get_insert_block()
-                    .ok_or("No insert block after evaluating right operand")?;
-                self.builder
-                    .build_unconditional_branch(merge_bb)
-                    .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(eval_right_bb);
+        let right_val = self.generate_expression(right_expr)?;
+        let right_bool = self.get_raw_bool_value(right_val)?;
+        let right_bb = self
+            .builder
+            .get_insert_block()
+            .ok_or("No insert block after evaluating right operand")?;
+        self.builder
+            .build_unconditional_branch(merge_bb)
+            .map_err(|e| e.to_string())?;
 
-                // merge_bb: phi node combines results
-                self.builder.position_at_end(merge_bb);
-                let phi = self
-                    .builder
-                    .build_phi(self.context.bool_type(), "or_result")
-                    .map_err(|e| e.to_string())?;
-
-                let true_val = self.context.bool_type().const_int(1, false);
-                phi.add_incoming(&[
-                    (&true_val, left_bb),    // Left was true, return true
-                    (&right_bool, right_bb), // Left was false, return right
-                ]);
-
-                Ok(phi.as_basic_value())
-            }
-            _ => Err(
-                "generate_short_circuit_logical_op called with non-logical operator".to_string(),
-            ),
-        }
+        self.builder.position_at_end(merge_bb);
+        let phi = self
+            .builder
+            .build_phi(self.context.bool_type(), &format!("{operation}_result"))
+            .map_err(|e| e.to_string())?;
+        let short_circuit_value = self
+            .context
+            .bool_type()
+            .const_int(u64::from(!is_and), false);
+        phi.add_incoming(&[(&short_circuit_value, left_bb), (&right_bool, right_bb)]);
+        Ok(phi.as_basic_value())
     }
 
     fn generate_add_op(
@@ -968,10 +1018,15 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Int) => {
                 let left_int = self.get_raw_int_value(left)?;
                 let right_int = self.get_raw_int_value(right)?;
-                self.builder
-                    .build_int_add(left_int, right_int, "add")
-                    .map_err(|e| e.to_string())
-                    .map(|v| v.into())
+                self.checked_int_operation(
+                    left_int,
+                    right_int,
+                    "llvm.sadd.with.overflow.i64",
+                    "integer addition overflow",
+                    Some(left_expr.span()),
+                    "add",
+                )
+                .map(Into::into)
             }
             Type::Primitive(PrimitiveType::Float) => {
                 let left_float = self.get_raw_float_value(left)?;
@@ -988,81 +1043,110 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
-    fn generate_subtract_op(
-        &mut self,
-        left: BasicValueEnum<'a>,
-        right: BasicValueEnum<'a>,
-    ) -> Result<BasicValueEnum<'a>, String> {
-        if let (Ok(left_int), Ok(right_int)) =
-            (self.get_raw_int_value(left), self.get_raw_int_value(right))
-        {
-            self.builder
-                .build_int_sub(left_int, right_int, "sub")
-                .map_err(|e| e.to_string())
-                .map(|v| v.into())
-        } else if let (Ok(left_float), Ok(right_float)) = (
-            self.get_raw_float_value(left),
-            self.get_raw_float_value(right),
-        ) {
-            self.builder
-                .build_float_sub(left_float, right_float, "fsub")
-                .map_err(|e| e.to_string())
-                .map(|v| v.into())
-        } else {
-            Err("Unsupported sub operands".to_string())
-        }
-    }
-
-    fn generate_multiply_op(
-        &mut self,
-        left: BasicValueEnum<'a>,
-        right: BasicValueEnum<'a>,
-    ) -> Result<BasicValueEnum<'a>, String> {
-        if let (Ok(left_int), Ok(right_int)) =
-            (self.get_raw_int_value(left), self.get_raw_int_value(right))
-        {
-            self.builder
-                .build_int_mul(left_int, right_int, "mul")
-                .map_err(|e| e.to_string())
-                .map(|v| v.into())
-        } else if let (Ok(left_float), Ok(right_float)) = (
-            self.get_raw_float_value(left),
-            self.get_raw_float_value(right),
-        ) {
-            self.builder
-                .build_float_mul(left_float, right_float, "fmul")
-                .map_err(|e| e.to_string())
-                .map(|v| v.into())
-        } else {
-            Err("Unsupported mul operands".to_string())
-        }
-    }
-
-    fn generate_divide_op(
+    fn generate_checked_arithmetic_op(
         &mut self,
         left: BasicValueEnum<'a>,
         right: BasicValueEnum<'a>,
         span: Option<&Span>,
+        kind: CheckedArithmeticKind,
     ) -> Result<BasicValueEnum<'a>, String> {
+        let (intrinsic, message, block_prefix) = match kind {
+            CheckedArithmeticKind::Subtract => (
+                "llvm.ssub.with.overflow.i64",
+                "integer subtraction overflow",
+                "sub",
+            ),
+            CheckedArithmeticKind::Multiply => (
+                "llvm.smul.with.overflow.i64",
+                "integer multiplication overflow",
+                "mul",
+            ),
+        };
         if let (Ok(left_int), Ok(right_int)) =
             (self.get_raw_int_value(left), self.get_raw_int_value(right))
         {
-            self.emit_div_by_zero_check(right_int, span, "div", "division by zero")?;
-            self.builder
-                .build_int_signed_div(left_int, right_int, "div")
-                .map_err(|e| e.to_string())
-                .map(|v| v.into())
+            self.checked_int_operation(left_int, right_int, intrinsic, message, span, block_prefix)
+                .map(Into::into)
         } else if let (Ok(left_float), Ok(right_float)) = (
             self.get_raw_float_value(left),
             self.get_raw_float_value(right),
         ) {
+            let result = match kind {
+                CheckedArithmeticKind::Subtract => {
+                    self.builder
+                        .build_float_sub(left_float, right_float, "fsub")
+                }
+                CheckedArithmeticKind::Multiply => {
+                    self.builder
+                        .build_float_mul(left_float, right_float, "fmul")
+                }
+            };
+            result.map_err(|e| e.to_string()).map(|v| v.into())
+        } else {
+            let unsupported = match kind {
+                CheckedArithmeticKind::Subtract => "Unsupported sub operands",
+                CheckedArithmeticKind::Multiply => "Unsupported mul operands",
+            };
+            Err(unsupported.to_string())
+        }
+    }
+
+    fn generate_division_op(
+        &mut self,
+        left: BasicValueEnum<'a>,
+        right: BasicValueEnum<'a>,
+        span: Option<&Span>,
+        kind: DivisionKind,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let (block_prefix, zero_message, overflow_message, unsupported_message) = match kind {
+            DivisionKind::Divide => (
+                "div",
+                "division by zero",
+                "integer division overflow",
+                "Unsupported div operands",
+            ),
+            DivisionKind::Modulo => (
+                "mod",
+                "modulo by zero",
+                "integer modulo overflow",
+                "Unsupported mod operands",
+            ),
+        };
+        if let (Ok(left_int), Ok(right_int)) =
+            (self.get_raw_int_value(left), self.get_raw_int_value(right))
+        {
+            self.emit_div_by_zero_check(right_int, span, block_prefix, zero_message)?;
+            self.emit_div_overflow_check(
+                left_int,
+                right_int,
+                span,
+                block_prefix,
+                overflow_message,
+            )?;
+            let result = match kind {
+                DivisionKind::Divide => {
+                    self.builder
+                        .build_int_signed_div(left_int, right_int, block_prefix)
+                }
+                DivisionKind::Modulo => {
+                    self.builder
+                        .build_int_signed_rem(left_int, right_int, block_prefix)
+                }
+            };
+            result.map_err(|e| e.to_string()).map(|v| v.into())
+        } else if matches!(kind, DivisionKind::Divide)
+            && let (Ok(left_float), Ok(right_float)) = (
+                self.get_raw_float_value(left),
+                self.get_raw_float_value(right),
+            )
+        {
             // Float division follows IEEE 754 semantics (inf/nan), no check.
             self.builder
                 .build_float_div(left_float, right_float, "fdiv")
                 .map_err(|e| e.to_string())
                 .map(|v| v.into())
         } else {
-            Err("Unsupported div operands".to_string())
+            Err(unsupported_message.to_string())
         }
     }
 
@@ -1090,7 +1174,7 @@ impl<'a> CodeGenerator<'a> {
         let current_function = self
             .builder
             .get_insert_block()
-            .expect("Builder should have an insertion block")
+            .ok_or("No current basic block")?
             .get_parent()
             .ok_or("No current function")?;
 
@@ -1112,14 +1196,66 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| e.to_string())?;
         let loc = self.panic_location_arg(span, &format!("{}_zero_error", block_prefix))?;
         self.generate_runtime_call(
-            "mux_panic_cstr",
-            &[msg.as_pointer_value().into(), loc.into()],
+            "mux_panic_cstr_code",
+            &[
+                self.context
+                    .i32_type()
+                    .const_int(
+                        super::runtime::RuntimeErrorCode::DivisionByZero as u64,
+                        false,
+                    )
+                    .into(),
+                msg.as_pointer_value().into(),
+                loc.into(),
+            ],
         );
         self.builder
             .build_unreachable()
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(continue_bb);
+        Ok(())
+    }
+
+    /// Signed division and remainder have one overflowing pair in addition to
+    /// division by zero: `i64::MIN / -1` (and its remainder). LLVM does not
+    /// provide a defined value for that pair, so reject it before emitting the
+    /// operation just as the source-language checked arithmetic contract does.
+    fn emit_div_overflow_check(
+        &mut self,
+        dividend: IntValue<'a>,
+        divisor: IntValue<'a>,
+        span: Option<&Span>,
+        block_prefix: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        let int_type = dividend.get_type();
+        let min = int_type.const_int(i64::MIN as u64, false);
+        let minus_one = int_type.const_int((-1i64) as u64, false);
+        let is_min = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::EQ, dividend, min, "is_min")
+            .map_err(|e| e.to_string())?;
+        let is_minus_one = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                divisor,
+                minus_one,
+                "is_minus_one",
+            )
+            .map_err(|e| e.to_string())?;
+        let is_overflow = self
+            .builder
+            .build_and(is_min, is_minus_one, "div_overflow")
+            .map_err(|e| e.to_string())?;
+        self.emit_checked_failure(
+            is_overflow,
+            super::runtime::RuntimeErrorCode::IntegerOverflow,
+            message,
+            span,
+            block_prefix,
+        )?;
         Ok(())
     }
 
@@ -1159,25 +1295,6 @@ impl<'a> CodeGenerator<'a> {
             Ok(result)
         } else {
             Err("Unsupported pow operands".to_string())
-        }
-    }
-
-    fn generate_modulo_op(
-        &mut self,
-        left: BasicValueEnum<'a>,
-        right: BasicValueEnum<'a>,
-        span: Option<&Span>,
-    ) -> Result<BasicValueEnum<'a>, String> {
-        if let (Ok(left_int), Ok(right_int)) =
-            (self.get_raw_int_value(left), self.get_raw_int_value(right))
-        {
-            self.emit_div_by_zero_check(right_int, span, "mod", "modulo by zero")?;
-            self.builder
-                .build_int_signed_rem(left_int, right_int, "mod")
-                .map_err(|e| e.to_string())
-                .map(|v| v.into())
-        } else {
-            Err("Unsupported mod operands".to_string())
         }
     }
 
@@ -1509,9 +1626,24 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         match op {
             BinaryOp::Add => self.generate_add_op(left_expr, left, right),
-            BinaryOp::Subtract => self.generate_subtract_op(left, right),
-            BinaryOp::Multiply => self.generate_multiply_op(left, right),
-            BinaryOp::Divide => self.generate_divide_op(left, right, Some(right_expr.span())),
+            BinaryOp::Subtract => self.generate_checked_arithmetic_op(
+                left,
+                right,
+                Some(left_expr.span()),
+                CheckedArithmeticKind::Subtract,
+            ),
+            BinaryOp::Multiply => self.generate_checked_arithmetic_op(
+                left,
+                right,
+                Some(left_expr.span()),
+                CheckedArithmeticKind::Multiply,
+            ),
+            BinaryOp::Divide => self.generate_division_op(
+                left,
+                right,
+                Some(right_expr.span()),
+                DivisionKind::Divide,
+            ),
             BinaryOp::Exponent => self.generate_exponent_op(left, right),
             BinaryOp::Equal => {
                 self.generate_equality_op(left_expr, left, right, EqualityKind::Equal)
@@ -1556,7 +1688,12 @@ impl<'a> CodeGenerator<'a> {
                 // and should not reach here
                 Err("Logical AND/OR should use short-circuit evaluation".to_string())
             }
-            BinaryOp::Modulo => self.generate_modulo_op(left, right, Some(right_expr.span())),
+            BinaryOp::Modulo => self.generate_division_op(
+                left,
+                right,
+                Some(right_expr.span()),
+                DivisionKind::Modulo,
+            ),
             BinaryOp::In => self.generate_in_op(left_expr, right_expr, left, right),
             _ => Err("Binary op not implemented".to_string()),
         }

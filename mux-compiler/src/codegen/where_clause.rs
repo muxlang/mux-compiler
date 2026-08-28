@@ -1,7 +1,7 @@
 //! Codegen for `where { ... }` constraint checks.
 //!
 //! Each predicate is evaluated as a bool; a false result panics through the
-//! unified runtime panic (`panic: where constraint violated` plus the
+//! unified runtime panic (`panic[E0604]: where constraint violated` plus the
 //! predicate's `--> file:line:col`). Emission points: function/method/lambda
 //! entry (preconditions, including preconditions inherited from interfaces),
 //! enum variant construction, class construction (`.new()`, after field
@@ -51,7 +51,12 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(fail_bb);
-            self.emit_runtime_fatal("where constraint violated", Some(&predicate.span), &prefix)?;
+            self.emit_runtime_fatal(
+                super::runtime::RuntimeErrorCode::WhereConstraintViolation,
+                "where constraint violated",
+                Some(&predicate.span),
+                &prefix,
+            )?;
 
             self.builder.position_at_end(ok_bb);
         }

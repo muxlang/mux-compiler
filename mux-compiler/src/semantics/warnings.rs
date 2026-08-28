@@ -7,7 +7,8 @@
 use super::const_fold::{ConstValue, fold};
 use super::error::SemanticError;
 use crate::ast::{
-    AstNode, BinaryOp, ExpressionKind, ExpressionNode, FunctionNode, StatementKind, StatementNode,
+    AstNode, BinaryOp, ExpressionKind, ExpressionNode, FunctionNode, MatchArm, PatternNode,
+    StatementKind, StatementNode,
 };
 use crate::diagnostic::{DiagnosticCode, SpanEdit};
 
@@ -25,7 +26,388 @@ pub(super) fn collect(nodes: &[AstNode]) -> Vec<SemanticError> {
             AstNode::Enum { .. } => {}
         }
     }
+    warnings.extend(collect_binding_warnings(nodes));
     warnings
+}
+
+#[derive(Debug)]
+struct Binding {
+    name: String,
+    span: crate::lexer::Span,
+    reads: usize,
+    last_assignment: Option<crate::lexer::Span>,
+    read_since_assignment: bool,
+}
+
+/// A deliberately small lexical-use pass. Semantic analysis has already
+/// proven the program valid when this runs, so this pass can focus on facts
+/// that are syntax-local and cannot be invalidated by error recovery.
+struct BindingWarnings {
+    bindings: Vec<Binding>,
+    scopes: Vec<Vec<usize>>,
+    warnings: Vec<SemanticError>,
+}
+
+impl BindingWarnings {
+    fn new() -> Self {
+        Self {
+            bindings: Vec::new(),
+            scopes: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn push_scope(&mut self) {
+        self.scopes.push(Vec::new());
+    }
+
+    fn pop_scope(&mut self) {
+        let Some(indices) = self.scopes.pop() else {
+            return;
+        };
+        for index in indices {
+            let binding = &self.bindings[index];
+            if binding.reads == 0 && binding.name != "_" {
+                self.warnings.push(SemanticError::new(
+                    DiagnosticCode::UnusedBinding,
+                    format!("binding '{}' is never read", binding.name),
+                    binding.span,
+                ));
+            }
+        }
+    }
+
+    fn declare(&mut self, name: &str, span: crate::lexer::Span) {
+        if name == "_" {
+            return;
+        }
+        let Some(scope_index) = self.scopes.len().checked_sub(1) else {
+            return;
+        };
+        let shadowed = self
+            .scopes
+            .iter()
+            .rev()
+            .skip(1)
+            .flatten()
+            .any(|index| self.bindings[*index].name == name);
+        if shadowed {
+            self.warnings.push(SemanticError::new(
+                DiagnosticCode::ShadowedBinding,
+                format!("binding '{}' shadows an outer binding", name),
+                span,
+            ));
+        }
+        let index = self.bindings.len();
+        self.bindings.push(Binding {
+            name: name.to_string(),
+            span,
+            reads: 0,
+            last_assignment: None,
+            read_since_assignment: false,
+        });
+        self.scopes[scope_index].push(index);
+    }
+
+    fn find(&self, name: &str) -> Option<usize> {
+        self.scopes
+            .iter()
+            .rev()
+            .flatten()
+            .find_map(|index| (self.bindings[*index].name == name).then_some(*index))
+    }
+
+    fn read(&mut self, name: &str) {
+        let Some(index) = self.find(name) else {
+            return;
+        };
+        let binding = &mut self.bindings[index];
+        binding.reads += 1;
+        binding.read_since_assignment = true;
+    }
+
+    fn write(&mut self, name: &str, span: crate::lexer::Span) {
+        let Some(index) = self.find(name) else {
+            return;
+        };
+        let binding = &mut self.bindings[index];
+        if let Some(previous) = binding.last_assignment
+            && !binding.read_since_assignment
+        {
+            self.warnings.push(SemanticError::new(
+                DiagnosticCode::DeadAssignment,
+                format!("assignment to '{}' is overwritten before it is read", name),
+                previous,
+            ));
+        }
+        binding.last_assignment = Some(span);
+        binding.read_since_assignment = false;
+    }
+
+    /// A write observed inside a branch or loop is not known to execute, so it
+    /// must not participate in a later straight-line dead-assignment claim.
+    /// Reads remain recorded because they are safe evidence that a binding is
+    /// used, regardless of which path executed.
+    fn clear_assignment_tracking(&mut self) {
+        for binding in &mut self.bindings {
+            binding.last_assignment = None;
+            binding.read_since_assignment = false;
+        }
+    }
+}
+
+fn collect_binding_warnings(nodes: &[AstNode]) -> Vec<SemanticError> {
+    let mut analysis = BindingWarnings::new();
+    for node in nodes {
+        match node {
+            AstNode::Function(function) => collect_function_bindings(function, &mut analysis),
+            AstNode::Class { methods, .. } => {
+                for method in methods {
+                    collect_function_bindings(method, &mut analysis);
+                }
+            }
+            AstNode::Statement(statement) => {
+                if let StatementKind::Function(function) = &statement.kind {
+                    collect_function_bindings(function, &mut analysis);
+                }
+            }
+            AstNode::Interface { .. } => {}
+            AstNode::Enum { .. } => {}
+        }
+    }
+    analysis.warnings
+}
+
+fn collect_function_bindings(function: &FunctionNode, analysis: &mut BindingWarnings) {
+    analysis.push_scope();
+    for parameter in &function.params {
+        analysis.declare(&parameter.name, parameter.type_.span);
+        if let Some(default) = &parameter.default_value {
+            collect_binding_expression(default, analysis);
+        }
+    }
+    collect_binding_block(&function.body, analysis);
+    analysis.pop_scope();
+}
+
+fn collect_binding_block(statements: &[StatementNode], analysis: &mut BindingWarnings) {
+    for statement in statements {
+        collect_binding_statement(statement, analysis);
+    }
+}
+
+fn collect_binding_statement(statement: &StatementNode, analysis: &mut BindingWarnings) {
+    match &statement.kind {
+        StatementKind::AutoDecl(name, _, expression)
+        | StatementKind::TypedDecl(name, _, expression)
+        | StatementKind::ConstDecl(name, _, expression) => {
+            collect_binding_expression(expression, analysis);
+            analysis.declare(name, statement.span);
+        }
+        StatementKind::UninitDecl(name, _) => analysis.declare(name, statement.span),
+        StatementKind::For {
+            var, iter, body, ..
+        } => {
+            collect_binding_expression(iter, analysis);
+            analysis.clear_assignment_tracking();
+            analysis.push_scope();
+            analysis.declare(var, statement.span);
+            collect_binding_block(body, analysis);
+            analysis.pop_scope();
+            analysis.clear_assignment_tracking();
+        }
+        StatementKind::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
+            collect_binding_expression(cond, analysis);
+            analysis.clear_assignment_tracking();
+            analysis.push_scope();
+            collect_binding_block(then_block, analysis);
+            analysis.pop_scope();
+            if let Some(else_block) = else_block {
+                analysis.push_scope();
+                collect_binding_block(else_block, analysis);
+                analysis.pop_scope();
+            }
+            analysis.clear_assignment_tracking();
+        }
+        StatementKind::While { cond, body } => {
+            collect_binding_expression(cond, analysis);
+            analysis.clear_assignment_tracking();
+            analysis.push_scope();
+            collect_binding_block(body, analysis);
+            analysis.pop_scope();
+            analysis.clear_assignment_tracking();
+        }
+        StatementKind::Match { expr, arms } => {
+            collect_binding_expression(expr, analysis);
+            analysis.clear_assignment_tracking();
+            for arm in arms {
+                collect_binding_arm(arm, analysis);
+                // Arms are mutually exclusive. A store in one arm cannot make
+                // a later store in another arm a straight-line dead write.
+                analysis.clear_assignment_tracking();
+            }
+            analysis.clear_assignment_tracking();
+        }
+        StatementKind::Return(Some(expression)) | StatementKind::Expression(expression) => {
+            collect_binding_expression(expression, analysis)
+        }
+        StatementKind::Block(statements) => {
+            analysis.clear_assignment_tracking();
+            analysis.push_scope();
+            collect_binding_block(statements, analysis);
+            analysis.pop_scope();
+            analysis.clear_assignment_tracking();
+        }
+        StatementKind::Function(function) => {
+            analysis.declare(&function.name, statement.span);
+            collect_function_bindings(function, analysis);
+        }
+        StatementKind::Import { .. }
+        | StatementKind::Return(None)
+        | StatementKind::Break
+        | StatementKind::Continue => {}
+    }
+}
+
+fn collect_binding_arm(arm: &MatchArm, analysis: &mut BindingWarnings) {
+    analysis.push_scope();
+    collect_binding_pattern(&arm.pattern, analysis);
+    if let Some(guard) = &arm.guard {
+        collect_binding_expression(guard, analysis);
+    }
+    collect_binding_block(&arm.body, analysis);
+    analysis.pop_scope();
+}
+
+fn collect_binding_pattern(pattern: &PatternNode, analysis: &mut BindingWarnings) {
+    // Pattern identifiers are ambiguous in the recovered AST: `LIMIT` can be
+    // a constant pattern while `value` can bind a payload. The semantic
+    // pattern checker resolves that distinction, but it does not expose the
+    // binding spans to this lint pass. Do not guess here; guessing would turn
+    // valid constant patterns into bogus unused/shadowing warnings.
+    let _ = (pattern, analysis);
+}
+
+fn collect_binding_expression(expression: &ExpressionNode, analysis: &mut BindingWarnings) {
+    match &expression.kind {
+        ExpressionKind::Identifier(name) => analysis.read(name),
+        ExpressionKind::Binary {
+            left, op, right, ..
+        } if op.is_assignment() => collect_binding_assignment(left, op, right, analysis),
+        ExpressionKind::Binary { left, right, .. } => {
+            collect_binding_expression(left, analysis);
+            collect_binding_expression(right, analysis);
+        }
+        ExpressionKind::Unary { expr, .. } => collect_binding_expression(expr, analysis),
+        ExpressionKind::Call { func, args } => collect_binding_call(func, args, analysis),
+        ExpressionKind::FieldAccess { expr, .. } => collect_binding_expression(expr, analysis),
+        ExpressionKind::ListAccess { expr, index } => {
+            collect_binding_expression(expr, analysis);
+            collect_binding_expression(index, analysis);
+        }
+        ExpressionKind::Slice { expr, start, end } => {
+            collect_binding_slice(expr, start.as_deref(), end.as_deref(), analysis)
+        }
+        ExpressionKind::ListLiteral(elements)
+        | ExpressionKind::SetLiteral(elements)
+        | ExpressionKind::TupleLiteral(elements) => collect_binding_elements(elements, analysis),
+        ExpressionKind::MapLiteral { entries, .. } => collect_binding_map(entries, analysis),
+        ExpressionKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_binding_expression(cond, analysis);
+            collect_binding_expression(then_expr, analysis);
+            collect_binding_expression(else_expr, analysis);
+        }
+        ExpressionKind::Lambda { params, body, .. } => {
+            collect_binding_lambda(params, body, analysis)
+        }
+        ExpressionKind::Literal(_) | ExpressionKind::None | ExpressionKind::GenericType(_, _) => {}
+    }
+}
+
+fn collect_binding_assignment(
+    left: &ExpressionNode,
+    op: &BinaryOp,
+    right: &ExpressionNode,
+    analysis: &mut BindingWarnings,
+) {
+    let ExpressionKind::Identifier(name) = &left.kind else {
+        collect_binding_expression(left, analysis);
+        collect_binding_expression(right, analysis);
+        return;
+    };
+    if !matches!(op, BinaryOp::Assign) {
+        analysis.read(name);
+    }
+    collect_binding_expression(right, analysis);
+    analysis.write(name, left.span);
+}
+
+fn collect_binding_call(
+    func: &ExpressionNode,
+    args: &[ExpressionNode],
+    analysis: &mut BindingWarnings,
+) {
+    collect_binding_expression(func, analysis);
+    for arg in args {
+        collect_binding_expression(arg, analysis);
+    }
+}
+
+fn collect_binding_slice(
+    expr: &ExpressionNode,
+    start: Option<&ExpressionNode>,
+    end: Option<&ExpressionNode>,
+    analysis: &mut BindingWarnings,
+) {
+    collect_binding_expression(expr, analysis);
+    if let Some(start) = start {
+        collect_binding_expression(start, analysis);
+    }
+    if let Some(end) = end {
+        collect_binding_expression(end, analysis);
+    }
+}
+
+fn collect_binding_elements(elements: &[ExpressionNode], analysis: &mut BindingWarnings) {
+    for element in elements {
+        collect_binding_expression(element, analysis);
+    }
+}
+
+fn collect_binding_map(
+    entries: &[(ExpressionNode, ExpressionNode)],
+    analysis: &mut BindingWarnings,
+) {
+    for (key, value) in entries {
+        collect_binding_expression(key, analysis);
+        collect_binding_expression(value, analysis);
+    }
+}
+
+fn collect_binding_lambda(
+    params: &[crate::ast::Param],
+    body: &[StatementNode],
+    analysis: &mut BindingWarnings,
+) {
+    // The lambda may execute later, so writes inside it cannot prove anything
+    // about the enclosing function's straight-line store order. Reads of
+    // captured names are still real uses, however.
+    analysis.clear_assignment_tracking();
+    analysis.push_scope();
+    for parameter in params {
+        analysis.declare(&parameter.name, parameter.type_.span);
+    }
+    collect_binding_block(body, analysis);
+    analysis.pop_scope();
+    analysis.clear_assignment_tracking();
 }
 
 fn collect_function(function: &FunctionNode, warnings: &mut Vec<SemanticError>) {

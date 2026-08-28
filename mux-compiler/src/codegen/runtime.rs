@@ -14,6 +14,23 @@ use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue,
 };
 
+/// Numeric codes owned by `mux-runtime` for terminating failures. Keep this
+/// mirror in lockstep with `mux_runtime::panic::RuntimeErrorCode`; the compiler
+/// cannot depend on the runtime crate because it supports separately built
+/// runtimes and cross-target compilation.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum RuntimeErrorCode {
+    IndexOutOfBounds = 600,
+    KeyNotFound = 601,
+    DivisionByZero = 602,
+    AssertionFailed = 603,
+    WhereConstraintViolation = 604,
+    IntegerOverflow = 605,
+    InternalRuntime = 699,
+}
+
 impl<'a> CodeGenerator<'a> {
     pub(super) fn runtime_function(&self, name: &str) -> Option<FunctionValue<'a>> {
         if let Some(func) = self.module.get_function(name) {
@@ -140,6 +157,14 @@ impl<'a> CodeGenerator<'a> {
         module.add_function(
             "mux_panic_cstr",
             void_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+            None,
+        );
+        module.add_function(
+            "mux_panic_cstr_code",
+            void_type.fn_type(
+                &[context.i32_type().into(), i8_ptr.into(), i8_ptr.into()],
+                false,
+            ),
             None,
         );
         module.add_function(
@@ -1690,7 +1715,12 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(error_bb);
-        self.emit_runtime_fatal("cannot copy object of this type", None, "copy_error")?;
+        self.emit_runtime_fatal(
+            RuntimeErrorCode::InternalRuntime,
+            "cannot copy object of this type",
+            None,
+            "copy_error",
+        )?;
 
         self.builder.position_at_end(continue_bb);
         Ok(copied)
@@ -1715,5 +1745,21 @@ impl<'a> CodeGenerator<'a> {
         value_ptr: PointerValue<'a>,
     ) -> Result<PointerValue<'a>, String> {
         self.call_value_getter("mux_value_get_set", value_ptr, "get_set")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeErrorCode;
+
+    #[test]
+    fn runtime_codes_match_the_runtime_registry() {
+        assert_eq!(RuntimeErrorCode::IndexOutOfBounds as i32, 600);
+        assert_eq!(RuntimeErrorCode::KeyNotFound as i32, 601);
+        assert_eq!(RuntimeErrorCode::DivisionByZero as i32, 602);
+        assert_eq!(RuntimeErrorCode::AssertionFailed as i32, 603);
+        assert_eq!(RuntimeErrorCode::WhereConstraintViolation as i32, 604);
+        assert_eq!(RuntimeErrorCode::IntegerOverflow as i32, 605);
+        assert_eq!(RuntimeErrorCode::InternalRuntime as i32, 699);
     }
 }
