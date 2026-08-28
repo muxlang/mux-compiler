@@ -1362,13 +1362,23 @@ impl<'a> CodeGenerator<'a> {
 
         let one = self.context.i64_type().const_int(1, false);
         let new_val = if increment {
-            self.builder
-                .build_int_add(current_val, one, "incr_result")
-                .map_err(|e| e.to_string())?
+            self.checked_int_operation(
+                current_val,
+                one,
+                "llvm.sadd.with.overflow.i64",
+                "integer increment overflow",
+                Some(expr.span()),
+                "incr",
+            )?
         } else {
-            self.builder
-                .build_int_sub(current_val, one, "decr_result")
-                .map_err(|e| e.to_string())?
+            self.checked_int_operation(
+                current_val,
+                one,
+                "llvm.ssub.with.overflow.i64",
+                "integer decrement overflow",
+                Some(expr.span()),
+                "decr",
+            )?
         };
         // Written back through the slot's own type: a scalar slot takes the raw
         // value, while a capture cell holds a box whose previous occupant is
@@ -1392,13 +1402,24 @@ impl<'a> CodeGenerator<'a> {
         let current_val = self.get_raw_int_value(current)?;
         let one = self.context.i64_type().const_int(1, false);
         let new_val = if increment {
-            self.builder
-                .build_int_add(current_val, one, "field_incr_result")
+            self.checked_int_operation(
+                current_val,
+                one,
+                "llvm.sadd.with.overflow.i64",
+                "integer increment overflow",
+                Some(obj.span()),
+                "field_incr",
+            )
         } else {
-            self.builder
-                .build_int_sub(current_val, one, "field_decr_result")
-        }
-        .map_err(|e| e.to_string())?;
+            self.checked_int_operation(
+                current_val,
+                one,
+                "llvm.ssub.with.overflow.i64",
+                "integer decrement overflow",
+                Some(obj.span()),
+                "field_decr",
+            )
+        }?;
         // The incremented value is a fresh computed result (owned).
         self.assign_to_field_access(obj, field, new_val.into(), true)?;
         Ok(new_val.into())
@@ -1424,10 +1445,15 @@ impl<'a> CodeGenerator<'a> {
         let expr_val = self.generate_expression(expr)?;
         if expr_val.is_int_value() {
             let int_val = expr_val.into_int_value();
-            let neg = self
-                .builder
-                .build_int_neg(int_val, "neg")
-                .map_err(|e| e.to_string())?;
+            let zero = self.context.i64_type().const_zero();
+            let neg = self.checked_int_operation(
+                zero,
+                int_val,
+                "llvm.ssub.with.overflow.i64",
+                "integer negation overflow",
+                Some(expr.span()),
+                "neg",
+            )?;
             return Ok(neg.into());
         }
         if expr_val.is_float_value() {
@@ -1439,10 +1465,15 @@ impl<'a> CodeGenerator<'a> {
             return Ok(neg.into());
         }
         if let Ok(int_val) = self.get_raw_int_value(expr_val) {
-            let neg = self
-                .builder
-                .build_int_neg(int_val, "neg")
-                .map_err(|e| e.to_string())?;
+            let zero = self.context.i64_type().const_zero();
+            let neg = self.checked_int_operation(
+                zero,
+                int_val,
+                "llvm.ssub.with.overflow.i64",
+                "integer negation overflow",
+                Some(expr.span()),
+                "neg",
+            )?;
             return Ok(neg.into());
         }
         if let Ok(float_val) = self.get_raw_float_value(expr_val) {
@@ -4537,6 +4568,7 @@ impl<'a> CodeGenerator<'a> {
     /// code 1. The current block is consumed and left unreachable.
     pub(super) fn emit_runtime_fatal(
         &mut self,
+        code: super::runtime::RuntimeErrorCode,
         message: &str,
         span: Option<&Span>,
         block_name: &str,
@@ -4546,9 +4578,10 @@ impl<'a> CodeGenerator<'a> {
             .build_global_string_ptr(message, &format!("{}_msg", block_name))
             .map_err(|e| e.to_string())?;
         let loc = self.panic_location_arg(span, block_name)?;
+        let code = self.context.i32_type().const_int(code as u64, false);
         self.generate_runtime_call(
-            "mux_panic_cstr",
-            &[error_msg.as_pointer_value().into(), loc.into()],
+            "mux_panic_cstr_code",
+            &[code.into(), error_msg.as_pointer_value().into(), loc.into()],
         );
         self.builder
             .build_unreachable()

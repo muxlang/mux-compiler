@@ -91,23 +91,20 @@ impl DiagnosticCode {
             Self::ModuleNotFound,
             Self::ImportFailure,
             Self::InternalCompiler,
+            Self::UnusedBinding,
+            Self::ShadowedBinding,
             Self::UnreachableCode,
+            Self::DeadAssignment,
             Self::ConstantCondition,
             Self::RedundantConstruct,
         ]
     }
 
-    /// Allocated codes whose producers are not yet part of the public
-    /// diagnostic contract. Keeping these out of `all` prevents `explain` and
-    /// synchronization tests from promising diagnostics the compiler cannot
-    /// currently emit.
+    /// Allocated codes reserved for a future producer. These remain separate
+    /// from `all` so the embedded registry never advertises an unimplemented
+    /// diagnostic.
     pub const fn reserved() -> &'static [Self] {
-        &[
-            Self::UnusedBinding,
-            Self::ShadowedBinding,
-            Self::DeadAssignment,
-            Self::UninitializedRead,
-        ]
+        &[Self::UninitializedRead]
     }
 
     pub const fn as_str(self) -> &'static str {

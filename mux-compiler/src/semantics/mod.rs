@@ -97,6 +97,11 @@ pub struct SemanticAnalyzer {
     pub module_dependencies: Vec<String>,
     pub(super) current_file: Option<std::path::PathBuf>, // Track current file for relative imports
     pub(super) current_file_id: Option<crate::diagnostic::FileId>,
+    /// Warnings are reported for the root compilation unit. Imported modules
+    /// are type-checked independently, but linting their implementation would
+    /// make a dependency's private choices fail the importing program (and
+    /// would duplicate diagnostics when a module is reached through aliases).
+    pub(super) is_imported_module: bool,
     pub lambda_captures: std::collections::HashMap<Span, Vec<(String, Type)>>, // Track captured variables for each lambda
     pub current_return_type: Option<Type>, // Track current function/lambda return type
     pub current_class_type_params: Option<Vec<(String, GenericBounds)>>, // Track class-level type params with bounds for method analysis
@@ -162,6 +167,7 @@ impl SemanticAnalyzer {
             module_dependencies: Vec::new(),
             current_file: None,
             current_file_id: None,
+            is_imported_module: false,
             lambda_captures: std::collections::HashMap::new(),
             current_return_type: None,
             current_class_type_params: None,
@@ -299,6 +305,10 @@ impl SemanticAnalyzer {
 
     pub fn set_current_file_id(&mut self, file_id: crate::diagnostic::FileId) {
         self.current_file_id = Some(file_id);
+    }
+
+    pub(super) fn set_imported_module(&mut self) {
+        self.is_imported_module = true;
     }
 
     pub fn take_imported_errors(&mut self) -> Vec<SemanticError> {
@@ -783,7 +793,7 @@ impl SemanticAnalyzer {
         let has_errors = errors
             .iter()
             .any(|error| error.code.level() == crate::diagnostic::Level::Error);
-        if !has_errors {
+        if !has_errors && !self.is_imported_module {
             errors.extend(warnings::collect(ast));
         }
         let mut seen = HashSet::new();

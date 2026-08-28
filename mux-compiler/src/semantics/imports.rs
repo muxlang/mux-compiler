@@ -182,6 +182,7 @@ impl SemanticAnalyzer {
         span: Span,
     ) -> Result<HashMap<String, Symbol>, SemanticError> {
         let mut module_analyzer = SemanticAnalyzer::new_with_resolver(resolver.clone());
+        module_analyzer.set_imported_module();
         module_analyzer.set_current_file(std::path::PathBuf::from(
             module_path.replace('.', "/") + ".mux",
         ));
@@ -389,6 +390,7 @@ impl SemanticAnalyzer {
             })?;
 
         let mut submodule_analyzer = SemanticAnalyzer::new_with_resolver(resolver.clone());
+        submodule_analyzer.set_imported_module();
         submodule_analyzer.set_current_file(std::path::PathBuf::from(
             submodule_path.replace('.', "/") + ".mux",
         ));
