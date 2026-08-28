@@ -144,30 +144,43 @@ impl<'a> CodeGenerator<'a> {
             .build_extract_value(aggregate, 1, "checked_overflow")
             .map_err(|e| e.to_string())?
             .into_int_value();
+        self.emit_checked_failure(
+            overflow,
+            super::runtime::RuntimeErrorCode::IntegerOverflow,
+            message,
+            span,
+            block_prefix,
+        )?;
+        Ok(result)
+    }
+
+    fn emit_checked_failure(
+        &mut self,
+        condition: IntValue<'a>,
+        code: super::runtime::RuntimeErrorCode,
+        message: &str,
+        span: Option<&Span>,
+        block_prefix: &str,
+    ) -> Result<(), String> {
         let current_function = self
             .builder
             .get_insert_block()
             .ok_or("No current basic block")?
             .get_parent()
             .ok_or("No current function")?;
-        let fail_bb = self
+        let failure_bb = self
             .context
             .append_basic_block(current_function, &format!("{block_prefix}_overflow"));
         let continue_bb = self
             .context
             .append_basic_block(current_function, &format!("{block_prefix}_continue"));
         self.builder
-            .build_conditional_branch(overflow, fail_bb, continue_bb)
+            .build_conditional_branch(condition, failure_bb, continue_bb)
             .map_err(|e| e.to_string())?;
-        self.builder.position_at_end(fail_bb);
-        self.emit_runtime_fatal(
-            super::runtime::RuntimeErrorCode::IntegerOverflow,
-            message,
-            span,
-            &format!("{block_prefix}_overflow"),
-        )?;
+        self.builder.position_at_end(failure_bb);
+        self.emit_runtime_fatal(code, message, span, &format!("{block_prefix}_overflow"))?;
         self.builder.position_at_end(continue_bb);
-        Ok(result)
+        Ok(())
     }
 
     /// Ensure a value is a pointer, boxing it if necessary.
@@ -1173,7 +1186,7 @@ impl<'a> CodeGenerator<'a> {
         let current_function = self
             .builder
             .get_insert_block()
-            .expect("Builder should have an insertion block")
+            .ok_or("No current basic block")?
             .get_parent()
             .ok_or("No current function")?;
 
@@ -1248,29 +1261,13 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_and(is_min, is_minus_one, "div_overflow")
             .map_err(|e| e.to_string())?;
-        let current_function = self
-            .builder
-            .get_insert_block()
-            .ok_or("No current basic block")?
-            .get_parent()
-            .ok_or("No current function")?;
-        let fail_bb = self
-            .context
-            .append_basic_block(current_function, &format!("{block_prefix}_overflow"));
-        let continue_bb = self
-            .context
-            .append_basic_block(current_function, &format!("{block_prefix}_continue"));
-        self.builder
-            .build_conditional_branch(is_overflow, fail_bb, continue_bb)
-            .map_err(|e| e.to_string())?;
-        self.builder.position_at_end(fail_bb);
-        self.emit_runtime_fatal(
+        self.emit_checked_failure(
+            is_overflow,
             super::runtime::RuntimeErrorCode::IntegerOverflow,
             message,
             span,
-            &format!("{block_prefix}_overflow"),
+            block_prefix,
         )?;
-        self.builder.position_at_end(continue_bb);
         Ok(())
     }
 

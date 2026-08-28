@@ -78,9 +78,12 @@ impl BindingWarnings {
     }
 
     fn declare(&mut self, name: &str, span: crate::lexer::Span) {
-        if name == "_" || self.scopes.is_empty() {
+        if name == "_" {
             return;
         }
+        let Some(scope_index) = self.scopes.len().checked_sub(1) else {
+            return;
+        };
         let shadowed = self
             .scopes
             .iter()
@@ -103,7 +106,7 @@ impl BindingWarnings {
             last_assignment: None,
             read_since_assignment: false,
         });
-        self.scopes.last_mut().expect("scope exists").push(index);
+        self.scopes[scope_index].push(index);
     }
 
     fn find(&self, name: &str) -> Option<usize> {

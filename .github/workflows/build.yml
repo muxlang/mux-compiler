@@ -679,11 +679,17 @@ jobs:
         run: |
           set -euo pipefail
           ref=main
-          paired=$(printf '%s' "$PR_LABELS" \
-            | jq -r 'if type == "array" then .[] else empty end
-                     | select(startswith("paired-runtime:"))
-                     | sub("^paired-runtime:"; "")' \
-            | head -n 1)
+          paired=$(python3 -c '
+            import json
+            import os
+
+            labels = json.loads(os.environ.get("PR_LABELS", "[]"))
+            match = next(
+                (label for label in labels if label.startswith("paired-runtime:")),
+                "",
+            )
+            print(match.removeprefix("paired-runtime:"), end="")
+          ')
           if [ -n "$paired" ]; then
             case "$paired" in
               -* | *..* | *[!A-Za-z0-9._/-]*)
