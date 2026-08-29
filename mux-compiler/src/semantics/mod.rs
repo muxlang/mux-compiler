@@ -982,52 +982,80 @@ impl SemanticAnalyzer {
             return qualified;
         }
 
-        // A generic type parameter (e.g. `T`) resolves to a type variable.
         if type_args.is_empty()
-            && let Some(symbol) = self.symbol_table.lookup(name)
-            && matches!(symbol.kind, SymbolKind::Type)
+            && self
+                .symbol_table
+                .lookup(name)
+                .is_some_and(|symbol| matches!(symbol.kind, SymbolKind::Type))
         {
             return Ok(Type::Variable(name.to_string()));
         }
 
-        // Correctly-parameterized built-in wrappers.
-        if name == "optional" && type_args.len() == 1 {
-            let resolved_arg = self.resolve_type(&type_args[0])?;
-            return Ok(Type::Optional(Box::new(resolved_arg)));
-        } else if name == "result" && type_args.len() == 2 {
-            let resolved_ok = self.resolve_type(&type_args[0])?;
-            let resolved_err = self.resolve_type(&type_args[1])?;
-            // A type parameter reaches here as a bare name: the signature is
-            // resolved before the parameters are substituted for type
-            // variables, so `result<T, E>` would be rejected for E not
-            // implementing Error even when the declaration says `E is Error`.
-            // Its bound is enforced at the call, where E is bound to a real
-            // type, so defer for one - but only for a name the declaration
-            // actually lists, or a misspelled type would be waved through.
-            let err_is_type_param = matches!(
-                &resolved_err,
-                Type::Named(name, args)
-                    if args.is_empty() && self.signature_type_params.contains(name)
-            );
-            if !err_is_type_param && !self.type_implements_interface(&resolved_err, "Error") {
-                return Err(SemanticError::with_help(
-                    DiagnosticCode::InvalidOperation,
-                    format!(
-                        "Result error type must implement Error, but found {}",
-                        format_type(&resolved_err)
-                    ),
-                    span,
-                    "Use an error type that implements Error (requires message() -> string).",
-                ));
-            }
-            return Ok(Type::Result(Box::new(resolved_ok), Box::new(resolved_err)));
+        if let Some(builtin) = self.resolve_builtin_named_type(name, type_args, span) {
+            return builtin;
         }
 
-        // Built-in generic types always require their type arguments. The
-        // correctly-arg'd forms are handled before reaching here (list/map/set/
-        // tuple become dedicated TypeKind variants in the parser; optional/result
-        // are matched just above), so any of these names arriving here is missing
-        // or has the wrong number of type arguments (issue #289).
+        self.validate_named_type_arguments(name, type_args, span)?;
+        self.reject_interface_named_type(name, span)?;
+
+        // Named types are otherwise assumed to be classes or enums.
+        let resolved_args = type_args
+            .iter()
+            .map(|arg| self.resolve_type(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Type::Named(name.to_string(), resolved_args))
+    }
+
+    fn resolve_builtin_named_type(
+        &self,
+        name: &str,
+        type_args: &[TypeNode],
+        span: Span,
+    ) -> Option<Result<Type, SemanticError>> {
+        if name == "optional" && type_args.len() == 1 {
+            let resolved_arg = self.resolve_type(&type_args[0]);
+            return Some(resolved_arg.map(|arg| Type::Optional(Box::new(arg))));
+        }
+        if name != "result" || type_args.len() != 2 {
+            return None;
+        }
+
+        let resolved_ok = match self.resolve_type(&type_args[0]) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        };
+        let resolved_err = match self.resolve_type(&type_args[1]) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        };
+        let err_is_type_param = matches!(
+            &resolved_err,
+            Type::Named(name, args)
+                if args.is_empty() && self.signature_type_params.contains(name)
+        );
+        if !err_is_type_param && !self.type_implements_interface(&resolved_err, "Error") {
+            return Some(Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
+                format!(
+                    "Result error type must implement Error, but found {}",
+                    format_type(&resolved_err)
+                ),
+                span,
+                "Use an error type that implements Error (requires message() -> string).",
+            )));
+        }
+        Some(Ok(Type::Result(
+            Box::new(resolved_ok),
+            Box::new(resolved_err),
+        )))
+    }
+
+    fn validate_named_type_arguments(
+        &self,
+        name: &str,
+        type_args: &[TypeNode],
+        span: Span,
+    ) -> Result<(), SemanticError> {
         if let Some(required) = builtin_generic_arity(name) {
             return Err(SemanticError::with_help(
                 DiagnosticCode::InvalidTypeArguments,
@@ -1042,59 +1070,39 @@ impl SemanticAnalyzer {
                 missing_type_args_help(name),
             ));
         }
-
-        // A user-declared generic type used without (or with the wrong number
-        // of) type arguments; non-generic named types have no type parameters
-        // and are unaffected (issue #289).
         if let Some(symbol) = self.symbol_table.lookup(name)
             && !symbol.type_params.is_empty()
         {
             self.validate_type_argument_count(name, &symbol, type_args, span)?;
         }
+        Ok(())
+    }
 
-        // An interface names a capability, not a value. Mux dispatches
-        // interfaces statically, so an interface-typed slot has no way to find
-        // the method body for whatever it happens to hold - the vtable each
-        // object carries is never read. Taking the interface as a bound
-        // monomorphizes the call instead, which is the form that works.
-        //
-        // Rejecting here rather than at the call keeps the error on the
-        // declaration the reader can fix: it used to be accepted and then fail
-        // with "Type mismatch: expected Shape, got Rect" at every caller.
-        // The built-in capabilities are answered structurally and are never
-        // declared symbols, so a symbol-kind test alone let `func f(Comparable c)`
-        // through to fail at the caller with the very message this replaces.
+    fn reject_interface_named_type(&self, name: &str, span: Span) -> Result<(), SemanticError> {
         let is_builtin_capability = self.symbol_table.lookup(name).is_none()
             && matches!(
                 name,
                 "Stringable" | "Equatable" | "Comparable" | "Hashable" | "Error"
             );
-        if is_builtin_capability
-            || self
-                .symbol_table
-                .lookup(name)
-                .is_some_and(|symbol| matches!(symbol.kind, SymbolKind::Interface))
-        {
-            return Err(SemanticError::with_help(
-                DiagnosticCode::InvalidOperation,
-                format!(
-                    "'{}' is an interface and cannot be used as a value type",
-                    name
-                ),
-                span,
-                format!(
-                    "Take it as a bound instead, e.g. 'func f<T is {}>(T value)'. A class still implements it with 'is {}'.",
-                    name, name
-                ),
-            ));
+        let is_declared_interface = self
+            .symbol_table
+            .lookup(name)
+            .is_some_and(|symbol| matches!(symbol.kind, SymbolKind::Interface));
+        if !is_builtin_capability && !is_declared_interface {
+            return Ok(());
         }
-
-        // Named types are otherwise assumed to be classes or enums.
-        let resolved_args = type_args
-            .iter()
-            .map(|arg| self.resolve_type(arg))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Type::Named(name.to_string(), resolved_args))
+        Err(SemanticError::with_help(
+            DiagnosticCode::InvalidOperation,
+            format!(
+                "'{}' is an interface and cannot be used as a value type",
+                name
+            ),
+            span,
+            format!(
+                "Take it as a bound instead, e.g. 'func f<T is {}>(T value)'. A class still implements it with 'is {}'.",
+                name, name
+            ),
+        ))
     }
 
     /// Validate only the generic arity of every named type inside `type_node`,
@@ -1117,35 +1125,7 @@ impl SemanticAnalyzer {
         local_params: &[(String, Vec<TraitBound>)],
     ) -> Result<(), SemanticError> {
         match &type_node.kind {
-            TypeKind::Named(name, args) => {
-                let is_local_param = local_params.iter().any(|(p, _)| p == name);
-                if !is_local_param {
-                    if let Some(required) = builtin_generic_arity(name) {
-                        if args.len() != required {
-                            return Err(SemanticError::with_help(
-                                DiagnosticCode::InvalidTypeArguments,
-                                format!(
-                                    "'{}' requires {} type argument{}, got {}",
-                                    name,
-                                    required,
-                                    if required == 1 { "" } else { "s" },
-                                    args.len()
-                                ),
-                                type_node.span,
-                                missing_type_args_help(name),
-                            ));
-                        }
-                    } else if let Some(symbol) = self.symbol_table.lookup(name)
-                        && !symbol.type_params.is_empty()
-                    {
-                        self.validate_type_argument_count(name, &symbol, args, type_node.span)?;
-                    }
-                }
-                for arg in args {
-                    self.validate_type_arity(arg, local_params)?;
-                }
-                Ok(())
-            }
+            TypeKind::Named(_, _) => self.validate_named_type_arity(type_node, local_params),
             TypeKind::List(inner) | TypeKind::Set(inner) | TypeKind::Reference(inner) => {
                 self.validate_type_arity(inner, local_params)
             }
@@ -1166,6 +1146,54 @@ impl SemanticAnalyzer {
             TypeKind::TraitObject(inner) => self.validate_type_arity(inner, local_params),
             TypeKind::Primitive(_) | TypeKind::Auto => Ok(()),
         }
+    }
+
+    fn validate_named_type_arity(
+        &self,
+        type_node: &TypeNode,
+        local_params: &[(String, Vec<TraitBound>)],
+    ) -> Result<(), SemanticError> {
+        let TypeKind::Named(name, args) = &type_node.kind else {
+            return Ok(());
+        };
+        if !local_params.iter().any(|(param, _)| param == name) {
+            self.validate_named_type_arguments_for_arity(name, args, type_node.span)?;
+        }
+        for arg in args {
+            self.validate_type_arity(arg, local_params)?;
+        }
+        Ok(())
+    }
+
+    fn validate_named_type_arguments_for_arity(
+        &self,
+        name: &str,
+        args: &[TypeNode],
+        span: Span,
+    ) -> Result<(), SemanticError> {
+        if let Some(required) = builtin_generic_arity(name) {
+            if args.len() != required {
+                return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidTypeArguments,
+                    format!(
+                        "'{}' requires {} type argument{}, got {}",
+                        name,
+                        required,
+                        if required == 1 { "" } else { "s" },
+                        args.len()
+                    ),
+                    span,
+                    missing_type_args_help(name),
+                ));
+            }
+            return Ok(());
+        }
+        if let Some(symbol) = self.symbol_table.lookup(name)
+            && !symbol.type_params.is_empty()
+        {
+            self.validate_type_argument_count(name, &symbol, args, span)?;
+        }
+        Ok(())
     }
 
     pub fn get_expression_type(&mut self, expr: &ExpressionNode) -> Result<Type, SemanticError> {
