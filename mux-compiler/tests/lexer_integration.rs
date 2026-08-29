@@ -35,13 +35,20 @@ fn root_mux_files() -> Vec<PathBuf> {
 
 #[test]
 fn lexer_snapshot_inventory_matches_fixtures() {
-    let fixture_stems: std::collections::BTreeSet<_> = root_mux_files()
+    let fixture_stems: Vec<_> = root_mux_files()
         .into_iter()
         .filter_map(|path| {
             path.file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
         })
         .collect();
+    let unique_fixture_stems: std::collections::BTreeSet<_> =
+        fixture_stems.iter().cloned().collect();
+    assert_eq!(
+        fixture_stems.len(),
+        unique_fixture_stems.len(),
+        "root fixtures must have unique stems so each fixture maps to one snapshot"
+    );
     let snapshot_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
     let snapshot_stems: std::collections::BTreeSet<_> = fs::read_dir(&snapshot_dir)
         .unwrap_or_else(|error| panic!("Failed to read snapshot directory: {error}"))
@@ -58,7 +65,7 @@ fn lexer_snapshot_inventory_matches_fixtures() {
         .collect();
 
     assert_eq!(
-        fixture_stems, snapshot_stems,
+        unique_fixture_stems, snapshot_stems,
         "every root fixture must have exactly one named lexer snapshot; update the fixture and snapshot together"
     );
 }
