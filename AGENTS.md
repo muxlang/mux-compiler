@@ -30,5 +30,5 @@ parser, code-generation, or diagnostic changes.
 
 ## Documentation
 
-See [`README.md`](README.md), [`CONTRIBUTING.md`](CONTRIBUTING.md),
-`docs/`, and the cross-repository decisions in `mux-context`.
+See [`README.md`](README.md), [`docs/`](docs/), and the cross-repository
+decisions in `mux-context`.
