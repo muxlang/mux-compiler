@@ -4,7 +4,7 @@
 
 use super::CodeGenerator;
 use crate::ast::{EnumVariant, ExpressionNode, Field, LiteralNode, PrimitiveType, TypeKind};
-use crate::semantics::{GenericContext, MethodSig, Type};
+use crate::semantics::{GenericContext, MethodSig, Type, mangle_type_name};
 use inkwell::AddressSpace;
 use inkwell::types::BasicType;
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, PointerValue};
@@ -871,50 +871,8 @@ impl<'a> CodeGenerator<'a> {
         result
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     pub(super) fn sanitize_type_name(&self, type_: &Type) -> String {
-        match type_ {
-            Type::Primitive(PrimitiveType::Int) => "int".to_string(),
-            Type::Primitive(PrimitiveType::Float) => "float".to_string(),
-            Type::Primitive(PrimitiveType::Bool) => "bool".to_string(),
-            Type::Primitive(PrimitiveType::Str) => "string".to_string(),
-            Type::Named(name, type_args) => {
-                if type_args.is_empty() {
-                    name.clone()
-                } else {
-                    let args_str = type_args
-                        .iter()
-                        .map(|arg| self.sanitize_type_name(arg))
-                        .collect::<Vec<_>>()
-                        .join("_");
-                    format!("{}_{}", name, args_str)
-                }
-            }
-            Type::Generic(name) | Type::Variable(name) => name.clone(),
-            Type::List(inner) => format!("list_{}", self.sanitize_type_name(inner)),
-            Type::Map(k, v) => format!(
-                "map_{}_{}",
-                self.sanitize_type_name(k),
-                self.sanitize_type_name(v)
-            ),
-            Type::Set(inner) => format!("set_{}", self.sanitize_type_name(inner)),
-
-            Type::Optional(inner) => format!("optional_{}", self.sanitize_type_name(inner)),
-            Type::Result(ok, err) => format!(
-                "result_{}_{}",
-                self.sanitize_type_name(ok),
-                self.sanitize_type_name(err)
-            ),
-            Type::Instantiated(name, type_args) => {
-                let args_str = type_args
-                    .iter()
-                    .map(|arg| self.sanitize_type_name(arg))
-                    .collect::<Vec<_>>()
-                    .join("$");
-                format!("{}${}", name, args_str)
-            }
-            _ => "unknown".to_string(),
-        }
+        mangle_type_name(type_)
     }
 
     pub(super) fn create_specialized_method_name(

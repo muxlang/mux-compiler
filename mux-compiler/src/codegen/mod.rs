@@ -645,14 +645,25 @@ impl<'a> CodeGenerator<'a> {
         f: impl FnOnce(&mut Self) -> Result<T, String>,
     ) -> Result<T, String> {
         let mangled = mangle_module_path(module_name);
-        let globals = self.module_globals.get(&mangled).cloned().ok_or_else(|| {
+        self.with_mangled_module_globals(&mangled, f)
+    }
+
+    /// Run `f` with a module table whose key has already been encoded. This
+    /// variant keeps callers that receive a mangled name from accidentally
+    /// encoding it a second time.
+    fn with_mangled_module_globals<T>(
+        &mut self,
+        mangled: &str,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let globals = self.module_globals.get(mangled).cloned().ok_or_else(|| {
             format!("internal error: no global table registered for module '{mangled}'")
         })?;
         // The prefix must travel with the table: anything that declares a
         // global while `f` runs has to mangle it into this module, not leak an
         // unprefixed name into the swapped-in view.
         let saved = std::mem::replace(&mut self.global_variables, globals);
-        let saved_prefix = self.current_module_prefix.replace(mangled);
+        let saved_prefix = self.current_module_prefix.replace(mangled.to_string());
         let result = f(self);
         self.global_variables = saved;
         self.current_module_prefix = saved_prefix;
@@ -667,7 +678,7 @@ impl<'a> CodeGenerator<'a> {
             if func.type_params.is_empty() {
                 let mangled_name = format!("{}!{}", module_name_mangled, func.name);
                 // A module function reads its own module's globals by bare name.
-                self.with_module_globals(module_name_mangled, |me| {
+                self.with_mangled_module_globals(module_name_mangled, |me| {
                     me.generate_function_with_llvm_name(func, &mangled_name)
                 })?;
             }

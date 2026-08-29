@@ -23,7 +23,9 @@ pub mod where_clause;
 pub use error::SemanticError;
 pub use format::{format_binary_op, format_type};
 pub use symbol_table::SymbolTable;
-pub use types::{BuiltInSig, GenericContext, MethodSig, Symbol, SymbolKind, Type};
+pub use types::{
+    BuiltInSig, GenericContext, MethodSig, Symbol, SymbolKind, Type, mangle_type_name,
+};
 pub use unifier::Unifier;
 
 // Internal imports
