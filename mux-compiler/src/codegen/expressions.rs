@@ -4138,10 +4138,12 @@ impl<'a> CodeGenerator<'a> {
         // temporary to be released at the end of the statement.
         if field_value.is_pointer_value() {
             match field_type {
-                Type::Primitive(PrimitiveType::Int)
-                | Type::Primitive(PrimitiveType::Float)
-                | Type::Primitive(PrimitiveType::Bool)
-                | Type::Primitive(PrimitiveType::Char) => {
+                Type::Primitive(
+                    PrimitiveType::Int
+                    | PrimitiveType::Float
+                    | PrimitiveType::Bool
+                    | PrimitiveType::Char,
+                ) => {
                     self.emit_value_decref(field_value.into_pointer_value())?;
                 }
                 _ => {
@@ -4310,11 +4312,13 @@ impl<'a> CodeGenerator<'a> {
         ty: &Type,
     ) -> Result<BasicValueEnum<'a>, String> {
         match ty {
-            Type::Primitive(PrimitiveType::Int)
-            | Type::Primitive(PrimitiveType::Float)
-            | Type::Primitive(PrimitiveType::Bool)
-            | Type::Primitive(PrimitiveType::Char)
-            | Type::Primitive(PrimitiveType::Str) => self.unbox_value_for_type(loaded, ty),
+            Type::Primitive(
+                PrimitiveType::Int
+                | PrimitiveType::Float
+                | PrimitiveType::Bool
+                | PrimitiveType::Char
+                | PrimitiveType::Str,
+            ) => self.unbox_value_for_type(loaded, ty),
             _ => Ok(loaded),
         }
     }
@@ -4334,7 +4338,7 @@ impl<'a> CodeGenerator<'a> {
             }
             Type::Primitive(PrimitiveType::Char) => self.get_raw_int_value(value).map(|v| v.into()),
             Type::Primitive(PrimitiveType::Str) => Ok(value),
-            Type::Primitive(PrimitiveType::Void) | Type::Primitive(PrimitiveType::Auto) => {
+            Type::Primitive(PrimitiveType::Void | PrimitiveType::Auto) => {
                 Err(format!("Unsupported tuple field type {:?}", ty))
             }
             _ => Ok(value),

@@ -1666,8 +1666,9 @@ impl SemanticAnalyzer {
             UnaryOp::Neg => {
                 let operand_type = self.get_expression_type(expr)?;
                 match operand_type {
-                    Type::Primitive(crate::ast::PrimitiveType::Int)
-                    | Type::Primitive(crate::ast::PrimitiveType::Float) => Ok(operand_type),
+                    Type::Primitive(
+                        crate::ast::PrimitiveType::Int | crate::ast::PrimitiveType::Float,
+                    ) => Ok(operand_type),
                     _ => Err(SemanticError::with_help(
                         DiagnosticCode::InvalidOperation,
                         format!(

@@ -448,14 +448,14 @@ impl<'a> Lexer<'a> {
         num: &mut String,
         is_float: &mut bool,
     ) -> Result<(), LexerError> {
-        if !matches!(self.source.peek(), Some('e') | Some('E')) {
+        if !matches!(self.source.peek(), Some('e' | 'E')) {
             return Ok(());
         }
 
         *is_float = true;
         num.push(self.consume_char());
 
-        if let Some('+') | Some('-') = self.source.peek() {
+        if let Some('+' | '-') = self.source.peek() {
             num.push(self.consume_char());
         }
 

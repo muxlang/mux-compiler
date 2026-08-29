@@ -1353,7 +1353,7 @@ impl<'a> CodeGenerator<'a> {
                     kind.string_label(),
                 )
             }
-            Type::Primitive(PrimitiveType::Int) | Type::Primitive(PrimitiveType::Char) => {
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
                 let left_int = self.get_raw_int_value(left)?;
                 let right_int = self.get_raw_int_value(right)?;
                 self.builder
