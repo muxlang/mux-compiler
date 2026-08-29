@@ -350,7 +350,7 @@ fn runtime_lib_from_env() -> Option<PathBuf> {
     let path = env::var("MUX_RUNTIME_LIB").ok()?;
     let path = PathBuf::from(path);
     if path.exists() {
-        return path.parent().map(|p| p.to_path_buf());
+        return path.parent().map(Path::to_path_buf);
     }
 
     eprintln!(
@@ -603,7 +603,7 @@ fn get_linker_version() -> Option<String> {
     first_line
         .split_whitespace()
         .find(|s| s.starts_with(|c: char| c.is_ascii_digit()))
-        .map(|s| s.to_string())
+        .map(str::to_string)
 }
 
 fn get_llvm_version() -> String {

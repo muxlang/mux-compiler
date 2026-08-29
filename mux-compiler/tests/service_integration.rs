@@ -15,7 +15,7 @@ fn required_env(key: &str) -> String {
 fn resolve_ipv4_addr(addr: &str) -> String {
     addr.to_socket_addrs()
         .unwrap_or_else(|e| panic!("failed to resolve {}: {}", addr, e))
-        .find(|socket_addr| socket_addr.is_ipv4())
+        .find(std::net::SocketAddr::is_ipv4)
         .unwrap_or_else(|| panic!("no IPv4 address found for {}", addr))
         .to_string()
 }
@@ -66,7 +66,7 @@ fn compile_and_execute_file(
 
     let exec_name = test_file
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("test_executable");
     let exec_path = abs_dir.join(exec_name);
 

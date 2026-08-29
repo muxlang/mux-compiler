@@ -267,11 +267,7 @@ impl SemanticAnalyzer {
             ExpressionKind::Binary { left, right, .. } => {
                 self.handle_binary_expression(left, right, local_vars, free_vars)?;
             }
-            ExpressionKind::Unary {
-                expr: inner,
-                op_span: _,
-                ..
-            } => {
+            ExpressionKind::Unary { expr: inner, .. } => {
                 self.handle_unary_expression(inner, local_vars, free_vars)?;
             }
             ExpressionKind::Call { func, args } => {

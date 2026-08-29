@@ -64,7 +64,7 @@ fn collect_mux_files_in_dir(test_dir: &Path, failures: &mut Vec<std::path::PathB
         let entry = entry.expect("Failed to read directory entry");
         let path = entry.path();
 
-        if path.extension().and_then(|s| s.to_str()) == Some("mux") {
+        if path.extension().and_then(std::ffi::OsStr::to_str) == Some("mux") {
             if !analyze_mux_file(&path) {
                 failures.push(path);
             }

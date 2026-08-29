@@ -688,7 +688,7 @@ fn datetime_fn(name: &'static str, params: &'static [Type], ret: Type) -> Stdlib
     io_fn(name, params, ret)
 }
 
-static STDLIB_ITEMS: phf::Map<&'static str, StdlibItemDesc> = phf_map! {
+static STDLIB_ITEMS: phf::Map<&str, StdlibItemDesc> = phf_map! {
    "math.pi" => StdlibItemDesc::Constant { ty: TypeDesc::Float, value: ConstDesc::Pi },
    "math.e" => StdlibItemDesc::Constant { ty: TypeDesc::Float, value: ConstDesc::E },
    "random.seed" => StdlibItemDesc::Function { params: INT_PARAM_DESC, ret: TypeDesc::Void, llvm_name: "mux_rand_init" },

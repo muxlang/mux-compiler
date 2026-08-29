@@ -28,7 +28,7 @@ static ACTIVE: Mutex<Option<SpinnerHandle>> = Mutex::new(None);
 fn lock_active() -> std::sync::MutexGuard<'static, Option<SpinnerHandle>> {
     ACTIVE
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Whether enough time has passed since compilation started to show the

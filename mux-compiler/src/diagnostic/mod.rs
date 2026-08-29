@@ -130,7 +130,7 @@ impl Diagnostic {
     }
 
     pub fn with_help(mut self, help: Option<impl Into<String>>) -> Self {
-        self.help = help.map(|h| h.into());
+        self.help = help.map(Into::into);
         self
     }
 

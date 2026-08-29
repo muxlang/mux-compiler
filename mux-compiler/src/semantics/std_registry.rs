@@ -71,6 +71,6 @@ fn build_std_module_registry() -> HashMap<&'static str, StdModuleDef> {
 }
 
 pub fn std_module_registry() -> &'static HashMap<&'static str, StdModuleDef> {
-    static REGISTRY: OnceLock<HashMap<&'static str, StdModuleDef>> = OnceLock::new();
+    static REGISTRY: OnceLock<HashMap<&str, StdModuleDef>> = OnceLock::new();
     REGISTRY.get_or_init(build_std_module_registry)
 }
