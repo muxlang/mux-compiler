@@ -12,7 +12,7 @@ use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 
 use crate::ast::{AstNode, FunctionNode, PrimitiveType, StatementNode, TypeKind};
-use crate::semantics::Type;
+use crate::semantics::{Type, mangle_module_path};
 
 use super::CodeGenerator;
 use super::scoped_vars::ScopedVars;
@@ -321,7 +321,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         // Use ! prefix to avoid conflicts with user-defined functions
         // (! is used for module-level generated code, $ is used for generic specializations)
-        let init_name = format!("!{}!init", module_name.replace(['.', '/'], "_"));
+        let init_name = format!("!{}!init", mangle_module_path(module_name));
 
         let init_type = self.context.void_type().fn_type(&[], false);
         let init_func = self.module.add_function(&init_name, init_type, None);
@@ -382,20 +382,20 @@ impl<'a> CodeGenerator<'a> {
         // Call imported module init functions in dependency order
         // This ensures modules are initialized before use
         for module_path in &self.analyzer.module_dependencies {
-            let init_name = format!("!{}!init", Self::sanitize_module_path(module_path));
+            let init_name = format!("!{}!init", mangle_module_path(module_path));
             if let Some(init_func) = self.module.get_function(&init_name) {
                 self.builder
                     .build_call(
                         init_func,
                         &[],
-                        &format!("{}_init_call", module_path.replace('.', "_")),
+                        &format!("{}_init_call", mangle_module_path(module_path)),
                     )
                     .map_err(|e| e.to_string())?;
             }
         }
 
         // Call main module init function
-        let init_name = format!("!{}!init", Self::sanitize_module_path(module_name));
+        let init_name = format!("!{}!init", mangle_module_path(module_name));
         if let Some(init_func) = self.module.get_function(&init_name) {
             self.builder
                 .build_call(init_func, &[], "init_call")

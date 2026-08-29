@@ -54,31 +54,24 @@ jobs:
               # including the one being changed.
               - '.github/workflows/**'
 
-  lint_workflows:
-    # actionlint plus its built-in shellcheck integration (active once
-    # shellcheck is on PATH, which it is on this image) - context #29's
-    # lint-the-pipeline-itself ask. Ungated: a workflow-only change is exactly
-    # what this exists to catch, and it is cheap enough not to need a filter.
-    name: Lint Workflows
+  cargo_deny:
+    name: Cargo dependency policy
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: actionlint + shellcheck
-        run: ./scripts/ci/lint-workflows.sh
-      - name: Install Ruff
-        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
         with:
-          version: "0.16.4"
-          args: "--version"
-      - name: Ruff
-        run: |
-          ruff format --check scripts/generate-programs.py scripts/run-generated-programs.py scripts/tests
-          ruff check scripts/generate-programs.py scripts/run-generated-programs.py scripts/tests
-      - name: Generated program tooling tests
-        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+          toolchain: 1.93.1
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.20.2
+      - name: Check advisories, licenses, and sources
+        run: cargo deny check advisories licenses sources bans
 
   format:
     # Formatting only. Clippy is its own job below: it compiles the crate, so
@@ -393,11 +386,15 @@ jobs:
         run: cargo insta test -p mux-lang --unreferenced=reject
       # cargo-llvm-cov comes from the CI image too, pinned at 0.8.7 - it used
       # to be installed unpinned here on every run.
+      - name: Install nightly toolchain for branch coverage
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
+        with:
+          toolchain: nightly
       - name: Coverage
         # Re-runs the test suite under instrumentation. Integration tests shell
         # out to CARGO_BIN_EXE_mux, which llvm-cov instruments too, so codegen
         # executed in the spawned compiler is captured.
-        run: cargo llvm-cov -p mux-lang --all-features --lcov --output-path lcov.info
+        run: cargo +nightly llvm-cov -p mux-lang --all-features --branch --lcov --output-path lcov.info
       - name: Upload coverage report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

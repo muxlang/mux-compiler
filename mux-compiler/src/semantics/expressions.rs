@@ -329,7 +329,7 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         if !matches!(
             operand_type,
-            Type::Primitive(PrimitiveType::Int) | Type::Primitive(PrimitiveType::Float)
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Float)
         ) {
             return Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,

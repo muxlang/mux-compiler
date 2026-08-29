@@ -1,0 +1,2443 @@
+---
+source: mux-compiler/tests/lexer_integration.rs
+expression: tokens
+---
+[
+    Token {
+        token_type: LineComment(
+            "A whole-number float keeps its '.0' wherever it is printed. Only the bare",
+        ),
+        span: Span {
+            row_start: 1,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 1,
+            row_end: None,
+            col_start: 77,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: LineComment(
+            "value did: inside a list, map, set, tuple or optional it printed through the",
+        ),
+        span: Span {
+            row_start: 2,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 2,
+            row_end: None,
+            col_start: 80,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: LineComment(
+            "runtime's Display, which used a plain format and rendered 6.0 as \"6\" - so a",
+        ),
+        span: Span {
+            row_start: 3,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 3,
+            row_end: None,
+            col_start: 79,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: LineComment(
+            "list of floats was indistinguishable from a list of ints.",
+        ),
+        span: Span {
+            row_start: 4,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 4,
+            row_end: None,
+            col_start: 61,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 5,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Func,
+        span: Span {
+            row_start: 6,
+            row_end: Some(
+                6,
+            ),
+            col_start: 1,
+            col_end: Some(
+                5,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "main",
+        ),
+        span: Span {
+            row_start: 6,
+            row_end: Some(
+                6,
+            ),
+            col_start: 6,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 6,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 6,
+            row_end: None,
+            col_start: 11,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Returns,
+        span: Span {
+            row_start: 6,
+            row_end: Some(
+                6,
+            ),
+            col_start: 13,
+            col_end: Some(
+                20,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "void",
+        ),
+        span: Span {
+            row_start: 6,
+            row_end: Some(
+                6,
+            ),
+            col_start: 21,
+            col_end: Some(
+                25,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenBrace,
+        span: Span {
+            row_start: 6,
+            row_end: None,
+            col_start: 26,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 6,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 7,
+            row_end: Some(
+                7,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 7,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            6.0,
+        ),
+        span: Span {
+            row_start: 7,
+            row_end: Some(
+                7,
+            ),
+            col_start: 11,
+            col_end: Some(
+                14,
+            ),
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 7,
+            row_end: None,
+            col_start: 14,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 7,
+            row_end: Some(
+                7,
+            ),
+            col_start: 15,
+            col_end: Some(
+                24,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 7,
+            row_end: None,
+            col_start: 24,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 7,
+            row_end: None,
+            col_start: 25,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 7,
+            row_end: None,
+            col_start: 26,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 7,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 8,
+            row_end: Some(
+                8,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 8,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 8,
+            row_end: None,
+            col_start: 11,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            -3.0,
+        ),
+        span: Span {
+            row_start: 8,
+            row_end: Some(
+                8,
+            ),
+            col_start: 12,
+            col_end: Some(
+                16,
+            ),
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 8,
+            row_end: None,
+            col_start: 16,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 8,
+            row_end: None,
+            col_start: 17,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 8,
+            row_end: Some(
+                8,
+            ),
+            col_start: 18,
+            col_end: Some(
+                27,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 8,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 8,
+            row_end: None,
+            col_start: 28,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 8,
+            row_end: None,
+            col_start: 29,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 8,
+            row_end: None,
+            col_start: 30,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 9,
+            row_end: Some(
+                9,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 9,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            10.5,
+        ),
+        span: Span {
+            row_start: 9,
+            row_end: Some(
+                9,
+            ),
+            col_start: 11,
+            col_end: Some(
+                15,
+            ),
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 9,
+            row_end: None,
+            col_start: 15,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 9,
+            row_end: Some(
+                9,
+            ),
+            col_start: 16,
+            col_end: Some(
+                25,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 9,
+            row_end: None,
+            col_start: 25,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 9,
+            row_end: None,
+            col_start: 26,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 9,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 9,
+            row_end: None,
+            col_start: 28,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 10,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "list",
+        ),
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 5,
+            col_end: Some(
+                9,
+            ),
+        },
+    },
+    Token {
+        token_type: Lt,
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 9,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "float",
+        ),
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 10,
+            col_end: Some(
+                15,
+            ),
+        },
+    },
+    Token {
+        token_type: Gt,
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 15,
+            col_end: Some(
+                16,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "values",
+        ),
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 17,
+            col_end: Some(
+                23,
+            ),
+        },
+    },
+    Token {
+        token_type: Eq,
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 24,
+            col_end: Some(
+                25,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenBracket,
+        span: Span {
+            row_start: 11,
+            row_end: None,
+            col_start: 26,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            6.0,
+        ),
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 27,
+            col_end: Some(
+                30,
+            ),
+        },
+    },
+    Token {
+        token_type: Comma,
+        span: Span {
+            row_start: 11,
+            row_end: None,
+            col_start: 30,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            10.5,
+        ),
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 32,
+            col_end: Some(
+                36,
+            ),
+        },
+    },
+    Token {
+        token_type: Comma,
+        span: Span {
+            row_start: 11,
+            row_end: None,
+            col_start: 36,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            0.0,
+        ),
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 38,
+            col_end: Some(
+                41,
+            ),
+        },
+    },
+    Token {
+        token_type: Comma,
+        span: Span {
+            row_start: 11,
+            row_end: None,
+            col_start: 41,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            -3.0,
+        ),
+        span: Span {
+            row_start: 11,
+            row_end: Some(
+                11,
+            ),
+            col_start: 43,
+            col_end: Some(
+                47,
+            ),
+        },
+    },
+    Token {
+        token_type: CloseBracket,
+        span: Span {
+            row_start: 11,
+            row_end: None,
+            col_start: 47,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 11,
+            row_end: None,
+            col_start: 48,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 12,
+            row_end: Some(
+                12,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 12,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "values",
+        ),
+        span: Span {
+            row_start: 12,
+            row_end: Some(
+                12,
+            ),
+            col_start: 11,
+            col_end: Some(
+                17,
+            ),
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 12,
+            row_end: None,
+            col_start: 17,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 12,
+            row_end: Some(
+                12,
+            ),
+            col_start: 18,
+            col_end: Some(
+                27,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 12,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 12,
+            row_end: None,
+            col_start: 28,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 12,
+            row_end: None,
+            col_start: 29,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 12,
+            row_end: None,
+            col_start: 30,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 13,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "map",
+        ),
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 5,
+            col_end: Some(
+                8,
+            ),
+        },
+    },
+    Token {
+        token_type: Lt,
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 8,
+            col_end: Some(
+                9,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "string",
+        ),
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 9,
+            col_end: Some(
+                15,
+            ),
+        },
+    },
+    Token {
+        token_type: Comma,
+        span: Span {
+            row_start: 14,
+            row_end: None,
+            col_start: 15,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "float",
+        ),
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 17,
+            col_end: Some(
+                22,
+            ),
+        },
+    },
+    Token {
+        token_type: Gt,
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 22,
+            col_end: Some(
+                23,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "rates",
+        ),
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 24,
+            col_end: Some(
+                29,
+            ),
+        },
+    },
+    Token {
+        token_type: Eq,
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 30,
+            col_end: Some(
+                31,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenBrace,
+        span: Span {
+            row_start: 14,
+            row_end: None,
+            col_start: 32,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Str(
+            "whole",
+        ),
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 33,
+            col_end: Some(
+                40,
+            ),
+        },
+    },
+    Token {
+        token_type: Colon,
+        span: Span {
+            row_start: 14,
+            row_end: None,
+            col_start: 40,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            1.0,
+        ),
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 42,
+            col_end: Some(
+                45,
+            ),
+        },
+    },
+    Token {
+        token_type: Comma,
+        span: Span {
+            row_start: 14,
+            row_end: None,
+            col_start: 45,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Str(
+            "part",
+        ),
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 47,
+            col_end: Some(
+                53,
+            ),
+        },
+    },
+    Token {
+        token_type: Colon,
+        span: Span {
+            row_start: 14,
+            row_end: None,
+            col_start: 53,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            0.25,
+        ),
+        span: Span {
+            row_start: 14,
+            row_end: Some(
+                14,
+            ),
+            col_start: 55,
+            col_end: Some(
+                59,
+            ),
+        },
+    },
+    Token {
+        token_type: CloseBrace,
+        span: Span {
+            row_start: 14,
+            row_end: None,
+            col_start: 59,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 14,
+            row_end: None,
+            col_start: 60,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 15,
+            row_end: Some(
+                15,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 15,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "rates",
+        ),
+        span: Span {
+            row_start: 15,
+            row_end: Some(
+                15,
+            ),
+            col_start: 11,
+            col_end: Some(
+                16,
+            ),
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 15,
+            row_end: None,
+            col_start: 16,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 15,
+            row_end: Some(
+                15,
+            ),
+            col_start: 17,
+            col_end: Some(
+                26,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 15,
+            row_end: None,
+            col_start: 26,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 15,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 15,
+            row_end: None,
+            col_start: 28,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 15,
+            row_end: None,
+            col_start: 29,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 16,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "set",
+        ),
+        span: Span {
+            row_start: 17,
+            row_end: Some(
+                17,
+            ),
+            col_start: 5,
+            col_end: Some(
+                8,
+            ),
+        },
+    },
+    Token {
+        token_type: Lt,
+        span: Span {
+            row_start: 17,
+            row_end: Some(
+                17,
+            ),
+            col_start: 8,
+            col_end: Some(
+                9,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "float",
+        ),
+        span: Span {
+            row_start: 17,
+            row_end: Some(
+                17,
+            ),
+            col_start: 9,
+            col_end: Some(
+                14,
+            ),
+        },
+    },
+    Token {
+        token_type: Gt,
+        span: Span {
+            row_start: 17,
+            row_end: Some(
+                17,
+            ),
+            col_start: 14,
+            col_end: Some(
+                15,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "seen",
+        ),
+        span: Span {
+            row_start: 17,
+            row_end: Some(
+                17,
+            ),
+            col_start: 16,
+            col_end: Some(
+                20,
+            ),
+        },
+    },
+    Token {
+        token_type: Eq,
+        span: Span {
+            row_start: 17,
+            row_end: Some(
+                17,
+            ),
+            col_start: 21,
+            col_end: Some(
+                22,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenBrace,
+        span: Span {
+            row_start: 17,
+            row_end: None,
+            col_start: 23,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            2.0,
+        ),
+        span: Span {
+            row_start: 17,
+            row_end: Some(
+                17,
+            ),
+            col_start: 24,
+            col_end: Some(
+                27,
+            ),
+        },
+    },
+    Token {
+        token_type: CloseBrace,
+        span: Span {
+            row_start: 17,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 17,
+            row_end: None,
+            col_start: 28,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 18,
+            row_end: Some(
+                18,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 18,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "seen",
+        ),
+        span: Span {
+            row_start: 18,
+            row_end: Some(
+                18,
+            ),
+            col_start: 11,
+            col_end: Some(
+                15,
+            ),
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 18,
+            row_end: None,
+            col_start: 15,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 18,
+            row_end: Some(
+                18,
+            ),
+            col_start: 16,
+            col_end: Some(
+                25,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 18,
+            row_end: None,
+            col_start: 25,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 18,
+            row_end: None,
+            col_start: 26,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 18,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 18,
+            row_end: None,
+            col_start: 28,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 19,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 20,
+            row_end: Some(
+                20,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 20,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 20,
+            row_end: None,
+            col_start: 11,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            1.0,
+        ),
+        span: Span {
+            row_start: 20,
+            row_end: Some(
+                20,
+            ),
+            col_start: 12,
+            col_end: Some(
+                15,
+            ),
+        },
+    },
+    Token {
+        token_type: Comma,
+        span: Span {
+            row_start: 20,
+            row_end: None,
+            col_start: 15,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            2.5,
+        ),
+        span: Span {
+            row_start: 20,
+            row_end: Some(
+                20,
+            ),
+            col_start: 17,
+            col_end: Some(
+                20,
+            ),
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 20,
+            row_end: None,
+            col_start: 20,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 20,
+            row_end: None,
+            col_start: 21,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 20,
+            row_end: Some(
+                20,
+            ),
+            col_start: 22,
+            col_end: Some(
+                31,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 20,
+            row_end: None,
+            col_start: 31,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 20,
+            row_end: None,
+            col_start: 32,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 20,
+            row_end: None,
+            col_start: 33,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 20,
+            row_end: None,
+            col_start: 34,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 21,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "optional",
+        ),
+        span: Span {
+            row_start: 22,
+            row_end: Some(
+                22,
+            ),
+            col_start: 5,
+            col_end: Some(
+                13,
+            ),
+        },
+    },
+    Token {
+        token_type: Lt,
+        span: Span {
+            row_start: 22,
+            row_end: Some(
+                22,
+            ),
+            col_start: 13,
+            col_end: Some(
+                14,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "float",
+        ),
+        span: Span {
+            row_start: 22,
+            row_end: Some(
+                22,
+            ),
+            col_start: 14,
+            col_end: Some(
+                19,
+            ),
+        },
+    },
+    Token {
+        token_type: Gt,
+        span: Span {
+            row_start: 22,
+            row_end: Some(
+                22,
+            ),
+            col_start: 19,
+            col_end: Some(
+                20,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "maybe",
+        ),
+        span: Span {
+            row_start: 22,
+            row_end: Some(
+                22,
+            ),
+            col_start: 21,
+            col_end: Some(
+                26,
+            ),
+        },
+    },
+    Token {
+        token_type: Eq,
+        span: Span {
+            row_start: 22,
+            row_end: Some(
+                22,
+            ),
+            col_start: 27,
+            col_end: Some(
+                28,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "some",
+        ),
+        span: Span {
+            row_start: 22,
+            row_end: Some(
+                22,
+            ),
+            col_start: 29,
+            col_end: Some(
+                33,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 22,
+            row_end: None,
+            col_start: 33,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            4.0,
+        ),
+        span: Span {
+            row_start: 22,
+            row_end: Some(
+                22,
+            ),
+            col_start: 34,
+            col_end: Some(
+                37,
+            ),
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 22,
+            row_end: None,
+            col_start: 37,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 22,
+            row_end: None,
+            col_start: 38,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 23,
+            row_end: Some(
+                23,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 23,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "maybe",
+        ),
+        span: Span {
+            row_start: 23,
+            row_end: Some(
+                23,
+            ),
+            col_start: 11,
+            col_end: Some(
+                16,
+            ),
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 23,
+            row_end: None,
+            col_start: 16,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 23,
+            row_end: Some(
+                23,
+            ),
+            col_start: 17,
+            col_end: Some(
+                26,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 23,
+            row_end: None,
+            col_start: 26,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 23,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 23,
+            row_end: None,
+            col_start: 28,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 23,
+            row_end: None,
+            col_start: 29,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 24,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "result",
+        ),
+        span: Span {
+            row_start: 25,
+            row_end: Some(
+                25,
+            ),
+            col_start: 5,
+            col_end: Some(
+                11,
+            ),
+        },
+    },
+    Token {
+        token_type: Lt,
+        span: Span {
+            row_start: 25,
+            row_end: Some(
+                25,
+            ),
+            col_start: 11,
+            col_end: Some(
+                12,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "float",
+        ),
+        span: Span {
+            row_start: 25,
+            row_end: Some(
+                25,
+            ),
+            col_start: 12,
+            col_end: Some(
+                17,
+            ),
+        },
+    },
+    Token {
+        token_type: Comma,
+        span: Span {
+            row_start: 25,
+            row_end: None,
+            col_start: 17,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "string",
+        ),
+        span: Span {
+            row_start: 25,
+            row_end: Some(
+                25,
+            ),
+            col_start: 19,
+            col_end: Some(
+                25,
+            ),
+        },
+    },
+    Token {
+        token_type: Gt,
+        span: Span {
+            row_start: 25,
+            row_end: Some(
+                25,
+            ),
+            col_start: 25,
+            col_end: Some(
+                26,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "ok_value",
+        ),
+        span: Span {
+            row_start: 25,
+            row_end: Some(
+                25,
+            ),
+            col_start: 27,
+            col_end: Some(
+                35,
+            ),
+        },
+    },
+    Token {
+        token_type: Eq,
+        span: Span {
+            row_start: 25,
+            row_end: Some(
+                25,
+            ),
+            col_start: 36,
+            col_end: Some(
+                37,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "ok",
+        ),
+        span: Span {
+            row_start: 25,
+            row_end: Some(
+                25,
+            ),
+            col_start: 38,
+            col_end: Some(
+                40,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 25,
+            row_end: None,
+            col_start: 40,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            7.0,
+        ),
+        span: Span {
+            row_start: 25,
+            row_end: Some(
+                25,
+            ),
+            col_start: 41,
+            col_end: Some(
+                44,
+            ),
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 25,
+            row_end: None,
+            col_start: 44,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 25,
+            row_end: None,
+            col_start: 45,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 26,
+            row_end: Some(
+                26,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 26,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "ok_value",
+        ),
+        span: Span {
+            row_start: 26,
+            row_end: Some(
+                26,
+            ),
+            col_start: 11,
+            col_end: Some(
+                19,
+            ),
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 26,
+            row_end: None,
+            col_start: 19,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 26,
+            row_end: Some(
+                26,
+            ),
+            col_start: 20,
+            col_end: Some(
+                29,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 26,
+            row_end: None,
+            col_start: 29,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 26,
+            row_end: None,
+            col_start: 30,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 26,
+            row_end: None,
+            col_start: 31,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 26,
+            row_end: None,
+            col_start: 32,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 27,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "list",
+        ),
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 5,
+            col_end: Some(
+                9,
+            ),
+        },
+    },
+    Token {
+        token_type: Lt,
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 9,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "list",
+        ),
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 10,
+            col_end: Some(
+                14,
+            ),
+        },
+    },
+    Token {
+        token_type: Lt,
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 14,
+            col_end: Some(
+                15,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "float",
+        ),
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 15,
+            col_end: Some(
+                20,
+            ),
+        },
+    },
+    Token {
+        token_type: Gt,
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 20,
+            col_end: Some(
+                21,
+            ),
+        },
+    },
+    Token {
+        token_type: Gt,
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 21,
+            col_end: Some(
+                22,
+            ),
+        },
+    },
+    Token {
+        token_type: Id(
+            "nested",
+        ),
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 23,
+            col_end: Some(
+                29,
+            ),
+        },
+    },
+    Token {
+        token_type: Eq,
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 30,
+            col_end: Some(
+                31,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenBracket,
+        span: Span {
+            row_start: 28,
+            row_end: None,
+            col_start: 32,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: OpenBracket,
+        span: Span {
+            row_start: 28,
+            row_end: None,
+            col_start: 33,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            1.0,
+        ),
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 34,
+            col_end: Some(
+                37,
+            ),
+        },
+    },
+    Token {
+        token_type: CloseBracket,
+        span: Span {
+            row_start: 28,
+            row_end: None,
+            col_start: 37,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Comma,
+        span: Span {
+            row_start: 28,
+            row_end: None,
+            col_start: 38,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: OpenBracket,
+        span: Span {
+            row_start: 28,
+            row_end: None,
+            col_start: 40,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            2.0,
+        ),
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 41,
+            col_end: Some(
+                44,
+            ),
+        },
+    },
+    Token {
+        token_type: Comma,
+        span: Span {
+            row_start: 28,
+            row_end: None,
+            col_start: 44,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Float(
+            3.5,
+        ),
+        span: Span {
+            row_start: 28,
+            row_end: Some(
+                28,
+            ),
+            col_start: 46,
+            col_end: Some(
+                49,
+            ),
+        },
+    },
+    Token {
+        token_type: CloseBracket,
+        span: Span {
+            row_start: 28,
+            row_end: None,
+            col_start: 49,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseBracket,
+        span: Span {
+            row_start: 28,
+            row_end: None,
+            col_start: 50,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 28,
+            row_end: None,
+            col_start: 51,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "print",
+        ),
+        span: Span {
+            row_start: 29,
+            row_end: Some(
+                29,
+            ),
+            col_start: 5,
+            col_end: Some(
+                10,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 29,
+            row_end: None,
+            col_start: 10,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "nested",
+        ),
+        span: Span {
+            row_start: 29,
+            row_end: Some(
+                29,
+            ),
+            col_start: 11,
+            col_end: Some(
+                17,
+            ),
+        },
+    },
+    Token {
+        token_type: Dot,
+        span: Span {
+            row_start: 29,
+            row_end: None,
+            col_start: 17,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Id(
+            "to_string",
+        ),
+        span: Span {
+            row_start: 29,
+            row_end: Some(
+                29,
+            ),
+            col_start: 18,
+            col_end: Some(
+                27,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 29,
+            row_end: None,
+            col_start: 27,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 29,
+            row_end: None,
+            col_start: 28,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseParen,
+        span: Span {
+            row_start: 29,
+            row_end: None,
+            col_start: 29,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 29,
+            row_end: None,
+            col_start: 30,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Return,
+        span: Span {
+            row_start: 30,
+            row_end: Some(
+                30,
+            ),
+            col_start: 5,
+            col_end: Some(
+                11,
+            ),
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 30,
+            row_end: None,
+            col_start: 11,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: CloseBrace,
+        span: Span {
+            row_start: 31,
+            row_end: None,
+            col_start: 1,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: NewLine,
+        span: Span {
+            row_start: 31,
+            row_end: None,
+            col_start: 2,
+            col_end: None,
+        },
+    },
+]

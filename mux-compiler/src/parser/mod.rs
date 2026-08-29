@@ -209,29 +209,41 @@ impl<'a> Parser<'a> {
     }
 
     fn declaration(&mut self) -> ParserResult<Option<AstNode>> {
-        let _ = self.skip_newlines();
-        if self.is_at_end() {
-            return Ok(None);
-        }
-        let result = self.parse_declaration_content();
-
-        while self.matches(&[TokenType::NewLine]) {}
-
-        if let Err(ref e) = result {
-            self.record_error(e.clone());
-            // Retry the next declaration to recover, but stop at a closing brace:
-            // that terminates the enclosing block or class body, and retrying
-            // there would parse '}' as a stray declaration and cascade a spurious
-            // "Expected expression, found '}'" plus a lost terminator (issue #288,
-            // in method bodies). Returning None lets the block/class loop see the
-            // '}' and finish cleanly.
-            if !self.is_at_end() && !self.check(TokenType::CloseBrace) {
-                return self.declaration();
+        loop {
+            let _ = self.skip_newlines();
+            if self.is_at_end() {
+                return Ok(None);
             }
-            return Ok(None);
-        }
 
-        result
+            let start_position = self.current;
+            let result = self.parse_declaration_content();
+
+            while self.matches(&[TokenType::NewLine]) {}
+
+            if let Err(ref e) = result {
+                self.record_error(e.clone());
+                // Retry the next declaration to recover, but stop at a closing brace:
+                // that terminates the enclosing block or class body, and retrying
+                // there would parse '}' as a stray declaration and cascade a spurious
+                // "Expected expression, found '}'" plus a lost terminator (issue #288,
+                // in method bodies). Returning None lets the block/class loop see the
+                // '}' and finish cleanly.
+                if self.stopped || self.is_at_end() || self.check(TokenType::CloseBrace) {
+                    return Ok(None);
+                }
+
+                // Recovery must make progress before trying another declaration. Most
+                // parse errors consume input themselves; advance the offending token
+                // here when one does not, preventing unbounded stack growth and retry
+                // loops on tokens that cannot begin a declaration.
+                if self.current == start_position {
+                    self.advance();
+                }
+                continue;
+            }
+
+            return result;
+        }
     }
 
     fn parse_declaration_content(&mut self) -> ParserResult<Option<AstNode>> {
@@ -3475,7 +3487,7 @@ impl<'a> Parser<'a> {
         Ok(precedence)
     }
 
-    /// Check if a field type is a direct generic parameter (e.g., T, U, not List<T>)
+    /// Check if a field type is a direct generic parameter (e.g., T, U, not `List<T>`)
     fn parse_field_declaration(
         &mut self,
         type_param_names: &[(String, Vec<TraitBound>)],
@@ -3611,6 +3623,21 @@ mod tests {
     #[test]
     fn parser_caps_recovery_errors() {
         let source = (0..110).map(|_| "func main( {\n").collect::<String>();
+        let mut parser = create_parser(&source);
+        let Err((_, errors)) = parser.parse() else {
+            panic!("malformed source unexpectedly parsed");
+        };
+
+        assert_eq!(errors.len(), Parser::MAX_ERRORS);
+        assert_eq!(
+            errors.last().map(|error| error.code),
+            Some(DiagnosticCode::ParseErrorLimit)
+        );
+    }
+
+    #[test]
+    fn parser_recovery_progress_is_iterative() {
+        let source = ")".repeat(10_000);
         let mut parser = create_parser(&source);
         let Err((_, errors)) = parser.parse() else {
             panic!("malformed source unexpectedly parsed");

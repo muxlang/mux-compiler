@@ -108,6 +108,13 @@ impl<'a> Lexer<'a> {
     pub fn next_token(&mut self) -> Result<Token, LexerError> {
         self.skip_space()?;
 
+        // Newlines inside `(` or `[` continue the expression. Consume a run
+        // iteratively so deeply wrapped expressions cannot overflow the stack.
+        while self.bracket_depth > 0 && self.source.peek() == Some('\n') {
+            self.source.next_char();
+            self.skip_space()?;
+        }
+
         match self.source.peek() {
             None => {
                 return Ok(Token::new(
@@ -118,14 +125,6 @@ impl<'a> Lexer<'a> {
             Some('\n') => {
                 let start_span = Span::new(self.source.line, self.source.col);
                 self.source.next_char(); // consume '\n'
-                if self.bracket_depth > 0 {
-                    // Inside `(` or `[` a newline continues the expression, so a
-                    // wrapped call or list literal parses as one. Recursing
-                    // rather than looping keeps a run of blank lines collapsing
-                    // to nothing; a comment on the next line is returned as
-                    // usual and filtered downstream like any other.
-                    return self.next_token();
-                }
                 return Ok(Token::new(TokenType::NewLine, start_span));
             }
             // handle comments and division operator starting with slash
@@ -448,14 +447,14 @@ impl<'a> Lexer<'a> {
         num: &mut String,
         is_float: &mut bool,
     ) -> Result<(), LexerError> {
-        if !matches!(self.source.peek(), Some('e') | Some('E')) {
+        if !matches!(self.source.peek(), Some('e' | 'E')) {
             return Ok(());
         }
 
         *is_float = true;
         num.push(self.consume_char());
 
-        if let Some('+') | Some('-') = self.source.peek() {
+        if let Some('+' | '-') = self.source.peek() {
             num.push(self.consume_char());
         }
 
@@ -1013,6 +1012,18 @@ mod tests {
             TokenType::CloseBrace
         );
         assert_eq!(lexer.next_token().unwrap().token_type, TokenType::Eof);
+    }
+
+    #[test]
+    fn continuation_newlines_are_consumed_iteratively() {
+        let input = format!("(\n{}1)", "\n".repeat(100_000));
+        let mut source = Source::from_test_str(&input);
+        let tokens = Lexer::new(&mut source).lex_all().unwrap();
+
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].token_type, TokenType::OpenParen);
+        assert_eq!(tokens[1].token_type, TokenType::Int(1));
+        assert_eq!(tokens[2].token_type, TokenType::CloseParen);
     }
 
     #[test]

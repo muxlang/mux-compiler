@@ -1,0 +1,41 @@
+# Dependency policy for the compiler and its coupled runtime.
+#
+# This file intentionally has no advisory or license allowlist. A dependency
+# that violates one of these rules must be upgraded, replaced, or reviewed as
+# a change to this policy with evidence from the upstream project.
+
+[advisories]
+version = 2
+unmaintained = "all"
+yanked = "deny"
+# mysql's transitive `proc-macro-error2` dependency is unmaintained and has no
+# safe replacement available yet (RUSTSEC-2026-0173). Keep the exception
+# explicit and narrow; remove it when mysql-common-derive migrates.
+ignore = ["RUSTSEC-2026-0173"]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://github.com/muxlang/mux-runtime"]

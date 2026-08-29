@@ -28,7 +28,7 @@ static ACTIVE: Mutex<Option<SpinnerHandle>> = Mutex::new(None);
 fn lock_active() -> std::sync::MutexGuard<'static, Option<SpinnerHandle>> {
     ACTIVE
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Whether enough time has passed since compilation started to show the
@@ -42,7 +42,7 @@ fn render_frame(frame: usize, message: &str) -> String {
     format!("\r{} {}", FRAMES[frame % FRAMES.len()], message)
 }
 
-/// Overwrite "<frame> <message>" with spaces, then return the cursor.
+/// Overwrite `&lt;frame&gt; &lt;message&gt;` with spaces, then return the cursor.
 fn render_clear(message: &str) -> String {
     format!("\r{:width$}\r", "", width = message.len() + 2)
 }

@@ -18,7 +18,7 @@ impl SemanticAnalyzer {
         span: Span,
     ) -> Result<(), SemanticError> {
         // Mangle function names in the symbols before storing
-        let module_name_for_mangling = module_path.replace(['.', '/'], "_");
+        let module_name_for_mangling = crate::semantics::mangle_module_path(module_path);
         let mut mangled_symbols = std::collections::HashMap::new();
 
         for (name, symbol) in symbols {
@@ -224,7 +224,7 @@ impl SemanticAnalyzer {
         module_symbols: &HashMap<String, Symbol>,
         module_path: &str,
     ) -> Result<(), SemanticError> {
-        let module_name_for_mangling = Self::sanitize_module_path(module_path);
+        let module_name_for_mangling = crate::semantics::mangle_module_path(module_path);
         for (name, symbol) in module_symbols {
             let name_str = name.as_str();
             // Builtin *functions* (print, read_line, range, some, none, ok, err)
@@ -640,7 +640,7 @@ impl SemanticAnalyzer {
         symbols: &std::collections::HashMap<String, Symbol>,
         module_path: &str,
     ) -> std::collections::HashMap<String, Symbol> {
-        let module_name_for_mangling = Self::sanitize_module_path(module_path);
+        let module_name_for_mangling = crate::semantics::mangle_module_path(module_path);
         let mut mangled_symbols = std::collections::HashMap::new();
 
         for (name, symbol) in symbols {
@@ -704,7 +704,7 @@ impl SemanticAnalyzer {
 
         // Set llvm_name for functions and module constants (mangled with module path)
         if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
-            let module_name_for_mangling = module_path.replace(['.', '/'], "_");
+            let module_name_for_mangling = crate::semantics::mangle_module_path(module_path);
             imported_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, item_name));
         }
 
@@ -818,7 +818,7 @@ impl SemanticAnalyzer {
         module_path: &str,
         _span: Span,
     ) -> Result<(), SemanticError> {
-        let module_name_for_mangling = module_path.replace(['.', '/'], "_");
+        let module_name_for_mangling = crate::semantics::mangle_module_path(module_path);
 
         for (name, symbol) in module_symbols {
             let mut imported_symbol = symbol.clone();

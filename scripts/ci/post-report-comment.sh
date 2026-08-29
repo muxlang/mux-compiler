@@ -123,7 +123,7 @@ if [[ "$wrote" -eq 0 ]]; then
   echo "Nothing to report for this PR; not commenting."
   exit 0
 fi
-printf '_Commit `%s` - [full run](%s)_\n' "$HEAD_SHA" "$RUN_URL" >> body.md
+printf "_Commit \`%s\` - [full run](%s)_\n" "$HEAD_SHA" "$RUN_URL" >> body.md
 printf '\n%s\n' "$MARKER" >> body.md
 
 # Update our own previous comment instead of stacking one per push. The

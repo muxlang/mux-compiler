@@ -1735,8 +1735,7 @@ impl<'a> CodeGenerator<'a> {
                         .map_err(|e| e.to_string())?;
 
                     let const_val: BasicValueEnum<'a> = match match_expr_type {
-                        Type::Primitive(PrimitiveType::Int)
-                        | Type::Primitive(PrimitiveType::Char) => {
+                        Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
                             self.get_raw_int_value(loaded)?.into()
                         }
                         Type::Primitive(PrimitiveType::Bool) => {
@@ -2474,7 +2473,7 @@ impl<'a> CodeGenerator<'a> {
         expr_type: &Type,
     ) -> Result<inkwell::values::IntValue<'a>, String> {
         match expr_type {
-            Type::Primitive(PrimitiveType::Int) | Type::Primitive(PrimitiveType::Char) => {
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
                 let left_raw = self.get_raw_int_value(left)?;
                 let right_raw = self.get_raw_int_value(right)?;
                 self.builder

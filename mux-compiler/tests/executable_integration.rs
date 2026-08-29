@@ -47,7 +47,7 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
 
     let exec_name = test_file
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("test_executable");
 
     let exec_path = abs_dir.join(exec_name);
@@ -156,7 +156,7 @@ fn collect_mux_files(dir: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 files.extend(collect_mux_files(&path));
-            } else if path.extension().and_then(|s| s.to_str()) == Some("mux") {
+            } else if path.extension().and_then(std::ffi::OsStr::to_str) == Some("mux") {
                 files.push(path);
             }
         }
@@ -170,7 +170,7 @@ fn run_snapshot_test(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
 
     let snapshot_name = path
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("unknown_file");
 
     let output_to_snapshot = if stderr.is_empty() {
@@ -193,7 +193,7 @@ fn run_snapshot_test(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
 fn process_test_file(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
     let file_name = path
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("unknown");
     if is_network_fixture(file_name) && std::env::var_os("MUX_RUN_NETWORK_TESTS").is_none() {
         println!("Skipping network fixture {file_name}; set MUX_RUN_NETWORK_TESTS=1 to run it");

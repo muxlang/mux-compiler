@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Semantic fixture integration tests now fail when any discovered fixture has
+  semantic errors instead of counting the file as passed.
+
+### Added
+
+- Cargo dependency checks now enforce advisory, license, and source policy with
+  a checked-in `deny.toml` and a pinned Rust toolchain.
+
 ## [0.10.1] - 2026-08-21
 
 ### Fixed

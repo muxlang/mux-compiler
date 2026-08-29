@@ -1449,7 +1449,7 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Extracts a value from a *mut Value pointer based on the wrapped type.
-    /// Used for unwrapping Optional<T> and Result<T, E> in match statements.
+    /// Used for unwrapping `Optional<T>` and `Result<T, E>` in match statements.
     ///
     /// # Arguments
     /// * `data_ptr` - Pointer to the wrapped value (*mut Value)

@@ -23,7 +23,9 @@ pub mod where_clause;
 pub use error::SemanticError;
 pub use format::{format_binary_op, format_type};
 pub use symbol_table::SymbolTable;
-pub use types::{BuiltInSig, GenericContext, MethodSig, Symbol, SymbolKind, Type};
+pub use types::{
+    BuiltInSig, GenericContext, MethodSig, Symbol, SymbolKind, Type, mangle_type_name,
+};
 pub use unifier::Unifier;
 
 // Internal imports
@@ -145,12 +147,30 @@ impl Default for SemanticAnalyzer {
     }
 }
 
-impl SemanticAnalyzer {
-    // Helper function to sanitize module paths for use in identifiers
-    pub(super) fn sanitize_module_path(module_path: &str) -> String {
-        module_path.replace(['.', '/'], "_")
-    }
+/// Encode a module path into a deterministic, collision-free identifier.
+///
+/// Every non-ASCII-alphanumeric UTF-8 byte is escaped, including `_`, so an
+/// encoded escape sequence cannot be confused with source text. The leading
+/// `m` also keeps an empty path and paths beginning with a digit valid as LLVM
+/// identifier prefixes.
+pub(crate) fn mangle_module_path(module_path: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
 
+    let mut mangled = String::with_capacity(1 + module_path.len());
+    mangled.push('m');
+    for byte in module_path.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            mangled.push(byte as char);
+        } else {
+            mangled.push('_');
+            mangled.push(HEX[(byte >> 4) as usize] as char);
+            mangled.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    mangled
+}
+
+impl SemanticAnalyzer {
     pub fn new() -> Self {
         let symbol_table = SymbolTable::new();
         Self {
@@ -1666,8 +1686,9 @@ impl SemanticAnalyzer {
             UnaryOp::Neg => {
                 let operand_type = self.get_expression_type(expr)?;
                 match operand_type {
-                    Type::Primitive(crate::ast::PrimitiveType::Int)
-                    | Type::Primitive(crate::ast::PrimitiveType::Float) => Ok(operand_type),
+                    Type::Primitive(
+                        crate::ast::PrimitiveType::Int | crate::ast::PrimitiveType::Float,
+                    ) => Ok(operand_type),
                     _ => Err(SemanticError::with_help(
                         DiagnosticCode::InvalidOperation,
                         format!(
@@ -4082,5 +4103,32 @@ fn collection_new_hint(name: &str) -> Option<&'static str> {
             "Result has no '.new()' constructor. Use 'ok(value)' or 'err(message)' to construct one. For example: result<int, string> my_res = ok(42)",
         ),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mangle_module_path;
+    use std::collections::HashSet;
+
+    #[test]
+    fn module_path_mangling_is_injective() {
+        let paths = [
+            "",
+            "foo.bar",
+            "foo_bar",
+            "foo/bar",
+            "foo_2ebar",
+            "foo!bar",
+            "mfoo_2ebar",
+            "café",
+        ];
+        let mangled: HashSet<_> = paths.iter().map(|path| mangle_module_path(path)).collect();
+
+        assert_eq!(mangled.len(), paths.len());
+        assert!(mangled.iter().all(|name| {
+            name.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        }));
     }
 }

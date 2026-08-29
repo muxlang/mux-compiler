@@ -320,7 +320,7 @@ impl ModuleResolver {
                 let path = entry.path();
                 if path.is_file()
                     && path.extension().is_some_and(|ext| ext == "mux")
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                    && let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str)
                 {
                     submodules.insert(stem.to_string());
                 }

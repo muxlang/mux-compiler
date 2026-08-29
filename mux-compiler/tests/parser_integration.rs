@@ -32,6 +32,37 @@ fn parse_file_to_ast(test_file: &Path) -> String {
 }
 
 #[test]
+fn parser_snapshot_inventory_matches_fixtures() {
+    let fixture_dir = std::env::var_os("MUX_TEST_SCRIPTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_scripts"));
+    let snapshot_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
+
+    let fixtures: std::collections::BTreeSet<_> = fs::read_dir(&fixture_dir)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", fixture_dir.display()))
+        .map(|entry| entry.expect("failed to read fixture entry").path())
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("mux"))
+        .filter_map(|path| path.file_stem().map(|stem| stem.to_os_string()))
+        .collect();
+    let snapshots: std::collections::BTreeSet<_> = fs::read_dir(&snapshot_dir)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", snapshot_dir.display()))
+        .map(|entry| entry.expect("failed to read snapshot entry").path())
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            let stem = name
+                .strip_prefix("parser_integration__")?
+                .strip_suffix(".snap")?;
+            Some(stem.to_owned().into())
+        })
+        .collect();
+
+    assert_eq!(
+        fixtures, snapshots,
+        "every root fixture must have exactly one parser snapshot; update the fixture and snapshot together"
+    );
+}
+
+#[test]
 fn test_parse_all_mux_files_in_dir() {
     let test_dir = "../test_scripts";
     let dir_path = PathBuf::from(&test_dir);

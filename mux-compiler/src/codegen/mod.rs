@@ -33,7 +33,9 @@ use crate::ast::{
     AstNode, EnumVariant, EnumVariantField, Field, FunctionNode, ImportSpec, StatementKind,
     StatementNode, TraitBound, TypeNode,
 };
-use crate::semantics::{GenericContext, SemanticAnalyzer, Type, Type as ResolvedType};
+use crate::semantics::{
+    GenericContext, SemanticAnalyzer, Type, Type as ResolvedType, mangle_module_path,
+};
 
 use scoped_vars::ScopedVars;
 
@@ -129,14 +131,14 @@ pub struct CodeGenerator<'a> {
     /// bare source name. Swapped per module (see `module_globals`) so every
     /// lookup site can keep using the unqualified name.
     global_variables: HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>,
-    /// Per-module global tables, keyed by sanitized module name, each mapping a
+    /// Per-module global tables, keyed by mangled module name, each mapping a
     /// bare global name to its slot. Module-level globals are emitted as
     /// `module!name` in LLVM so two modules declaring the same constant no
     /// longer collide; this table is what makes the right set visible while a
     /// given module's init and functions are generated.
     module_globals:
         HashMap<String, HashMap<String, (PointerValue<'a>, BasicTypeEnum<'a>, ResolvedType)>>,
-    /// Sanitized name of the module whose globals are being declared/generated,
+    /// Mangled name of the module whose globals are being declared/generated,
     /// or `None` for the main module (whose globals keep unqualified symbols).
     current_module_prefix: Option<String>,
     functions: HashMap<String, FunctionValue<'a>>,
@@ -202,7 +204,7 @@ impl<'a> CodeGenerator<'a> {
             .all_module_asts()
             .iter()
             .flat_map(|(module_path, module_nodes)| {
-                let module_name_for_mangling = Self::sanitize_module_path(module_path);
+                let module_name_for_mangling = mangle_module_path(module_path);
                 module_nodes
                     .iter()
                     .filter_map(|node| {
@@ -514,7 +516,7 @@ impl<'a> CodeGenerator<'a> {
                         }
                     })
                     .collect();
-                (module_path.replace('/', "_"), module_top_level_statements)
+                (module_path.clone(), module_top_level_statements)
             })
             .collect()
     }
@@ -566,7 +568,7 @@ impl<'a> CodeGenerator<'a> {
                     kind: StatementKind::Import { module_path, spec },
                     ..
                 }) if !matches!(spec, ImportSpec::Module { .. }) => {
-                    Some((Self::sanitize_module_path(module_path), spec.clone()))
+                    Some((mangle_module_path(module_path), spec.clone()))
                 }
                 _ => None,
             })
@@ -611,7 +613,7 @@ impl<'a> CodeGenerator<'a> {
                 Some(nodes) => nodes.clone(),
                 None => continue,
             };
-            let target = Self::sanitize_module_path(&module_path);
+            let target = mangle_module_path(&module_path);
             let mut aliases = Vec::new();
             for (source, spec) in Self::collect_direct_imports(&nodes) {
                 let Some(source_globals) = self.module_globals.get(&source) else {
@@ -642,19 +644,26 @@ impl<'a> CodeGenerator<'a> {
         module_name: &str,
         f: impl FnOnce(&mut Self) -> Result<T, String>,
     ) -> Result<T, String> {
-        let sanitized = Self::sanitize_module_path(module_name);
-        let globals = self
-            .module_globals
-            .get(&sanitized)
-            .cloned()
-            .ok_or_else(|| {
-                format!("internal error: no global table registered for module '{sanitized}'")
-            })?;
+        let mangled = mangle_module_path(module_name);
+        self.with_mangled_module_globals(&mangled, f)
+    }
+
+    /// Run `f` with a module table whose key has already been encoded. This
+    /// variant keeps callers that receive a mangled name from accidentally
+    /// encoding it a second time.
+    fn with_mangled_module_globals<T>(
+        &mut self,
+        mangled: &str,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let globals = self.module_globals.get(mangled).cloned().ok_or_else(|| {
+            format!("internal error: no global table registered for module '{mangled}'")
+        })?;
         // The prefix must travel with the table: anything that declares a
         // global while `f` runs has to mangle it into this module, not leak an
         // unprefixed name into the swapped-in view.
         let saved = std::mem::replace(&mut self.global_variables, globals);
-        let saved_prefix = self.current_module_prefix.replace(sanitized);
+        let saved_prefix = self.current_module_prefix.replace(mangled.to_string());
         let result = f(self);
         self.global_variables = saved;
         self.current_module_prefix = saved_prefix;
@@ -669,7 +678,7 @@ impl<'a> CodeGenerator<'a> {
             if func.type_params.is_empty() {
                 let mangled_name = format!("{}!{}", module_name_mangled, func.name);
                 // A module function reads its own module's globals by bare name.
-                self.with_module_globals(module_name_mangled, |me| {
+                self.with_mangled_module_globals(module_name_mangled, |me| {
                     me.generate_function_with_llvm_name(func, &mangled_name)
                 })?;
             }
@@ -751,11 +760,6 @@ impl<'a> CodeGenerator<'a> {
         }
 
         Ok(())
-    }
-
-    // Helper function to sanitize module paths for use in LLVM identifiers
-    fn sanitize_module_path(module_path: &str) -> String {
-        module_path.replace(['.', '/'], "_")
     }
 
     // small helpers for runtime declarations were moved to runtime.rs
@@ -1025,13 +1029,13 @@ impl<'a> CodeGenerator<'a> {
         // module being generated has its globals visible, so two modules
         // declaring the same constant no longer share one slot.
         for (module_name, module_top_level_statements) in &modules_data {
-            let sanitized = Self::sanitize_module_path(module_name);
+            let mangled = mangle_module_path(module_name);
             self.global_variables = HashMap::new();
-            self.current_module_prefix = Some(sanitized.clone());
+            self.current_module_prefix = Some(mangled.clone());
             self.declare_top_level_globals(module_top_level_statements)?;
             self.current_module_prefix = None;
             self.module_globals
-                .insert(sanitized, std::mem::take(&mut self.global_variables));
+                .insert(mangled, std::mem::take(&mut self.global_variables));
         }
         // Every module's table exists now, so cross-module aliases can be
         // resolved in either direction.

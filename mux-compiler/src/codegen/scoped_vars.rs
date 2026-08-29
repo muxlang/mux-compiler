@@ -99,7 +99,7 @@ impl<V> ScopedVars<V> {
         self.scopes
             .iter()
             .rev()
-            .flat_map(|scope| scope.iter())
+            .flat_map(std::collections::HashMap::iter)
             .filter(move |(name, _)| seen.insert((*name).clone()))
     }
 
