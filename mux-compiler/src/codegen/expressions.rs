@@ -5152,12 +5152,12 @@ impl<'a> CodeGenerator<'a> {
     /// - `list_of_maps[0]["key"] = value` (2 levels, List then Map)
     ///
     /// Algorithm (recursive get-modify-writeback):
-    /// For base[i1][i2]...[iN] = value:
-    /// 1. If N == 1: base[i1] = value (base case, direct assignment)
+    /// For `base[i1][i2]...[iN] = value`:
+    /// 1. If N == 1: `base[i1] = value` (base case, direct assignment)
     /// 2. If N > 1:
-    ///    a. Get base[i1] -> temp (copy)
-    ///    b. Recursively: temp[i2]...[iN] = value
-    ///    c. Write temp back: base[i1] = temp
+    ///    a. Get `base[i1]` -> temp (copy)
+    ///    b. Recursively: `temp[i2]...[iN] = value`
+    ///    c. Write temp back: `base[i1] = temp`
     fn generate_nested_collection_assignment(
         &mut self,
         base_expr: &ExpressionNode,
@@ -5351,7 +5351,7 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Helper to apply a chain of indices to a value and set the final element.
-    /// This handles: value[i1][i2]...[iN] = new_value
+    /// This handles: `value[i1][i2]...[iN] = new_value`
     /// where `value` is a BasicValueEnum (*mut Value), not an ExpressionNode.
     ///
     /// Requires the type of `current_val` to determine if it's a List or Map.

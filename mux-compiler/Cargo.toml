@@ -2,6 +2,7 @@
 name = "mux-lang"
 version = "0.10.1"
 edition = "2024"
+rust-version = "1.93.1"
 default-run = "mux"
 description = "The Mux Programming Language Compiler"
 authors = ["Derek Corniello"]
@@ -10,6 +11,13 @@ license = "MIT"
 keywords = ["mux", "compiler", "language"]
 categories = ["development-tools", "compilers"]
 exclude = ["tests/"]
+
+[lints.rust]
+unused_must_use = "deny"
+
+[lints.clippy]
+correctness = "deny"
+suspicious = "deny"
 
 [[bin]]
 name = "mux"

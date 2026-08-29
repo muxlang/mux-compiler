@@ -42,7 +42,7 @@ fn render_frame(frame: usize, message: &str) -> String {
     format!("\r{} {}", FRAMES[frame % FRAMES.len()], message)
 }
 
-/// Overwrite "<frame> <message>" with spaces, then return the cursor.
+/// Overwrite `&lt;frame&gt; &lt;message&gt;` with spaces, then return the cursor.
 fn render_clear(message: &str) -> String {
     format!("\r{:width$}\r", "", width = message.len() + 2)
 }

@@ -3475,7 +3475,7 @@ impl<'a> Parser<'a> {
         Ok(precedence)
     }
 
-    /// Check if a field type is a direct generic parameter (e.g., T, U, not List<T>)
+    /// Check if a field type is a direct generic parameter (e.g., T, U, not `List<T>`)
     fn parse_field_declaration(
         &mut self,
         type_param_names: &[(String, Vec<TraitBound>)],

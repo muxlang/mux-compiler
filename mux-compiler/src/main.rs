@@ -414,7 +414,7 @@ fn resolve_runtime_lib_dir() -> Option<PathBuf> {
         .or_else(runtime_lib_from_build_config)
 }
 
-/// Colored ASCII status marker for doctor checks: green "[ok]" or red "[x]".
+/// Colored ASCII status marker for doctor checks: green `[ok]` or red `[x]`.
 fn status_marker(ok: bool) -> String {
     let (style, marker) = if ok {
         (AnsiColor::Green.on_default().bold(), "[ok]")
@@ -1861,7 +1861,7 @@ fn report_internal_compiler_error(detail: &str) {
 }
 
 /// Format a panic's message and optional source location into a concise
-/// "<message> (at <file>:<line>:<col>)" detail line. Pure, so it is unit-tested
+/// `&lt;message&gt; (at &lt;file&gt;:&lt;line&gt;:&lt;col&gt;)` detail line. Pure, so it is unit-tested
 /// directly; `panic_detail` handles pulling these fields out of the hook info.
 fn format_panic_detail(message: &str, location: Option<(&str, u32, u32)>) -> String {
     match location {
