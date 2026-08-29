@@ -36,10 +36,10 @@ clap = { version = "4", features = ["derive"] }
 # Resolved from muxlang/mux-runtime `main`, not crates.io: the compiler and the
 # runtime are ABI-coupled and change together, so a coupled change must build
 # against the source that defines the new FFI symbols rather than waiting on a
-# publish. Cargo.lock pins the exact commit, so `--locked` builds - CI and
-# release tags included - are reproducible. Move the pin with
-# `cargo update -p mux-runtime`.
-mux-runtime = { git = "https://github.com/muxlang/mux-runtime", branch = "main" }
+# publish. Pin the exact reviewed runtime stack commit so `--locked` builds -
+# CI and release tags included - are reproducible. Move the pin only when the
+# runtime stack has merged and passed its gates.
+mux-runtime = { version = "0.6.1", git = "https://github.com/muxlang/mux-runtime", rev = "1ceca81db86966d4c4c9268cf2ed2512ff2a2229" }
 phf = { version = "0.11", features = ["macros"] }
 
 [dev-dependencies]

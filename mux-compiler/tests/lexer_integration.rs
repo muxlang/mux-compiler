@@ -27,7 +27,7 @@ fn root_mux_files() -> Vec<PathBuf> {
             )
         })
         .map(|entry| entry.expect("Failed to read directory entry").path())
-        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("mux"))
+        .filter(|path| path.extension().and_then(std::ffi::OsStr::to_str) == Some("mux"))
         .collect();
     test_files.sort();
     test_files

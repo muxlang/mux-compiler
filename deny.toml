@@ -8,7 +8,10 @@
 version = 2
 unmaintained = "all"
 yanked = "deny"
-ignore = []
+# mysql's transitive `proc-macro-error2` dependency is unmaintained and has no
+# safe replacement available yet (RUSTSEC-2026-0173). Keep the exception
+# explicit and narrow; remove it when mysql-common-derive migrates.
+ignore = ["RUSTSEC-2026-0173"]
 
 [licenses]
 version = 2

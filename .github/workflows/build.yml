@@ -386,11 +386,15 @@ jobs:
         run: cargo insta test -p mux-lang --unreferenced=reject
       # cargo-llvm-cov comes from the CI image too, pinned at 0.8.7 - it used
       # to be installed unpinned here on every run.
+      - name: Install nightly toolchain for branch coverage
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
+        with:
+          toolchain: nightly
       - name: Coverage
         # Re-runs the test suite under instrumentation. Integration tests shell
         # out to CARGO_BIN_EXE_mux, which llvm-cov instruments too, so codegen
         # executed in the spawned compiler is captured.
-        run: cargo llvm-cov -p mux-lang --all-features --branch --lcov --output-path lcov.info
+        run: cargo +nightly llvm-cov -p mux-lang --all-features --branch --lcov --output-path lcov.info
       - name: Upload coverage report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
