@@ -97,7 +97,7 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked --version 0.18.3
       - name: Check advisories, licenses, and sources
-        run: cargo deny check advisories licenses sources
+        run: cargo deny check advisories licenses sources bans
 
   format:
     # Formatting only. Clippy is its own job below: it compiles the crate, so
