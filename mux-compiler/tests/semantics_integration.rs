@@ -9,10 +9,11 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn analyze_mux_file(path: &std::path::PathBuf) -> bool {
+fn analyze_mux_file(path: &std::path::PathBuf) -> Result<(), String> {
     println!("=== Testing file: {} ===", path.display());
 
-    let content = fs::read_to_string(path).expect("Failed to read test file");
+    let content =
+        fs::read_to_string(path).map_err(|error| format!("could not read fixture: {error}"))?;
     let mut source = Source::from_test_str(&content);
 
     let mut lexer = Lexer::new(&mut source);
@@ -22,10 +23,12 @@ fn analyze_mux_file(path: &std::path::PathBuf) -> bool {
         Err(e) => Some(Err(e)),
     })
     .collect::<Result<_, _>>()
-    .expect("Lexer error");
+    .map_err(|error| format!("lexer error: {error}"))?;
 
     let mut parser = Parser::new(&tokens);
-    let ast = parser.parse().expect("Parser error");
+    let ast = parser
+        .parse()
+        .map_err(|error| format!("parser error: {error:?}"))?;
 
     let mut files = Files::new();
     let file_id = files.add(path, content);
@@ -45,28 +48,45 @@ fn analyze_mux_file(path: &std::path::PathBuf) -> bool {
 
     if errors.is_empty() {
         println!("✓ Successfully analyzed: {}", path.display());
-        true
+        Ok(())
     } else {
         println!("✗ Semantic errors in {}:", path.display());
-        for error in errors {
+        for error in &errors {
             println!(
                 "  {} at {}:{}",
                 error.message, error.span.row_start, error.span.col_start
             );
         }
-        false
+        let details = errors
+            .iter()
+            .map(|error| {
+                format!(
+                    "{} at {}:{}",
+                    error.message, error.span.row_start, error.span.col_start
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(details)
     }
 }
 
-fn collect_mux_files_in_dir(test_dir: &Path, failures: &mut Vec<std::path::PathBuf>) -> usize {
+fn collect_mux_files_in_dir(
+    test_dir: &Path,
+    failures: &mut Vec<(std::path::PathBuf, String)>,
+) -> usize {
     let mut count = 0;
-    for entry in fs::read_dir(test_dir).expect("Failed to read test directory") {
-        let entry = entry.expect("Failed to read directory entry");
-        let path = entry.path();
+    let mut paths = fs::read_dir(test_dir)
+        .unwrap_or_else(|error| panic!("Failed to read {}: {error}", test_dir.display()))
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("Failed to read fixture entry: {error}"));
+    paths.sort();
 
+    for path in paths {
         if path.extension().and_then(std::ffi::OsStr::to_str) == Some("mux") {
-            if !analyze_mux_file(&path) {
-                failures.push(path);
+            if let Err(error) = analyze_mux_file(&path) {
+                failures.push((path, error));
             }
             count += 1;
         }
@@ -88,8 +108,8 @@ fn test_semantic_analysis() {
     let operator_test_path = Path::new("tests/operator_overloading.mux");
     if operator_test_path.exists() {
         let path_buf = operator_test_path.to_path_buf();
-        if !analyze_mux_file(&path_buf) {
-            failures.push(path_buf);
+        if let Err(error) = analyze_mux_file(&path_buf) {
+            failures.push((path_buf, error));
         }
         files_processed += 1;
     }
@@ -105,7 +125,7 @@ fn test_semantic_analysis() {
         "Semantic analysis failed for: {}",
         failures
             .iter()
-            .map(|path| path.display().to_string())
+            .map(|(path, error)| format!("{} ({error})", path.display()))
             .collect::<Vec<_>>()
             .join(", ")
     );
@@ -136,5 +156,7 @@ fn semantic_fixture_failures_are_reported() {
     fs::remove_dir_all(temp_dir).expect("temporary fixture directory should be removable");
 
     assert_eq!(files_processed, 1);
-    assert_eq!(failures, vec![invalid_fixture]);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].0, invalid_fixture);
+    assert!(failures[0].1.contains("missing_name"));
 }
