@@ -55,6 +55,7 @@ pub struct ModuleResolver {
 }
 
 impl ModuleResolver {
+    #[must_use]
     pub fn new(base_path: PathBuf) -> Self {
         Self {
             base_path,
@@ -86,6 +87,7 @@ impl ModuleResolver {
             .unwrap_or(module_path)
     }
 
+    #[must_use]
     pub fn has_embedded_module(&self, module_path: &str) -> bool {
         self.resolve_embedded_key(module_path).is_some()
     }
@@ -110,6 +112,7 @@ impl ModuleResolver {
     }
 
     /// Return the source file loaded for a resolved module.
+    #[must_use]
     pub fn file_id_for_module(&self, module_path: &str) -> Option<FileId> {
         self.module_file_ids
             .get(self.normalize_module_key(module_path))
@@ -269,12 +272,13 @@ impl ModuleResolver {
 
     /// Check if a module path resolves to a file, directory, both, or neither.
     /// Returns (has_file, has_directory) tuple.
+    #[must_use]
     pub fn check_module_path(&self, module_path: &str) -> (bool, bool) {
         if self.has_embedded_module(module_path) {
             return (true, false);
         }
 
-        let embedded_prefix = format!("{}.", module_path);
+        let embedded_prefix = format!("{module_path}.");
         let has_embedded_directory = self
             .embedded_sources
             .keys()
@@ -297,7 +301,7 @@ impl ModuleResolver {
     /// Get all .mux files in a directory module
     pub fn get_submodules(&self, module_path: &str) -> Result<Vec<String>, String> {
         let mut submodules = HashSet::new();
-        let embedded_prefix = format!("{}.", module_path);
+        let embedded_prefix = format!("{module_path}.");
         for key in self.embedded_sources.keys() {
             if let Some(rest) = key.strip_prefix(&embedded_prefix)
                 && !rest.is_empty()
@@ -328,7 +332,7 @@ impl ModuleResolver {
         }
 
         if submodules.is_empty() {
-            return Err(format!("Module directory not found: {}", module_path));
+            return Err(format!("Module directory not found: {module_path}"));
         }
 
         let mut result: Vec<String> = submodules.into_iter().collect();

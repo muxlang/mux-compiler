@@ -38,8 +38,7 @@ impl SemanticAnalyzer {
         let is_constant = self
             .symbol_table
             .lookup(name)
-            .map(|s| s.kind == SymbolKind::Constant)
-            .unwrap_or(false);
+            .is_some_and(|s| s.kind == SymbolKind::Constant);
 
         if is_constant {
             let const_type = self
@@ -49,7 +48,7 @@ impl SemanticAnalyzer {
                 .ok_or_else(|| {
                     SemanticError::new(
                         DiagnosticCode::InvalidOperation,
-                        format!("Constant '{}' has no type information", name),
+                        format!("Constant '{name}' has no type information"),
                         span,
                     )
                 })?;
@@ -225,13 +224,13 @@ impl SemanticAnalyzer {
             if available_variants.is_empty() {
                 SemanticError::new(
                     DiagnosticCode::InvalidOperation,
-                    format!("Unknown variant '{}' for enum '{}'", name, enum_name),
+                    format!("Unknown variant '{name}' for enum '{enum_name}'"),
                     span,
                 )
             } else {
                 SemanticError::with_help(
                     DiagnosticCode::InvalidOperation,
-                    format!("Unknown variant '{}' for enum '{}'", name, enum_name),
+                    format!("Unknown variant '{name}' for enum '{enum_name}'"),
                     span,
                     format!(
                         "Available variants: {}",

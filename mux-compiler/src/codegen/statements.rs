@@ -410,19 +410,19 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let header_bb = self
             .context
-            .append_basic_block(*function, &format!("for_header_{}", label_id));
+            .append_basic_block(*function, &format!("for_header_{label_id}"));
         let body_bb = self
             .context
-            .append_basic_block(*function, &format!("for_body_{}", label_id));
+            .append_basic_block(*function, &format!("for_body_{label_id}"));
         let exit_bb = self
             .context
-            .append_basic_block(*function, &format!("for_exit_{}", label_id));
+            .append_basic_block(*function, &format!("for_exit_{label_id}"));
         let continue_bb = self
             .context
-            .append_basic_block(*function, &format!("for_continue_{}", label_id));
+            .append_basic_block(*function, &format!("for_continue_{label_id}"));
         let break_cleanup_bb = self
             .context
-            .append_basic_block(*function, &format!("for_break_{}", label_id));
+            .append_basic_block(*function, &format!("for_break_{label_id}"));
         self.builder
             .build_unconditional_branch(header_bb)
             .map_err(|e| e.to_string())?;
@@ -521,19 +521,19 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let header_bb = self
             .context
-            .append_basic_block(*function, &format!("for_header_{}", label_id));
+            .append_basic_block(*function, &format!("for_header_{label_id}"));
         let body_bb = self
             .context
-            .append_basic_block(*function, &format!("for_body_{}", label_id));
+            .append_basic_block(*function, &format!("for_body_{label_id}"));
         let exit_bb = self
             .context
-            .append_basic_block(*function, &format!("for_exit_{}", label_id));
+            .append_basic_block(*function, &format!("for_exit_{label_id}"));
         let continue_bb = self
             .context
-            .append_basic_block(*function, &format!("for_continue_{}", label_id));
+            .append_basic_block(*function, &format!("for_continue_{label_id}"));
         let break_cleanup_bb = self
             .context
-            .append_basic_block(*function, &format!("for_break_{}", label_id));
+            .append_basic_block(*function, &format!("for_break_{label_id}"));
         self.builder
             .build_unconditional_branch(header_bb)
             .map_err(|e| e.to_string())?;
@@ -617,7 +617,7 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let actual_type = self
             .get_resolved_expression_type(expr)
-            .map_err(|e| format!("Type inference failed: {}", e))?;
+            .map_err(|e| format!("Type inference failed: {e}"))?;
         // The spill slot holds whatever the subject is. A scalar subject is a
         // raw value, and a slot typed `*mut Value` would have the arms read it
         // as a pointer.
@@ -657,7 +657,7 @@ impl<'a> CodeGenerator<'a> {
         }
 
         self.get_resolved_expression_type(match_expr)
-            .map_err(|e| format!("Type inference failed: {}", e))
+            .map_err(|e| format!("Type inference failed: {e}"))
     }
 
     fn resolve_match_identifier_type(
@@ -680,7 +680,7 @@ impl<'a> CodeGenerator<'a> {
                         } else {
                             "Temporary variable"
                         };
-                        format!("{} {} not found", label, name)
+                        format!("{label} {name} not found")
                     }),
             );
         }
@@ -721,7 +721,7 @@ impl<'a> CodeGenerator<'a> {
             }
             _ => self
                 .get_resolved_expression_type(match_expr)
-                .map_err(|e| format!("Type inference failed: {}", e)),
+                .map_err(|e| format!("Type inference failed: {e}")),
         };
         Some(result)
     }
@@ -802,7 +802,7 @@ impl<'a> CodeGenerator<'a> {
         let value = self.generate_expression(expr)?;
         let resolved_type = self
             .resolve_expression_type_with_fallback(expr)
-            .map_err(|e| format!("Failed to get type for {}: {}", name, e))?;
+            .map_err(|e| format!("Failed to get type for {name}: {e}"))?;
         let concrete_type = self
             .resolve_type(&resolved_type)
             .unwrap_or_else(|_| resolved_type.clone());
@@ -879,7 +879,7 @@ impl<'a> CodeGenerator<'a> {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let resolved_type = self
             .resolve_expression_type_with_fallback(expr)
-            .map_err(|e| format!("Failed to get type for {}: {}", name, e))?;
+            .map_err(|e| format!("Failed to get type for {name}: {e}"))?;
 
         // A scalar constant lives in its slot like any other scalar. Boxing it
         // wrote a pointer into a slot the readers load as a raw value, and left
@@ -940,10 +940,7 @@ impl<'a> CodeGenerator<'a> {
                 &self.current_function_return_type
         {
             self.generate_all_scopes_cleanup()?;
-            let bool_val = self
-                .context
-                .bool_type()
-                .const_int(if *b { 1 } else { 0 }, false);
+            let bool_val = self.context.bool_type().const_int(u64::from(*b), false);
             self.builder
                 .build_return(Some(&bool_val))
                 .map_err(|e| e.to_string())?;
@@ -1141,10 +1138,10 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let then_bb = self
             .context
-            .append_basic_block(*function, &format!("if_then_{}", if_id));
+            .append_basic_block(*function, &format!("if_then_{if_id}"));
         let else_bb = self
             .context
-            .append_basic_block(*function, &format!("if_else_{}", if_id));
+            .append_basic_block(*function, &format!("if_else_{if_id}"));
         let then_ends_with_return = then_block
             .last()
             .is_some_and(|s| matches!(s.kind, StatementKind::Return(_)));
@@ -1159,7 +1156,7 @@ impl<'a> CodeGenerator<'a> {
         let merge_bb = if needs_merge {
             Some(
                 self.context
-                    .append_basic_block(*function, &format!("if_merge_{}", if_id)),
+                    .append_basic_block(*function, &format!("if_merge_{if_id}")),
             )
         } else {
             None
@@ -1372,7 +1369,7 @@ impl<'a> CodeGenerator<'a> {
         if self
             .builder
             .get_insert_block()
-            .and_then(|bb| bb.get_terminator())
+            .and_then(inkwell::basic_block::BasicBlock::get_terminator)
             .is_some()
         {
             return Ok(());
@@ -1515,7 +1512,7 @@ impl<'a> CodeGenerator<'a> {
     fn resolve_enum_match_name_from_identifier(&self, name: &str) -> Result<String, String> {
         if let Some((_, _, var_type)) = self.variables.get(name) {
             let unknown_msg = if name.starts_with("match_temp_") {
-                format!("Match expression must be an enum type, got {:?}", var_type)
+                format!("Match expression must be an enum type, got {var_type:?}")
             } else {
                 "Match expression must be an enum type".to_string()
             };
@@ -1523,7 +1520,7 @@ impl<'a> CodeGenerator<'a> {
         }
 
         if name.starts_with("match_temp_") {
-            return Err(format!("Temporary variable {} not found", name));
+            return Err(format!("Temporary variable {name} not found"));
         }
 
         if let Some(symbol) = self.analyzer.symbol_table().lookup(name) {
@@ -1534,7 +1531,7 @@ impl<'a> CodeGenerator<'a> {
             return Err("Match expression must be an enum type".to_string());
         }
 
-        Err(format!("Symbol {} not found", name))
+        Err(format!("Symbol {name} not found"))
     }
 
     fn resolve_enum_constructor_match_name(
@@ -1552,7 +1549,7 @@ impl<'a> CodeGenerator<'a> {
                         Err("Constructor must be enum type".to_string())
                     }
                 } else {
-                    Err(format!("Constructor {} not found", constructor_name))
+                    Err(format!("Constructor {constructor_name} not found"))
                 }
             }
         }
@@ -1594,10 +1591,10 @@ impl<'a> CodeGenerator<'a> {
             .or_else(|| self.global_variables.get(obj))
             .is_some()
         {
-            return Err(format!("Variable {} is not a class instance", obj));
+            return Err(format!("Variable {obj} is not a class instance"));
         }
 
-        Err(format!("Variable {} not found", obj))
+        Err(format!("Variable {obj} not found"))
     }
 
     /// Name the enum a matched class field holds, as seen through the receiver.
@@ -1655,11 +1652,11 @@ impl<'a> CodeGenerator<'a> {
         let fields = self
             .classes
             .get(class_name)
-            .ok_or_else(|| format!("Class {} not found", class_name))?;
+            .ok_or_else(|| format!("Class {class_name} not found"))?;
         let field_info = fields
             .iter()
             .find(|f| f.name == field)
-            .ok_or_else(|| format!("Field {} not found in class {}", field, class_name))?;
+            .ok_or_else(|| format!("Field {field} not found in class {class_name}"))?;
         Ok(self.type_node_to_type(&field_info.type_))
     }
 
@@ -1675,7 +1672,7 @@ impl<'a> CodeGenerator<'a> {
             let guard_val = self.generate_expression(guard)?;
             let guard_pass_bb = self
                 .context
-                .append_basic_block(*function, &format!("match_guard_pass_{}", arm_index));
+                .append_basic_block(*function, &format!("match_guard_pass_{arm_index}"));
             self.builder
                 .build_conditional_branch(guard_val.into_int_value(), guard_pass_bb, next_bb)
                 .map_err(|e| e.to_string())?;
@@ -1688,7 +1685,7 @@ impl<'a> CodeGenerator<'a> {
         if self
             .builder
             .get_insert_block()
-            .and_then(|bb| bb.get_terminator())
+            .and_then(inkwell::basic_block::BasicBlock::get_terminator)
             .is_none()
         {
             self.builder
@@ -1715,15 +1712,14 @@ impl<'a> CodeGenerator<'a> {
                     .analyzer
                     .symbol_table()
                     .lookup(name)
-                    .map(|s| s.kind == crate::semantics::SymbolKind::Constant)
-                    .unwrap_or(false);
+                    .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Constant);
 
                 if is_constant {
                     let (const_ptr, const_slot_type, _) = self
                         .variables
                         .get(name)
                         .or_else(|| self.global_variables.get(name))
-                        .ok_or_else(|| format!("Constant {} not found", name))?
+                        .ok_or_else(|| format!("Constant {name} not found"))?
                         .clone();
 
                     // Read through the constant's own slot: a scalar constant
@@ -1731,7 +1727,7 @@ impl<'a> CodeGenerator<'a> {
                     // dereferenced the value itself.
                     let loaded = self
                         .builder
-                        .build_load(const_slot_type, const_ptr, &format!("load_{}", name))
+                        .build_load(const_slot_type, const_ptr, &format!("load_{name}"))
                         .map_err(|e| e.to_string())?;
 
                     let const_val: BasicValueEnum<'a> = match match_expr_type {
@@ -1814,7 +1810,7 @@ impl<'a> CodeGenerator<'a> {
         let struct_type = self
             .type_map
             .get(enum_name)
-            .ok_or_else(|| format!("Enum {} not found in type map", enum_name))?
+            .ok_or_else(|| format!("Enum {enum_name} not found in type map"))?
             .into_struct_type();
         let temp_ptr = self
             .builder
@@ -1874,7 +1870,7 @@ impl<'a> CodeGenerator<'a> {
 
         let func = self
             .runtime_function(data_func)
-            .ok_or(format!("{} not found", data_func))?;
+            .ok_or(format!("{data_func} not found"))?;
         let data_call = self
             .builder
             .build_call(func, &[expr_ptr.into()], "data_call")
@@ -1939,7 +1935,7 @@ impl<'a> CodeGenerator<'a> {
         match enum_name {
             "optional" => Ok("mux_optional_data"),
             "result" => Ok("mux_result_data"),
-            _ => Err(format!("Unknown enum {}", enum_name)),
+            _ => Err(format!("Unknown enum {enum_name}")),
         }
     }
 
@@ -1956,7 +1952,7 @@ impl<'a> CodeGenerator<'a> {
         if enum_name == "result" {
             return self.extract_result_variant_value(variant_name, match_expr_type, data_ptr);
         }
-        Err(format!("Unknown enum {}", enum_name))
+        Err(format!("Unknown enum {enum_name}"))
     }
 
     fn extract_optional_variant_value(
@@ -1968,8 +1964,7 @@ impl<'a> CodeGenerator<'a> {
             return self.extract_value_from_ptr(data_ptr, inner_type, "some");
         }
         Err(format!(
-            "Type mismatch: expected Optional, got {:?}",
-            match_expr_type
+            "Type mismatch: expected Optional, got {match_expr_type:?}"
         ))
     }
 
@@ -1988,8 +1983,7 @@ impl<'a> CodeGenerator<'a> {
             return self.extract_value_from_ptr(data_ptr, target_type, variant);
         }
         Err(format!(
-            "Type mismatch: expected Result, got {:?}",
-            match_expr_type
+            "Type mismatch: expected Result, got {match_expr_type:?}"
         ))
     }
 
@@ -2045,7 +2039,7 @@ impl<'a> CodeGenerator<'a> {
         let struct_type = self
             .type_map
             .get(enum_name)
-            .ok_or_else(|| format!("Enum {} not found in type map", enum_name))?
+            .ok_or_else(|| format!("Enum {enum_name} not found in type map"))?
             .into_struct_type();
 
         let field_types_clone = self.variant_field_types(enum_name, variant_name)?;
@@ -2151,11 +2145,11 @@ impl<'a> CodeGenerator<'a> {
         let variant_fields = self
             .enum_variant_fields
             .get(enum_name)
-            .ok_or_else(|| format!("No field information found for enum {}", enum_name))?;
+            .ok_or_else(|| format!("No field information found for enum {enum_name}"))?;
         variant_fields
             .get(variant_name)
             .cloned()
-            .ok_or_else(|| format!("Variant {} not found in enum {}", variant_name, enum_name))
+            .ok_or_else(|| format!("Variant {variant_name} not found in enum {enum_name}"))
     }
 
     pub(super) fn variant_field_llvm_type(
@@ -2236,7 +2230,7 @@ impl<'a> CodeGenerator<'a> {
         let struct_type = self
             .type_map
             .get(enum_name)
-            .ok_or_else(|| format!("Enum {} not found in type map", enum_name))?
+            .ok_or_else(|| format!("Enum {enum_name} not found in type map"))?
             .into_struct_type();
         let unbox_fn = self
             .runtime_function("mux_value_unbox_enum")
@@ -2304,15 +2298,15 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let end_bb = self
             .context
-            .append_basic_block(*function, &format!("match_end_{}", match_id));
+            .append_basic_block(*function, &format!("match_end_{match_id}"));
 
         for (i, arm) in arms.iter().enumerate() {
             let arm_bb = self
                 .context
-                .append_basic_block(*function, &format!("match_arm_{}_{}", match_id, i));
+                .append_basic_block(*function, &format!("match_arm_{match_id}_{i}"));
             let next_bb = if i < arms.len() - 1 {
                 self.context
-                    .append_basic_block(*function, &format!("match_next_{}_{}", match_id, i))
+                    .append_basic_block(*function, &format!("match_next_{match_id}_{i}"))
             } else {
                 end_bb
             };
@@ -2382,15 +2376,15 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let end_bb = self
             .context
-            .append_basic_block(*function, &format!("match_end_{}", match_id));
+            .append_basic_block(*function, &format!("match_end_{match_id}"));
 
         for (i, arm) in arms.iter().enumerate() {
             let arm_bb = self
                 .context
-                .append_basic_block(*function, &format!("match_arm_{}_{}", match_id, i));
+                .append_basic_block(*function, &format!("match_arm_{match_id}_{i}"));
             let next_bb = if i < arms.len() - 1 {
                 self.context
-                    .append_basic_block(*function, &format!("match_next_{}_{}", match_id, i))
+                    .append_basic_block(*function, &format!("match_next_{match_id}_{i}"))
             } else {
                 end_bb
             };
@@ -2450,17 +2444,17 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<inkwell::values::IntValue<'a>, String> {
         let func = self
             .runtime_function(func_name)
-            .ok_or_else(|| format!("{} not found", func_name))?;
+            .ok_or_else(|| format!("{func_name} not found"))?;
         let result = self
             .builder
             .build_call(func, &[left.into(), right.into()], label)
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} returned no value", func_name))?;
+            .ok_or_else(|| format!("{func_name} returned no value"))?;
         let int_val = match result {
             BasicValueEnum::IntValue(v) => v,
-            _ => return Err(format!("runtime function {} must return i32", func_name)),
+            _ => return Err(format!("runtime function {func_name} must return i32")),
         };
         self.i32_to_bool(int_val).map(|v| v.into_int_value())
     }
@@ -2533,8 +2527,7 @@ impl<'a> CodeGenerator<'a> {
                 self.call_runtime_bool(left_ptr, right_ptr, "mux_value_equal", "value_equal")
             }
             _ => Err(format!(
-                "Equality comparison not supported for match type: {:?}",
-                expr_type
+                "Equality comparison not supported for match type: {expr_type:?}"
             )),
         }
     }

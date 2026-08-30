@@ -32,6 +32,7 @@ impl Default for SymbolTable {
 }
 
 impl SymbolTable {
+    #[must_use]
     pub fn new() -> Self {
         let root = Rc::new(RefCell::new(Scope::default()));
         SymbolTable {
@@ -119,6 +120,7 @@ impl SymbolTable {
         Ok(())
     }
 
+    #[must_use]
     pub fn exists(&self, name: &str) -> bool {
         self.get_cloned(name).is_some()
     }
@@ -170,14 +172,14 @@ impl SymbolTable {
             if is_global_scope && crate::semantics::stdlib::BUILT_IN_FUNCTIONS.contains_key(name) {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::ImportFailure,
-                    format!("'{}' is a built-in function", name),
+                    format!("'{name}' is a built-in function"),
                     symbol.span,
-                    format!("Rename this; '{}' is taken at module scope.", name),
+                    format!("Rename this; '{name}' is taken at module scope."),
                 ));
             }
             return Err(SemanticError {
                 code: DiagnosticCode::DuplicateDeclaration,
-                message: format!("Duplicate declaration of '{}'", name).into_boxed_str(),
+                message: format!("Duplicate declaration of '{name}'").into_boxed_str(),
                 help: None,
                 span: symbol.span,
                 file_id: None,
@@ -221,11 +223,10 @@ impl SymbolTable {
         };
         Some(SemanticError::with_help(
             DiagnosticCode::InvalidOperation,
-            format!("Cannot declare a variable named '{}'", name),
+            format!("Cannot declare a variable named '{name}'"),
             symbol.span,
             format!(
-                "'{}' already names {}. Rename the variable; a type name and a value cannot share a name.",
-                name, kind
+                "'{name}' already names {kind}. Rename the variable; a type name and a value cannot share a name."
             ),
         ))
     }
@@ -243,6 +244,7 @@ impl SymbolTable {
         self.add_symbol_to_current_scope(name, symbol)
     }
 
+    #[must_use]
     pub fn global_scope_symbols(&self) -> HashMap<String, Symbol> {
         self.scopes
             .first()
@@ -258,11 +260,13 @@ impl SymbolTable {
     /// to each other's. The scope chain answers correctly whenever the name is
     /// live; the flat index remains the fallback for everything looked up after
     /// its scope was popped, which is how codegen reads declarations.
+    #[must_use]
     pub fn lookup(&self, name: &str) -> Option<Symbol> {
         self.get_cloned(name)
             .or_else(|| self.all_symbols.get(name).cloned())
     }
 
+    #[must_use]
     pub fn get_cloned(&self, name: &str) -> Option<Symbol> {
         for scope in self.scopes.iter().rev() {
             let scope_borrow = scope.borrow();
@@ -275,6 +279,7 @@ impl SymbolTable {
 
     /// Find symbols with names similar to the given name (for "did you mean?" suggestions).
     /// Uses a simple edit distance check to find candidates within a threshold.
+    #[must_use]
     pub fn find_similar(&self, name: &str) -> Option<String> {
         let threshold = calculate_similarity_threshold(name);
 
@@ -337,6 +342,7 @@ impl SymbolTable {
 /// - 1-2 chars: threshold of 1 (strict for short names)
 /// - 3-5 chars: threshold of 2 (moderate for medium names)
 /// - 6+ chars: threshold of 3 (permissive for long names)
+#[must_use]
 pub fn calculate_similarity_threshold(name: &str) -> usize {
     match name.len() {
         0..=2 => 1,
@@ -346,6 +352,7 @@ pub fn calculate_similarity_threshold(name: &str) -> usize {
 }
 
 /// Compute the Levenshtein edit distance between two strings.
+#[must_use]
 pub fn edit_distance(a: &str, b: &str) -> usize {
     let a_len = a.chars().count();
     let b_len = b.chars().count();
@@ -363,7 +370,7 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
     for (i, ca) in a.chars().enumerate() {
         curr[0] = i + 1;
         for (j, cb) in b.chars().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
+            let cost = usize::from(ca != cb);
             curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);

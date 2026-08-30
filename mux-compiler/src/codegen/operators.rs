@@ -318,14 +318,14 @@ impl<'a> CodeGenerator<'a> {
         let func = self
             .module
             .get_function(&func_name)
-            .ok_or_else(|| format!("{} not found for Comparable", func_name))?;
+            .ok_or_else(|| format!("{func_name} not found for Comparable"))?;
         let ordering = self
             .builder
             .build_call(func, &[left.into(), right.into()], "cmp_call")
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} should return a value", func_name))?;
+            .ok_or_else(|| format!("{func_name} should return a value"))?;
         let ordering = self.get_raw_int_value(ordering)?;
         let zero = ordering.get_type().const_zero();
         self.builder
@@ -353,10 +353,9 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         if left.is_pointer_value() || right.is_pointer_value() {
             return Err(format!(
-                "Ordering comparison '{}' reached the numeric path with a pointer operand. \
+                "Ordering comparison '{label}' reached the numeric path with a pointer operand. \
                  A type ordered by more than a machine comparison must be handled before \
-                 this point",
-                label
+                 this point"
             ));
         }
         if let (Ok(left_int), Ok(right_int)) =
@@ -365,18 +364,18 @@ impl<'a> CodeGenerator<'a> {
             self.builder
                 .build_int_compare(int_pred, left_int, right_int, label)
                 .map_err(|e| e.to_string())
-                .map(|v| v.into())
+                .map(std::convert::Into::into)
         } else if let (Ok(left_float), Ok(right_float)) = (
             self.get_raw_float_value(left),
             self.get_raw_float_value(right),
         ) {
-            let flabel = format!("f{}", label);
+            let flabel = format!("f{label}");
             self.builder
                 .build_float_compare(float_pred, left_float, right_float, &flabel)
                 .map_err(|e| e.to_string())
-                .map(|v| v.into())
+                .map(std::convert::Into::into)
         } else {
-            Err(format!("Unsupported {} operands", label))
+            Err(format!("Unsupported {label} operands"))
         }
     }
 
@@ -412,7 +411,7 @@ impl<'a> CodeGenerator<'a> {
             val
         };
         if !val.is_struct_value() {
-            return Err(format!("enum operand is not a struct value: {:?}", val));
+            return Err(format!("enum operand is not a struct value: {val:?}"));
         }
         let struct_val = val.into_struct_value();
         let temp = self.create_entry_alloca(struct_val.get_type().into(), "enum_cmp_operand")?;
@@ -448,7 +447,7 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_int_compare(predicate, result.into_int_value(), zero, label)
             .map_err(|e| e.to_string())
-            .map(|v| v.into())
+            .map(std::convert::Into::into)
     }
 
     /// Call a runtime comparison function on two pointer values and convert
@@ -462,7 +461,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let func = self
             .runtime_function(func_name)
-            .ok_or_else(|| format!("{} not found", func_name))?;
+            .ok_or_else(|| format!("{func_name} not found"))?;
         let result = self
             .builder
             .build_call(func, &[left.into(), right.into()], label)
@@ -505,7 +504,7 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_int_compare(inkwell::IntPredicate::NE, int_val, zero, "to_bool")
             .map_err(|e| e.to_string())
-            .map(|v| v.into())
+            .map(std::convert::Into::into)
     }
 
     /// Hand the analyzer the locals of the function being emitted, so it types
@@ -675,7 +674,7 @@ impl<'a> CodeGenerator<'a> {
             return Ok(ty.clone());
         }
 
-        Err(format!("Undefined variable '{}'", name))
+        Err(format!("Undefined variable '{name}'"))
     }
 
     fn resolve_list_access_type(&mut self, expr: &ExpressionNode) -> Result<Type, String> {
@@ -695,7 +694,7 @@ impl<'a> CodeGenerator<'a> {
                         ExpressionKind::Literal(LiteralNode::Integer(1)) => Ok(*right),
                         _ => Err("Tuple index must be a literal 0 or 1".to_string()),
                     },
-                    _ => Err(format!("Cannot index into type: {:?}", container_type)),
+                    _ => Err(format!("Cannot index into type: {container_type:?}")),
                 }
             }
             _ => Err("Expected list access expression".to_string()),
@@ -714,7 +713,7 @@ impl<'a> CodeGenerator<'a> {
         let func_type = self.resolve_expression_type_with_fallback(func)?;
         match func_type {
             Type::Function { returns, .. } => Ok(*returns),
-            other => Err(format!("Cannot call non-function type: {:?}", other)),
+            other => Err(format!("Cannot call non-function type: {other:?}")),
         }
     }
 
@@ -851,7 +850,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let left_type = self
             .resolve_expression_type_with_fallback(left_expr)
-            .map_err(|e| format!("Failed to get left operand type for '+': {}", e))?;
+            .map_err(|e| format!("Failed to get left operand type for '+': {e}"))?;
 
         match &left_type {
             Type::Primitive(PrimitiveType::Str) => {
@@ -1034,11 +1033,10 @@ impl<'a> CodeGenerator<'a> {
                 self.builder
                     .build_float_add(left_float, right_float, "fadd")
                     .map_err(|e| e.to_string())
-                    .map(|v| v.into())
+                    .map(std::convert::Into::into)
             }
             _ => Err(format!(
-                "Add operation not supported for type: {:?}",
-                left_type
+                "Add operation not supported for type: {left_type:?}"
             )),
         }
     }
@@ -1081,7 +1079,9 @@ impl<'a> CodeGenerator<'a> {
                         .build_float_mul(left_float, right_float, "fmul")
                 }
             };
-            result.map_err(|e| e.to_string()).map(|v| v.into())
+            result
+                .map_err(|e| e.to_string())
+                .map(std::convert::Into::into)
         } else {
             let unsupported = match kind {
                 CheckedArithmeticKind::Subtract => "Unsupported sub operands",
@@ -1133,7 +1133,9 @@ impl<'a> CodeGenerator<'a> {
                         .build_int_signed_rem(left_int, right_int, block_prefix)
                 }
             };
-            result.map_err(|e| e.to_string()).map(|v| v.into())
+            result
+                .map_err(|e| e.to_string())
+                .map(std::convert::Into::into)
         } else if matches!(kind, DivisionKind::Divide)
             && let (Ok(left_float), Ok(right_float)) = (
                 self.get_raw_float_value(left),
@@ -1144,7 +1146,7 @@ impl<'a> CodeGenerator<'a> {
             self.builder
                 .build_float_div(left_float, right_float, "fdiv")
                 .map_err(|e| e.to_string())
-                .map(|v| v.into())
+                .map(std::convert::Into::into)
         } else {
             Err(unsupported_message.to_string())
         }
@@ -1167,7 +1169,7 @@ impl<'a> CodeGenerator<'a> {
                 inkwell::IntPredicate::EQ,
                 divisor,
                 zero,
-                &format!("{}_is_zero", block_prefix),
+                &format!("{block_prefix}_is_zero"),
             )
             .map_err(|e| e.to_string())?;
 
@@ -1180,10 +1182,10 @@ impl<'a> CodeGenerator<'a> {
 
         let error_bb = self
             .context
-            .append_basic_block(current_function, &format!("{}_zero_error", block_prefix));
+            .append_basic_block(current_function, &format!("{block_prefix}_zero_error"));
         let continue_bb = self
             .context
-            .append_basic_block(current_function, &format!("{}_zero_continue", block_prefix));
+            .append_basic_block(current_function, &format!("{block_prefix}_zero_continue"));
 
         self.builder
             .build_conditional_branch(is_zero, error_bb, continue_bb)
@@ -1192,9 +1194,9 @@ impl<'a> CodeGenerator<'a> {
         self.builder.position_at_end(error_bb);
         let msg = self
             .builder
-            .build_global_string_ptr(message, &format!("{}_zero_msg", block_prefix))
+            .build_global_string_ptr(message, &format!("{block_prefix}_zero_msg"))
             .map_err(|e| e.to_string())?;
-        let loc = self.panic_location_arg(span, &format!("{}_zero_error", block_prefix))?;
+        let loc = self.panic_location_arg(span, &format!("{block_prefix}_zero_error"))?;
         self.generate_runtime_call(
             "mux_panic_cstr_code",
             &[
@@ -1359,7 +1361,7 @@ impl<'a> CodeGenerator<'a> {
                 self.builder
                     .build_int_compare(kind.int_predicate(), left_int, right_int, kind.label())
                     .map_err(|e| e.to_string())
-                    .map(|v| v.into())
+                    .map(std::convert::Into::into)
             }
             Type::Primitive(PrimitiveType::Bool) => {
                 let left_bool = self.get_raw_bool_value(left)?;
@@ -1367,7 +1369,7 @@ impl<'a> CodeGenerator<'a> {
                 self.builder
                     .build_int_compare(kind.int_predicate(), left_bool, right_bool, kind.label())
                     .map_err(|e| e.to_string())
-                    .map(|v| v.into())
+                    .map(std::convert::Into::into)
             }
             Type::Primitive(PrimitiveType::Float) => {
                 let left_float = self.get_raw_float_value(left)?;
@@ -1380,7 +1382,7 @@ impl<'a> CodeGenerator<'a> {
                         kind.float_label(),
                     )
                     .map_err(|e| e.to_string())
-                    .map(|v| v.into())
+                    .map(std::convert::Into::into)
             }
             // optional/result are heap `*mut Value` like the collections, and
             // mux_value_equal already compares them structurally - a set
@@ -1444,7 +1446,7 @@ impl<'a> CodeGenerator<'a> {
                 self.builder
                     .build_int_compare(inkwell::IntPredicate::EQ, equal, expected, kind.label())
                     .map_err(|e| e.to_string())
-                    .map(|v| v.into())
+                    .map(std::convert::Into::into)
             }
             _ => Err(format!(
                 "{} comparison not supported for type: {:?}",
@@ -1478,21 +1480,21 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value()
                 .basic()
-                .ok_or_else(|| format!("{} should return a value", eq_name))?;
+                .ok_or_else(|| format!("{eq_name} should return a value"))?;
             return self.get_raw_bool_value(equal);
         }
         let cmp_name = self.create_specialized_method_name(class_name, type_args, "cmp");
         let func = self
             .module
             .get_function(&cmp_name)
-            .ok_or_else(|| format!("neither {} nor {} found", eq_name, cmp_name))?;
+            .ok_or_else(|| format!("neither {eq_name} nor {cmp_name} found"))?;
         let ordering = self
             .builder
             .build_call(func, &[left.into(), right.into()], "cmp_call")
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} should return a value", cmp_name))?;
+            .ok_or_else(|| format!("{cmp_name} should return a value"))?;
         let ordering = self.get_raw_int_value(ordering)?;
         let zero = ordering.get_type().const_zero();
         self.builder
@@ -1509,10 +1511,10 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let right_type = self
             .resolve_expression_type_with_fallback(right_expr)
-            .map_err(|e| format!("Failed to get right operand type for 'in': {}", e))?;
+            .map_err(|e| format!("Failed to get right operand type for 'in': {e}"))?;
         let left_type = self
             .resolve_expression_type_with_fallback(left_expr)
-            .map_err(|e| format!("Failed to get left operand type for 'in': {}", e))?;
+            .map_err(|e| format!("Failed to get left operand type for 'in': {e}"))?;
 
         match right_type {
             Type::List(_) | Type::EmptyList => {
@@ -1563,7 +1565,7 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Str) => {
                 let left_type = self
                     .resolve_expression_type_with_fallback(left_expr)
-                    .map_err(|e| format!("Failed to get left operand type for 'in': {}", e))?;
+                    .map_err(|e| format!("Failed to get left operand type for 'in': {e}"))?;
                 let string_ptr = right.into_pointer_value();
 
                 match left_type {
@@ -1604,14 +1606,12 @@ impl<'a> CodeGenerator<'a> {
                         Ok(result)
                     }
                     _ => Err(format!(
-                        "Invalid left operand type for 'in' operator with string: {:?}",
-                        left_type
+                        "Invalid left operand type for 'in' operator with string: {left_type:?}"
                     )),
                 }
             }
             _ => Err(format!(
-                "'in' operator not supported for type: {:?}",
-                right_type
+                "'in' operator not supported for type: {right_type:?}"
             )),
         }
     }

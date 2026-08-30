@@ -5,6 +5,7 @@ use crate::lexer::Span;
 use fs2::FileExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
+use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,7 @@ pub struct RecoveryIntervals {
 }
 
 impl RecoveryIntervals {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -34,6 +36,7 @@ impl RecoveryIntervals {
         }
     }
 
+    #[must_use]
     pub fn touches(&self, file_id: FileId, range: SourceRange) -> bool {
         self.intervals.get(&file_id).is_some_and(|ranges| {
             ranges
@@ -89,7 +92,7 @@ impl fmt::Display for FixError {
             Self::NonMachineApplicable {
                 code,
                 applicability,
-            } => write!(f, "{} is not machine-applicable ({applicability:?})", code),
+            } => write!(f, "{code} is not machine-applicable ({applicability:?})"),
             Self::InvalidRange {
                 file_id,
                 range,
@@ -319,6 +322,7 @@ fn ranges_overlap(left: SourceRange, right: SourceRange) -> bool {
 }
 
 /// Produce a concise unified-style diff for changed files.
+#[must_use]
 pub fn unified_diff(files: &Files, applied: &AppliedEdits) -> String {
     let mut output = String::new();
     for (file_id, updated) in &applied.files {
@@ -333,13 +337,15 @@ pub fn unified_diff(files: &Files, applied: &AppliedEdits) -> String {
             .map_or_else(|| "<unknown>".into(), |path| path.display().to_string());
         let old_lines = diff_lines(original);
         let new_lines = diff_lines(updated);
-        let old_start = if old_lines.is_empty() { 0 } else { 1 };
-        let new_start = if new_lines.is_empty() { 0 } else { 1 };
-        output.push_str(&format!(
+        let old_start = i32::from(!old_lines.is_empty());
+        let new_start = i32::from(!new_lines.is_empty());
+        write!(
+            &mut output,
             "--- {path}\n+++ {path}\n@@ -{old_start},{} +{new_start},{} @@\n",
             old_lines.len(),
             new_lines.len()
-        ));
+        )
+        .expect("writing unified diff to String cannot fail");
         for (line, has_newline) in old_lines {
             append_diff_line(&mut output, '-', line, has_newline);
         }

@@ -21,6 +21,7 @@ pub struct StandardEmitter {
 }
 
 impl StandardEmitter {
+    #[must_use]
     pub fn new(config: ColorConfig) -> Self {
         Self {
             styles: Styles::new(config),
@@ -34,9 +35,7 @@ impl StandardEmitter {
 
     /// Render a single line of source with line number.
     fn render_source_line(&self, line_number: usize, line_content: &str, width: usize) -> String {
-        let line_num_str =
-            self.styles
-                .line_number(&format!("{:width$}", line_number, width = width));
+        let line_num_str = self.styles.line_number(&format!("{line_number:width$}"));
         format!("{} | {}", line_num_str, line_content.trim_end())
     }
 
@@ -144,11 +143,7 @@ impl StandardEmitter {
             "--> {}:{}:{}",
             file_path,
             min_line,
-            diagnostic
-                .labels
-                .first()
-                .map(|l| l.span.col_start)
-                .unwrap_or(1)
+            diagnostic.labels.first().map_or(1, |l| l.span.col_start)
         );
         eprintln!("{}", self.styles.location(&location));
         eprintln!("{}", self.render_gutter(width));

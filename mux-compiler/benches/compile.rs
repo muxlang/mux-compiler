@@ -75,8 +75,7 @@ fn fresh(prog: &Program) -> (SemanticAnalyzer, Files) {
     let base = prog
         .path
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let resolver = Rc::new(RefCell::new(ModuleResolver::new(base)));
     let mut files = Files::new();
     files.add(&prog.path, prog.src.clone());
@@ -123,10 +122,10 @@ fn corpus() -> &'static [Program] {
                 skipped += 1;
                 continue;
             };
-            let name = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            let name = path.file_stem().map_or_else(
+                || path.to_string_lossy().into_owned(),
+                |s| s.to_string_lossy().into_owned(),
+            );
             let prog = Program { name, path, src };
 
             if compiles(&prog) {

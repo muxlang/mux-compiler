@@ -79,11 +79,10 @@ impl SemanticAnalyzer {
             {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::UninitializedReadError,
-                    format!("'{}' is read before it is assigned", name),
+                    format!("'{name}' is read before it is assigned"),
                     read.span,
                     format!(
-                        "'{0}' was declared without a value. Assign it on every path that                          reaches this point - an `if` needs an `else`, and every arm of a                          `match` must assign it or return.",
-                        name
+                        "'{name}' was declared without a value. Assign it on every path that                          reaches this point - an `if` needs an `else`, and every arm of a                          `match` must assign it or return."
                     ),
                 ));
             }
@@ -108,9 +107,9 @@ impl SemanticAnalyzer {
             };
             return Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,
-                format!("Cannot infer type for empty {} literal", collection_type),
+                format!("Cannot infer type for empty {collection_type} literal"),
                 expr.span,
-                format!("Use an explicit type annotation, e.g. {}", example),
+                format!("Use an explicit type annotation, e.g. {example}"),
             ));
         }
         if Self::type_contains_empty_collection(&expr_type) {

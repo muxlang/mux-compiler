@@ -12,6 +12,7 @@ pub struct Token {
 }
 
 impl Token {
+    #[must_use]
     pub fn new(token: TokenType, span: Span) -> Token {
         Token {
             token_type: token,

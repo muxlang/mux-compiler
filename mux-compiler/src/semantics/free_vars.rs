@@ -153,8 +153,7 @@ impl SemanticAnalyzer {
                 let is_constant = self
                     .symbol_table()
                     .lookup(name)
-                    .map(|s| s.kind == SymbolKind::Constant)
-                    .unwrap_or(false);
+                    .is_some_and(|s| s.kind == SymbolKind::Constant);
                 if !is_constant {
                     locals.insert(name.clone());
                 }
@@ -474,7 +473,7 @@ impl SemanticAnalyzer {
             {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::InvalidOperation,
-                    format!("Cannot modify constant '{}'", name),
+                    format!("Cannot modify constant '{name}'"),
                     *op_span,
                     "Constants cannot be modified after initialization",
                 ));
@@ -492,7 +491,7 @@ impl SemanticAnalyzer {
             {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::UnknownMember,
-                    format!("Cannot modify const field '{}'", field),
+                    format!("Cannot modify const field '{field}'"),
                     *op_span,
                     "Const fields cannot be modified after initialization. Remove the 'const' modifier from the field declaration if mutation is needed.",
                 ));

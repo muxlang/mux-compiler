@@ -99,7 +99,7 @@ fn test_semantic_analysis() {
     let test_dir = Path::new("../test_scripts");
 
     if !test_dir.exists() {
-        panic!("Test scripts directory not found: {:?}", test_dir);
+        panic!("Test scripts directory not found: {test_dir:?}");
     }
 
     let mut files_processed = 0;
@@ -129,7 +129,7 @@ fn test_semantic_analysis() {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    println!("Processed {} files", files_processed);
+    println!("Processed {files_processed} files");
 }
 
 #[test]

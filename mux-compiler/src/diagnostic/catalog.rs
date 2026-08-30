@@ -479,7 +479,7 @@ mod tests {
     fn reserved_codes_are_not_published_as_emitted_diagnostics() {
         let emitted = DiagnosticCode::all();
         for code in DiagnosticCode::reserved() {
-            assert!(!emitted.contains(code), "{} is reserved and emitted", code);
+            assert!(!emitted.contains(code), "{code} is reserved and emitted");
         }
     }
 }

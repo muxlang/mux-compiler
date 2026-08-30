@@ -5,9 +5,10 @@ use std::fs;
 use std::path::PathBuf;
 
 fn fixture_dir() -> PathBuf {
-    std::env::var_os("MUX_TEST_SCRIPTS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_scripts"))
+    std::env::var_os("MUX_TEST_SCRIPTS_DIR").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_scripts"),
+        PathBuf::from,
+    )
 }
 
 fn root_mux_files() -> Vec<PathBuf> {
@@ -77,7 +78,7 @@ fn test_file_lexer() {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
-        println!("\n=== Testing file: {} ===", file_name);
+        println!("\n=== Testing file: {file_name} ===");
 
         let mut src = Source::new(&path.to_string_lossy())
             .unwrap_or_else(|_| panic!("Failed to open source file: {}", path.display()));
@@ -85,13 +86,13 @@ fn test_file_lexer() {
         let mut lexer = Lexer::new(&mut src);
         let tokens = lexer
             .lex_all()
-            .unwrap_or_else(|e| panic!("Lexing failed for file {}: {}", file_name, e));
+            .unwrap_or_else(|e| panic!("Lexing failed for file {file_name}: {e}"));
 
         let snapshot_name = path
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("unknown_file");
         assert_debug_snapshot!(format!("file_lexer__{snapshot_name}"), tokens);
-        println!("✓ Successfully processed: {}", file_name);
+        println!("✓ Successfully processed: {file_name}");
     }
 }

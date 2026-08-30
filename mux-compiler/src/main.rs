@@ -25,6 +25,7 @@ use source::Source;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -148,7 +149,7 @@ fn find_linker_command() -> Option<String> {
     // `cc` and `gcc` are just as valid and the search no longer needs a
     // version-matched clang to exist.
     let linked_major = env!("MUX_LLVM_MAJOR");
-    let versioned = format!("clang-{}", linked_major);
+    let versioned = format!("clang-{linked_major}");
     let candidates: &[&str] = &[versioned.as_str(), "clang", "cc", "gcc"];
     for candidate in candidates {
         let output = match Command::new(candidate).arg("--version").output() {
@@ -176,7 +177,7 @@ fn llvm_config_candidates() -> Vec<String> {
         candidates.push(path);
     }
 
-    candidates.push(format!("llvm-config-{}", REQUIRED_LLVM_MAJOR));
+    candidates.push(format!("llvm-config-{REQUIRED_LLVM_MAJOR}"));
     candidates.push("llvm-config".to_string());
 
     candidates
@@ -704,7 +705,7 @@ fn print_version_banner() {
     sleep(Duration::from_millis(200));
 
     // Move cursor past the version lines so the shell prompt doesn't overlap
-    write!(out, "\x1b[{}B", num_versions).ok();
+    write!(out, "\x1b[{num_versions}B").ok();
     out.flush().ok();
 }
 
@@ -813,31 +814,34 @@ fn banner_sweep_frame(
     offset: usize,
     palette: &BannerPalette,
 ) -> String {
-    let mut buf = format!("\x1b[{}A", offset);
+    let mut buf = format!("\x1b[{offset}A");
     // Blank line before logo
     buf.push('\n');
     for char_row in combined {
         for (col, ch) in char_row.iter().enumerate().take(cols) {
             let s = palette.for_distance(cols - 1 - col);
-            buf.push_str(&format!("{s}{ch}{s:#}"));
+            write!(&mut buf, "{s}{ch}{s:#}").expect("writing banner frame to String cannot fail");
         }
         buf.push('\n');
     }
     buf.push('\n');
     let settled = &palette.settled;
-    buf.push_str(&format!("{settled}{BANNER_MSG}{settled:#}\n"));
+    writeln!(&mut buf, "{settled}{BANNER_MSG}{settled:#}")
+        .expect("writing banner frame to String cannot fail");
     buf
 }
 
 fn banner_settled_frame(combined: &[Vec<char>], settled: &anstyle::Style) -> String {
-    let mut buf = format!("\x1b[{}A", BANNER_ANIM_ROWS);
+    let mut buf = format!("\x1b[{BANNER_ANIM_ROWS}A");
     buf.push('\n');
     for char_row in combined {
         let s: String = char_row.iter().collect();
-        buf.push_str(&format!("{settled}{s}{settled:#}\n"));
+        writeln!(&mut buf, "{settled}{s}{settled:#}")
+            .expect("writing banner frame to String cannot fail");
     }
     buf.push('\n');
-    buf.push_str(&format!("{settled}{BANNER_MSG}{settled:#}\n"));
+    writeln!(&mut buf, "{settled}{BANNER_MSG}{settled:#}")
+        .expect("writing banner frame to String cannot fail");
     buf
 }
 
@@ -903,7 +907,8 @@ fn fix_json_escape(value: &str) -> String {
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
             character if character.is_control() => {
-                escaped.push_str(&format!("\\u{:04x}", character as u32));
+                write!(&mut escaped, "\\u{:04x}", character as u32)
+                    .expect("writing JSON escape to String cannot fail");
             }
             character => escaped.push(character),
         }
@@ -1540,19 +1545,19 @@ fn generate_object(
     // rather than a bare message.
     codegen
         .generate(nodes)
-        .map_err(|e| format!("codegen error: {}", e))?;
+        .map_err(|e| format!("codegen error: {e}"))?;
 
     // IR first: when the module is invalid, the emitted `.ll` is exactly what is
     // needed to debug it, and object emission verifies and would bail first.
     if let Some(ir_file) = ir_file {
         codegen
             .emit_ir_to_file(ir_file)
-            .map_err(|e| format!("failed to emit IR: {}", e))?;
+            .map_err(|e| format!("failed to emit IR: {e}"))?;
     }
 
     codegen
         .emit_object(object)
-        .map_err(|e| format!("failed to emit object file: {}", e))?;
+        .map_err(|e| format!("failed to emit object file: {e}"))?;
 
     // The bytes must be on disk, and read from the start: on unix the handle
     // becomes the linker's stdin, on Windows it is reopened by path.
@@ -1562,7 +1567,7 @@ fn generate_object(
             use std::io::Seek;
             object.rewind()
         })
-        .map_err(|e| format!("failed to finalize the object file: {}", e))
+        .map_err(|e| format!("failed to finalize the object file: {e}"))
 }
 
 fn resolve_runtime_lib_dir_or_exit() -> PathBuf {
@@ -1641,8 +1646,7 @@ fn classify_clang_output(
             ClangOutcome::LinkFailed(clang_failure_detail(&output.stdout, &output.stderr))
         }
         Err(e) => ClangOutcome::SpawnFailed(format!(
-            "Failed to run clang: {}. IR file generated at: {}",
-            e, ir_file
+            "Failed to run clang: {e}. IR file generated at: {ir_file}"
         )),
     }
 }
@@ -1722,10 +1726,10 @@ fn create_scratch_object(stem: &str) -> Result<(PathBuf, fs::File), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
-    let name = Path::new(stem)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "mux_module".to_string());
+    let name = Path::new(stem).file_name().map_or_else(
+        || "mux_module".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
 
     for _ in 0..16 {
         let nanos = std::time::SystemTime::now()
@@ -1869,7 +1873,8 @@ fn internal_compiler_error_report(
         }
     }
     if let Some(file) = file {
-        out.push_str(&format!("  while compiling: {}\n", file));
+        writeln!(&mut out, "  while compiling: {file}")
+            .expect("writing compiler error to String cannot fail");
     }
     // The "tip:" wording requested in mux-context#24: point the user at where to
     // report and what to include, without implying their code is at fault. Only
@@ -1880,10 +1885,11 @@ fn internal_compiler_error_report(
     } else {
         "the file you ran"
     };
-    out.push_str(&format!(
-        "tip: please report this error, along with {} and your system details\n",
-        subject
-    ));
+    writeln!(
+        &mut out,
+        "tip: please report this error, along with {subject} and your system details"
+    )
+    .expect("writing compiler error to String cannot fail");
     out.push_str(
         "     (the output of `mux --version`), to the Mux maintainers at https://github.com/muxlang/mux-compiler\n",
     );
@@ -1907,7 +1913,7 @@ fn report_internal_compiler_error(detail: &str) {
 /// directly; `panic_detail` handles pulling these fields out of the hook info.
 fn format_panic_detail(message: &str, location: Option<(&str, u32, u32)>) -> String {
     match location {
-        Some((file, line, col)) => format!("{} (at {}:{}:{})", message, file, line, col),
+        Some((file, line, col)) => format!("{message} (at {file}:{line}:{col})"),
         None => message.to_string(),
     }
 }
@@ -2125,17 +2131,17 @@ fn main() {
     analyze_semantics_or_exit(&mut analyzer, &nodes, file_id, &mut files, deny_warnings);
 
     let context = inkwell::context::Context::create();
-    let source_name = file_path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| file_path.to_string_lossy().into_owned());
+    let source_name = file_path.file_name().map_or_else(
+        || file_path.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     let mut codegen = codegen::CodeGenerator::new(&context, &mut analyzer, &source_name);
 
     let stem = file_path
         .to_string_lossy()
         .trim_end_matches(".mux")
         .to_string();
-    let ir_file = format!("{}.ll", stem);
+    let ir_file = format!("{stem}.ll");
 
     // Resolved before the scratch directory exists and before codegen runs.
     // Neither depends on codegen, both exit the process on failure, and
@@ -2355,7 +2361,7 @@ mod tests {
         };
         match classify_clang_output(Ok(failed), "out.ll") {
             ClangOutcome::LinkFailed(detail) => {
-                assert!(detail.contains("linking failed: undefined reference to pow"))
+                assert!(detail.contains("linking failed: undefined reference to pow"));
             }
             _ => panic!("expected LinkFailed"),
         }
@@ -2463,7 +2469,7 @@ mod tests {
         assert!(
             candidates
                 .iter()
-                .any(|c| c == &format!("llvm-config-{}", REQUIRED_LLVM_MAJOR))
+                .any(|c| c == &format!("llvm-config-{REQUIRED_LLVM_MAJOR}"))
         );
     }
 
@@ -2536,7 +2542,7 @@ mod tests {
         let args = build_linker_args(Path::new("scratch.o"), &dir);
 
         assert_eq!(
-            args.first().map(|arg| arg.as_os_str()),
+            args.first().map(std::ffi::OsString::as_os_str),
             Some(Path::new("scratch.o").as_os_str())
         );
         assert!(args.iter().any(|a| a == "-lmux_runtime"));
@@ -2781,8 +2787,7 @@ mod tests {
             assert_eq!(
                 dir_holding_runtime_lib(&dir),
                 Some(dir.clone()),
-                "expected the directory itself for {}",
-                name
+                "expected the directory itself for {name}"
             );
             std::fs::remove_dir_all(&dir).ok();
         }
@@ -2895,7 +2900,7 @@ mod tests {
             let path = dir.join(name);
             std::fs::write(
                 &path,
-                format!("#!/bin/sh\necho \"clang version {}.0.0\"\n", major),
+                format!("#!/bin/sh\necho \"clang version {major}.0.0\"\n"),
             )
             .unwrap();
             let mut perms = std::fs::metadata(&path).unwrap().permissions();

@@ -386,7 +386,7 @@ impl<'a> CodeGenerator<'a> {
         // two modules get distinct LLVM symbols; the map stays keyed by the bare
         // name because only one module's globals are visible at a time.
         let llvm_name = match &self.current_module_prefix {
-            Some(prefix) => format!("{}!{}", prefix, name),
+            Some(prefix) => format!("{prefix}!{name}"),
             None => name.to_string(),
         };
         // A captured global is emitted as a statically allocated capture cell,
@@ -475,7 +475,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         let resolved_type = self
             .resolve_expression_type_with_fallback(expr)
-            .map_err(|e| format!("Failed to get type for {}: {}", name, e))?;
+            .map_err(|e| format!("Failed to get type for {name}: {e}"))?;
         self.instantiate_generic_types_in_type(&resolved_type)?;
         let llvm_type = self.llvm_global_type_for_resolved_type(name, &resolved_type)?;
         self.declare_global_variable(name, llvm_type, resolved_type);
@@ -910,7 +910,7 @@ impl<'a> CodeGenerator<'a> {
         let null = self.context.ptr_type(AddressSpace::default()).const_null();
         let cell = self
             .builder
-            .build_call(alloc, &[null.into()], &format!("{}_cell", name))
+            .build_call(alloc, &[null.into()], &format!("{name}_cell"))
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
@@ -1102,7 +1102,7 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| format!("LLVM module verification failed: {}", e.to_string()))?;
 
         Target::initialize_native(&InitializationConfig::default())
-            .map_err(|e| format!("failed to initialize the native target: {}", e))?;
+            .map_err(|e| format!("failed to initialize the native target: {e}"))?;
 
         let triple = TargetMachine::get_default_triple();
         let target = Target::from_triple(&triple)
@@ -1119,7 +1119,7 @@ impl<'a> CodeGenerator<'a> {
                 RelocMode::PIC,
                 CodeModel::Default,
             )
-            .ok_or_else(|| format!("failed to create a target machine for {}", triple))?;
+            .ok_or_else(|| format!("failed to create a target machine for {triple}"))?;
 
         // Stamp the module with the machine's own triple and layout. Nothing set
         // them before, which is why clang reported "overriding the module target
@@ -1134,7 +1134,7 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| format!("failed to emit object code: {}", e.to_string()))?;
 
         out.write_all(object.as_slice())
-            .map_err(|e| format!("failed to write the object file: {}", e))
+            .map_err(|e| format!("failed to write the object file: {e}"))
     }
 
     pub fn emit_ir_to_file(&self, filename: &str) -> Result<(), String> {
@@ -1143,7 +1143,7 @@ impl<'a> CodeGenerator<'a> {
         // debug, so `-i` must still leave the file behind rather than bail first.
         self.module
             .print_to_file(filename)
-            .map_err(|e| format!("Failed to write IR: {}", e))?;
+            .map_err(|e| format!("Failed to write IR: {e}"))?;
         self.module
             .verify()
             .map_err(|e| format!("LLVM module verification failed: {}", e.to_string()))

@@ -62,7 +62,7 @@ impl<'a> CodeGenerator<'a> {
                 if self.classes.contains_key(name) {
                     Ok(self.ptr_type())
                 } else {
-                    Err(format!("Unknown type: {}", name))
+                    Err(format!("Unknown type: {name}"))
                 }
             }
             Type::Function { .. }
@@ -82,7 +82,7 @@ impl<'a> CodeGenerator<'a> {
                 if let Some(concrete) = self.resolve_generic_param(name) {
                     return self.llvm_type_from_resolved_type(&concrete.clone());
                 }
-                Err(format!("Variable type '{}' should be resolved", name))
+                Err(format!("Variable type '{name}' should be resolved"))
             }
             Type::Never => Err("Never type not allowed here".to_string()),
             Type::Module(_) => Err(
@@ -161,8 +161,7 @@ impl<'a> CodeGenerator<'a> {
             | Type::Reference(_)
             | Type::Function { .. } => Ok(self.ptr_type()),
             _ => Err(format!(
-                "Unsupported type in interface fields: {:?}",
-                sem_type
+                "Unsupported type in interface fields: {sem_type:?}"
             )),
         }
     }
@@ -191,9 +190,10 @@ impl<'a> CodeGenerator<'a> {
                         let arg_types: Vec<Type> =
                             args.iter().map(|a| self.type_node_to_type(a)).collect();
                         let resolved = self.mangled_enum_name(name, &arg_types);
-                        let struct_type = self.type_map.get(&resolved).ok_or_else(|| {
-                            format!("Enum type {} not found in type map", resolved)
-                        })?;
+                        let struct_type = self
+                            .type_map
+                            .get(&resolved)
+                            .ok_or_else(|| format!("Enum type {resolved} not found in type map"))?;
                         Ok(*struct_type)
                     }
                 } else {
@@ -326,7 +326,7 @@ impl<'a> CodeGenerator<'a> {
             | Type::EmptySet => Ok(type_.clone()),
             Type::Generic(name) | Type::Variable(name) => {
                 if seen_generic_params.contains(name) {
-                    return Err(format!("Cyclic generic resolution for '{}'", name));
+                    return Err(format!("Cyclic generic resolution for '{name}'"));
                 }
                 if let Some(concrete) = self.resolve_generic_param(name) {
                     seen_generic_params.insert(name.clone());
@@ -335,12 +335,12 @@ impl<'a> CodeGenerator<'a> {
                     seen_generic_params.remove(name);
                     return resolved;
                 }
-                Err(format!("Unresolved generic: {}", name))
+                Err(format!("Unresolved generic: {name}"))
             }
             Type::Named(name, type_args) => {
                 if type_args.is_empty() {
                     if seen_generic_params.contains(name) {
-                        return Err(format!("Cyclic generic resolution for '{}'", name));
+                        return Err(format!("Cyclic generic resolution for '{name}'"));
                     }
                     if let Some(concrete) = self.resolve_generic_param(name) {
                         seen_generic_params.insert(name.clone());

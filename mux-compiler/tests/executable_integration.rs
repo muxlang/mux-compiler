@@ -1,5 +1,6 @@
 use insta::assert_snapshot;
 use regex::Regex;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -59,7 +60,7 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
                 "Warning: Failed to clean up old executable {}: {}",
                 exec_path.display(),
                 e
-            )
+            );
         });
     }
 
@@ -73,15 +74,15 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
         .current_dir("../")
         .env("RUST_BACKTRACE", "1");
 
-    println!("Compiling: {}", path_str);
+    println!("Compiling: {path_str}");
     let compile_output = compile_cmd
         .output()
-        .unwrap_or_else(|e| panic!("Failed to execute compile command for {}: {}", path_str, e));
+        .unwrap_or_else(|e| panic!("Failed to execute compile command for {path_str}: {e}"));
 
     let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
     // Print compile stderr for debugging (including DEBUG lines from the compiler)
     if !compile_stderr.is_empty() {
-        print!("COMPILE_STDERR: {}", compile_stderr);
+        print!("COMPILE_STDERR: {compile_stderr}");
     }
 
     // Check if binary was created (indicates successful compilation)
@@ -109,7 +110,7 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
         .lines()
         .filter(|l| l.contains("PATH") || l.contains("NEEDED"))
     {
-        println!("READELF: {}", line);
+        println!("READELF: {line}");
     }
 
     let mut exec_cmd = Command::new(&exec_path);
@@ -120,7 +121,7 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
         Err(e) => {
             // Clean up before returning
             let _ = fs::remove_file(&exec_path);
-            return (String::new(), format!("Failed to execute binary: {}", e));
+            return (String::new(), format!("Failed to execute binary: {e}"));
         }
     };
 
@@ -129,10 +130,12 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
 
     // If binary exited with non-zero status, append exit status to output
     if !exec_output.status.success() {
-        exec_stdout.push_str(&format!(
-            "Program exited with status: {}\n",
+        writeln!(
+            &mut exec_stdout,
+            "Program exited with status: {}",
             exec_output.status
-        ));
+        )
+        .expect("writing execution status to String cannot fail");
     }
 
     // Clean up the executable
@@ -142,7 +145,7 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
                 "Warning: Failed to clean up executable {}: {}",
                 exec_path.display(),
                 e
-            )
+            );
         });
     }
 
@@ -179,7 +182,7 @@ fn run_snapshot_test(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
         stderr.clone()
     };
 
-    println!("Creating executable snapshot for: {}", snapshot_name);
+    println!("Creating executable snapshot for: {snapshot_name}");
 
     let normalized = ipv4_re.replace_all(&output_to_snapshot, "$host:PORT");
     let normalized = ipv6_re.replace_all(&normalized, "[$host]:PORT");
@@ -199,19 +202,16 @@ fn process_test_file(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
         println!("Skipping network fixture {file_name}; set MUX_RUN_NETWORK_TESTS=1 to run it");
         return;
     }
-    println!("\n=== Testing executable for file: {} ===", file_name);
+    println!("\n=== Testing executable for file: {file_name} ===");
 
     match std::panic::catch_unwind(|| {
         run_snapshot_test(path, ipv4_re, ipv6_re);
-        println!("✓ Successfully processed executable for: {}", file_name);
+        println!("✓ Successfully processed executable for: {file_name}");
     }) {
-        Ok(_) => {}
+        Ok(()) => {}
         Err(e) => {
-            println!(
-                "❌ Error processing executable for file {}: {:?}",
-                file_name, e
-            );
-            panic!("Executable test failed while processing: {}", file_name);
+            println!("❌ Error processing executable for file {file_name}: {e:?}");
+            panic!("Executable test failed while processing: {file_name}");
         }
     }
 }
@@ -233,7 +233,7 @@ fn reference_to_temporary_in_loop_releases_each_previous_value() {
         std::env::temp_dir().join(format!("mux_ref_loop_{}_{}.mux", std::process::id(), nonce));
     fs::write(
         &source_path,
-        r#"func main() returns void {
+        r"func main() returns void {
     list<int> xs = [2, 1, 5]
     for int x in xs {
         auto ref = &xs[0]
@@ -241,7 +241,7 @@ fn reference_to_temporary_in_loop_releases_each_previous_value() {
     }
     return
 }
-"#,
+",
     )
     .expect("temporary Mux source should be writable");
 
@@ -273,7 +273,7 @@ fn test_executable_all_mux_files_in_dir() {
 
     let fixture_stems: Vec<_> = test_files
         .iter()
-        .filter_map(|path| path.file_stem().map(|stem| stem.to_os_string()))
+        .filter_map(|path| path.file_stem().map(std::ffi::OsStr::to_os_string))
         .collect();
     let unique_fixture_stems: std::collections::BTreeSet<_> =
         fixture_stems.iter().cloned().collect();

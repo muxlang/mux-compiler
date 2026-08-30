@@ -193,7 +193,7 @@ impl<'a> CodeGenerator<'a> {
         field: &str,
     ) -> Result<BasicValueEnum<'a>, String> {
         if field != "headers" && field != "rows" {
-            return Err(format!("Csv has no field '{}'", field));
+            return Err(format!("Csv has no field '{field}'"));
         }
         let csv_value = self.generate_expression(expr)?;
         let raw_map = self
@@ -229,7 +229,7 @@ impl<'a> CodeGenerator<'a> {
     fn csv_field_key_value(&mut self, field: &str) -> Result<BasicValueEnum<'a>, String> {
         let key_global = self
             .builder
-            .build_global_string_ptr(field, &format!("csv_field_key_{}", field))
+            .build_global_string_ptr(field, &format!("csv_field_key_{field}"))
             .map_err(|e| e.to_string())?;
         let key_ptr = key_global.as_pointer_value();
         self.generate_runtime_call("mux_new_string_from_cstr", &[key_ptr.into()])
@@ -335,12 +335,12 @@ impl<'a> CodeGenerator<'a> {
             call_args.push(self.generate_expression(arg)?.into());
         }
 
-        let func_name = format!("{}.{}", class_name, method_name);
+        let func_name = format!("{class_name}.{method_name}");
         match self.module.get_function(&func_name) {
             Some(func) => {
                 let call = self
                     .builder
-                    .build_call(func, &call_args, &format!("{}_call", func_name))
+                    .build_call(func, &call_args, &format!("{func_name}_call"))
                     .map_err(|e| e.to_string())?;
                 Ok(Some(
                     call.try_as_basic_value()
@@ -349,8 +349,7 @@ impl<'a> CodeGenerator<'a> {
                 ))
             }
             None => Err(format!(
-                "Static method {} not found for class {}",
-                method_name, class_name
+                "Static method {method_name} not found for class {class_name}"
             )),
         }
     }
@@ -376,7 +375,7 @@ impl<'a> CodeGenerator<'a> {
             self.build_import_call_args(args, func_type, Some(func))?;
         let call = self
             .builder
-            .build_call(func, &call_args, &format!("{}_call", display_name))
+            .build_call(func, &call_args, &format!("{display_name}_call"))
             .map_err(|e| e.to_string())?;
         self.free_import_arg_cstrings(&owned_cstrings)?;
         let result = self.call_result_or_default_i32(call);
@@ -659,7 +658,7 @@ impl<'a> CodeGenerator<'a> {
         params: &[Param],
         has_captures: bool,
     ) -> u32 {
-        let param_offset = if has_captures { 1 } else { 0 };
+        let param_offset = usize::from(has_captures);
         if has_captures {
             function
                 .get_nth_param(0)
@@ -697,13 +696,13 @@ impl<'a> CodeGenerator<'a> {
                     capture_struct_type,
                     captures_ptr,
                     i as u32,
-                    &format!("cap_{}_ptr", name),
+                    &format!("cap_{name}_ptr"),
                 )
                 .map_err(|e| e.to_string())?;
 
             let var_ptr = self
                 .builder
-                .build_load(ptr_type, field_ptr, &format!("cap_{}", name))
+                .build_load(ptr_type, field_ptr, &format!("cap_{name}"))
                 .map_err(|e| e.to_string())?
                 .into_pointer_value();
 
@@ -798,7 +797,7 @@ impl<'a> CodeGenerator<'a> {
         // loading that as a pointer misreads the integer.
         let current_value = self
             .builder
-            .build_load(llvm_type, var_ptr, &format!("cap_{}_val", name))
+            .build_load(llvm_type, var_ptr, &format!("cap_{name}_val"))
             .map_err(|e| e.to_string())?;
         // A cell holds a `*mut Value`, so a scalar is boxed on the way in.
         let stored_value = if llvm_type.is_pointer_type() {
@@ -819,7 +818,7 @@ impl<'a> CodeGenerator<'a> {
             .ok_or("mux_cell_alloc not found")?;
         let cell = self
             .builder
-            .build_call(alloc, &[stored_value.into()], &format!("cap_{}_cell", name))
+            .build_call(alloc, &[stored_value.into()], &format!("cap_{name}_cell"))
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
@@ -856,7 +855,7 @@ impl<'a> CodeGenerator<'a> {
                 .variables
                 .get(name)
                 .or_else(|| self.global_variables.get(name))
-                .ok_or_else(|| format!("Captured variable '{}' not found", name))?
+                .ok_or_else(|| format!("Captured variable '{name}' not found"))?
                 .clone();
 
             // A captured local's storage IS a cell (see
@@ -875,7 +874,7 @@ impl<'a> CodeGenerator<'a> {
                     .runtime_function("mux_cell_retain")
                     .ok_or("mux_cell_retain not found")?;
                 self.builder
-                    .build_call(retain, &[var_ptr.into()], &format!("cap_{}_retain", name))
+                    .build_call(retain, &[var_ptr.into()], &format!("cap_{name}_retain"))
                     .map_err(|e| e.to_string())?;
                 var_ptr
             } else {
@@ -888,7 +887,7 @@ impl<'a> CodeGenerator<'a> {
                     capture_struct_type,
                     capture_mem,
                     i as u32,
-                    &format!("cap_field_{}", i),
+                    &format!("cap_field_{i}"),
                 )
                 .map_err(|e| e.to_string())?;
 
@@ -1246,7 +1245,7 @@ impl<'a> CodeGenerator<'a> {
             {
                 return Ok((*ptr).into());
             }
-            return Err(format!("Undefined variable {}", name));
+            return Err(format!("Undefined variable {name}"));
         }
 
         let expr_val = self.generate_expression(expr)?;
@@ -1349,14 +1348,14 @@ impl<'a> CodeGenerator<'a> {
         } else {
             self.variables.get(name).map(|(p, t, _)| (*p, *t))
         }
-        .ok_or_else(|| format!("Undefined variable {}", name))?;
+        .ok_or_else(|| format!("Undefined variable {name}"))?;
 
         // Read through the slot's own type. An `int` slot holds the value
         // itself, so loading it as a `*mut Value` and asking the runtime to
         // unbox it dereferenced the integer as a pointer.
         let loaded = self
             .builder
-            .build_load(slot_type, ptr, &format!("{}_load", name))
+            .build_load(slot_type, ptr, &format!("{name}_load"))
             .map_err(|e| e.to_string())?;
         let current_val = self.get_raw_int_value(loaded)?;
 
@@ -1502,7 +1501,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let func = self
             .runtime_function(func_name)
-            .ok_or(format!("{} not found", func_name))?;
+            .ok_or(format!("{func_name} not found"))?;
         let call = self
             .builder
             .build_call(func, &[arg_val.into()], call_name)
@@ -1510,7 +1509,7 @@ impl<'a> CodeGenerator<'a> {
         let result = call
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} should return a basic value", func_name))?;
+            .ok_or_else(|| format!("{func_name} should return a basic value"))?;
         // some(...)/ok(...)/err(...) return an owned (+1) optional/result value;
         // register it so it is released at statement end unless transferred.
         self.register_temp(result);
@@ -1548,9 +1547,9 @@ impl<'a> CodeGenerator<'a> {
         let arg_expr = &args[0];
         let arg_type = self
             .get_resolved_expression_type(arg_expr)
-            .map_err(|e| format!("Type inference failed: {}", e))?;
+            .map_err(|e| format!("Type inference failed: {e}"))?;
         let func_name = Self::ok_builtin_constructor_name(&arg_type)
-            .ok_or_else(|| format!("Ok() not supported for type {:?}", arg_type))?;
+            .ok_or_else(|| format!("Ok() not supported for type {arg_type:?}"))?;
         let arg_val = self.generate_expression(arg_expr)?;
         let arg_val = self.box_wrapper_payload(func_name, arg_val, &arg_type)?;
         self.call_single_arg_builtin(func_name, arg_val, "ok_call")
@@ -1580,7 +1579,7 @@ impl<'a> CodeGenerator<'a> {
             }
         };
         let func_name = Self::some_builtin_constructor_name(&arg_type)
-            .ok_or_else(|| format!("Some() not supported for type {:?}", arg_type))?;
+            .ok_or_else(|| format!("Some() not supported for type {arg_type:?}"))?;
         let arg_val = self.generate_expression(arg_expr)?;
         let arg_val = self.box_wrapper_payload(func_name, arg_val, &arg_type)?;
         self.call_single_arg_builtin(func_name, arg_val, "some_call")
@@ -1699,8 +1698,7 @@ impl<'a> CodeGenerator<'a> {
                 call_args.push(default_val.into());
             } else {
                 return Err(format!(
-                    "Missing argument for parameter in function '{}'",
-                    function_name
+                    "Missing argument for parameter in function '{function_name}'"
                 ));
             }
         }
@@ -1779,7 +1777,7 @@ impl<'a> CodeGenerator<'a> {
         let current_fn = self
             .builder
             .get_insert_block()
-            .and_then(|b| b.get_parent())
+            .and_then(inkwell::basic_block::BasicBlock::get_parent)
             .ok_or("No current function")?;
         let with_captures_bb = self.context.append_basic_block(current_fn, "with_captures");
         let without_captures_bb = self
@@ -1928,10 +1926,9 @@ impl<'a> CodeGenerator<'a> {
             .analyzer
             .symbol_table()
             .lookup(name)
-            .map(|s| s.kind == crate::semantics::SymbolKind::Enum)
-            .unwrap_or(false)
+            .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum)
         {
-            return Err(format!("Enums cannot be used as values: {}", name));
+            return Err(format!("Enums cannot be used as values: {name}"));
         }
 
         if let Some(value) = self.try_generate_method_enum_field_identifier(name)? {
@@ -1954,7 +1951,7 @@ impl<'a> CodeGenerator<'a> {
             .build_load(
                 self.context.ptr_type(AddressSpace::default()),
                 ptr,
-                &format!("load_{}", name),
+                &format!("load_{name}"),
             )
             .map_err(|e| e.to_string())
             .map(|v| v.into_pointer_value())
@@ -1968,17 +1965,21 @@ impl<'a> CodeGenerator<'a> {
         type_node: &Type,
     ) -> Result<BasicValueEnum<'a>, String> {
         match type_node {
-            Type::Optional(_) | Type::Result(_, _) => {
-                self.load_boxed_ptr_from_alloca(ptr, name).map(|v| v.into())
-            }
+            Type::Optional(_) | Type::Result(_, _) => self
+                .load_boxed_ptr_from_alloca(ptr, name)
+                .map(std::convert::Into::into),
             Type::Named(type_name, _) => {
                 self.generate_named_identifier_from_binding(name, ptr, var_type, type_name)
             }
             Type::Primitive(prim) => {
                 self.generate_primitive_identifier_from_binding(name, ptr, var_type, prim)
             }
-            Type::Function { .. } => self.load_boxed_ptr_from_alloca(ptr, name).map(|v| v.into()),
-            _ => self.load_boxed_ptr_from_alloca(ptr, name).map(|v| v.into()),
+            Type::Function { .. } => self
+                .load_boxed_ptr_from_alloca(ptr, name)
+                .map(std::convert::Into::into),
+            _ => self
+                .load_boxed_ptr_from_alloca(ptr, name)
+                .map(std::convert::Into::into),
         }
     }
 
@@ -1990,20 +1991,21 @@ impl<'a> CodeGenerator<'a> {
         type_name: &str,
     ) -> Result<BasicValueEnum<'a>, String> {
         if type_name == "optional" || type_name == "result" {
-            return self.load_boxed_ptr_from_alloca(ptr, name).map(|v| v.into());
+            return self
+                .load_boxed_ptr_from_alloca(ptr, name)
+                .map(std::convert::Into::into);
         }
 
         let is_enum = self
             .analyzer
             .symbol_table()
             .lookup(type_name)
-            .map(|s| s.kind == crate::semantics::SymbolKind::Enum)
-            .unwrap_or(false);
+            .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum);
         if is_enum {
             if let BasicTypeEnum::StructType(st) = var_type {
                 return self
                     .builder
-                    .build_load(st, ptr, &format!("load_{}", name))
+                    .build_load(st, ptr, &format!("load_{name}"))
                     .map_err(|e| e.to_string());
             }
             if var_type.is_pointer_type() {
@@ -2011,7 +2013,7 @@ impl<'a> CodeGenerator<'a> {
                 let struct_type = self
                     .type_map
                     .get(type_name)
-                    .ok_or_else(|| format!("Enum {} not found in type map", type_name))?
+                    .ok_or_else(|| format!("Enum {type_name} not found in type map"))?
                     .into_struct_type();
                 let unbox_fn = self
                     .runtime_function("mux_value_unbox_enum")
@@ -2026,13 +2028,14 @@ impl<'a> CodeGenerator<'a> {
                     .into_pointer_value();
                 return self
                     .builder
-                    .build_load(struct_type, raw_ptr, &format!("load_{}", name))
+                    .build_load(struct_type, raw_ptr, &format!("load_{name}"))
                     .map_err(|e| e.to_string());
             }
-            return Err(format!("Expected struct type for enum variable {}", name));
+            return Err(format!("Expected struct type for enum variable {name}"));
         }
 
-        self.load_boxed_ptr_from_alloca(ptr, name).map(|v| v.into())
+        self.load_boxed_ptr_from_alloca(ptr, name)
+            .map(std::convert::Into::into)
     }
 
     fn generate_primitive_identifier_from_binding(
@@ -2048,18 +2051,26 @@ impl<'a> CodeGenerator<'a> {
         if !var_type.is_pointer_type() {
             return self
                 .builder
-                .build_load(var_type, ptr, &format!("load_{}", name))
+                .build_load(var_type, ptr, &format!("load_{name}"))
                 .map_err(|e| e.to_string());
         }
         let boxed_ptr = self.load_boxed_ptr_from_alloca(ptr, name)?;
         match prim {
-            PrimitiveType::Int => self.get_raw_int_value(boxed_ptr.into()).map(|v| v.into()),
-            PrimitiveType::Float => self.get_raw_float_value(boxed_ptr.into()).map(|v| v.into()),
-            PrimitiveType::Bool => self.get_raw_bool_value(boxed_ptr.into()).map(|v| v.into()),
+            PrimitiveType::Int => self
+                .get_raw_int_value(boxed_ptr.into())
+                .map(std::convert::Into::into),
+            PrimitiveType::Float => self
+                .get_raw_float_value(boxed_ptr.into())
+                .map(std::convert::Into::into),
+            PrimitiveType::Bool => self
+                .get_raw_bool_value(boxed_ptr.into())
+                .map(std::convert::Into::into),
             PrimitiveType::Str => Ok(boxed_ptr.into()),
-            PrimitiveType::Char => self.get_raw_int_value(boxed_ptr.into()).map(|v| v.into()),
+            PrimitiveType::Char => self
+                .get_raw_int_value(boxed_ptr.into())
+                .map(std::convert::Into::into),
             PrimitiveType::Void | PrimitiveType::Auto => {
-                Err(format!("Unsupported primitive type {:?}", prim))
+                Err(format!("Unsupported primitive type {prim:?}"))
             }
         }
     }
@@ -2078,7 +2089,7 @@ impl<'a> CodeGenerator<'a> {
         let class_name = func_name
             .split('.')
             .next()
-            .ok_or_else(|| format!("Invalid function name format: {}", func_name))?
+            .ok_or_else(|| format!("Invalid function name format: {func_name}"))?
             .to_string();
         let has_field = self
             .field_map
@@ -2122,10 +2133,10 @@ impl<'a> CodeGenerator<'a> {
         let field_indices = self
             .field_map
             .get(&class_name)
-            .ok_or_else(|| format!("Field map not found for class {}", class_name))?;
+            .ok_or_else(|| format!("Field map not found for class {class_name}"))?;
         let field_index = field_indices
             .get(name)
-            .ok_or_else(|| format!("Field {} not found in class {}", name, class_name))?;
+            .ok_or_else(|| format!("Field {name} not found in class {class_name}"))?;
         let field_ptr = self
             .builder
             .build_struct_gep(
@@ -2193,14 +2204,14 @@ impl<'a> CodeGenerator<'a> {
         let struct_type = self
             .type_map
             .get(&class_name)
-            .ok_or_else(|| format!("Class {} not found in type map", class_name))?;
+            .ok_or_else(|| format!("Class {class_name} not found in type map"))?;
         let field_ptr = self
             .builder
             .build_struct_gep(
                 *struct_type,
                 data_ptr,
                 field_index as u32,
-                &format!("{}_ptr", name),
+                &format!("{name}_ptr"),
             )
             .map_err(|e| e.to_string())?;
         let field_types = self
@@ -2222,7 +2233,7 @@ impl<'a> CodeGenerator<'a> {
         if let Some(func) = self.module.get_function(name) {
             return Ok(func.as_global_value().as_pointer_value().into());
         }
-        Err(format!("Undefined variable: {}", name))
+        Err(format!("Undefined variable: {name}"))
     }
 
     fn generate_binary_expression(
@@ -2285,7 +2296,7 @@ impl<'a> CodeGenerator<'a> {
             .get(name)
             .or_else(|| self.global_variables.get(name))
         else {
-            return Err(format!("Undefined variable {}", name));
+            return Err(format!("Undefined variable {name}"));
         };
         let ptr_copy = *ptr;
         let slot_type_copy = *slot_type;
@@ -2295,8 +2306,7 @@ impl<'a> CodeGenerator<'a> {
             self.analyzer
                 .symbol_table()
                 .lookup(type_name)
-                .map(|s| s.kind == crate::semantics::SymbolKind::Enum)
-                .unwrap_or(false)
+                .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum)
         } else {
             false
         };
@@ -2457,14 +2467,14 @@ impl<'a> CodeGenerator<'a> {
         let struct_type = self
             .type_map
             .get(class_name.as_str())
-            .ok_or_else(|| format!("Class {} not found in type map", class_name))?;
+            .ok_or_else(|| format!("Class {class_name} not found in type map"))?;
         let field_ptr = self
             .builder
             .build_struct_gep(
                 *struct_type,
                 data_ptr,
                 field_index as u32,
-                &format!("{}_ptr", name),
+                &format!("{name}_ptr"),
             )
             .map_err(|e| e.to_string())?;
         self.store_class_field(&class_name, name, field_ptr, right_val, rhs_owned)?;
@@ -2578,8 +2588,7 @@ impl<'a> CodeGenerator<'a> {
                 .variables
                 .get(obj_name)
                 .or_else(|| self.global_variables.get(obj_name))
-                .map(|(_, _, t)| matches!(t, Type::Reference(_)))
-                .unwrap_or(false);
+                .is_some_and(|(_, _, t)| matches!(t, Type::Reference(_)));
         }
         self.get_resolved_expression_type(expr)
             .map(|t| matches!(t, Type::Reference(_)))
@@ -2625,7 +2634,7 @@ impl<'a> CodeGenerator<'a> {
         let index = field_indices
             .get(field)
             .copied()
-            .ok_or_else(|| format!("Field {} not found", field))?;
+            .ok_or_else(|| format!("Field {field} not found"))?;
         let struct_type = self
             .type_map
             .get(class_name)
@@ -2673,8 +2682,7 @@ impl<'a> CodeGenerator<'a> {
                 .analyzer
                 .symbol_table()
                 .lookup(field_type_name)
-                .map(|s| s.kind == crate::semantics::SymbolKind::Enum)
-                .unwrap_or(false);
+                .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum);
             if is_enum {
                 // The field slot is an inline struct. An enum read out of a
                 // collection arrives boxed, and storing the pointer into that
@@ -2771,8 +2779,7 @@ impl<'a> CodeGenerator<'a> {
                 Ok(right_val)
             }
             _ => Err(format!(
-                "Cannot assign to index on non-list/map type: {:?}",
-                target_type
+                "Cannot assign to index on non-list/map type: {target_type:?}"
             )),
         }
     }
@@ -2789,7 +2796,7 @@ impl<'a> CodeGenerator<'a> {
             BinaryOp::MultiplyAssign => Ok(BinaryOp::Multiply),
             BinaryOp::DivideAssign => Ok(BinaryOp::Divide),
             BinaryOp::ModuloAssign => Ok(BinaryOp::Modulo),
-            other => Err(format!("{:?} is not a compound assignment", other)),
+            other => Err(format!("{other:?} is not a compound assignment")),
         }
     }
 
@@ -2817,7 +2824,7 @@ impl<'a> CodeGenerator<'a> {
                     .get(name)
                     .or_else(|| self.global_variables.get(name))
                 else {
-                    return Err(format!("Undefined variable {}", name));
+                    return Err(format!("Undefined variable {name}"));
                 };
                 let ptr_copy = *ptr;
                 let slot_type_copy = *slot_type;
@@ -2955,7 +2962,7 @@ impl<'a> CodeGenerator<'a> {
         let resolved_field_type = self
             .analyzer
             .resolve_type(&field_type)
-            .map_err(|e| format!("Type resolution failed: {}", e))?;
+            .map_err(|e| format!("Type resolution failed: {e}"))?;
         let self_field_expr = ExpressionNode {
             kind: ExpressionKind::FieldAccess {
                 expr: Box::new(ExpressionNode {
@@ -2994,7 +3001,7 @@ impl<'a> CodeGenerator<'a> {
                 .and_then(|module_syms| module_syms.get(submodule_name))
                 .is_some()
         {
-            let qualified_submodule_name = format!("{}.{}", module_name, submodule_name);
+            let qualified_submodule_name = format!("{module_name}.{submodule_name}");
             let function_symbol = self
                 .analyzer
                 .imported_symbols()
@@ -3052,7 +3059,7 @@ impl<'a> CodeGenerator<'a> {
         };
 
         if symbol.kind == crate::semantics::SymbolKind::Function {
-            let full_name = format!("{}.{}", name, field);
+            let full_name = format!("{name}.{field}");
             if let Some(crate::semantics::stdlib::StdlibItem::Function { llvm_name, .. }) =
                 crate::semantics::stdlib::lookup_stdlib_item(&full_name)
             {
@@ -3098,8 +3105,7 @@ impl<'a> CodeGenerator<'a> {
             return self.generate_generic_function_call(field, args).map(Some);
         }
         Err(format!(
-            "Function {} not found in module {}",
-            field, module_name
+            "Function {field} not found in module {module_name}"
         ))
     }
 
@@ -3124,8 +3130,7 @@ impl<'a> CodeGenerator<'a> {
                     .cloned()
                     .ok_or_else(|| {
                         format!(
-                            "Cannot infer type argument '{}' for '{}.new()'. Name it, as in {}<...>.new()",
-                            param, class_name, class_name
+                            "Cannot infer type argument '{param}' for '{class_name}.new()'. Name it, as in {class_name}<...>.new()"
                         )
                     })
             })
@@ -3145,7 +3150,7 @@ impl<'a> CodeGenerator<'a> {
             .analyzer
             .symbol_table()
             .lookup(class_name)
-            .ok_or_else(|| format!("Class {} not found", class_name))?;
+            .ok_or_else(|| format!("Class {class_name} not found"))?;
         // `Slot.new()` written inside the class's own generic method means
         // `Slot<T>.new()`, with T bound by the specialization it appears in. It
         // has to build the instantiation: the unspecialized `Slot.new` allocates
@@ -3168,18 +3173,14 @@ impl<'a> CodeGenerator<'a> {
         }
 
         let Some(method) = class_symbol.methods.get(field) else {
-            return Err(format!(
-                "Method {} not found on class {}",
-                field, class_name
-            ));
+            return Err(format!("Method {field} not found on class {class_name}"));
         };
         if let Some(call) = self.try_generate_net_static_method_call(class_name, field, args)? {
             return Ok(Some(call));
         }
         if !method.is_static {
             return Err(format!(
-                "Method {} on class {} is not static",
-                field, class_name
+                "Method {field} on class {class_name} is not static"
             ));
         }
         let call_args = self.build_call_args_from_expressions(args)?;
@@ -3187,10 +3188,10 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_call(
                 self.module
-                    .get_function(&format!("{}.{}", class_name, field))
+                    .get_function(&format!("{class_name}.{field}"))
                     .expect("static method should be in module"),
                 &call_args,
-                &format!("{}.{}_call", class_name, field),
+                &format!("{class_name}.{field}_call"),
             )
             .map_err(|e| e.to_string())?;
         Ok(Some(
@@ -3210,7 +3211,7 @@ impl<'a> CodeGenerator<'a> {
             return Ok(None);
         }
         if !args.is_empty() {
-            return Err(format!("{}.new() takes no arguments", class_name));
+            return Err(format!("{class_name}.new() takes no arguments"));
         }
         let runtime_fn = match class_name {
             "Mutex" => "mux_mutex_new",
@@ -3222,14 +3223,14 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_call(
                 self.runtime_function(runtime_fn)
-                    .ok_or(format!("{} not found", runtime_fn))?,
+                    .ok_or(format!("{runtime_fn} not found"))?,
                 &[],
-                &format!("{}_new_call", class_name),
+                &format!("{class_name}_new_call"),
             )
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} should return a value", runtime_fn))?;
+            .ok_or_else(|| format!("{runtime_fn} should return a value"))?;
         Ok(Some(created))
     }
 
@@ -3239,11 +3240,10 @@ impl<'a> CodeGenerator<'a> {
         variant: &str,
         args: &[ExpressionNode],
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        let constructor_name = format!("{}!{}", enum_name, variant);
+        let constructor_name = format!("{enum_name}!{variant}");
         let Some(constructor_func) = self.module.get_function(&constructor_name) else {
             return Err(format!(
-                "Enum variant {} not found in enum {}",
-                variant, enum_name
+                "Enum variant {variant} not found in enum {enum_name}"
             ));
         };
         let mut call_args = self.build_call_args_from_expressions(args)?;
@@ -3265,7 +3265,7 @@ impl<'a> CodeGenerator<'a> {
             .build_call(
                 constructor_func,
                 &call_args,
-                &format!("{}_call", constructor_name),
+                &format!("{constructor_name}_call"),
             )
             .map_err(|e| e.to_string())?;
         let value = call
@@ -3314,10 +3314,7 @@ impl<'a> CodeGenerator<'a> {
                 .map(Some);
         }
         let Some(class_symbol) = self.analyzer.symbol_table().lookup(&resolved_class_name) else {
-            return Err(format!(
-                "Method {} not found on class {}",
-                field, class_name
-            ));
+            return Err(format!("Method {field} not found on class {class_name}"));
         };
         // `Box<int>.Full(5)`. A variant constructor is named `Box!Full`, not
         // `Box.Full`, so the class path below would look for a function that
@@ -3332,15 +3329,11 @@ impl<'a> CodeGenerator<'a> {
             return self.generate_enum_symbol_method_call(&instance, field, args);
         }
         let Some(method) = class_symbol.methods.get(field) else {
-            return Err(format!(
-                "Method {} not found on class {}",
-                field, class_name
-            ));
+            return Err(format!("Method {field} not found on class {class_name}"));
         };
         if !method.is_static {
             return Err(format!(
-                "Method {} on class {} is not static",
-                field, class_name
+                "Method {field} on class {class_name} is not static"
             ));
         }
         self.generate_generic_static_method_call(
@@ -3392,14 +3385,14 @@ impl<'a> CodeGenerator<'a> {
             let function_name = if self.module.get_function(&specialized_method_name).is_some() {
                 specialized_method_name
             } else {
-                format!("{}.{}", resolved_class_name, field)
+                format!("{resolved_class_name}.{field}")
             };
             let call = self
                 .builder
                 .build_call(
                     self.module
                         .get_function(&function_name)
-                        .ok_or(format!("Method '{}' not found", function_name))?,
+                        .ok_or(format!("Method '{function_name}' not found"))?,
                     &call_args,
                     &format!("{}_call", function_name.replace('.', "_")),
                 )
@@ -3424,10 +3417,10 @@ impl<'a> CodeGenerator<'a> {
             self.variables
                 .get(name)
                 .map(|(_, _, t)| t.clone())
-                .ok_or_else(|| format!("Unknown variable: {}", name))?
+                .ok_or_else(|| format!("Unknown variable: {name}"))?
         } else {
             self.resolve_expression_type_with_fallback(expr)
-                .map_err(|e| format!("Type inference failed: {}", e))?
+                .map_err(|e| format!("Type inference failed: {e}"))?
         };
         self.generate_method_call(obj_value, &obj_type, field, args)
     }
@@ -3531,7 +3524,7 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
             return Ok(Some(self.call_result_or_default_i32(call)));
         }
-        Err(format!("Undefined function: {}", name))
+        Err(format!("Undefined function: {name}"))
     }
 
     fn should_generate_generic_function_call(&mut self, name: &str) -> bool {
@@ -3566,7 +3559,7 @@ impl<'a> CodeGenerator<'a> {
 
     fn find_nested_mangled_function_name(&self, name: &str) -> Option<String> {
         let parent_fn = self.current_function_name.as_ref()?;
-        let direct = format!("{}!{}", parent_fn, name);
+        let direct = format!("{parent_fn}!{name}");
         if self.module.get_function(&direct).is_some() {
             return Some(direct);
         }
@@ -3576,7 +3569,7 @@ impl<'a> CodeGenerator<'a> {
         }
         for i in 1..parts.len() {
             let prefix = parts[0..i].join("!");
-            let nested = format!("{}!{}", prefix, name);
+            let nested = format!("{prefix}!{name}");
             if self.module.get_function(&nested).is_some() {
                 return Some(nested);
             }
@@ -3601,8 +3594,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let Some(func) = self.runtime_function(lookup_name) else {
             return Err(format!(
-                "Undefined function: {} (looked for LLVM name: {})",
-                display_name, lookup_name
+                "Undefined function: {display_name} (looked for LLVM name: {lookup_name})"
             ));
         };
         let llvm_param_types = func.get_type().get_param_types();
@@ -3673,7 +3665,7 @@ impl<'a> CodeGenerator<'a> {
         {
             return self.call_closure_with_optional_captures(closure_ptr, &params, &returns, args);
         }
-        Err(format!("Cannot call non-function type: {:?}", func_type))
+        Err(format!("Cannot call non-function type: {func_type:?}"))
     }
 
     /// `xs[a:b]` on a list or a string.
@@ -3730,7 +3722,7 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(out);
                 Ok(out)
             }
-            other => Err(format!("Cannot slice type: {:?}", other)),
+            other => Err(format!("Cannot slice type: {other:?}")),
         }
     }
 
@@ -3869,8 +3861,7 @@ impl<'a> CodeGenerator<'a> {
                 Ok(extracted_val)
             }
             _ => Err(format!(
-                "ListAccess target must be a list or map, found {:?}",
-                target_type
+                "ListAccess target must be a list or map, found {target_type:?}"
             )),
         }
     }
@@ -4014,7 +4005,7 @@ impl<'a> CodeGenerator<'a> {
         };
 
         use crate::semantics::stdlib::{ConstantValue, lookup_stdlib_item};
-        let full_name = format!("{}.{}", module_name, field);
+        let full_name = format!("{module_name}.{field}");
         let Some(crate::semantics::stdlib::StdlibItem::Constant { value, .. }) =
             lookup_stdlib_item(&full_name)
         else {
@@ -4068,14 +4059,12 @@ impl<'a> CodeGenerator<'a> {
                 .and_then(|globals| globals.get(field))
                 .ok_or_else(|| {
                     format!(
-                        "internal error: module constant '{}' has no global slot in module '{}'",
-                        field, module
+                        "internal error: module constant '{field}' has no global slot in module '{module}'"
                     )
                 })?,
             None => self.global_variables.get(field).ok_or_else(|| {
                 format!(
-                    "internal error: module constant '{}' has no global slot in codegen",
-                    field
+                    "internal error: module constant '{field}' has no global slot in codegen"
                 )
             })?,
         };
@@ -4110,7 +4099,7 @@ impl<'a> CodeGenerator<'a> {
         let (field_index, field_type) = match field {
             "left" => (0, *left_type),
             "right" => (1, *right_type),
-            _ => return Err(format!("Unknown field '{}' for tuple type", field)),
+            _ => return Err(format!("Unknown field '{field}' for tuple type")),
         };
         let get_field_func = self
             .runtime_function(if field_index == 0 {
@@ -4175,7 +4164,7 @@ impl<'a> CodeGenerator<'a> {
         let index = field_indices
             .get(field)
             .copied()
-            .ok_or_else(|| format!("Field {} not found", field))?;
+            .ok_or_else(|| format!("Field {field} not found"))?;
         let field_ptr = self.resolve_struct_field_pointer(&class_name, field, struct_ptr)?;
         self.load_class_field_value(expr, &class_name, field, index, field_ptr)
             .map(Some)
@@ -4329,17 +4318,21 @@ impl<'a> CodeGenerator<'a> {
         ty: &Type,
     ) -> Result<BasicValueEnum<'a>, String> {
         match ty {
-            Type::Primitive(PrimitiveType::Int) => self.get_raw_int_value(value).map(|v| v.into()),
-            Type::Primitive(PrimitiveType::Float) => {
-                self.get_raw_float_value(value).map(|v| v.into())
+            Type::Primitive(PrimitiveType::Int) => {
+                self.get_raw_int_value(value).map(std::convert::Into::into)
             }
+            Type::Primitive(PrimitiveType::Float) => self
+                .get_raw_float_value(value)
+                .map(std::convert::Into::into),
             Type::Primitive(PrimitiveType::Bool) => {
-                self.get_raw_bool_value(value).map(|v| v.into())
+                self.get_raw_bool_value(value).map(std::convert::Into::into)
             }
-            Type::Primitive(PrimitiveType::Char) => self.get_raw_int_value(value).map(|v| v.into()),
+            Type::Primitive(PrimitiveType::Char) => {
+                self.get_raw_int_value(value).map(std::convert::Into::into)
+            }
             Type::Primitive(PrimitiveType::Str) => Ok(value),
             Type::Primitive(PrimitiveType::Void | PrimitiveType::Auto) => {
-                Err(format!("Unsupported tuple field type {:?}", ty))
+                Err(format!("Unsupported tuple field type {ty:?}"))
             }
             _ => Ok(value),
         }
@@ -4505,14 +4498,14 @@ impl<'a> CodeGenerator<'a> {
         let cstr = self.value_to_cstr(value)?;
         let func = self
             .runtime_function(func_name)
-            .ok_or(format!("{} not found", func_name))?;
+            .ok_or(format!("{func_name} not found"))?;
         let result_ptr = self
             .builder
             .build_call(func, &[cstr.into()], call_name)
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
-            .ok_or(format!("{} should return a basic value", func_name))?;
+            .ok_or(format!("{func_name} should return a basic value"))?;
         Ok(Some(result_ptr))
     }
 
@@ -4579,7 +4572,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         let error_msg = self
             .builder
-            .build_global_string_ptr(message, &format!("{}_msg", block_name))
+            .build_global_string_ptr(message, &format!("{block_name}_msg"))
             .map_err(|e| e.to_string())?;
         let loc = self.panic_location_arg(span, block_name)?;
         let code = self.context.i32_type().const_int(code as u64, false);
@@ -4605,7 +4598,7 @@ impl<'a> CodeGenerator<'a> {
                 let loc = self.panic_location(span);
                 let global = self
                     .builder
-                    .build_global_string_ptr(&loc, &format!("{}_loc", block_name))
+                    .build_global_string_ptr(&loc, &format!("{block_name}_loc"))
                     .map_err(|e| e.to_string())?;
                 Ok(global.as_pointer_value().into())
             }
@@ -4641,7 +4634,7 @@ impl<'a> CodeGenerator<'a> {
                 self.runtime_function("mux_map_get")
                     .expect("mux_map_get must be declared in runtime"),
                 &[map.into(), boxed_key.into()],
-                &format!("{}_get", block_prefix),
+                &format!("{block_prefix}_get"),
             )
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
@@ -4674,7 +4667,7 @@ impl<'a> CodeGenerator<'a> {
                 self.runtime_function("mux_value_map_get_value")
                     .ok_or("mux_value_map_get_value not found")?,
                 &[map_value.into(), boxed_key.into()],
-                &format!("{}_get", block_prefix),
+                &format!("{block_prefix}_get"),
             )
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
@@ -4703,7 +4696,7 @@ impl<'a> CodeGenerator<'a> {
                 self.runtime_function("mux_optional_is_some")
                     .expect("mux_optional_is_some must be declared in runtime"),
                 &[optional_ptr.into()],
-                &format!("{}_has_key", block_prefix),
+                &format!("{block_prefix}_has_key"),
             )
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
@@ -4720,10 +4713,10 @@ impl<'a> CodeGenerator<'a> {
 
         let error_bb = self
             .context
-            .append_basic_block(current_function, &format!("{}_error", block_prefix));
+            .append_basic_block(current_function, &format!("{block_prefix}_error"));
         let continue_bb = self
             .context
-            .append_basic_block(current_function, &format!("{}_continue", block_prefix));
+            .append_basic_block(current_function, &format!("{block_prefix}_continue"));
 
         self.builder
             .build_conditional_branch(is_some, continue_bb, error_bb)
@@ -4731,7 +4724,7 @@ impl<'a> CodeGenerator<'a> {
 
         // Error block: panic with the missing key and source location
         self.builder.position_at_end(error_bb);
-        let loc = self.panic_location_arg(span, &format!("{}_error", block_prefix))?;
+        let loc = self.panic_location_arg(span, &format!("{block_prefix}_error"))?;
         self.generate_runtime_call("mux_panic_key_not_found", &[boxed_key.into(), loc.into()]);
         self.builder
             .build_unreachable()
@@ -4755,7 +4748,7 @@ impl<'a> CodeGenerator<'a> {
                 self.runtime_function("mux_optional_get_value")
                     .expect("mux_optional_get_value must be declared in runtime"),
                 &[optional_ptr.into()],
-                &format!("{}_unwrap", block_prefix),
+                &format!("{block_prefix}_unwrap"),
             )
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
@@ -4793,7 +4786,7 @@ impl<'a> CodeGenerator<'a> {
                 self.runtime_function("mux_list_length")
                     .ok_or("mux_list_length not found")?,
                 &[list.into()],
-                &format!("{}_len", block_prefix),
+                &format!("{block_prefix}_len"),
             )
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
@@ -4806,7 +4799,7 @@ impl<'a> CodeGenerator<'a> {
                 self.runtime_function("mux_list_get_value")
                     .expect("mux_list_get_value must be declared in runtime"),
                 &[list.into(), normalized_index.into()],
-                &format!("{}_get", block_prefix),
+                &format!("{block_prefix}_get"),
             )
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
@@ -4842,7 +4835,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         let is_null = self
             .builder
-            .build_is_null(ptr, &format!("{}_is_null", block_prefix))
+            .build_is_null(ptr, &format!("{block_prefix}_is_null"))
             .map_err(|e| e.to_string())?;
 
         let current_function = self
@@ -4854,17 +4847,17 @@ impl<'a> CodeGenerator<'a> {
 
         let error_bb = self
             .context
-            .append_basic_block(current_function, &format!("{}_error", block_prefix));
+            .append_basic_block(current_function, &format!("{block_prefix}_error"));
         let continue_bb = self
             .context
-            .append_basic_block(current_function, &format!("{}_continue", block_prefix));
+            .append_basic_block(current_function, &format!("{block_prefix}_continue"));
 
         self.builder
             .build_conditional_branch(is_null, error_bb, continue_bb)
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(error_bb);
-        let loc = self.panic_location_arg(span, &format!("{}_error", block_prefix))?;
+        let loc = self.panic_location_arg(span, &format!("{block_prefix}_error"))?;
         self.generate_runtime_call(
             "mux_panic_index_oob",
             &[index.into(), length.into(), loc.into()],
@@ -5009,10 +5002,7 @@ impl<'a> CodeGenerator<'a> {
             }
             LiteralNode::Boolean(b) => {
                 // Generate i1 (bool) value directly, like int/float literals
-                let val = self
-                    .context
-                    .bool_type()
-                    .const_int(if *b { 1 } else { 0 }, false);
+                let val = self.context.bool_type().const_int(u64::from(*b), false);
                 Ok(val.into())
             }
             LiteralNode::String(s) => {
@@ -5242,8 +5232,7 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => {
                     return Err(format!(
-                        "Cannot use nested indexing on non-list/map type: {:?}",
-                        base_type
+                        "Cannot use nested indexing on non-list/map type: {base_type:?}"
                     ));
                 }
             };
@@ -5348,8 +5337,7 @@ impl<'a> CodeGenerator<'a> {
                 Ok(())
             }
             other => Err(format!(
-                "Cannot assign to index on non-list/map type: {:?}",
-                other
+                "Cannot assign to index on non-list/map type: {other:?}"
             )),
         }
     }
@@ -5398,8 +5386,7 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => {
                     return Err(format!(
-                        "Cannot apply index to non-list/map type: {:?}",
-                        current_type
+                        "Cannot apply index to non-list/map type: {current_type:?}"
                     ));
                 }
             }
@@ -5463,8 +5450,7 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => {
                     return Err(format!(
-                        "Cannot apply nested index to non-list/map type: {:?}",
-                        current_type
+                        "Cannot apply nested index to non-list/map type: {current_type:?}"
                     ));
                 }
             };

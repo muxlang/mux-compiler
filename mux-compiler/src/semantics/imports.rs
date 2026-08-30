@@ -26,7 +26,7 @@ impl SemanticAnalyzer {
             // Set llvm_name for functions and module constants (both are emitted
             // under module!name so same-named symbols in two modules differ)
             if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
-                mangled_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, name));
+                mangled_symbol.llvm_name = Some(format!("{module_name_for_mangling}!{name}"));
             }
             mangled_symbols.insert(name, mangled_symbol);
         }
@@ -205,7 +205,7 @@ impl SemanticAnalyzer {
                 errors.iter().map(|e| e.message.to_string()).collect();
             return Err(SemanticError::with_help(
                 DiagnosticCode::ImportFailure,
-                format!("Errors in imported module '{}'", module_path),
+                format!("Errors in imported module '{module_path}'"),
                 span,
                 format!(
                     "Fix the following errors in '{}':\n  {}",
@@ -243,8 +243,7 @@ impl SemanticAnalyzer {
             if !is_unmangled_builtin_function && !self.symbol_table.all_symbols.contains_key(name) {
                 let mut mangled_symbol = symbol.clone();
                 if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
-                    mangled_symbol.llvm_name =
-                        Some(format!("{}!{}", module_name_for_mangling, name));
+                    mangled_symbol.llvm_name = Some(format!("{module_name_for_mangling}!{name}"));
                 }
                 self.symbol_table
                     .all_symbols
@@ -321,7 +320,7 @@ impl SemanticAnalyzer {
         if has_file && has_directory {
             return Err(SemanticError::with_help(
                 DiagnosticCode::ImportFailure,
-                format!("Ambiguous import: '{}'", module_path),
+                format!("Ambiguous import: '{module_path}'"),
                 span,
                 format!(
                     "Both {}.mux and {}/ directory exist. Please remove one.",
@@ -342,7 +341,7 @@ impl SemanticAnalyzer {
             .map_err(|e| {
                 SemanticError::with_help(
                     e.code,
-                    format!("Failed to import module '{}'", module_path),
+                    format!("Failed to import module '{module_path}'"),
                     span,
                     e.message,
                 )
@@ -383,7 +382,7 @@ impl SemanticAnalyzer {
             .map_err(|e| {
                 SemanticError::with_help(
                     e.code,
-                    format!("Failed to import submodule '{}'", submodule_path),
+                    format!("Failed to import submodule '{submodule_path}'"),
                     span,
                     e.message,
                 )
@@ -410,7 +409,7 @@ impl SemanticAnalyzer {
                 errors.iter().map(|e| e.message.to_string()).collect();
             return Err(SemanticError::with_help(
                 DiagnosticCode::ImportFailure,
-                format!("Errors in submodule '{}'", submodule_path),
+                format!("Errors in submodule '{submodule_path}'"),
                 span,
                 format!(
                     "Fix the following errors in '{}':\n  {}",
@@ -476,7 +475,7 @@ impl SemanticAnalyzer {
                     span,
                     &resolver,
                     files,
-                )?
+                )?;
             }
             ImportSpec::Items { items } => self.import_directory_items(
                 module_path,
@@ -487,7 +486,7 @@ impl SemanticAnalyzer {
                 files,
             )?,
             ImportSpec::Wildcard => {
-                self.import_directory_wildcard(module_path, &submodules, span, &resolver, files)?
+                self.import_directory_wildcard(module_path, &submodules, span, &resolver, files)?;
             }
         }
         Ok(())
@@ -502,7 +501,7 @@ impl SemanticAnalyzer {
         resolver.borrow().get_submodules(module_path).map_err(|e| {
             SemanticError::new(
                 DiagnosticCode::ImportFailure,
-                format!("Failed to get submodules: {}", e),
+                format!("Failed to get submodules: {e}"),
                 span,
             )
         })
@@ -520,10 +519,7 @@ impl SemanticAnalyzer {
         }
         Err(SemanticError::with_help(
             DiagnosticCode::ImportFailure,
-            format!(
-                "Submodule '{}' not found in '{}'",
-                submodule_name, module_path
-            ),
+            format!("Submodule '{submodule_name}' not found in '{module_path}'"),
             span,
             format!("Available submodules: {}", submodules.join(", ")),
         ))
@@ -541,7 +537,7 @@ impl SemanticAnalyzer {
         let namespace = alias.unwrap_or(module_path);
         let mut module_symbols = std::collections::HashMap::new();
         for submodule_name in submodules {
-            let submodule_path = format!("{}.{}", module_path, submodule_name);
+            let submodule_path = format!("{module_path}.{submodule_name}");
             let symbol = self.resolve_and_register_submodule(
                 &submodule_path,
                 submodule_name,
@@ -581,7 +577,7 @@ impl SemanticAnalyzer {
         resolver: &Rc<RefCell<crate::module_resolver::ModuleResolver>>,
         files: &mut Files,
     ) -> Result<(), SemanticError> {
-        let submodule_path = format!("{}.{}", module_path, item);
+        let submodule_path = format!("{module_path}.{item}");
         let namespace = alias.unwrap_or(item);
         let symbol =
             self.resolve_and_register_submodule(&submodule_path, namespace, span, resolver, files)?;
@@ -621,7 +617,7 @@ impl SemanticAnalyzer {
         files: &mut Files,
     ) -> Result<(), SemanticError> {
         for submodule_name in submodules {
-            let submodule_path = format!("{}.{}", module_path, submodule_name);
+            let submodule_path = format!("{module_path}.{submodule_name}");
             let symbol = self.resolve_and_register_submodule(
                 &submodule_path,
                 submodule_name,
@@ -646,7 +642,7 @@ impl SemanticAnalyzer {
         for (name, symbol) in symbols {
             let mut mangled_symbol = symbol.clone();
             if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
-                mangled_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, name));
+                mangled_symbol.llvm_name = Some(format!("{module_name_for_mangling}!{name}"));
             }
             mangled_symbols.insert(name.clone(), mangled_symbol);
         }
@@ -668,19 +664,13 @@ impl SemanticAnalyzer {
             if available.is_empty() {
                 SemanticError::new(
                     DiagnosticCode::ImportFailure,
-                    format!(
-                        "Symbol '{}' not found in module '{}'",
-                        item_name, module_path
-                    ),
+                    format!("Symbol '{item_name}' not found in module '{module_path}'"),
                     span,
                 )
             } else {
                 SemanticError::with_help(
                     DiagnosticCode::ImportFailure,
-                    format!(
-                        "Symbol '{}' not found in module '{}'",
-                        item_name, module_path
-                    ),
+                    format!("Symbol '{item_name}' not found in module '{module_path}'"),
                     span,
                     format!(
                         "Available symbols: {}",
@@ -705,7 +695,7 @@ impl SemanticAnalyzer {
         // Set llvm_name for functions and module constants (mangled with module path)
         if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
             let module_name_for_mangling = crate::semantics::mangle_module_path(module_path);
-            imported_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, item_name));
+            imported_symbol.llvm_name = Some(format!("{module_name_for_mangling}!{item_name}"));
         }
 
         self.add_import_symbol_if_absent(local_name, imported_symbol)?;
@@ -752,7 +742,7 @@ impl SemanticAnalyzer {
             }
             match module_symbols.get(&interface_name) {
                 Some(interface) => {
-                    self.add_import_symbol_if_absent(&interface_name, interface.clone())?
+                    self.add_import_symbol_if_absent(&interface_name, interface.clone())?;
                 }
                 None => self.pending_interface_imports.push((
                     item_name.to_string(),
@@ -787,14 +777,12 @@ impl SemanticAnalyzer {
             self.errors.push(SemanticError::with_help(
                 DiagnosticCode::ImportFailure,
                 format!(
-                    "'{}' implements interface '{}', which is not imported",
-                    item_name, interface_name
+                    "'{item_name}' implements interface '{interface_name}', which is not imported"
                 ),
                 span,
                 format!(
                     "importing a type does not import the interfaces it implements. \
-                     Import '{0}' as well, or import the whole module with 'import {1}.*'",
-                    interface_name, parent
+                     Import '{interface_name}' as well, or import the whole module with 'import {parent}.*'"
                 ),
             ));
         }
@@ -824,7 +812,7 @@ impl SemanticAnalyzer {
             let mut imported_symbol = symbol.clone();
 
             if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Constant) {
-                imported_symbol.llvm_name = Some(format!("{}!{}", module_name_for_mangling, name));
+                imported_symbol.llvm_name = Some(format!("{module_name_for_mangling}!{name}"));
             }
 
             self.add_import_symbol_if_absent(name, imported_symbol)?;
@@ -867,7 +855,7 @@ impl SemanticAnalyzer {
         span: Span,
         files: Option<&mut Files>,
     ) -> Result<(), SemanticError> {
-        let full_module_path = format!("std.{}", item);
+        let full_module_path = format!("std.{item}");
         if let Some(resolver) = &self.module_resolver {
             let (has_file, has_directory) = resolver.borrow().check_module_path(&full_module_path);
             if has_file || has_directory {
@@ -977,7 +965,7 @@ impl SemanticAnalyzer {
             None => return Ok(None),
         };
 
-        let parent_path = format!("std.{}", parent);
+        let parent_path = format!("std.{parent}");
         if !registry.contains_key(parent_path.as_str()) {
             return Ok(None);
         }
@@ -1046,7 +1034,7 @@ impl SemanticAnalyzer {
 
         match spec {
             ImportSpec::Module { alias } => {
-                self.import_all_std_as_namespace(alias.as_deref(), span, registry)?
+                self.import_all_std_as_namespace(alias.as_deref(), span, registry)?;
             }
             ImportSpec::Wildcard => self.import_all_std_wildcard(span)?,
             ImportSpec::Items { items } => {
@@ -1140,7 +1128,9 @@ impl SemanticAnalyzer {
 
         match spec {
             ImportSpec::Module { alias } => {
-                let symbol_name = alias.as_ref().map(|s| s.as_str()).unwrap_or(module_name);
+                let symbol_name = alias
+                    .as_ref()
+                    .map_or(module_name, std::string::String::as_str);
                 if let Some(sig) = self.get_builtin_sig(symbol_name).cloned() {
                     self.register_builtin_function(symbol_name, &sig, span);
                 } else if symbol_name == "none" {
@@ -1153,7 +1143,7 @@ impl SemanticAnalyzer {
                         ),
                     )?;
                 } else {
-                    self.register_builtin_functions_with_prefix(&format!("{}_", symbol_name), span);
+                    self.register_builtin_functions_with_prefix(&format!("{symbol_name}_"), span);
                 }
             }
             ImportSpec::Item { item, alias } => {
@@ -1163,11 +1153,11 @@ impl SemanticAnalyzer {
                 }
             }
             ImportSpec::Wildcard => {
-                self.register_builtin_functions_with_prefix(&format!("{}_", module_name), span);
+                self.register_builtin_functions_with_prefix(&format!("{module_name}_"), span);
             }
             ImportSpec::Items { items } => {
                 for (item, alias) in items {
-                    let qualified_name = format!("{}_{}", module_name, item);
+                    let qualified_name = format!("{module_name}_{item}");
                     let symbol_name = alias.as_ref().unwrap_or(&qualified_name);
                     if let Some(sig) = self.get_builtin_sig(&qualified_name).cloned() {
                         self.register_builtin_function(symbol_name, &sig, span);
@@ -1225,7 +1215,7 @@ impl SemanticAnalyzer {
 
     fn stdlib_item_name_for_module(key: &str, prefixes: &[String]) -> Option<String> {
         for prefix in prefixes {
-            let pattern = format!("{}.", prefix);
+            let pattern = format!("{prefix}.");
             if let Some(rest) = key.strip_prefix(&pattern)
                 && !rest.contains('.')
             {
@@ -1242,13 +1232,13 @@ impl SemanticAnalyzer {
     ) {
         match module_name {
             "net" => {
-                module_symbols.extend(crate::semantics::stdlib::net_module_class_symbols(span))
+                module_symbols.extend(crate::semantics::stdlib::net_module_class_symbols(span));
             }
             "sync" => {
-                module_symbols.extend(crate::semantics::stdlib::sync_module_class_symbols(span))
+                module_symbols.extend(crate::semantics::stdlib::sync_module_class_symbols(span));
             }
             "sql" => {
-                module_symbols.extend(crate::semantics::stdlib::sql_module_class_symbols(span))
+                module_symbols.extend(crate::semantics::stdlib::sql_module_class_symbols(span));
             }
             _ if module_name.ends_with(".json") => {
                 module_symbols.insert("Json".to_string(), Self::make_json_symbol(span));
@@ -1408,16 +1398,19 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         match spec {
             ImportSpec::Module { alias } => {
-                let namespace = alias.as_deref().map(|s| s.to_string()).unwrap_or_else(|| {
-                    // If importing a nested module like "data.json" prefer the
-                    // short child name "json" as the namespace so callers can
-                    // reference `json.parse` without an alias.
-                    if module_name.contains('.') {
-                        module_name.split('.').next_back().unwrap().to_string()
-                    } else {
-                        module_name.to_string()
-                    }
-                });
+                let namespace = alias.as_deref().map_or_else(
+                    || {
+                        // If importing a nested module like "data.json" prefer the
+                        // short child name "json" as the namespace so callers can
+                        // reference `json.parse` without an alias.
+                        if module_name.contains('.') {
+                            module_name.split('.').next_back().unwrap().to_string()
+                        } else {
+                            module_name.to_string()
+                        }
+                    },
+                    std::string::ToString::to_string,
+                );
 
                 self.imported_symbols
                     .entry(namespace.to_string())

@@ -11,6 +11,7 @@ pub struct Unifier {
 }
 
 impl Unifier {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -133,6 +134,7 @@ impl Unifier {
         }
     }
 
+    #[must_use]
     pub fn apply(&self, t: &Type) -> Type {
         match t {
             Type::Variable(var) => self

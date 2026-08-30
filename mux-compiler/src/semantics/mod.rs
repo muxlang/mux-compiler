@@ -171,6 +171,7 @@ pub(crate) fn mangle_module_path(module_path: &str) -> String {
 }
 
 impl SemanticAnalyzer {
+    #[must_use]
     pub fn new() -> Self {
         let symbol_table = SymbolTable::new();
         Self {
@@ -335,6 +336,7 @@ impl SemanticAnalyzer {
         std::mem::take(&mut self.imported_errors)
     }
 
+    #[must_use]
     pub fn symbol_table(&self) -> &SymbolTable {
         &self.symbol_table
     }
@@ -347,10 +349,12 @@ impl SemanticAnalyzer {
 
     /// Build a local variable symbol from a name and its resolved type, for
     /// code generation to publish what is in scope where it is emitting.
+    #[must_use]
     pub fn local_symbol(span: Span, type_: Type) -> Symbol {
         Self::make_symbol(SymbolKind::Variable, span, Some(type_))
     }
 
+    #[must_use]
     pub fn all_symbols(&self) -> &std::collections::HashMap<String, Symbol> {
         &self.symbol_table.all_symbols
     }
@@ -360,8 +364,7 @@ impl SemanticAnalyzer {
     pub fn class_invariants(&self, class_name: &str) -> &[where_clause::ClassInvariant] {
         self.class_invariants
             .get(class_name)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], Vec::as_slice)
     }
 
     /// The interface preconditions a class method inherits from the
@@ -374,16 +377,17 @@ impl SemanticAnalyzer {
         self.inherited_preconditions
             .get(class_name)
             .and_then(|methods| methods.get(method_name))
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], Vec::as_slice)
     }
 
+    #[must_use]
     pub fn imported_symbols(
         &self,
     ) -> &std::collections::BTreeMap<String, std::collections::HashMap<String, Symbol>> {
         &self.imported_symbols
     }
 
+    #[must_use]
     pub fn all_module_asts(&self) -> &std::collections::BTreeMap<String, Vec<AstNode>> {
         &self.all_module_asts
     }
@@ -450,27 +454,22 @@ impl SemanticAnalyzer {
             // struct, so it never gets the structural compare a user enum has.
             // Saying "class or interface" here would be plainly wrong.
             Type::Named(name, _) if matches!(name.as_str(), "optional" | "result") => format!(
-                "'{}' is the name of a built-in type. An enum declared with that name does not get the structural comparison user enums have; rename it.",
-                name
+                "'{name}' is the name of a built-in type. An enum declared with that name does not get the structural comparison user enums have; rename it."
             ),
             Type::Named(name, _) => format!(
-                "'{}' is a class or an interface, and only enums compare structurally. Give '{}' a method that compares two values and call it directly, or model the type as an enum if it is a fixed set of alternatives.",
-                name, name
+                "'{name}' is a class or an interface, and only enums compare structurally. Give '{name}' a method that compares two values and call it directly, or model the type as an enum if it is a fixed set of alternatives."
             ),
             Type::Generic(name) | Type::Variable(name) => format!(
-                "'{}' is a type parameter with no 'Equatable' bound, so '{}' is not available on it. Declare the bound, as in <{} is Equatable>.",
-                name, op, name
+                "'{name}' is a type parameter with no 'Equatable' bound, so '{op}' is not available on it. Declare the bound, as in <{name} is Equatable>."
             ),
             Type::Function { .. } => {
-                format!("Functions cannot be compared with '{}'.", op)
+                format!("Functions cannot be compared with '{op}'.")
             }
             Type::Void | Type::Primitive(crate::ast::PrimitiveType::Void) => format!(
-                "A call that returns void produces no value, so there is nothing for '{}' to compare.",
-                op
+                "A call that returns void produces no value, so there is nothing for '{op}' to compare."
             ),
             Type::Never => format!(
-                "This expression never produces a value, so there is nothing for '{}' to compare.",
-                op
+                "This expression never produces a value, so there is nothing for '{op}' to compare."
             ),
             _ => format!(
                 "Values of type {} cannot be compared with '{}'.",
@@ -486,14 +485,14 @@ impl SemanticAnalyzer {
         if let Some(suggestion) = self.symbol_table.find_similar(name) {
             SemanticError::with_help(
                 DiagnosticCode::UndefinedName,
-                format!("Undefined {} '{}'", kind, name),
+                format!("Undefined {kind} '{name}'"),
                 span,
-                format!("Did you mean '{}'?", suggestion),
+                format!("Did you mean '{suggestion}'?"),
             )
         } else {
             SemanticError::new(
                 DiagnosticCode::UndefinedName,
-                format!("Undefined {} '{}'", kind, name),
+                format!("Undefined {kind} '{name}'"),
                 span,
             )
         }
@@ -560,9 +559,7 @@ impl SemanticAnalyzer {
             type_name,
             span,
             |t| self.get_available_fields(t),
-            |_item_type, item, type_name| {
-                format!("Field '{}' not found on type '{}'", item, type_name)
-            },
+            |_item_type, item, type_name| format!("Field '{item}' not found on type '{type_name}'"),
         )
     }
 
@@ -584,7 +581,7 @@ impl SemanticAnalyzer {
             span,
             |t| self.get_available_methods(t),
             |_item_type, item, type_name| {
-                format!("Undefined method '{}' on type '{}'", item, type_name)
+                format!("Undefined method '{item}' on type '{type_name}'")
             },
         )
     }
@@ -768,7 +765,7 @@ impl SemanticAnalyzer {
             "Comparable" => "cannot be ordered with '<'",
             "Hashable" => "cannot be used as a map key or set member",
             _ => {
-                return format!("'{}' is required to satisfy '{}' here.", param_name, bound);
+                return format!("'{param_name}' is required to satisfy '{bound}' here.");
             }
         };
         format!(
@@ -1093,14 +1090,10 @@ impl SemanticAnalyzer {
         }
         Err(SemanticError::with_help(
             DiagnosticCode::InvalidOperation,
-            format!(
-                "'{}' is an interface and cannot be used as a value type",
-                name
-            ),
+            format!("'{name}' is an interface and cannot be used as a value type"),
             span,
             format!(
-                "Take it as a bound instead, e.g. 'func f<T is {}>(T value)'. A class still implements it with 'is {}'.",
-                name, name
+                "Take it as a bound instead, e.g. 'func f<T is {name}>(T value)'. A class still implements it with 'is {name}'."
             ),
         ))
     }
@@ -1292,13 +1285,11 @@ impl SemanticAnalyzer {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::UnknownMember,
                     format!(
-                        "'{}' is a variant of enum '{}', not a field on a value of it",
-                        field, enum_name
+                        "'{field}' is a variant of enum '{enum_name}', not a field on a value of it"
                     ),
                     span,
                     format!(
-                        "Construct it from the enum name, as in {}.{}, or use 'match' to test which variant a value holds.",
-                        enum_name, field
+                        "Construct it from the enum name, as in {enum_name}.{field}, or use 'match' to test which variant a value holds."
                     ),
                 ));
             }
@@ -1349,7 +1340,7 @@ impl SemanticAnalyzer {
         {
             use crate::semantics::stdlib::{StdlibItem, lookup_stdlib_item};
 
-            let full_name = format!("{}.{}", name, field);
+            let full_name = format!("{name}.{field}");
             if let Some(StdlibItem::Function { params, ret, .. }) = lookup_stdlib_item(&full_name) {
                 return Some(Type::Function {
                     params: params.clone(),
@@ -1361,7 +1352,7 @@ impl SemanticAnalyzer {
 
         let stdlib_names: std::collections::HashSet<String> = std_module_registry()
             .keys()
-            .filter_map(|s| s.strip_prefix("std.").map(|name| name.to_string()))
+            .filter_map(|s| s.strip_prefix("std.").map(std::string::ToString::to_string))
             .collect();
         for (ns, module_symbols) in &self.imported_symbols {
             if !stdlib_names.contains(ns) {
@@ -1410,7 +1401,7 @@ impl SemanticAnalyzer {
                 "right" => Ok(*right_type.clone()),
                 _ => Err(SemanticError::with_help(
                     DiagnosticCode::UnknownMember,
-                    format!("Unknown field '{}' on tuple type", field),
+                    format!("Unknown field '{field}' on tuple type"),
                     span,
                     "Tuples only have two fields: 'left' and 'right'. Example: auto pair = (1, 2); print(int_to_string(pair.left))",
                 )),
@@ -1682,8 +1673,7 @@ impl SemanticAnalyzer {
             return Err(SemanticError::with_help(
                 DiagnosticCode::InvalidTypeArguments,
                 format!(
-                    "Generic type '{}' requires {} type argument(s), got {}",
-                    lookup_name, expected_count, actual_count
+                    "Generic type '{lookup_name}' requires {expected_count} type argument(s), got {actual_count}"
                 ),
                 span,
                 format!(
@@ -1779,13 +1769,11 @@ impl SemanticAnalyzer {
         SemanticError::with_help(
             DiagnosticCode::WrongArgumentCount,
             format!(
-                "Enum variant '{}.{}' carries a payload and cannot be used on its own",
-                enum_name, variant
+                "Enum variant '{enum_name}.{variant}' carries a payload and cannot be used on its own"
             ),
             span,
             format!(
-                "'{}.{}' takes {} argument{}. Construct a value by passing them, e.g. {}.{}(...).",
-                enum_name, variant, arity, plural, enum_name, variant
+                "'{enum_name}.{variant}' takes {arity} argument{plural}. Construct a value by passing them, e.g. {enum_name}.{variant}(...)."
             ),
         )
     }
@@ -1817,14 +1805,10 @@ impl SemanticAnalyzer {
         if arity == 0 {
             return Some(Err(SemanticError::with_help(
                 DiagnosticCode::WrongArgumentCount,
-                format!(
-                    "Enum variant '{}.{}' carries no payload and is not called",
-                    enum_name, field
-                ),
+                format!("Enum variant '{enum_name}.{field}' carries no payload and is not called"),
                 expr_span,
                 format!(
-                    "Parentheses pass arguments, and '{}.{}' takes none. Write it as a value: {}.{}",
-                    enum_name, field, enum_name, field
+                    "Parentheses pass arguments, and '{enum_name}.{field}' takes none. Write it as a value: {enum_name}.{field}"
                 ),
             )));
         }
@@ -2144,8 +2128,7 @@ impl SemanticAnalyzer {
                 let symbol_default = self
                     .symbol_table
                     .lookup(name)
-                    .map(|s| s.default_param_count)
-                    .unwrap_or(0);
+                    .map_or(0, |s| s.default_param_count);
                 std::cmp::max(default_count, symbol_default)
             }
             _ => default_count,
@@ -2170,8 +2153,8 @@ impl SemanticAnalyzer {
         expr_span: Span,
     ) -> Result<(), SemanticError> {
         let func_name = match &func.kind {
-            ExpressionKind::Identifier(name) => format!("'{}'", name),
-            ExpressionKind::FieldAccess { field, .. } => format!("'{}'", field),
+            ExpressionKind::Identifier(name) => format!("'{name}'"),
+            ExpressionKind::FieldAccess { field, .. } => format!("'{field}'"),
             _ => "this function".to_string(),
         };
 
@@ -2188,8 +2171,7 @@ impl SemanticAnalyzer {
                 ),
                 expr_span,
                 format!(
-                    "{} has {} required parameter(s) and {} optional parameter(s) with defaults",
-                    func_name, min_args, actual_default_count
+                    "{func_name} has {min_args} required parameter(s) and {actual_default_count} optional parameter(s) with defaults"
                 ),
             ))
         } else {
@@ -2206,10 +2188,7 @@ impl SemanticAnalyzer {
                 if arg_count > max_args {
                     "Too many arguments. Remove the extra argument(s).".to_string()
                 } else {
-                    format!(
-                        "Not enough arguments. {} requires {} argument(s).",
-                        func_name, max_args
-                    )
+                    format!("Not enough arguments. {func_name} requires {max_args} argument(s).")
                 },
             ))
         }
@@ -2236,7 +2215,7 @@ impl SemanticAnalyzer {
             let type_ = symbol.type_.clone().ok_or_else(|| {
                 SemanticError::new(
                     DiagnosticCode::InvalidOperation,
-                    format!("Symbol '{}' has no type information", name),
+                    format!("Symbol '{name}' has no type information"),
                     span,
                 )
             })?;
@@ -2257,7 +2236,7 @@ impl SemanticAnalyzer {
 
         let stdlib_names: std::collections::HashSet<String> = std_module_registry()
             .keys()
-            .filter_map(|s| s.strip_prefix("std.").map(|name| name.to_string()))
+            .filter_map(|s| s.strip_prefix("std.").map(std::string::ToString::to_string))
             .collect();
 
         for (module_ns, module_symbols) in &self.imported_symbols {
@@ -2400,7 +2379,7 @@ impl SemanticAnalyzer {
         {
             return Err(SemanticError::with_help(
                 DiagnosticCode::CannotAssign,
-                format!("Cannot assign to const field '{}'", field),
+                format!("Cannot assign to const field '{field}'"),
                 expr_span,
                 "Const fields cannot be modified after initialization. Remove the 'const' modifier from the field declaration if mutation is needed.",
             ));
@@ -2423,7 +2402,7 @@ impl SemanticAnalyzer {
         if symbol.kind == SymbolKind::Constant {
             return Err(SemanticError::with_help(
                 DiagnosticCode::CannotAssign,
-                format!("Cannot assign to constant '{}'", name),
+                format!("Cannot assign to constant '{name}'"),
                 expr_span,
                 "Constants cannot be modified after initialization",
             ));
@@ -2432,7 +2411,7 @@ impl SemanticAnalyzer {
         let var_type = symbol.type_.as_ref().ok_or_else(|| {
             SemanticError::new(
                 DiagnosticCode::InvalidOperation,
-                format!("Variable '{}' has no type information", name),
+                format!("Variable '{name}' has no type information"),
                 left_span,
             )
         })?;
@@ -2532,7 +2511,7 @@ impl SemanticAnalyzer {
         if symbol.kind == SymbolKind::Constant {
             return Err(SemanticError::with_help(
                 DiagnosticCode::CannotAssign,
-                format!("Cannot modify constant '{}'", name),
+                format!("Cannot modify constant '{name}'"),
                 expr_span,
                 "Constants cannot be modified after initialization. Declare the variable with 'auto' instead of 'const' if you need to change its value.",
             ));
@@ -2566,7 +2545,7 @@ impl SemanticAnalyzer {
             if *is_const {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::CannotAssign,
-                    format!("Cannot modify const field '{}'", field),
+                    format!("Cannot modify const field '{field}'"),
                     expr_span,
                     "Const fields cannot be modified after initialization. Remove the 'const' modifier from the field declaration if mutation is needed.",
                 ));
@@ -2619,11 +2598,10 @@ impl SemanticAnalyzer {
         let module_symbols = self.imported_symbols.get(module_name).ok_or_else(|| {
             SemanticError::with_help(
                 DiagnosticCode::ImportFailure,
-                format!("Module '{}' not found in imports", module_name),
+                format!("Module '{module_name}' not found in imports"),
                 span,
                 format!(
-                    "Make sure you have imported '{}' at the top of your file, e.g. import {}",
-                    module_name, module_name
+                    "Make sure you have imported '{module_name}' at the top of your file, e.g. import {module_name}"
                 ),
             )
         })?;
@@ -2632,19 +2610,13 @@ impl SemanticAnalyzer {
             if available.is_empty() {
                 SemanticError::new(
                     DiagnosticCode::UnknownMember,
-                    format!(
-                        "Module '{}' has no exported symbol '{}'",
-                        module_name, field
-                    ),
+                    format!("Module '{module_name}' has no exported symbol '{field}'"),
                     span,
                 )
             } else {
                 SemanticError::with_help(
                     DiagnosticCode::UnknownMember,
-                    format!(
-                        "Module '{}' has no exported symbol '{}'",
-                        module_name, field
-                    ),
+                    format!("Module '{module_name}' has no exported symbol '{field}'"),
                     span,
                     format!(
                         "Available exports: {}",
@@ -2660,10 +2632,7 @@ impl SemanticAnalyzer {
         symbol.type_.clone().ok_or_else(|| {
             SemanticError::new(
                 DiagnosticCode::UnknownMember,
-                format!(
-                    "Symbol '{}' in module '{}' has no type information",
-                    field, module_name
-                ),
+                format!("Symbol '{field}' in module '{module_name}' has no type information"),
                 span,
             )
         })
@@ -2972,7 +2941,7 @@ impl SemanticAnalyzer {
         if symbol.kind != SymbolKind::Class {
             return Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,
-                format!("'{}' is not a class", name),
+                format!("'{name}' is not a class"),
                 span,
                 format!(
                     "'{}' is a {}not a class. Only classes can be instantiated with .new()",
@@ -3020,11 +2989,10 @@ impl SemanticAnalyzer {
         }
         let new_sig = symbol.methods.get("new").ok_or_else(|| SemanticError::with_help(
                 DiagnosticCode::UnknownMember,
-            format!("Class '{}' has no constructor", name),
+            format!("Class '{name}' has no constructor"),
             span,
             format!(
-                "Class '{}' does not have a .new() method. Ensure the class has fields or a constructor defined.",
-                name
+                "Class '{name}' does not have a .new() method. Ensure the class has fields or a constructor defined."
             ),
         ))?;
         let substituted_params = new_sig
@@ -3141,6 +3109,7 @@ impl SemanticAnalyzer {
     /// Whether the named class or enum declares `interface_name`. Exposed for
     /// codegen, which needs it to decide whether an operator dispatches to a
     /// user method.
+    #[must_use]
     pub fn type_implements_named_interface(&self, name: &str, interface_name: &str) -> bool {
         self.type_implements_interface_with_named(name, interface_name, &[])
     }
@@ -3246,6 +3215,7 @@ impl SemanticAnalyzer {
     /// equality. This is `bound_grants` applied to a declaration rather than to
     /// a type parameter's bound: a class that orders itself can say whether two
     /// instances are the same one, and one that hashes itself has to.
+    #[must_use]
     pub fn class_supports_equality(&self, name: &str) -> bool {
         ["Equatable", "Comparable", "Hashable"]
             .iter()
@@ -3259,6 +3229,7 @@ impl SemanticAnalyzer {
     /// declaring it may also have an unrelated method named `eq` that nothing
     /// validated. Treating that as the equality method emitted a wrapper
     /// calling it with the wrong argument and return types.
+    #[must_use]
     pub fn class_declares_equality_method(&self, name: &str) -> bool {
         self.type_implements_named_interface(name, "Equatable")
             || self.type_implements_named_interface(name, "Hashable")

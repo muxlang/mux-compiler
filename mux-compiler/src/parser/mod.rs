@@ -46,6 +46,7 @@ fn reserved_class_method_error(name: &str) -> Option<String> {
 }
 
 impl<'a> Parser<'a> {
+    #[must_use]
     pub fn new(tokens: &'a [Token]) -> Self {
         Self {
             tokens: tokens
@@ -204,6 +205,7 @@ impl<'a> Parser<'a> {
     ///
     /// Callers use these intervals to suppress diagnostics derived from
     /// tokens the parser deliberately discarded.
+    #[must_use]
     pub fn recovery_spans(&self) -> &[Span] {
         &self.recovery_spans
     }
@@ -627,8 +629,7 @@ impl<'a> Parser<'a> {
                 return Err(ParserError::with_help(
                     DiagnosticCode::ParseExpectedToken,
                     format!(
-                        "Expected field or method declaration in class body, found {}",
-                        token_desc
+                        "Expected field or method declaration in class body, found {token_desc}"
                     ),
                     self.peek().span,
                     "Class bodies can only contain field declarations (e.g., 'int x = 0') and method declarations (e.g., 'func foo() returns void { ... }')",
@@ -1067,7 +1068,7 @@ impl<'a> Parser<'a> {
         let return_type = self.parse_required_return_type()?;
         self.skip_newlines();
         let body_statements = self.parse_function_body(start_span)?;
-        let end_span = body_statements.last().map(|s| s.span).unwrap_or(start_span);
+        let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
         Ok(AstNode::Function(FunctionNode {
             name,
@@ -1433,7 +1434,7 @@ impl<'a> Parser<'a> {
         then_block: &[StatementNode],
     ) -> ParserResult<(Option<Vec<StatementNode>>, Span)> {
         if !self.matches(&[TokenType::Else]) {
-            let end_span = then_block.last().map(|s| s.span).unwrap_or(start_span);
+            let end_span = then_block.last().map_or(start_span, |s| s.span);
             return Ok((None, end_span));
         }
         self.skip_newlines();
@@ -1484,8 +1485,7 @@ impl<'a> Parser<'a> {
         };
         let end_span = else_block
             .last()
-            .map(|s| s.span)
-            .unwrap_or_else(|| self.tokens[self.current - 1].span);
+            .map_or_else(|| self.tokens[self.current - 1].span, |s| s.span);
         Ok((Some(else_block), end_span))
     }
 
@@ -1516,7 +1516,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        let end_span = body_statements.last().map(|s| s.span).unwrap_or(start_span);
+        let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
 
         Ok(AstNode::Statement(StatementNode {
@@ -1565,7 +1565,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        let end_span = body_statements.last().map(|s| s.span).unwrap_or(start_span);
+        let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
         Ok(AstNode::Statement(StatementNode {
             kind: StatementKind::For {
@@ -1773,7 +1773,7 @@ impl<'a> Parser<'a> {
         };
         let stmts: Vec<StatementNode> = statements
             .into_iter()
-            .filter_map(|node| node.into_statement())
+            .filter_map(super::ast::nodes::AstNode::into_statement)
             .collect();
 
         Ok(AstNode::Statement(StatementNode {
@@ -2304,6 +2304,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[must_use]
     pub fn is_at_end(&self) -> bool {
         self.current >= self.tokens.len()
     }
@@ -2759,7 +2760,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        let end_span = body_statements.last().map(|s| s.span).unwrap_or(start_span);
+        let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let expr = ExpressionNode {
             kind: ExpressionKind::Lambda {
                 params,
@@ -2808,14 +2809,14 @@ impl<'a> Parser<'a> {
     fn parse_if_branch_expression(&mut self, what: &str) -> ParserResult<ExpressionNode> {
         self.consume_token(
             TokenType::OpenBrace,
-            &format!("Expected '{{' before {}", what),
+            &format!("Expected '{{' before {what}"),
         )?;
         self.skip_newlines();
         let expr = self.parse_expression()?;
         self.skip_newlines();
         self.consume_token(
             TokenType::CloseBrace,
-            &format!("Expected '}}' after {}", what),
+            &format!("Expected '}}' after {what}"),
         )?;
         Ok(expr)
     }
@@ -2855,7 +2856,7 @@ impl<'a> Parser<'a> {
 
         ParserError::from_token(
             DiagnosticCode::ParseExpectedExpression,
-            format!("Expected expression, found {}", token_desc),
+            format!("Expected expression, found {token_desc}"),
             &Token {
                 token_type,
                 span: token_span,
@@ -2866,12 +2867,15 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> ParserResult<ExpressionNode> {
         if self.is_at_end() {
             // Use the last token's span to show where we expected an expression
-            let error_span = self.tokens.last().map(|t| t.span).unwrap_or_else(|| Span {
-                row_start: 1,
-                row_end: None,
-                col_start: 1,
-                col_end: None,
-            });
+            let error_span = self.tokens.last().map_or_else(
+                || Span {
+                    row_start: 1,
+                    row_end: None,
+                    col_start: 1,
+                    col_end: None,
+                },
+                |t| t.span,
+            );
             return Err(ParserError::new(
                 DiagnosticCode::ParseExpectedExpression,
                 "Expected expression, found end of input",
@@ -3036,7 +3040,7 @@ impl<'a> Parser<'a> {
             ExpressionKind::Identifier(id) => Some(id.clone()),
             ExpressionKind::FieldAccess { expr, field } => {
                 if let ExpressionKind::Identifier(base) = &expr.kind {
-                    Some(format!("{}.{}", base, field))
+                    Some(format!("{base}.{field}"))
                 } else {
                     Some(field.clone())
                 }
@@ -3236,13 +3240,16 @@ impl<'a> Parser<'a> {
         if self.is_at_end() {
             return Err(ParserError::new(
                 DiagnosticCode::ParseExpectedToken,
-                format!("{}, but reached end of file", error_msg),
-                self.tokens.last().map(|t| t.span).unwrap_or_else(|| Span {
-                    row_start: 1,
-                    row_end: None,
-                    col_start: 1,
-                    col_end: None,
-                }),
+                format!("{error_msg}, but reached end of file"),
+                self.tokens.last().map_or_else(
+                    || Span {
+                        row_start: 1,
+                        row_end: None,
+                        col_start: 1,
+                        col_end: None,
+                    },
+                    |t| t.span,
+                ),
             ));
         }
 
@@ -3254,7 +3261,7 @@ impl<'a> Parser<'a> {
             let found_desc = Self::describe_token(&token.token_type);
             Err(ParserError::new(
                 DiagnosticCode::ParseExpectedToken,
-                format!("{}, found {}", error_msg, found_desc),
+                format!("{error_msg}, found {found_desc}"),
                 token.span,
             ))
         }
@@ -3264,7 +3271,7 @@ impl<'a> Parser<'a> {
         if self.is_at_end() {
             return Err(ParserError::new(
                 DiagnosticCode::ParseExpectedToken,
-                format!("{}, but reached end of file", error_msg),
+                format!("{error_msg}, but reached end of file"),
                 self.peek().span,
             ));
         }
@@ -3284,7 +3291,7 @@ impl<'a> Parser<'a> {
                 let found_desc = Self::describe_token(&self.peek().token_type);
                 Err(ParserError::new(
                     DiagnosticCode::ParseExpectedToken,
-                    format!("{}, found {}", error_msg, found_desc),
+                    format!("{error_msg}, found {found_desc}"),
                     self.peek().span,
                 ))
             }
@@ -3339,12 +3346,12 @@ impl<'a> Parser<'a> {
             TokenType::Bang => "'!'".to_string(),
             TokenType::And => "'&&'".to_string(),
             TokenType::Or => "'||'".to_string(),
-            TokenType::Id(name) => format!("identifier '{}'", name),
-            TokenType::Int(n) => format!("integer literal '{}'", n),
-            TokenType::Float(n) => format!("float literal '{}'", n),
-            TokenType::Str(s) => format!("string literal \"{}\"", s),
-            TokenType::Bool(b) => format!("boolean literal '{}'", b),
-            TokenType::Char(c) => format!("character literal '{}'", c),
+            TokenType::Id(name) => format!("identifier '{name}'"),
+            TokenType::Int(n) => format!("integer literal '{n}'"),
+            TokenType::Float(n) => format!("float literal '{n}'"),
+            TokenType::Str(s) => format!("string literal \"{s}\""),
+            TokenType::Bool(b) => format!("boolean literal '{b}'"),
+            TokenType::Char(c) => format!("character literal '{c}'"),
             TokenType::Eof => "end of file".to_string(),
             TokenType::NewLine => "newline".to_string(),
             TokenType::StarStar => "'**'".to_string(),
@@ -3359,7 +3366,7 @@ impl<'a> Parser<'a> {
             TokenType::PercentEq => "'%='".to_string(),
             TokenType::Ref => "'&'".to_string(),
             TokenType::Underscore => "'_'".to_string(),
-            _ => format!("{:?}", token_type),
+            _ => format!("{token_type:?}"),
         }
     }
 
@@ -3593,7 +3600,7 @@ mod tests {
 
     fn collect_tokens(source: &mut Source) -> Vec<Token> {
         let input = source.input.clone();
-        println!("Collecting tokens from source:\n{}", input);
+        println!("Collecting tokens from source:\n{input}");
 
         let mut lexer = Lexer::new(source);
         let mut tokens = Vec::new();
@@ -3607,7 +3614,7 @@ mod tests {
                     tokens.push(token);
                 }
                 Err(e) => {
-                    panic!("Lexer error: {}", e);
+                    panic!("Lexer error: {e}");
                 }
             }
         }
@@ -3695,7 +3702,7 @@ mod tests {
         match test_parser.parse() {
             Ok(nodes) => collect_statements(nodes),
             Err((nodes, errors)) => {
-                eprintln!("Parse errors: {:?}", errors);
+                eprintln!("Parse errors: {errors:?}");
                 collect_statements(nodes)
             }
         }
@@ -3822,15 +3829,12 @@ mod tests {
             Ok(nodes) => {
                 println!("Successfully parsed {} nodes", nodes.len());
                 for (i, node) in nodes.iter().enumerate() {
-                    println!("Node {}: {:?}", i, node);
+                    println!("Node {i}: {node:?}");
                 }
                 assert_eq!(nodes.len(), 2);
             }
             Err((nodes, errors)) => {
-                println!(
-                    "Parse failed with nodes: {:?} and errors: {:?}",
-                    nodes, errors
-                );
+                println!("Parse failed with nodes: {nodes:?} and errors: {errors:?}");
                 panic!("Failed to parse multiple statements with newlines");
             }
         }
@@ -3848,8 +3852,7 @@ mod tests {
         match result {
             Ok(nodes) => {
                 panic!(
-                    "Expected an error about missing newline, but got successful parse with nodes: {:?}",
-                    nodes
+                    "Expected an error about missing newline, but got successful parse with nodes: {nodes:?}"
                 );
             }
             Err((_, errors)) => {
@@ -3862,10 +3865,7 @@ mod tests {
                 });
 
                 if !has_newline_error {
-                    panic!(
-                        "Expected an error about missing newline, but got: {:?}",
-                        errors
-                    );
+                    panic!("Expected an error about missing newline, but got: {errors:?}");
                 }
             }
         }
@@ -3965,7 +3965,7 @@ mod tests {
                     );
                     return;
                 }
-                panic!("Failed to parse function: {:?}", errors);
+                panic!("Failed to parse function: {errors:?}");
             }
         }
 
@@ -3978,7 +3978,7 @@ mod tests {
             }
             Err((nodes, errors)) => {
                 if nodes.is_empty() {
-                    panic!("Failed to parse function: {:?}", errors);
+                    panic!("Failed to parse function: {errors:?}");
                 }
             }
         }
@@ -3993,7 +3993,7 @@ mod tests {
             }
             Err((nodes, errors)) => {
                 if nodes.is_empty() {
-                    panic!("Failed to parse function: {:?}", errors);
+                    panic!("Failed to parse function: {errors:?}");
                 }
             }
         }

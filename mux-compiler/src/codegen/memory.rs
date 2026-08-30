@@ -144,10 +144,10 @@ impl<'a> CodeGenerator<'a> {
                 RcSlot::Boxed(alloca) => {
                     let value = self
                         .builder
-                        .build_load(ptr_type, *alloca, &format!("rc_load_{}", name))
+                        .build_load(ptr_type, *alloca, &format!("rc_load_{name}"))
                         .map_err(|e| e.to_string())?;
                     self.builder
-                        .build_call(rc_dec, &[value.into()], &format!("rc_dec_{}", name))
+                        .build_call(rc_dec, &[value.into()], &format!("rc_dec_{name}"))
                         .map_err(|e| e.to_string())?;
                 }
                 RcSlot::Cell(cell) => {
@@ -155,11 +155,7 @@ impl<'a> CodeGenerator<'a> {
                         .runtime_function("mux_cell_release")
                         .ok_or("mux_cell_release not found")?;
                     self.builder
-                        .build_call(
-                            release,
-                            &[(*cell).into()],
-                            &format!("cell_release_{}", name),
-                        )
+                        .build_call(release, &[(*cell).into()], &format!("cell_release_{name}"))
                         .map_err(|e| e.to_string())?;
                 }
                 RcSlot::EnumStruct { enum_name, alloca } => {
@@ -411,7 +407,7 @@ impl<'a> CodeGenerator<'a> {
                                 || self.enum_has_rc_payload_rec(&inner, visited)
                         } else {
                             self.variant_field_llvm_type(enum_name, variant, &fields, i)
-                                .map(|t| t.is_pointer_type())
+                                .map(inkwell::types::BasicTypeEnum::is_pointer_type)
                                 .unwrap_or(false)
                         }
                     })
@@ -485,11 +481,10 @@ impl<'a> CodeGenerator<'a> {
             Some(BasicTypeEnum::StructType(struct_type)) => *struct_type,
             Some(_) => {
                 return Err(format!(
-                    "Enum {} type map entry is not a struct type",
-                    enum_name
+                    "Enum {enum_name} type map entry is not a struct type"
                 ));
             }
-            None => return Err(format!("Enum {} not found in type map", enum_name)),
+            None => return Err(format!("Enum {enum_name} not found in type map")),
         };
         let temp = self.spill_enum_to_temp(value, enum_name, "enum_copy_src")?;
         self.emit_enum_deep_clone(enum_name, temp)?;
@@ -513,11 +508,10 @@ impl<'a> CodeGenerator<'a> {
             Some(BasicTypeEnum::StructType(struct_type)) => *struct_type,
             Some(_) => {
                 return Err(format!(
-                    "Enum {} type map entry is not a struct type",
-                    enum_name
+                    "Enum {enum_name} type map entry is not a struct type"
                 ));
             }
-            None => return Err(format!("Enum {} not found in type map", enum_name)),
+            None => return Err(format!("Enum {enum_name} not found in type map")),
         };
         let temp = self.create_entry_alloca(struct_type.into(), label)?;
         self.builder
@@ -583,7 +577,7 @@ impl<'a> CodeGenerator<'a> {
             }
             let is_pointer = self
                 .variant_field_llvm_type(enum_name, variant, &fields, i)
-                .map(|t| t.is_pointer_type())
+                .map(inkwell::types::BasicTypeEnum::is_pointer_type)
                 .unwrap_or(false);
             if is_pointer {
                 glue.push((i, FieldGlue::Pointer));
@@ -639,11 +633,10 @@ impl<'a> CodeGenerator<'a> {
             Some(BasicTypeEnum::StructType(struct_type)) => *struct_type,
             Some(_) => {
                 return Err(format!(
-                    "Enum {} type map entry is not a struct type",
-                    enum_name
+                    "Enum {enum_name} type map entry is not a struct type"
                 ));
             }
-            None => return Err(format!("Enum {} not found in type map", enum_name)),
+            None => return Err(format!("Enum {enum_name} not found in type map")),
         };
         let runtime_fn = self
             .runtime_function(op.runtime_fn_name())
@@ -679,7 +672,7 @@ impl<'a> CodeGenerator<'a> {
             .enum_variants
             .get(enum_name)
             .cloned()
-            .ok_or_else(|| format!("Enum {} has no variant list", enum_name))?;
+            .ok_or_else(|| format!("Enum {enum_name} has no variant list"))?;
         let mut cases = Vec::new();
         for variant in &variants {
             let glue_fields = self.variant_glue_fields(enum_name, variant)?;
@@ -852,11 +845,11 @@ impl<'a> CodeGenerator<'a> {
         let clone_glue = *self
             .enum_glue_fns
             .get(&(enum_name.to_string(), EnumPayloadOp::DeepClone.label()))
-            .ok_or_else(|| format!("Enum {} deep-clone glue missing", enum_name))?;
+            .ok_or_else(|| format!("Enum {enum_name} deep-clone glue missing"))?;
         let drop_glue = *self
             .enum_glue_fns
             .get(&(enum_name.to_string(), EnumPayloadOp::Drop.label()))
-            .ok_or_else(|| format!("Enum {} drop glue missing", enum_name))?;
+            .ok_or_else(|| format!("Enum {enum_name} drop glue missing"))?;
         let cmp_glue = self.get_or_create_enum_cmp_fn(enum_name)?;
         let hash_glue = self.get_or_create_enum_hash_fn(enum_name)?;
         let struct_type = struct_val.get_type();
@@ -986,12 +979,12 @@ impl<'a> CodeGenerator<'a> {
         let fn_type = i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
         let function =
             self.module
-                .add_function(&format!("mux_enum_cmp_{}", enum_name), fn_type, None);
+                .add_function(&format!("mux_enum_cmp_{enum_name}"), fn_type, None);
         self.enum_glue_fns.insert(key, function);
 
         let struct_type = match self.type_map.get(enum_name) {
             Some(BasicTypeEnum::StructType(st)) => *st,
-            _ => return Err(format!("Enum {} is not a struct type", enum_name)),
+            _ => return Err(format!("Enum {enum_name} is not a struct type")),
         };
         let saved_block = self.builder.get_insert_block();
         let entry = self.context.append_basic_block(function, "entry");
@@ -1023,7 +1016,7 @@ impl<'a> CodeGenerator<'a> {
             .enum_variants
             .get(enum_name)
             .cloned()
-            .ok_or_else(|| format!("Enum {} has no variant list", enum_name))?;
+            .ok_or_else(|| format!("Enum {enum_name} has no variant list"))?;
         let mut cases = Vec::new();
         for variant in &variants {
             let fields = self.variant_compare_fields(enum_name, variant)?;
@@ -1099,14 +1092,14 @@ impl<'a> CodeGenerator<'a> {
         let fn_type = i64_type.fn_type(&[ptr_type.into()], false);
         let function =
             self.module
-                .add_function(&format!("mux_enum_hash_{}", enum_name), fn_type, None);
+                .add_function(&format!("mux_enum_hash_{enum_name}"), fn_type, None);
         // Memoized before the body is built, so a self-embedding enum resolves
         // the recursive call rather than expanding forever (issue #309).
         self.enum_glue_fns.insert(key, function);
 
         let struct_type = match self.type_map.get(enum_name) {
             Some(BasicTypeEnum::StructType(st)) => *st,
-            _ => return Err(format!("Enum {} is not a struct type", enum_name)),
+            _ => return Err(format!("Enum {enum_name} is not a struct type")),
         };
         let saved_block = self.builder.get_insert_block();
         let entry = self.context.append_basic_block(function, "entry");
@@ -1138,7 +1131,7 @@ impl<'a> CodeGenerator<'a> {
             .enum_variants
             .get(enum_name)
             .cloned()
-            .ok_or_else(|| format!("Enum {} has no variant list", enum_name))?;
+            .ok_or_else(|| format!("Enum {enum_name} has no variant list"))?;
         let mut cases = Vec::new();
         for variant in &variants {
             let fields = self.variant_compare_fields(enum_name, variant)?;
@@ -1354,7 +1347,7 @@ impl<'a> CodeGenerator<'a> {
         let function = self
             .builder
             .get_insert_block()
-            .and_then(|bb| bb.get_parent())
+            .and_then(inkwell::basic_block::BasicBlock::get_parent)
             .ok_or("enum compare: no current function")?;
         for (idx, kind) in fields {
             let r = self
@@ -1585,7 +1578,7 @@ impl<'a> CodeGenerator<'a> {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let inner_struct = match self.type_map.get(inner) {
             Some(BasicTypeEnum::StructType(st)) => *st,
-            _ => return Err(format!("Boxed nested enum {} is not a struct type", inner)),
+            _ => return Err(format!("Boxed nested enum {inner} is not a struct type")),
         };
         let field_ptr = self
             .builder
@@ -1676,7 +1669,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         let inner_struct = match self.type_map.get(inner) {
             Some(BasicTypeEnum::StructType(st)) => *st,
-            _ => return Err(format!("Boxed nested enum {} is not a struct type", inner)),
+            _ => return Err(format!("Boxed nested enum {inner} is not a struct type")),
         };
         let temp_ptr = self
             .builder
@@ -1853,14 +1846,10 @@ impl<'a> CodeGenerator<'a> {
         for (name, alloca) in vars {
             let value = self
                 .builder
-                .build_load(ptr_type, *alloca, &format!("closure_load_{}", name))
+                .build_load(ptr_type, *alloca, &format!("closure_load_{name}"))
                 .map_err(|e| e.to_string())?;
             self.builder
-                .build_call(
-                    release,
-                    &[value.into()],
-                    &format!("closure_release_{}", name),
-                )
+                .build_call(release, &[value.into()], &format!("closure_release_{name}"))
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
