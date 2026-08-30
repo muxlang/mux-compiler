@@ -319,6 +319,10 @@ fn runtime_static_lib_path(dir: &Path) -> PathBuf {
     }
 }
 
+fn runtime_lib_path_string(dir: &Path) -> String {
+    dir.to_string_lossy().into_owned()
+}
+
 /// Path to the dynamic runtime library in `dir` for the target platform. Shared
 /// with `runtime_static_lib_path` as the one place the runtime lib names live.
 fn runtime_dynamic_lib_path(dir: &Path) -> PathBuf {
@@ -2132,10 +2136,7 @@ fn main() {
     // `process::exit` skips destructors - so anything created first would be
     // left behind. Failing before the expensive work is better regardless.
     let lib_dir = resolve_runtime_lib_dir_or_exit();
-    let lib_path_str = lib_dir
-        .to_str()
-        .expect("library path should be valid Unicode")
-        .to_string();
+    let lib_path_str = runtime_lib_path_string(&lib_dir);
     let linker_cmd = find_linker_or_exit();
 
     let (object_file, mut object) = match create_scratch_object(&stem) {
@@ -2237,8 +2238,8 @@ mod tests {
         find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
         llvm_config_candidates, materialize_span_edits, native_runtime_deps, pick_llvm_for_dev,
         print_doctor_verdict, print_version_banner, relativize_to_cwd, report_clang_for_doctor,
-        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
-        status_marker, validate_llvm_for_doctor,
+        report_runtime_for_doctor, runtime_lib_dir_is_static_only, runtime_lib_path_string,
+        set_compiling_file, status_marker, validate_llvm_for_doctor,
     };
     use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, SpanEdit};
     use crate::lexer::Span;
@@ -2697,6 +2698,7 @@ mod tests {
 
         let args = build_linker_args_for("linux", "scratch.o", "/tmp", &dir);
         assert!(args.iter().any(|arg| arg.contains('\u{FFFD}')));
+        assert!(runtime_lib_path_string(&dir).contains('\u{FFFD}'));
         std::fs::remove_dir_all(&root).ok();
     }
 
