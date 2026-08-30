@@ -1686,6 +1686,16 @@ world"
     }
 
     #[test]
+    fn eof_token_preserves_empty_source_position() {
+        let mut source = Source::from_test_str("");
+        let mut lexer = Lexer::new(&mut source);
+        let eof = lexer.next_token().expect("empty input must lex to EOF");
+
+        assert_eq!(eof.token_type, TokenType::Eof);
+        assert_eq!(eof.span, Span::new(1, 1));
+    }
+
+    #[test]
     fn test_span_calculation() {
         // Test spans for various token types
         let input = r#"

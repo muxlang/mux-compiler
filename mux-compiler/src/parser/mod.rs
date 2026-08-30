@@ -3930,6 +3930,39 @@ mod tests {
     }
 
     #[test]
+    fn if_block_destructuring_preserves_nested_statement_and_span() {
+        let stmts = parse_stmts("if true {\n  auto y = 1\n}\n");
+        let StatementKind::If {
+            cond,
+            then_block,
+            else_block,
+        } = &stmts[0].kind
+        else {
+            panic!("expected an if statement, got {:?}", stmts[0].kind);
+        };
+
+        assert!(matches!(cond.kind, ExpressionKind::Literal(_)));
+        assert_eq!(then_block.len(), 1);
+        assert!(matches!(then_block[0].kind, StatementKind::AutoDecl(..)));
+        assert!(else_block.is_none());
+        assert_eq!(stmts[0].span.row_start, 1);
+        assert_eq!(stmts[0].span.row_end, Some(2));
+    }
+
+    #[test]
+    fn if_without_block_reports_the_expected_diagnostic() {
+        let mut parser = create_parser("if true\nauto y = 1\n");
+        let result = parser.parse();
+        let (_, errors) = result.expect_err("an if without a block must fail");
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| { error.message.contains("Expected '{' before block") })
+        );
+    }
+
+    #[test]
     fn test_function_declaration() {
         let mut test_parser = create_parser("func add(int a, int b) returns int {\n  a + b\n}\n");
         let result = test_parser.parse();
