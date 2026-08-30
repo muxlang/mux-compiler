@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,9 +29,8 @@ fn main() {
         "debug"
     };
 
-    let target_dir = env::var("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| workspace_root.join("target"));
+    let target_dir =
+        env::var("CARGO_TARGET_DIR").map_or_else(|_| workspace_root.join("target"), PathBuf::from);
 
     let debug_path = target_dir.join("debug");
     let release_path = target_dir.join("release");
@@ -75,7 +75,7 @@ fn emit_runtime_version(manifest_dir: &Path) {
             )
         });
     println!("cargo:rerun-if-changed={}", lock_path.display());
-    println!("cargo:rustc-env=MUX_RUNTIME_VERSION={}", version);
+    println!("cargo:rustc-env=MUX_RUNTIME_VERSION={version}");
 }
 
 /// Parse `Cargo.lock` for the `[[package]] name = "mux-runtime"` entry and
@@ -116,7 +116,7 @@ fn read_locked_runtime_version(lock_path: &Path) -> Option<String> {
         if let Some(rest) = trimmed.strip_prefix("source = \"")
             && let Some(commit) = locked_git_commit(rest.trim_end_matches('"'))
         {
-            return version.map(|locked| format!("{}+g{}", locked, commit));
+            return version.map(|locked| format!("{locked}+g{commit}"));
         }
     }
 
@@ -164,7 +164,7 @@ fn ensure_llvm_prefix(workspace_root: &Path) {
     };
 
     if let Err(e) = write_llvm_prefix_to_config(workspace_root, &prefix) {
-        eprintln!("error[build]: {}", e);
+        eprintln!("error[build]: {e}");
         std::process::exit(1);
     }
     // Force a rebuild so the newly written .cargo/config.toml takes effect.
@@ -174,7 +174,7 @@ fn ensure_llvm_prefix(workspace_root: &Path) {
 /// Probe for `llvm-config-22` on PATH and return its installation prefix
 /// (e.g. `/usr`).
 fn detect_llvm22_prefix() -> Option<String> {
-    let binary = format!("llvm-config-{}", REQUIRED_LLVM_MAJOR);
+    let binary = format!("llvm-config-{REQUIRED_LLVM_MAJOR}");
     let output = Command::new(&binary).arg("--prefix").output().ok()?;
     if !output.status.success() {
         return None;
@@ -192,7 +192,7 @@ fn write_llvm_prefix_to_config(workspace_root: &Path, prefix: &str) -> std::io::
     fs::create_dir_all(&cargo_dir).map_err(|e| {
         std::io::Error::new(
             e.kind(),
-            format!("failed to create {}: {}", cargo_dir.display(), e),
+            format!("failed to create {}: {e}", cargo_dir.display()),
         )
     })?;
 
@@ -201,35 +201,34 @@ fn write_llvm_prefix_to_config(workspace_root: &Path, prefix: &str) -> std::io::
         if existing.contains("[env]") {
             let updated = existing.replacen(
                 "[env]",
-                &format!("[env]\nLLVM_SYS_221_PREFIX = \"{}\"", prefix),
+                &format!("[env]\nLLVM_SYS_221_PREFIX = \"{prefix}\""),
                 1,
             );
             fs::write(&config_path, updated).map_err(|e| {
                 std::io::Error::new(
                     e.kind(),
-                    format!("failed to write {}: {}", config_path.display(), e),
+                    format!("failed to write {}: {e}", config_path.display()),
                 )
             })?;
         } else {
             let updated = format!(
-                "{}\n\n[env]\nLLVM_SYS_221_PREFIX = \"{}\"\n",
+                "{}\n\n[env]\nLLVM_SYS_221_PREFIX = \"{prefix}\"\n",
                 existing.trim_end(),
-                prefix,
             );
             fs::write(&config_path, updated).map_err(|e| {
                 std::io::Error::new(
                     e.kind(),
-                    format!("failed to write {}: {}", config_path.display(), e),
+                    format!("failed to write {}: {e}", config_path.display()),
                 )
             })?;
         }
     } else {
         // File does not exist — create it.
-        let contents = format!("[env]\nLLVM_SYS_221_PREFIX = \"{}\"\n", prefix);
+        let contents = format!("[env]\nLLVM_SYS_221_PREFIX = \"{prefix}\"\n");
         fs::write(&config_path, contents).map_err(|e| {
             std::io::Error::new(
                 e.kind(),
-                format!("failed to write {}: {}", config_path.display(), e),
+                format!("failed to write {}: {e}", config_path.display()),
             )
         })?;
     }
@@ -250,7 +249,7 @@ fn detect_and_emit_llvm_version() {
     }
 
     // Prefer the versioned binary to avoid picking up a different system LLVM.
-    candidates.push(format!("llvm-config-{}", REQUIRED_LLVM_MAJOR));
+    candidates.push(format!("llvm-config-{REQUIRED_LLVM_MAJOR}"));
     candidates.push("llvm-config".to_string());
 
     for candidate in &candidates {
@@ -263,13 +262,13 @@ fn detect_and_emit_llvm_version() {
         let major = raw.split('.').next().and_then(|s| s.parse::<u32>().ok());
 
         if let Some(major) = major {
-            println!("cargo:rustc-env=MUX_LLVM_MAJOR={}", major);
+            println!("cargo:rustc-env=MUX_LLVM_MAJOR={major}");
             return;
         }
     }
 
     // Fallback: assume the required version
-    println!("cargo:rustc-env=MUX_LLVM_MAJOR={}", REQUIRED_LLVM_MAJOR);
+    println!("cargo:rustc-env=MUX_LLVM_MAJOR={REQUIRED_LLVM_MAJOR}");
 }
 
 fn generate_embedded_std_sources(manifest_dir: &Path) {
@@ -300,10 +299,10 @@ fn generate_embedded_std_sources(manifest_dir: &Path) {
             .expect("failed to canonicalize std file path")
             .to_string_lossy()
             .replace('\\', "/");
-        generated.push_str(&format!(
-            "        m.insert(\"{}\".to_string(), include_str!(\"{}\").to_string());\n",
-            module_key, abs_path_str
-        ));
+        let _ = writeln!(
+            generated,
+            "        m.insert(\"{module_key}\".to_string(), include_str!(\"{abs_path_str}\").to_string());"
+        );
     }
 
     generated.push_str("        m\n");
@@ -314,9 +313,8 @@ fn generate_embedded_std_sources(manifest_dir: &Path) {
 }
 
 fn collect_mux_files(base: &Path, current: &Path, out: &mut Vec<(String, String)>) {
-    let entries = match fs::read_dir(current) {
-        Ok(entries) => entries,
-        Err(_) => return,
+    let Ok(entries) = fs::read_dir(current) else {
+        return;
     };
 
     for entry in entries.flatten() {
@@ -335,12 +333,9 @@ fn collect_mux_files(base: &Path, current: &Path, out: &mut Vec<(String, String)
         };
 
         let relative_str = relative.to_string_lossy().replace('\\', "/");
-        let mut module = relative_str
-            .trim_end_matches(".mux")
-            .replace('/', ".")
-            .to_string();
+        let mut module = relative_str.trim_end_matches(".mux").replace('/', ".");
         if !module.starts_with("std.") {
-            module = format!("std.{}", module);
+            module = format!("std.{module}");
         }
 
         out.push((module.clone(), relative_str.clone()));
