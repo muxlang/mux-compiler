@@ -527,9 +527,7 @@ impl<'a> CodeGenerator<'a> {
         method_name: &str,
         args: &[ExpressionNode],
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        let type_name = if let Type::Named(name, _) = obj_type {
-            name
-        } else {
+        let Type::Named(type_name, _) = obj_type else {
             return Ok(None);
         };
 
@@ -644,9 +642,7 @@ impl<'a> CodeGenerator<'a> {
         method_name: &str,
         args: &[ExpressionNode],
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        let type_name = if let Type::Named(name, _) = obj_type {
-            name
-        } else {
+        let Type::Named(type_name, _) = obj_type else {
             return Ok(None);
         };
 
@@ -723,9 +719,7 @@ impl<'a> CodeGenerator<'a> {
         method_name: &str,
         args: &[ExpressionNode],
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        let type_name = if let Type::Named(name, _) = obj_type {
-            name
-        } else {
+        let Type::Named(type_name, _) = obj_type else {
             return Ok(None);
         };
 

@@ -46,11 +46,8 @@ impl<'a> CodeGenerator<'a> {
         name: &str,
         args: &[BasicMetadataValueEnum<'a>],
     ) -> Option<BasicValueEnum<'a>> {
-        let func = match self.runtime_function(name) {
-            Some(f) => f,
-            None => {
-                panic!("Function '{name}' not found in module");
-            }
+        let Some(func) = self.runtime_function(name) else {
+            panic!("Function '{name}' not found in module");
         };
         let call = self
             .builder
@@ -1457,7 +1454,7 @@ impl<'a> CodeGenerator<'a> {
     /// * `variant_name` - Name of the variant ("Some", "Ok", "Err") for error messages
     ///
     /// # Returns
-    /// A tuple of (BasicValueEnum, Type) representing the extracted value and its type
+    /// A tuple of (`BasicValueEnum`, Type) representing the extracted value and its type
     /// Emit `mux_rc_dec` on an owned `*mut Value`. Used to release an
     /// intermediate extraction result that is not otherwise stored or returned.
     pub(super) fn emit_value_decref(&self, ptr: PointerValue<'a>) -> Result<(), String> {

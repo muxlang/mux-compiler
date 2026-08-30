@@ -152,9 +152,8 @@ fn find_linker_command() -> Option<String> {
     let versioned = format!("clang-{linked_major}");
     let candidates: &[&str] = &[versioned.as_str(), "clang", "cc", "gcc"];
     for candidate in candidates {
-        let output = match Command::new(candidate).arg("--version").output() {
-            Ok(output) => output,
-            Err(_) => continue,
+        let Ok(output) = Command::new(candidate).arg("--version").output() else {
+            continue;
         };
         if output.status.success() {
             return Some(candidate.to_string());
@@ -192,9 +191,8 @@ fn collect_llvm_versions() -> Vec<(String, String, u32)> {
             continue;
         }
 
-        let output = match Command::new(&candidate).arg("--version").output() {
-            Ok(output) => output,
-            Err(_) => continue,
+        let Ok(output) = Command::new(&candidate).arg("--version").output() else {
+            continue;
         };
         if !output.status.success() {
             continue;
@@ -202,9 +200,8 @@ fn collect_llvm_versions() -> Vec<(String, String, u32)> {
 
         let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let major_str = raw.split('.').next().unwrap_or("");
-        let major = match major_str.parse::<u32>() {
-            Ok(major) => major,
-            Err(_) => continue,
+        let Ok(major) = major_str.parse::<u32>() else {
+            continue;
         };
         found.push((candidate, raw, major));
     }
@@ -1847,7 +1844,7 @@ fn compiling_file() -> Option<String> {
 /// diagnostics. `detail` is the underlying error string or panic message.
 /// Build the internal-compiler-error report text. Split from the printing
 /// wrapper so its wording - which file line it shows, and whether it points at
-/// "the file above" or the RUST_BACKTRACE hint - is unit-testable without
+/// "the file above" or the `RUST_BACKTRACE` hint - is unit-testable without
 /// capturing stderr or a real panic.
 fn internal_compiler_error_report(
     detail: &str,
@@ -1930,7 +1927,7 @@ fn panic_detail(info: &std::panic::PanicHookInfo<'_>) -> String {
 /// Install a panic hook that reframes any compiler panic (a failed `assert`,
 /// `unwrap`, `expect`, or `unreachable!`) as an internal compiler error rather
 /// than letting Rust's raw "thread 'main' panicked" text reach the user. The
-/// full panic and backtrace are preserved for maintainers when RUST_BACKTRACE is
+/// full panic and backtrace are preserved for maintainers when `RUST_BACKTRACE` is
 /// set; the friendly message is the default.
 fn install_internal_error_panic_hook() {
     let default_hook = std::panic::take_hook();
@@ -2469,7 +2466,7 @@ mod tests {
 
     /// A packaged Windows install ships the DLL beside the import-less static
     /// archive, because the loader needs it. That must not read as a dynamic
-    /// link: `-lmux_runtime` still resolves mux_runtime.lib, so the runtime's
+    /// link: `-lmux_runtime` still resolves `mux_runtime.lib`, so the runtime's
     /// native dependencies still have to be linked explicitly.
     #[test]
     fn a_dll_in_the_lib_dir_does_not_make_the_link_dynamic() {
@@ -2734,7 +2731,7 @@ mod tests {
     /// loader finds it, and the import library under `lib/`. Resolution must
     /// therefore skip `bin/` and choose `lib/` - picking `bin/` passes the
     /// linker a directory holding nothing it can link, which is
-    /// "LNK1181: cannot open input file 'mux_runtime.lib'".
+    /// "LNK1181: cannot open input file '`mux_runtime.lib`'".
     #[test]
     fn a_dll_beside_the_binary_does_not_shadow_the_import_library() {
         let root = unique_tmp("rtlib_install");

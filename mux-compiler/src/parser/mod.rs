@@ -1401,18 +1401,16 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
 
         // Parse then block using the block() function directly
-        let then_block = match self.block()? {
-            AstNode::Statement(StatementNode {
-                kind: StatementKind::Block(block),
-                ..
-            }) => block,
-            _ => {
-                return Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    "Expected block after if condition",
-                    self.peek().span,
-                ));
-            }
+        let AstNode::Statement(StatementNode {
+            kind: StatementKind::Block(then_block),
+            ..
+        }) = self.block()?
+        else {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                "Expected block after if condition",
+                self.peek().span,
+            ));
         };
 
         self.skip_newlines();
@@ -1470,18 +1468,16 @@ impl<'a> Parser<'a> {
             ));
         }
         // Parse the else block using block() which handles the opening brace
-        let else_block = match self.block()? {
-            AstNode::Statement(StatementNode {
-                kind: StatementKind::Block(block),
-                ..
-            }) => block,
-            _ => {
-                return Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    "Expected block after else",
-                    self.peek().span,
-                ));
-            }
+        let AstNode::Statement(StatementNode {
+            kind: StatementKind::Block(else_block),
+            ..
+        }) = self.block()?
+        else {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                "Expected block after else",
+                self.peek().span,
+            ));
         };
         let end_span = else_block
             .last()

@@ -22,7 +22,7 @@ impl<'a> CodeGenerator<'a> {
     ///
     /// A module-level global is declared from a `Type` rather than a
     /// `TypeNode` - `declare_auto_global` infers one from the initializer - so
-    /// the TypeNode walker never sees it, and `auto b = Box<int>.Full(42)` at
+    /// the `TypeNode` walker never sees it, and `auto b = Box<int>.Full(42)` at
     /// module scope resolved its LLVM type before anything stamped out
     /// `Box$int`. Inside a function the same line works.
     pub(super) fn instantiate_generic_types_in_type(&mut self, ty: &Type) -> Result<(), String> {

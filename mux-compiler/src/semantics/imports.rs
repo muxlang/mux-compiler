@@ -955,14 +955,12 @@ impl SemanticAnalyzer {
             crate::semantics::std_registry::StdModuleDef,
         >,
     ) -> Result<Option<()>, SemanticError> {
-        let tail = match module_path.strip_prefix("std.") {
-            Some(tail) => tail,
-            None => return Ok(None),
+        let Some(tail) = module_path.strip_prefix("std.") else {
+            return Ok(None);
         };
 
-        let parent = match tail.split('.').next() {
-            Some(parent) => parent,
-            None => return Ok(None),
+        let Some(parent) = tail.split('.').next() else {
+            return Ok(None);
         };
 
         let parent_path = format!("std.{parent}");
@@ -970,9 +968,8 @@ impl SemanticAnalyzer {
             return Ok(None);
         }
 
-        let def = match registry.get(module_path) {
-            Some(def) => def,
-            None => return Ok(None),
+        let Some(def) = registry.get(module_path) else {
+            return Ok(None);
         };
 
         match def.kind {

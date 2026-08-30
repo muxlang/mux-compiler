@@ -210,7 +210,7 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Bind the variant's named payload fields as parameters and run its where
-    /// predicates. Binding boxes scalar payloads (mux_int_value, ...); those boxes
+    /// predicates. Binding boxes scalar payloads (`mux_int_value`, ...); those boxes
     /// are owned temporaries released once the check has run, or every constructed
     /// variant with a where clause leaks them.
     fn enforce_variant_where_clause(

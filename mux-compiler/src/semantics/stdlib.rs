@@ -13,7 +13,7 @@
 //! Contributing
 //! - Add new stdlib items by updating the appropriate table (`MATH_STDLIB_ITEMS`,
 //!   `IO_STDLIB_ITEMS`, or `STDLIB_ITEMS` for PHF-backed descriptors).
-//! - Prefer adding entries to the module-specific HashMaps rather than spreading
+//! - Prefer adding entries to the module-specific `HashMaps` rather than spreading
 //!   duplicates across the codebase — these are the single source of truth.
 //! - For class types (e.g., `net` / `sync`), update the corresponding `*_methods`
 //!   helper and the `*_module_class_symbols` function so the analyzer can import
@@ -74,7 +74,7 @@ pub enum ConstantValue {
 }
 
 /// Types of items in stdlib modules
-/// Owns its data to avoid Box::leak
+/// Owns its data to avoid `Box::leak`
 #[derive(Debug, Clone, PartialEq)]
 pub enum StdlibItem {
     Function {
@@ -1111,7 +1111,7 @@ pub fn lookup_stdlib_item(name: &str) -> Option<StdlibItem> {
         .or_else(|| SQL_STDLIB_ITEMS.get(name).cloned())
 }
 
-/// Convert a canonical `StdlibItem` into a `Symbol` suitable for registration in a SymbolTable.
+/// Convert a canonical `StdlibItem` into a `Symbol` suitable for registration in a `SymbolTable`.
 #[must_use]
 pub fn stdlib_item_to_symbol(item: &StdlibItem, span: Span) -> Symbol {
     match item {
