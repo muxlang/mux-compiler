@@ -974,28 +974,22 @@ impl<'a> Parser<'a> {
 
     // Parse module path with support for dots, relative (./, ../), and absolute (/)
     fn parse_module_path(&mut self) -> ParserResult<String> {
-        let mut parts = Vec::new();
+        let mut module_path = String::new();
 
         // Handle relative/absolute paths
         if self.matches(&[TokenType::Dot]) {
-            parts.push(".".to_string());
-            // Could be ./ or ../
-            if self.matches(&[TokenType::Slash]) {
-                // ./module
-                parts.push(String::new()); // Will join as ./
-            } else if self.matches(&[TokenType::Dot]) {
-                // ../module
-                parts.push(".".to_string());
-                self.consume_token(TokenType::Slash, "Expected '/' after '..'")?;
-                parts.push(String::new());
-            }
+            self.consume_token(TokenType::Slash, "Expected '/' after '.'")?;
+            module_path.push_str("./");
+        } else if self.matches(&[TokenType::DotDot]) {
+            self.consume_token(TokenType::Slash, "Expected '/' after '..'")?;
+            module_path.push_str("../");
         } else if self.matches(&[TokenType::Slash]) {
             // Absolute path /module
-            parts.push(String::new()); // Leading slash
+            module_path.push('/');
         }
 
         // Parse first identifier
-        parts.push(self.consume_identifier("Expected module path")?);
+        module_path.push_str(&self.consume_identifier("Expected module path")?);
 
         // Parse remaining dotted parts (utils.logger.helpers)
         // Stop if we see:
@@ -1021,10 +1015,11 @@ impl<'a> Parser<'a> {
             }
 
             self.advance(); // consume dot
-            parts.push(self.consume_identifier("Expected module name after '.'")?);
+            module_path.push('.');
+            module_path.push_str(&self.consume_identifier("Expected module name after '.'")?);
         }
 
-        Ok(parts.join("."))
+        Ok(module_path)
     }
 
     // Parse (item1, item2 as alias, item3)
@@ -3648,6 +3643,25 @@ mod tests {
             errors.last().map(|error| error.code),
             Some(DiagnosticCode::ParseErrorLimit)
         );
+    }
+
+    #[test]
+    fn module_path_fixture_preserves_relative_and_absolute_prefixes() {
+        for (source, expected_path) in [
+            ("import ./module\n", "./module"),
+            ("import ../module\n", "../module"),
+            ("import /module\n", "/module"),
+        ] {
+            let mut parser = create_parser(source);
+            let nodes = parser.parse().expect("module path fixture should parse");
+            let AstNode::Statement(statement) = &nodes[0] else {
+                panic!("module path fixture should produce an import statement");
+            };
+            let StatementKind::Import { module_path, .. } = &statement.kind else {
+                panic!("module path fixture should produce an import");
+            };
+            assert_eq!(module_path, expected_path, "source: {source}");
+        }
     }
 
     #[test]
