@@ -39,9 +39,9 @@ impl Spanned for AstNode {
     fn span(&self) -> &Span {
         match self {
             AstNode::Function(func) => &func.span,
-            AstNode::Class { span, .. } => span,
-            AstNode::Interface { span, .. } => span,
-            AstNode::Enum { span, .. } => span,
+            AstNode::Class { span, .. }
+            | AstNode::Interface { span, .. }
+            | AstNode::Enum { span, .. } => span,
             AstNode::Statement(stmt) => stmt.span(),
         }
     }
@@ -51,6 +51,7 @@ impl AstNode {
     // note, we only convert statement and function variants to statements.
     // class, interface, and enum are top-level declarations in the language
     // and cannot appear as statements, they must be handled separately.
+    #[must_use]
     pub fn into_statement(self) -> Option<StatementNode> {
         match self {
             AstNode::Statement(stmt) => Some(stmt),
