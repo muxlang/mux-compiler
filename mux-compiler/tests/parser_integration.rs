@@ -38,12 +38,18 @@ fn parser_snapshot_inventory_matches_fixtures() {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_scripts"));
     let snapshot_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
 
-    let fixtures: std::collections::BTreeSet<_> = fs::read_dir(&fixture_dir)
+    let fixture_stems: Vec<_> = fs::read_dir(&fixture_dir)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", fixture_dir.display()))
         .map(|entry| entry.expect("failed to read fixture entry").path())
         .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("mux"))
         .filter_map(|path| path.file_stem().map(|stem| stem.to_os_string()))
         .collect();
+    let fixtures: std::collections::BTreeSet<_> = fixture_stems.iter().cloned().collect();
+    assert_eq!(
+        fixture_stems.len(),
+        fixtures.len(),
+        "root fixtures must have unique stems so each fixture maps to one snapshot"
+    );
     let snapshots: std::collections::BTreeSet<_> = fs::read_dir(&snapshot_dir)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", snapshot_dir.display()))
         .map(|entry| entry.expect("failed to read snapshot entry").path())

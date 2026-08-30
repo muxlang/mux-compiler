@@ -8,17 +8,21 @@ Thanks for your interest! This guide explains how to contribute to Mux.
 
 1. Fork the repository.
 2. Clone your fork locally.
-3. Install Rust (edition 2024 required): `rustup install stable`
+3. Install the pinned Rust toolchain (edition 2024 required):
+   `rustup toolchain install 1.93.1`
 4. Run the bootstrap script to install LLVM 22 automatically:
 
    ```bash
    ./scripts/bootstrap-dev.sh
    ```
 
+   On Windows PowerShell, run `.\scripts\bootstrap-dev.ps1` instead.
+
    This script detects your OS and installs LLVM 22 and clang. It supports:
-   - Arch Linux (via yay)
+   - Arch Linux (via pacman)
    - Debian/Ubuntu (via apt)
    - macOS (via Homebrew)
+   - Windows (via Chocolatey)
 
 5. Build the compiler using the dev wrapper:
 
@@ -26,13 +30,16 @@ Thanks for your interest! This guide explains how to contribute to Mux.
    ./scripts/dev-cargo.sh build
    ```
 
-   The `dev-cargo.sh` script automatically sets the correct LLVM environment variables.
+   On Windows PowerShell, run `.\scripts\dev-cargo.ps1 build` instead. These
+   wrappers automatically set the correct LLVM environment variables.
 
 6. Run tests to make sure everything is working:
 
    ```bash
    ./scripts/run-checks.sh
    ```
+
+   On Windows PowerShell, run `.\scripts\dev-cargo.ps1 test` instead.
 
 7. Running Mux programs during development:
 

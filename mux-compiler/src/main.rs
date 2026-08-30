@@ -273,10 +273,49 @@ fn print_llvm_install_help() {
 /// single source of the archive filename, so runtime discovery and static-only
 /// classification cannot disagree.
 fn runtime_static_lib_path(dir: &Path) -> PathBuf {
-    if cfg!(target_family = "windows") {
+    let expected = if cfg!(target_family = "windows") {
         dir.join("mux_runtime.lib")
     } else {
         dir.join("libmux_runtime.a")
+    };
+    if expected.exists() {
+        return expected;
+    }
+
+    // A git dependency selected with `cargo build -p mux-runtime` is built as
+    // a dependency artifact, so Cargo puts its hash-suffixed archive under
+    // `target/<profile>/deps/` instead of beside the profile directory.
+    // Resolve that form too; otherwise source-checkout tests cannot link even
+    // immediately after the documented runtime build command.
+    let deps = dir.join("deps");
+    let prefix = if cfg!(target_family = "windows") {
+        "mux_runtime-"
+    } else {
+        "libmux_runtime-"
+    };
+    let candidates: Vec<PathBuf> = std::fs::read_dir(deps)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name| {
+                    path.is_file()
+                        && name.starts_with(prefix)
+                        && (name.ends_with(".a") || name.ends_with(".lib"))
+                })
+        })
+        .collect();
+    // Cargo can leave archives from previous builds in `deps/`, and directory
+    // iteration order is unspecified. If more than one hash is present, fail
+    // closed instead of guessing and potentially linking a stale runtime.
+    // `cargo clean` (or a fresh target directory) makes the intended artifact
+    // unambiguous; a uniquely matching archive is safe to use.
+    match candidates.as_slice() {
+        [candidate] => candidate.clone(),
+        _ => expected,
     }
 }
 
@@ -1639,9 +1678,12 @@ fn report_clang_output_or_exit(
 /// lock on a freshly written object, and a discarded error there means these
 /// accumulate in the temp directory with nothing ever saying so.
 #[cfg(not(unix))]
-fn remove_scratch_object(path: &str) {
+fn remove_scratch_object(path: &Path) {
     if let Err(e) = fs::remove_file(path) {
-        eprintln!("warning: could not remove the temporary object file {path}: {e}");
+        eprintln!(
+            "warning: could not remove the temporary object file {}: {e}",
+            path.display()
+        );
     }
 }
 
@@ -1676,7 +1718,7 @@ const LINKER_STDIN_OBJECT: &str = "/dev/stdin";
 /// child's stdin, so no name exists to race against. Windows has no equivalent:
 /// the linker must open the object by path, so the file keeps its name, the
 /// handle is closed before the link, and the caller removes it afterwards.
-fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
+fn create_scratch_object(stem: &str) -> Result<(PathBuf, fs::File), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -1724,10 +1766,10 @@ fn create_scratch_object(stem: &str) -> Result<(String, fs::File), String> {
                             e
                         ));
                     }
-                    return Ok((LINKER_STDIN_OBJECT.to_string(), file));
+                    return Ok((PathBuf::from(LINKER_STDIN_OBJECT), file));
                 }
                 #[cfg(not(unix))]
-                return Ok((candidate.to_string_lossy().into_owned(), file));
+                return Ok((candidate, file));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
@@ -1944,8 +1986,13 @@ fn native_runtime_deps(target_os: &str) -> &'static [&'static str] {
 /// three ideas - and inlining them pushed `main` past the cognitive-complexity
 /// budget. Keeping them together also means the whole link line can be read in
 /// one place.
-fn build_linker_args(object_file: &str, lib_path_str: &str, lib_dir: &Path) -> Vec<String> {
-    build_linker_args_for(env::consts::OS, object_file, lib_path_str, lib_dir)
+fn build_linker_args(object_file: &Path, lib_dir: &Path) -> Vec<std::ffi::OsString> {
+    build_linker_args_for(env::consts::OS, object_file, lib_dir)
+}
+
+fn append_linker_output(args: &mut Vec<std::ffi::OsString>, output: &Path) {
+    args.push("-o".into());
+    args.push(output.as_os_str().to_owned());
 }
 
 /// The link line for a given target OS.
@@ -1957,19 +2004,18 @@ fn build_linker_args(object_file: &str, lib_path_str: &str, lib_dir: &Path) -> V
 /// with nothing able to catch it.
 fn build_linker_args_for(
     target_os: &str,
-    object_file: &str,
-    lib_path_str: &str,
+    object_file: &Path,
     lib_dir: &Path,
-) -> Vec<String> {
+) -> Vec<std::ffi::OsString> {
     let windows = target_os == "windows";
     let macos = target_os == "macos";
 
     let mut linker_args = vec![
-        object_file.to_string(),
-        "-L".to_string(),
-        lib_path_str.to_string(),
-        "-ffunction-sections".to_string(),
-        "-fdata-sections".to_string(),
+        object_file.as_os_str().to_owned(),
+        "-L".into(),
+        lib_dir.as_os_str().to_owned(),
+        "-ffunction-sections".into(),
+        "-fdata-sections".into(),
     ];
 
     if windows {
@@ -1996,30 +2042,45 @@ fn build_linker_args_for(
         // `__imp_realloc`, because the `__imp_` form only exists in the import
         // library. So the driver's default has to be countermanded at link time
         // rather than influenced at compile time.
-        linker_args.push("-Wl,/NODEFAULTLIB:libcmt".to_string());
-        linker_args.push("-Wl,/NODEFAULTLIB:libucrt".to_string());
-        linker_args.push("-Wl,/DEFAULTLIB:msvcrt".to_string());
+        linker_args.push("-Wl,/NODEFAULTLIB:libcmt".into());
+        linker_args.push("-Wl,/NODEFAULTLIB:libucrt".into());
+        linker_args.push("-Wl,/DEFAULTLIB:msvcrt".into());
     } else {
         // rpath and the dtags flag are ELF concepts. MSVC's linker answers both
         // with "LNK4044: unrecognized option" and ignores them; Windows resolves
         // a DLL from the executable's own directory, which is where a packaged
         // install puts the runtime.
-        linker_args.push(format!("-Wl,-rpath,{}", lib_path_str));
+        let mut rpath = std::ffi::OsString::from("-Wl,-rpath,");
+        rpath.push(lib_dir.as_os_str());
+        linker_args.push(rpath);
         if !macos {
-            linker_args.push("-Wl,--disable-new-dtags".to_string());
+            linker_args.push("-Wl,--disable-new-dtags".into());
         }
 
         // Dead-stripping is spelled differently per linker, and MSVC's does it
         // by default at the optimisation levels that matter, so Windows passes
         // nothing rather than an option that would only be warned about.
         linker_args.push(if macos {
-            "-Wl,-dead_strip".to_string()
+            "-Wl,-dead_strip".into()
         } else {
-            "-Wl,--gc-sections".to_string()
+            "-Wl,--gc-sections".into()
         });
     }
 
-    linker_args.push("-lmux_runtime".to_string());
+    let runtime_static = runtime_static_lib_path(lib_dir);
+    let expected_static_name = if windows {
+        "mux_runtime.lib"
+    } else {
+        "libmux_runtime.a"
+    };
+    if runtime_static.exists()
+        && runtime_static.file_name().and_then(std::ffi::OsStr::to_str)
+            != Some(expected_static_name)
+    {
+        linker_args.push(runtime_static.into_os_string());
+    } else {
+        linker_args.push("-lmux_runtime".into());
+    }
 
     // A static runtime carries no record of its own dependencies, so its
     // undefined native symbols must be resolved explicitly - otherwise a program
@@ -2028,7 +2089,7 @@ fn build_linker_args_for(
     // references are satisfied by the libraries after it.
     if runtime_lib_dir_is_static_only(lib_dir) {
         for native_lib in native_runtime_deps(target_os) {
-            linker_args.push((*native_lib).to_string());
+            linker_args.push((*native_lib).into());
         }
     }
 
@@ -2081,10 +2142,6 @@ fn main() {
     // `process::exit` skips destructors - so anything created first would be
     // left behind. Failing before the expensive work is better regardless.
     let lib_dir = resolve_runtime_lib_dir_or_exit();
-    let lib_path_str = lib_dir
-        .to_str()
-        .expect("library path should be valid Unicode")
-        .to_string();
     let linker_cmd = find_linker_or_exit();
 
     let (object_file, mut object) = match create_scratch_object(&stem) {
@@ -2124,23 +2181,18 @@ fn main() {
             PathBuf::from("./").join(out_path)
         }
     } else {
-        let source_path = PathBuf::from(file_path.to_string_lossy().trim_end_matches(".mux"));
+        let source_path = file_path.with_extension("");
         let parent = source_path.parent().unwrap_or(Path::new("."));
-        let file_stem = source_path
-            .file_stem()
-            .expect("executable name should be valid Unicode");
-        parent.join(file_stem)
+        parent.join(
+            source_path
+                .file_stem()
+                .unwrap_or_else(|| source_path.as_os_str()),
+        )
     };
 
-    let mut linker_args = build_linker_args(&object_file, &lib_path_str, &lib_dir);
+    let mut linker_args = build_linker_args(&object_file, &lib_dir);
 
-    linker_args.push("-o".to_string());
-    linker_args.push(
-        exe_file
-            .to_str()
-            .expect("executable path should be valid Unicode")
-            .to_string(),
-    );
+    append_linker_output(&mut linker_args, &exe_file);
 
     let mut linker = Command::new(&linker_cmd);
     linker.args(&linker_args);
@@ -2181,17 +2233,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        REQUIRED_LLVM_MAJOR, build_linker_args, build_linker_args_for, clang_failure_detail,
-        clang_version_output, compiling_file, dir_holding_runtime_lib, extract_clang_major,
-        find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
-        llvm_config_candidates, materialize_span_edits, native_runtime_deps, pick_llvm_for_dev,
-        print_doctor_verdict, print_version_banner, relativize_to_cwd, report_clang_for_doctor,
-        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
-        status_marker, validate_llvm_for_doctor,
+        REQUIRED_LLVM_MAJOR, append_linker_output, build_linker_args, build_linker_args_for,
+        clang_failure_detail, clang_version_output, compiling_file, dir_holding_runtime_lib,
+        extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
+        internal_compiler_error_report, llvm_config_candidates, materialize_span_edits,
+        native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict, print_version_banner,
+        relativize_to_cwd, report_clang_for_doctor, report_runtime_for_doctor,
+        runtime_lib_dir_is_static_only, set_compiling_file, status_marker,
+        validate_llvm_for_doctor,
     };
     use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, SpanEdit};
     use crate::lexer::Span;
     use std::path::{Path, PathBuf};
+
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
 
     #[test]
     fn materializes_text_span_edits_against_the_current_source() {
@@ -2477,12 +2533,15 @@ mod tests {
     fn build_linker_args_links_the_object_and_the_runtime() {
         let dir = unique_tmp("linkargs_basic");
         std::fs::create_dir_all(&dir).unwrap();
-        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+        let args = build_linker_args(Path::new("scratch.o"), &dir);
 
-        assert_eq!(args.first().map(String::as_str), Some("scratch.o"));
+        assert_eq!(
+            args.first().map(|arg| arg.as_os_str()),
+            Some(Path::new("scratch.o").as_os_str())
+        );
         assert!(args.iter().any(|a| a == "-lmux_runtime"));
         let l_index = args.iter().position(|a| a == "-L").expect("-L present");
-        assert_eq!(args[l_index + 1], dir.to_str().unwrap());
+        assert_eq!(args[l_index + 1], dir.as_os_str());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2495,7 +2554,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(static_lib_name()), b"x").unwrap();
 
-        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
+        let args = build_linker_args(Path::new("scratch.o"), &dir);
         let runtime = args
             .iter()
             .position(|a| a == "-lmux_runtime")
@@ -2507,7 +2566,7 @@ mod tests {
         } else {
             let native = args
                 .iter()
-                .position(|a| a.starts_with("-l") && a != "-lmux_runtime")
+                .position(|a| a.to_string_lossy().starts_with("-l") && a != "-lmux_runtime")
                 .expect("native dependencies are linked for a static-only runtime");
             assert!(
                 native > runtime,
@@ -2526,10 +2585,10 @@ mod tests {
         std::fs::write(dir.join(static_lib_name()), b"x").unwrap();
         std::fs::write(dir.join(dynamic_lib_name()), b"x").unwrap();
 
-        let args = build_linker_args("scratch.o", dir.to_str().unwrap(), &dir);
-        let extra: Vec<&String> = args
+        let args = build_linker_args(Path::new("scratch.o"), &dir);
+        let extra: Vec<&std::ffi::OsString> = args
             .iter()
-            .filter(|a| a.starts_with("-l") && *a != "-lmux_runtime")
+            .filter(|a| a.to_string_lossy().starts_with("-l") && *a != "-lmux_runtime")
             .collect();
         assert!(extra.is_empty(), "expected no native deps, got {extra:?}");
         std::fs::remove_dir_all(&dir).ok();
@@ -2543,9 +2602,11 @@ mod tests {
     fn build_linker_args_uses_the_right_dialect_per_platform() {
         let dir = unique_tmp("linkargs_dialect");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.to_str().unwrap();
-
-        let windows = build_linker_args_for("windows", "scratch.o", path, &dir).join(" ");
+        let windows = build_linker_args_for("windows", Path::new("scratch.o"), &dir)
+            .iter()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
         // rpath and the ELF dtags flag draw LNK4044 from MSVC's linker.
         assert!(!windows.contains("-rpath"), "{windows}");
         assert!(!windows.contains("disable-new-dtags"), "{windows}");
@@ -2558,13 +2619,21 @@ mod tests {
         assert!(windows.contains("/DEFAULTLIB:msvcrt"), "{windows}");
         assert!(!windows.contains("-fms-runtime-lib"), "{windows}");
 
-        let macos = build_linker_args_for("macos", "scratch.o", path, &dir).join(" ");
+        let macos = build_linker_args_for("macos", Path::new("scratch.o"), &dir)
+            .iter()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(macos.contains("-dead_strip"), "{macos}");
         assert!(!macos.contains("gc-sections"), "{macos}");
         assert!(!macos.contains("disable-new-dtags"), "{macos}");
         assert!(!macos.contains("NODEFAULTLIB"), "{macos}");
 
-        let linux = build_linker_args_for("linux", "scratch.o", path, &dir).join(" ");
+        let linux = build_linker_args_for("linux", Path::new("scratch.o"), &dir)
+            .iter()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(linux.contains("--gc-sections"), "{linux}");
         assert!(linux.contains("disable-new-dtags"), "{linux}");
         assert!(linux.contains("-rpath"), "{linux}");
@@ -2602,6 +2671,63 @@ mod tests {
             assert_eq!(find_runtime_lib_in_dir(&dyn_dir), Some(dyn_path));
         }
         std::fs::remove_dir_all(&dyn_dir).ok();
+
+        // A dependency build puts hash-suffixed artifacts in target/.../deps.
+        let hashed_dir = unique_tmp("rtlib_hashed");
+        let deps_dir = hashed_dir.join("deps");
+        std::fs::create_dir_all(&deps_dir).unwrap();
+        let hashed_path = deps_dir.join("libmux_runtime-0123456789abcdef.a");
+        std::fs::write(&hashed_path, b"x").unwrap();
+        assert_eq!(find_runtime_lib_in_dir(&hashed_dir), Some(hashed_path));
+        let args = build_linker_args(Path::new("scratch.o"), &hashed_dir);
+        assert!(args.iter().any(|arg| {
+            arg.to_string_lossy()
+                .ends_with("libmux_runtime-0123456789abcdef.a")
+        }));
+        std::fs::remove_dir_all(&hashed_dir).ok();
+    }
+
+    #[test]
+    fn hashed_runtime_resolution_fails_closed_on_ambiguous_archives() {
+        let dir = unique_tmp("rtlib_hashed_ambiguous");
+        let deps = dir.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let stale = deps.join("libmux_runtime-stale.a");
+        let current = deps.join("libmux_runtime-current.a");
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::write(&current, b"current").unwrap();
+
+        assert!(find_runtime_lib_in_dir(&dir).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linker_args_handle_non_utf8_runtime_paths_without_panicking() {
+        let root = unique_tmp("rtlib_non_utf8");
+        let dir = root.join(std::ffi::OsString::from_vec(vec![b'r', 0x80]));
+        let deps = dir.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::write(deps.join("libmux_runtime-nonutf8.a"), b"x").unwrap();
+
+        let args = build_linker_args_for("linux", Path::new("scratch.o"), &dir);
+        let rpath = args
+            .iter()
+            .find(|arg| arg.to_string_lossy().starts_with("-Wl,-rpath,"))
+            .expect("rpath argument");
+        assert!(std::os::unix::ffi::OsStrExt::as_bytes(rpath.as_os_str()).contains(&0x80));
+        let library = args
+            .iter()
+            .find(|arg| arg.to_string_lossy().ends_with("libmux_runtime-nonutf8.a"))
+            .expect("runtime archive argument");
+        assert!(std::os::unix::ffi::OsStrExt::as_bytes(library.as_os_str()).contains(&0x80));
+
+        let output = dir.join(std::ffi::OsString::from_vec(vec![b'o', 0x80]));
+        let mut output_args = Vec::new();
+        append_linker_output(&mut output_args, &output);
+        assert_eq!(output_args[0], "-o");
+        assert!(std::os::unix::ffi::OsStrExt::as_bytes(output_args[1].as_os_str()).contains(&0x80));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A packaged Windows install keeps the DLL beside the executable so the
