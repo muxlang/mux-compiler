@@ -31,6 +31,7 @@ impl Files {
         }
     }
 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             files: Vec::new(),
@@ -64,16 +65,19 @@ impl Files {
     }
 
     /// Return the source text registered for a file.
+    #[must_use]
     pub fn source(&self, id: FileId) -> Option<&str> {
         self.get(id).map(|file| file.source.as_str())
     }
 
     /// Return the displayed path registered for a file.
+    #[must_use]
     pub fn path(&self, id: FileId) -> Option<&Path> {
         self.get(id).map(|file| file.path.as_path())
     }
 
     /// Return the ID for a path already registered in this collection.
+    #[must_use]
     pub fn id_for_path(&self, path: impl AsRef<Path>) -> Option<FileId> {
         self.path_to_id
             .get(&Self::normalized_path(path.as_ref()))
@@ -81,6 +85,7 @@ impl Files {
     }
 
     /// Iterate over all registered files in stable registration order.
+    #[must_use = "consume the iterator to inspect the registered files"]
     pub fn iter(&self) -> impl Iterator<Item = (FileId, &Path, &str)> {
         self.files
             .iter()
