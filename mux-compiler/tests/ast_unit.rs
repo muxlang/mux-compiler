@@ -64,17 +64,17 @@ fn primitive_type_parse_all_keywords() {
     ];
     for (text, expected) in cases {
         let tok = Token::new(TokenType::Id(text.to_string()), span());
-        assert_eq!(PrimitiveType::parse(tok), Ok(expected));
+        assert_eq!(PrimitiveType::parse(&tok), Ok(expected));
     }
 }
 
 #[test]
 fn primitive_type_parse_rejects_unknown_and_non_identifier() {
     let unknown = Token::new(TokenType::Id("widget".to_string()), span());
-    assert!(PrimitiveType::parse(unknown).is_err());
+    assert!(PrimitiveType::parse(&unknown).is_err());
 
     let non_id = Token::new(TokenType::Plus, span());
-    assert!(PrimitiveType::parse(non_id).is_err());
+    assert!(PrimitiveType::parse(&non_id).is_err());
 }
 
 #[test]
@@ -131,11 +131,11 @@ fn unary_op_parse_all_and_error() {
     ];
     for (tt, expected) in cases {
         let tok = Token::new(tt, span());
-        assert_eq!(UnaryOp::parse(tok), Ok(expected));
+        assert_eq!(UnaryOp::parse(&tok), Ok(expected));
     }
 
     let bad = Token::new(TokenType::Plus, span());
-    assert!(UnaryOp::parse(bad).is_err());
+    assert!(UnaryOp::parse(&bad).is_err());
 }
 
 #[test]

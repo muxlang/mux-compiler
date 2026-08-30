@@ -62,8 +62,13 @@ pub enum PrimitiveType {
 }
 
 impl PrimitiveType {
-    pub fn parse(token: Token) -> Result<PrimitiveType, ParseError> {
-        match token.token_type {
+    /// Parses a built-in primitive type token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `token` is not a recognized primitive type.
+    pub fn parse(token: &Token) -> Result<PrimitiveType, ParseError> {
+        match &token.token_type {
             TokenType::Id(value) => match value.as_str() {
                 "int" => Ok(PrimitiveType::Int),
                 "float" => Ok(PrimitiveType::Float),
@@ -73,7 +78,7 @@ impl PrimitiveType {
                 "void" => Ok(PrimitiveType::Void),
                 "auto" => Ok(PrimitiveType::Auto),
                 _ => Err(ParseError::new(
-                    format!("Unknown primitive type: {}", value),
+                    format!("Unknown primitive type: {value}"),
                     token.span,
                 )),
             },

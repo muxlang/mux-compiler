@@ -2025,7 +2025,7 @@ impl<'a> Parser<'a> {
         }
 
         if let Ok(prim_type) =
-            PrimitiveType::parse(Token::new(TokenType::Id(name.clone()), start_span))
+            PrimitiveType::parse(&Token::new(TokenType::Id(name.clone()), start_span))
         {
             return Ok(TypeNode {
                 kind: TypeKind::Primitive(prim_type),
@@ -2403,7 +2403,7 @@ impl<'a> Parser<'a> {
             let expr_span = *expr.span();
             Ok(ExpressionNode {
                 kind: ExpressionKind::Unary {
-                    op: UnaryOp::parse(op_token.clone())?,
+                    op: UnaryOp::parse(&op_token)?,
                     op_span: op_token.span,
                     expr: Box::new(expr),
                     postfix: false,

@@ -19,6 +19,7 @@ pub enum Precedence {
 }
 
 impl Precedence {
+    #[must_use]
     pub fn next_higher(self) -> Self {
         match self {
             Precedence::Assignment => Precedence::Or,
@@ -30,15 +31,14 @@ impl Precedence {
             Precedence::Factor => Precedence::Exponent,
             Precedence::Exponent => Precedence::Unary,
             Precedence::Unary => Precedence::Call,
-            Precedence::Call => Precedence::Primary,
-            Precedence::Primary => Precedence::Primary,
+            Precedence::Call | Precedence::Primary => Precedence::Primary,
         }
     }
 }
 
 impl fmt::Display for Precedence {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -72,6 +72,7 @@ pub enum BinaryOp {
 }
 
 impl BinaryOp {
+    #[must_use]
     pub fn is_assignment(&self) -> bool {
         matches!(
             self,
@@ -84,6 +85,7 @@ impl BinaryOp {
         )
     }
 
+    #[must_use]
     pub fn is_right_associative(&self) -> bool {
         matches!(self, BinaryOp::Exponent) || self.is_assignment()
     }
@@ -100,8 +102,13 @@ pub enum UnaryOp {
 }
 
 impl UnaryOp {
-    pub fn parse(token: Token) -> Result<UnaryOp, ParseError> {
-        match token.token_type {
+    /// Parses a unary operator token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `token` is not a unary operator.
+    pub fn parse(token: &Token) -> Result<UnaryOp, ParseError> {
+        match &token.token_type {
             TokenType::Minus => Ok(UnaryOp::Neg),
             TokenType::Bang => Ok(UnaryOp::Not),
             TokenType::Ref => Ok(UnaryOp::Ref),
