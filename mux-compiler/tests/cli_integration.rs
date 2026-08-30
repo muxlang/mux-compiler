@@ -475,7 +475,7 @@ fn repeated_builds_emit_identical_ir() {
     write_file(
         &dir,
         "det_alpha.mux",
-        r#"
+        r"
 func alpha_one(int n) returns int {
     return n + 1
 }
@@ -483,12 +483,12 @@ func alpha_one(int n) returns int {
 func alpha_two(int n) returns int {
     return n + 2
 }
-"#,
+",
     );
     write_file(
         &dir,
         "det_beta.mux",
-        r#"
+        r"
 func beta_one(int n) returns int {
     return n * 2
 }
@@ -496,7 +496,7 @@ func beta_one(int n) returns int {
 func beta_two(int n) returns int {
     return n * 3
 }
-"#,
+",
     );
     let src = write_file(
         &dir,

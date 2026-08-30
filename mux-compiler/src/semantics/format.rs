@@ -2,6 +2,7 @@ use crate::ast::{BinaryOp, PrimitiveType};
 use crate::lexer::Span;
 use crate::semantics::types::Type;
 
+#[must_use]
 pub fn format_span_location(span: &Span) -> String {
     format!("{}:{}", span.row_start, span.col_start)
 }
@@ -65,6 +66,7 @@ fn format_primitive_type(p: &PrimitiveType) -> String {
     }
 }
 
+#[must_use]
 pub fn format_binary_op(op: &BinaryOp) -> String {
     match op {
         BinaryOp::Add => "+".to_string(),

@@ -187,9 +187,9 @@ impl SemanticAnalyzer {
         }
         Some(SemanticError::with_help(
             DiagnosticCode::InvalidOperation,
-            format!("Cannot declare {} named '{}'", kind, name),
+            format!("Cannot declare {kind} named '{name}'"),
             *span,
-            format!("'{}' is a built-in type. Choose another name.", name),
+            format!("'{name}' is a built-in type. Choose another name."),
         ))
     }
 
@@ -333,14 +333,10 @@ impl SemanticAnalyzer {
         }
         Some(SemanticError::with_help(
             DiagnosticCode::TypeMismatch,
-            format!(
-                "Generic class '{}' cannot implement '{}'",
-                class_name, interface
-            ),
+            format!("Generic class '{class_name}' cannot implement '{interface}'"),
             span,
             format!(
-                "'{}' is registered with the runtime per class, and a generic class shares one                  registration across every instantiation. Drop the type parameter, or compare                  through a method you call directly.",
-                interface
+                "'{interface}' is registered with the runtime per class, and a generic class shares one                  registration across every instantiation. Drop the type parameter, or compare                  through a method you call directly."
             ),
         ))
     }
@@ -556,11 +552,10 @@ impl SemanticAnalyzer {
                 self.errors.push(SemanticError::with_help(
                 DiagnosticCode::UnknownMember,
                     format!(
-                        "Class '{}' does not implement method '{}' required by interface '{}'",
-                        class_name, method_name, interface_name
+                        "Class '{class_name}' does not implement method '{method_name}' required by interface '{interface_name}'"
                     ),
                     span,
-                    format!("Add a method '{}' to class '{}' with the signature required by interface '{}'", method_name, class_name, interface_name),
+                    format!("Add a method '{method_name}' to class '{class_name}' with the signature required by interface '{interface_name}'"),
                 ));
             }
         }
@@ -597,8 +592,7 @@ impl SemanticAnalyzer {
                     self.errors.push(SemanticError::with_help(
                         DiagnosticCode::UnknownMember,
                         format!(
-                            "Class '{}' is missing required field '{}' from interface '{}'",
-                            class_name, field_name, interface_name
+                            "Class '{class_name}' is missing required field '{field_name}' from interface '{interface_name}'"
                         ),
                         span,
                         format!(
@@ -652,13 +646,11 @@ impl SemanticAnalyzer {
             self.errors.push(SemanticError::with_help(
                 DiagnosticCode::UnknownMember,
                 format!(
-                    "Field '{}' must be const in class '{}' to implement interface '{}'",
-                    field_name, class_name, interface_name
+                    "Field '{field_name}' must be const in class '{class_name}' to implement interface '{interface_name}'"
                 ),
                 span,
                 format!(
-                    "Add the 'const' modifier to field '{}' in class '{}'",
-                    field_name, class_name
+                    "Add the 'const' modifier to field '{field_name}' in class '{class_name}'"
                 ),
             ));
         }
@@ -751,8 +743,7 @@ impl SemanticAnalyzer {
             self.errors.push(SemanticError::with_help(
                 DiagnosticCode::InvalidTypeArguments,
                 format!(
-                    "Enum '{}' contains itself with different type arguments",
-                    enum_name
+                    "Enum '{enum_name}' contains itself with different type arguments"
                 ),
                 type_node.span,
                 format!(

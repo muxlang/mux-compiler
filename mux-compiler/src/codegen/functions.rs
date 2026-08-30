@@ -86,8 +86,7 @@ impl<'a> CodeGenerator<'a> {
             .analyzer
             .symbol_table()
             .lookup(type_name)
-            .map(|s| s.kind == crate::semantics::SymbolKind::Enum)
-            .unwrap_or(false))
+            .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum))
     }
 
     fn store_enum_parameter(
@@ -145,7 +144,7 @@ impl<'a> CodeGenerator<'a> {
             let function = self
                 .builder
                 .get_insert_block()
-                .and_then(|block| block.get_parent())
+                .and_then(inkwell::basic_block::BasicBlock::get_parent)
                 .ok_or("parameter setup needs an enclosing function")?;
             let cell = self.create_entry_block_cell(function, param_name)?;
             self.track_cell_variable(param_name, cell);
@@ -255,7 +254,10 @@ impl<'a> CodeGenerator<'a> {
         let mut param_types: Vec<BasicMetadataTypeEnum> = func
             .params
             .iter()
-            .map(|p| self.llvm_type_from_mux_type(&p.type_).map(|t| t.into()))
+            .map(|p| {
+                self.llvm_type_from_mux_type(&p.type_)
+                    .map(std::convert::Into::into)
+            })
             .collect::<Result<_, _>>()?;
 
         let is_class_method = func.name.contains('.');
@@ -357,7 +359,7 @@ impl<'a> CodeGenerator<'a> {
         if self
             .builder
             .get_insert_block()
-            .and_then(|bb| bb.get_terminator())
+            .and_then(inkwell::basic_block::BasicBlock::get_terminator)
             .is_none()
         {
             self.generate_all_scopes_cleanup()?;
@@ -464,7 +466,7 @@ impl<'a> CodeGenerator<'a> {
                     .iter()
                     .filter_map(move |(name, (alloca, llvm_type, ty))| {
                         let label = match module {
-                            Some(module) => format!("{}_{}", module, name),
+                            Some(module) => format!("{module}_{name}"),
                             None => name.clone(),
                         };
                         // Inline custom-enum globals are value-semantic structs,

@@ -85,10 +85,10 @@ impl<'a> CodeGenerator<'a> {
         variant: &EnumVariant,
     ) -> Result<(), String> {
         let variant_name = &variant.name;
-        let full_name = format!("{}!{}", name, variant_name);
+        let full_name = format!("{name}!{variant_name}");
 
         // params: variant.data (extract types, discard field names for codegen)
-        let field_count = variant.data.as_ref().map(|d| d.len()).unwrap_or(0);
+        let field_count = variant.data.as_ref().map_or(0, std::vec::Vec::len);
         let mut param_types = vec![];
         if let Some(ref d) = variant.data {
             for (_, t) in d {
@@ -142,7 +142,7 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| e.to_string())?;
 
         self.constructors
-            .insert(format!("{}.{}", name, variant_name), function);
+            .insert(format!("{name}.{variant_name}"), function);
         Ok(())
     }
 
@@ -244,7 +244,7 @@ impl<'a> CodeGenerator<'a> {
     /// registration is guarded by the class's shared `type_id` slot, so the rest
     /// were dead constants in the module.
     fn class_type_name_global(&mut self, class_name: &str) -> Result<PointerValue<'a>, String> {
-        let global_name = format!("type_name_{}", class_name);
+        let global_name = format!("type_name_{class_name}");
         if let Some(existing) = self.module.get_global(&global_name) {
             return Ok(existing.as_pointer_value());
         }
@@ -271,7 +271,7 @@ impl<'a> CodeGenerator<'a> {
         type_size: IntValue<'a>,
     ) -> Result<IntValue<'a>, String> {
         let i32_type = self.context.i32_type();
-        let slot_name = format!("{}.type_id", name);
+        let slot_name = format!("{name}.type_id");
         let slot = match self.module.get_global(&slot_name) {
             Some(existing) => existing,
             None => {
@@ -285,7 +285,7 @@ impl<'a> CodeGenerator<'a> {
         let function = self
             .builder
             .get_insert_block()
-            .and_then(|block| block.get_parent())
+            .and_then(inkwell::basic_block::BasicBlock::get_parent)
             .ok_or("register_class_type needs an enclosing function")?;
         let register_block = self.context.append_basic_block(function, "register_type");
         let registered_block = self.context.append_basic_block(function, "type_registered");
@@ -388,7 +388,7 @@ impl<'a> CodeGenerator<'a> {
             // implemented, so its presence is the gate for the two wrappers.
             let func = if let Some(base) = method.strip_suffix("_glue") {
                 match self.class_capability_method(name, base) {
-                    Some(_) => self.module.get_function(&format!("{}.{}", name, method)),
+                    Some(_) => self.module.get_function(&format!("{name}.{method}")),
                     None => None,
                 }
             } else {
@@ -399,7 +399,7 @@ impl<'a> CodeGenerator<'a> {
             };
             let register_func = self
                 .runtime_function(register)
-                .ok_or_else(|| format!("{} not found", register))?;
+                .ok_or_else(|| format!("{register} not found"))?;
             self.builder
                 .build_call(
                     register_func,
@@ -453,7 +453,7 @@ impl<'a> CodeGenerator<'a> {
         fields: &[Field],
         interfaces: &HashMap<String, (Vec<Type>, HashMap<String, MethodSig>)>,
     ) -> Result<(), String> {
-        let full_name = format!("{}.new", name);
+        let full_name = format!("{name}.new");
 
         // Constructor takes no parameters - fields are initialized separately
         let param_types = vec![];
@@ -520,21 +520,18 @@ impl<'a> CodeGenerator<'a> {
         // fields rather than erroring, since the vtable field is never read
         // for dispatch (interfaces use static dispatch).
         for interface_name in interfaces.keys() {
-            let vtable_key = format!("{}_{}", name, interface_name);
+            let vtable_key = format!("{name}_{interface_name}");
             let Some(vtable_ptr) = self.vtable_map.get(&vtable_key) else {
                 continue;
             };
-            let vtable_field_name = format!("vtable_{}", interface_name);
+            let vtable_field_name = format!("vtable_{interface_name}");
             let field_index = self
                 .field_map
                 .get(name)
-                .ok_or_else(|| format!("Field map not found for class {}", name))?
+                .ok_or_else(|| format!("Field map not found for class {name}"))?
                 .get(&vtable_field_name)
                 .ok_or_else(|| {
-                    format!(
-                        "Vtable field {} not found in class {}",
-                        vtable_field_name, name
-                    )
+                    format!("Vtable field {vtable_field_name} not found in class {name}")
                 })?;
             let field_ptr = self
                 .builder
@@ -556,7 +553,7 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| e.to_string())?;
 
         // store in constructors
-        self.constructors.insert(format!("{}.new", name), function);
+        self.constructors.insert(format!("{name}.new"), function);
         Ok(())
     }
 
@@ -700,7 +697,7 @@ impl<'a> CodeGenerator<'a> {
                         .map_err(|e| e.to_string())?;
                 }
             }
-            _ => return Err(format!("Unsupported field type: {:?}", resolved_type)),
+            _ => return Err(format!("Unsupported field type: {resolved_type:?}")),
         }
         Ok(())
     }
@@ -882,14 +879,14 @@ impl<'a> CodeGenerator<'a> {
         method_name: &str,
     ) -> String {
         if type_args.is_empty() {
-            format!("{}.{}", class_name, method_name)
+            format!("{class_name}.{method_name}")
         } else {
             let args_str = type_args
                 .iter()
                 .map(|t| self.sanitize_type_name(t))
                 .collect::<Vec<_>>()
                 .join("$");
-            format!("{}${}.{}", class_name, args_str, method_name)
+            format!("{class_name}${args_str}.{method_name}")
         }
     }
 
@@ -902,7 +899,7 @@ impl<'a> CodeGenerator<'a> {
         let class_type = *self
             .type_map
             .get(class_name)
-            .ok_or(format!("Class '{}' not found in type map", class_name))?;
+            .ok_or(format!("Class '{class_name}' not found in type map"))?;
 
         // register the object type if not already registered
         let type_name_global = self.class_type_name_global(class_name)?;
@@ -921,7 +918,7 @@ impl<'a> CodeGenerator<'a> {
                 let field_index = *self
                     .field_map
                     .get(class_name)
-                    .ok_or_else(|| format!("Field map not found for class {}", class_name))?
+                    .ok_or_else(|| format!("Field map not found for class {class_name}"))?
                     .get(&field.name)
                     .ok_or_else(|| {
                         format!("Field {} not found in class {}", field.name, class_name)
@@ -953,21 +950,18 @@ impl<'a> CodeGenerator<'a> {
             .map(|sym| sym.interfaces.clone())
             .unwrap_or_default();
         for interface_name in interfaces.keys() {
-            let vtable_key = format!("{}_{}", class_name, interface_name);
+            let vtable_key = format!("{class_name}_{interface_name}");
             let Some(vtable_ptr) = self.vtable_map.get(&vtable_key).copied() else {
                 continue;
             };
-            let vtable_field_name = format!("vtable_{}", interface_name);
+            let vtable_field_name = format!("vtable_{interface_name}");
             let field_index = *self
                 .field_map
                 .get(class_name)
-                .ok_or_else(|| format!("Field map not found for class {}", class_name))?
+                .ok_or_else(|| format!("Field map not found for class {class_name}"))?
                 .get(&vtable_field_name)
                 .ok_or_else(|| {
-                    format!(
-                        "Vtable field {} not found in class {}",
-                        vtable_field_name, class_name
-                    )
+                    format!("Vtable field {vtable_field_name} not found in class {class_name}")
                 })?;
             let field_ptr = self
                 .builder
@@ -1020,16 +1014,16 @@ impl<'a> CodeGenerator<'a> {
             if type_args.is_empty()
                 && let Some(current_fn) = &self.current_function_name
                 && let Some((current_class_part, _)) = current_fn.split_once('.')
-                && current_class_part.starts_with(&format!("{}$", class_name))
+                && current_class_part.starts_with(&format!("{class_name}$"))
             {
-                let contextual_name = format!("{}.{}", current_class_part, method_name);
+                let contextual_name = format!("{current_class_part}.{method_name}");
                 if self.functions.contains_key(&contextual_name) {
                     method_func_name = contextual_name;
                 } else {
-                    method_func_name = format!("{}.{}", class_name, method_name);
+                    method_func_name = format!("{class_name}.{method_name}");
                 }
             } else {
-                method_func_name = format!("{}.{}", class_name, method_name);
+                method_func_name = format!("{class_name}.{method_name}");
             }
         }
         Ok(method_func_name)
@@ -1044,10 +1038,7 @@ impl<'a> CodeGenerator<'a> {
             && let Some(method) = class.methods.get(method_name)
             && method.is_static
         {
-            return Err(format!(
-                "Cannot call static method {} with self",
-                method_name
-            ));
+            return Err(format!("Cannot call static method {method_name} with self"));
         }
         Ok(())
     }
@@ -1095,7 +1086,7 @@ impl<'a> CodeGenerator<'a> {
         let func_val = *self
             .functions
             .get(&method_func_name)
-            .ok_or(format!("Method {} not found", method_func_name))?;
+            .ok_or(format!("Method {method_func_name} not found"))?;
 
         let is_specialized = method_func_name.contains('$');
         let call_args = self.build_call_arguments_for_method(self_ptr, args, is_specialized)?;
@@ -1103,7 +1094,7 @@ impl<'a> CodeGenerator<'a> {
         // call the method
         let call = self
             .builder
-            .build_call(func_val, &call_args, &format!("call_{}", method_name))
+            .build_call(func_val, &call_args, &format!("call_{method_name}"))
             .map_err(|e| e.to_string())?;
 
         if let Some(value) = call.try_as_basic_value().basic() {

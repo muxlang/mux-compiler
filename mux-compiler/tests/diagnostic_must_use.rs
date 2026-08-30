@@ -14,7 +14,7 @@ fn main() {
 }
 "#;
 
-const NEW_PROBE: &str = r#"
+const NEW_PROBE: &str = r"
 #![deny(unused_must_use)]
 
 use mux_lang::diagnostic::{Diagnostic, DiagnosticCode};
@@ -22,7 +22,7 @@ use mux_lang::diagnostic::{Diagnostic, DiagnosticCode};
 fn main() {
     Diagnostic::new(DiagnosticCode::InternalCompiler);
 }
-"#;
+";
 
 const BUILDER_PROBE: &str = r#"
 #![deny(unused_must_use)]

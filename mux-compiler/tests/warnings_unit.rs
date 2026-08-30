@@ -27,14 +27,14 @@ fn analyze(source_text: &str) -> Vec<(DiagnosticCode, String)> {
 #[test]
 fn reports_unused_bindings_and_parameters() {
     let diagnostics = analyze(
-        r#"
+        r"
 func main(int unused_parameter) returns void {
     auto unused_local = 1
     auto used = 2
     print(used.to_string())
     return
 }
-"#,
+",
     );
 
     assert_eq!(
@@ -49,7 +49,7 @@ func main(int unused_parameter) returns void {
 #[test]
 fn reports_shadowing_and_dead_assignment() {
     let diagnostics = analyze(
-        r#"
+        r"
 func main() returns void {
     auto value = 1
     value = 2
@@ -61,7 +61,7 @@ func main() returns void {
     print(value.to_string())
     return
 }
-"#,
+",
     );
 
     assert!(
@@ -79,12 +79,12 @@ func main() returns void {
 #[test]
 fn bare_underscore_is_not_reported() {
     let diagnostics = analyze(
-        r#"
+        r"
 func main() returns void {
     auto _ = 1
     return
 }
-"#,
+",
     );
     assert!(
         !diagnostics

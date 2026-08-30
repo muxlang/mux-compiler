@@ -65,7 +65,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let func = self
             .runtime_function(func_name)
-            .ok_or(format!("Function '{}' not found", func_name))?;
+            .ok_or(format!("Function '{func_name}' not found"))?;
         let call = self
             .builder
             .build_call(
@@ -76,7 +76,7 @@ impl<'a> CodeGenerator<'a> {
             .map_err(|e| e.to_string())?;
         call.try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} should return a basic value", func_name))
+            .ok_or_else(|| format!("{func_name} should return a basic value"))
     }
 
     fn call_runtime_to_string(
@@ -86,7 +86,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let to_cstr = self
             .runtime_function(func_name)
-            .ok_or(format!("{} not found", func_name))?;
+            .ok_or(format!("{func_name} not found"))?;
         let call = self
             .builder
             .build_call(to_cstr, &[value.into()], "to_cstr")
@@ -94,7 +94,7 @@ impl<'a> CodeGenerator<'a> {
         let cstr = call
             .try_as_basic_value()
             .basic()
-            .ok_or(format!("{} should return a basic value", func_name))?;
+            .ok_or(format!("{func_name} should return a basic value"))?;
         self.call_cstr_to_mux_string(cstr)
     }
 
@@ -135,20 +135,20 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let getter = self
             .runtime_function(getter_func)
-            .ok_or(format!("{} not found", getter_func))?;
+            .ok_or(format!("{getter_func} not found"))?;
         let raw = self
             .builder
             .build_call(getter, &[obj_value.into()], extract_name)
             .map_err(|e| e.to_string())?;
         raw.try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} should return a basic value", getter_func))
+            .ok_or_else(|| format!("{getter_func} should return a basic value"))
     }
 
     fn free_raw_pointer(&self, raw_ptr: BasicValueEnum<'a>, free_func: &str) -> Result<(), String> {
         let free_fn = self
             .runtime_function(free_func)
-            .ok_or(format!("{} not found", free_func))?;
+            .ok_or(format!("{free_func} not found"))?;
         self.builder
             .build_call(free_fn, &[raw_ptr.into()], "free_raw")
             .map_err(|e| e.to_string())?;
@@ -256,7 +256,7 @@ impl<'a> CodeGenerator<'a> {
             .expect("mux_value_to_string should return a basic value");
         let func = self
             .runtime_function(conversion_func)
-            .ok_or(format!("{} not found", conversion_func))?;
+            .ok_or(format!("{conversion_func} not found"))?;
         let call = self
             .builder
             .build_call(func, &[cstr.into()], "str_conv")
@@ -264,7 +264,7 @@ impl<'a> CodeGenerator<'a> {
         let result = call
             .try_as_basic_value()
             .basic()
-            .unwrap_or_else(|| panic!("{} should return a basic value", conversion_func));
+            .unwrap_or_else(|| panic!("{conversion_func} should return a basic value"));
         // `mux_value_to_string` returned an owned C string that the conversion
         // only borrows; free it so string `.length()`/`.to_int()` etc. do not leak.
         let free_fn = self
@@ -283,7 +283,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let func = self
             .runtime_function(func_name)
-            .ok_or(format!("{} not found", func_name))?;
+            .ok_or(format!("{func_name} not found"))?;
         let call = self
             .builder
             .build_call(func, &[obj_value.into()], "predicate_call")
@@ -291,7 +291,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(call
             .try_as_basic_value()
             .basic()
-            .unwrap_or_else(|| panic!("{} should return a basic value", func_name)))
+            .unwrap_or_else(|| panic!("{func_name} should return a basic value")))
     }
 
     // Validate argument counts for methods
@@ -303,8 +303,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         if args.len() != expected {
             Err(format!(
-                "{}() method takes exactly {} argument(s)",
-                method, expected
+                "{method}() method takes exactly {expected} argument(s)"
             ))
         } else {
             Ok(())
@@ -313,7 +312,7 @@ impl<'a> CodeGenerator<'a> {
 
     fn ensure_no_args(&self, method: &str, args: &[ExpressionNode]) -> Result<(), String> {
         if !args.is_empty() {
-            Err(format!("{}() method takes no arguments", method))
+            Err(format!("{method}() method takes no arguments"))
         } else {
             Ok(())
         }
@@ -334,17 +333,16 @@ impl<'a> CodeGenerator<'a> {
             .analyzer
             .symbol_table()
             .lookup(class_name)
-            .ok_or_else(|| format!("Class {} not found", class_name))?;
+            .ok_or_else(|| format!("Class {class_name} not found"))?;
 
         let method = class
             .methods
             .get(method_name)
-            .ok_or_else(|| format!("Method {} not found on class {}", method_name, class_name))?;
+            .ok_or_else(|| format!("Method {method_name} not found on class {class_name}"))?;
 
         if method.is_static {
             return Err(format!(
-                "Cannot call static method {} on instance",
-                method_name
+                "Cannot call static method {method_name} on instance"
             ));
         }
 
@@ -356,7 +354,7 @@ impl<'a> CodeGenerator<'a> {
         let func = self
             .module
             .get_function(&method_func_name)
-            .ok_or_else(|| format!("Method '{}' not found", method_func_name))?;
+            .ok_or_else(|| format!("Method '{method_func_name}' not found"))?;
 
         let call = self
             .builder
@@ -379,9 +377,9 @@ impl<'a> CodeGenerator<'a> {
         if type_args.is_empty()
             && let Some(current_fn) = &self.current_function_name
             && let Some((current_class_part, _)) = current_fn.split_once('.')
-            && current_class_part.starts_with(&format!("{}$", class_name))
+            && current_class_part.starts_with(&format!("{class_name}$"))
         {
-            let contextual_name = format!("{}.{}", current_class_part, method_name);
+            let contextual_name = format!("{current_class_part}.{method_name}");
             if self.module.get_function(&contextual_name).is_some() {
                 return Ok(contextual_name);
             }
@@ -404,7 +402,7 @@ impl<'a> CodeGenerator<'a> {
         if self.module.get_function(&specialized_method_name).is_some() {
             Ok(specialized_method_name)
         } else {
-            Ok(format!("{}.{}", class_name, method_name))
+            Ok(format!("{class_name}.{method_name}"))
         }
     }
 
@@ -449,7 +447,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicValueEnum<'a>, String> {
         let func = self
             .runtime_function(func_name)
-            .ok_or(format!("{} not found", func_name))?;
+            .ok_or(format!("{func_name} not found"))?;
         let metadata_args = args.iter().map(|v| (*v).into()).collect::<Vec<_>>();
         let call = self
             .builder
@@ -839,12 +837,9 @@ impl<'a> CodeGenerator<'a> {
         method_name: &str,
         args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
-        let resolved_obj_type = self.resolve_type(obj_type).map_err(|e| {
-            format!(
-                "Unresolved receiver type for method '{}': {}",
-                method_name, e
-            )
-        })?;
+        let resolved_obj_type = self
+            .resolve_type(obj_type)
+            .map_err(|e| format!("Unresolved receiver type for method '{method_name}': {e}"))?;
 
         if let Some(call) = self.try_generate_net_instance_method_call(
             obj_value,
@@ -953,7 +948,7 @@ impl<'a> CodeGenerator<'a> {
                 }
                 "to_int" => Ok(obj_value),
                 "to_char" => Ok(obj_value),
-                _ => Err(format!("Method {} not implemented for int", method_name)),
+                _ => Err(format!("Method {method_name} not implemented for int")),
             },
             PrimitiveType::Float => match method_name {
                 "to_string" => self.call_runtime_to_string(obj_value, "mux_float_to_string"),
@@ -970,7 +965,7 @@ impl<'a> CodeGenerator<'a> {
                     Ok(int_val.into())
                 }
                 "to_float" => Ok(obj_value),
-                _ => Err(format!("Method {} not implemented for float", method_name)),
+                _ => Err(format!("Method {method_name} not implemented for float")),
             },
             PrimitiveType::Str => match method_name {
                 "to_string" => self.call_runtime_to_string(obj_value, "mux_value_to_string"),
@@ -1015,8 +1010,8 @@ impl<'a> CodeGenerator<'a> {
                 "trim" | "to_upper" | "to_lower" => {
                     self.ensure_no_args(method_name, args)?;
                     let recv = self.string_value_to_cstr(obj_value)?;
-                    let out = self
-                        .call_runtime_function(&format!("mux_string_{}", method_name), &[recv])?;
+                    let out =
+                        self.call_runtime_function(&format!("mux_string_{method_name}"), &[recv])?;
                     self.free_cstrings(&[recv])?;
                     self.call_cstr_to_mux_string(out)
                 }
@@ -1070,7 +1065,7 @@ impl<'a> CodeGenerator<'a> {
                     let recv = self.string_value_to_cstr(obj_value)?;
                     let other_cstr = self.string_value_to_cstr(other)?;
                     let result = self.call_runtime_function(
-                        &format!("mux_string_{}", method_name),
+                        &format!("mux_string_{method_name}"),
                         &[recv, other_cstr],
                     )?;
                     self.free_cstrings(&[recv, other_cstr])?;
@@ -1095,7 +1090,7 @@ impl<'a> CodeGenerator<'a> {
                     self.free_cstrings(&[recv, from_cstr, to_cstr])?;
                     self.call_cstr_to_mux_string(out)
                 }
-                _ => Err(format!("Method {} not implemented for string", method_name)),
+                _ => Err(format!("Method {method_name} not implemented for string")),
             },
             PrimitiveType::Bool => match method_name {
                 "to_string" => {
@@ -1129,17 +1124,16 @@ impl<'a> CodeGenerator<'a> {
                         .map_err(|e| e.to_string())?;
                     Ok(float_val.into())
                 }
-                _ => Err(format!("Method {} not implemented for bool", method_name)),
+                _ => Err(format!("Method {method_name} not implemented for bool")),
             },
             PrimitiveType::Char => match method_name {
                 "to_string" => self.call_runtime_to_string(obj_value, "mux_char_to_string"),
                 "to_int" => self.call_runtime_function("mux_char_to_int", &[obj_value]),
                 "to_char" => Ok(obj_value),
-                _ => Err(format!("Method {} not implemented for char", method_name)),
+                _ => Err(format!("Method {method_name} not implemented for char")),
             },
             _ => Err(format!(
-                "Method {} not implemented for primitive type {:?}",
-                method_name, prim
+                "Method {method_name} not implemented for primitive type {prim:?}"
             )),
         }
     }
@@ -1239,7 +1233,7 @@ impl<'a> CodeGenerator<'a> {
                     me.call_cstr_to_mux_string(cstr)
                 })
             }
-            _ => Err(format!("Method {} not implemented for lists", method_name)),
+            _ => Err(format!("Method {method_name} not implemented for lists")),
         }
     }
 
@@ -1260,7 +1254,7 @@ impl<'a> CodeGenerator<'a> {
                 self.ensure_no_args("to_string", args)?;
                 self.call_runtime_function("mux_csv_render", &[obj_value])
             }
-            _ => Err(format!("Method {} not implemented for Csv", method_name)),
+            _ => Err(format!("Method {method_name} not implemented for Csv")),
         }
     }
 
@@ -1299,7 +1293,7 @@ impl<'a> CodeGenerator<'a> {
             "as_string" | "as_int" | "as_float" | "as_bool" | "as_list" | "as_map" => {
                 self.ensure_no_args(method_name, args)?;
                 let result =
-                    self.call_runtime_function(&format!("mux_json_{}", method_name), &[obj_value])?;
+                    self.call_runtime_function(&format!("mux_json_{method_name}"), &[obj_value])?;
                 self.register_temp(result);
                 Ok(result)
             }
@@ -1309,7 +1303,7 @@ impl<'a> CodeGenerator<'a> {
                 self.ensure_no_args("is_null", args)?;
                 self.call_runtime_function("mux_json_is_null", &[obj_value])
             }
-            _ => Err(format!("Method {} not implemented for Json", method_name)),
+            _ => Err(format!("Method {method_name} not implemented for Json")),
         }
     }
 
@@ -1348,10 +1342,7 @@ impl<'a> CodeGenerator<'a> {
                 self.ensure_no_args("to_string", args)?;
                 self.generate_to_string_call(obj_value)
             }
-            _ => Err(format!(
-                "Method {} not implemented for SqlValue",
-                method_name
-            )),
+            _ => Err(format!("Method {method_name} not implemented for SqlValue")),
         }
     }
 
@@ -1479,7 +1470,7 @@ impl<'a> CodeGenerator<'a> {
 
                 Ok(optional_ptr)
             }
-            _ => Err(format!("Method {} not implemented for maps", method_name)),
+            _ => Err(format!("Method {method_name} not implemented for maps")),
         }
     }
 
@@ -1539,7 +1530,7 @@ impl<'a> CodeGenerator<'a> {
                     me.call_runtime_function("mux_set_to_list", &[extract_set])
                 })
             }
-            _ => Err(format!("Method {} not implemented for sets", method_name)),
+            _ => Err(format!("Method {method_name} not implemented for sets")),
         }
     }
 
@@ -1563,8 +1554,7 @@ impl<'a> CodeGenerator<'a> {
                 self.call_unary_predicate(obj_value, "mux_optional_is_none")
             }
             _ => Err(format!(
-                "Method {} not implemented for Optionals",
-                method_name
+                "Method {method_name} not implemented for Optionals"
             )),
         }
     }
@@ -1588,10 +1578,7 @@ impl<'a> CodeGenerator<'a> {
                 self.ensure_no_args("is_err", args)?;
                 self.call_unary_predicate(obj_value, "mux_result_is_err")
             }
-            _ => Err(format!(
-                "Method {} not implemented for Results",
-                method_name
-            )),
+            _ => Err(format!("Method {method_name} not implemented for Results")),
         }
     }
 
@@ -1614,7 +1601,7 @@ impl<'a> CodeGenerator<'a> {
                     self.call_runtime_function("mux_tuple_to_string", &[tuple_ptr.into()])?;
                 self.call_cstr_to_mux_string(cstr)
             }
-            _ => Err(format!("Method {} not implemented for tuples", method_name)),
+            _ => Err(format!("Method {method_name} not implemented for tuples")),
         }
     }
 }

@@ -174,7 +174,7 @@ impl<'a> CodeGenerator<'a> {
             argument: document,
         } = self.begin_deserializer(&full_name)?;
 
-        let instance = self.call_returning_ptr(&format!("{}.new", name), &[])?;
+        let instance = self.call_returning_ptr(&format!("{name}.new"), &[])?;
 
         for field in fields {
             self.read_field_into(function, name, field, document, instance)?;
@@ -192,7 +192,7 @@ impl<'a> CodeGenerator<'a> {
 
     /// `<Class>.from_json(text)` - parse, then hand the value to the core.
     fn emit_from_json(&mut self, name: &str) -> Result<(), String> {
-        let full_name = format!("{}.from_json", name);
+        let full_name = format!("{name}.from_json");
         let DeserializerEntry {
             function,
             argument: text,
@@ -390,7 +390,7 @@ impl<'a> CodeGenerator<'a> {
     }
 
     fn emit_list_from_json(&mut self, name: &str) -> Result<(), String> {
-        let full_name = format!("{}.list_from_json", name);
+        let full_name = format!("{name}.list_from_json");
         let DeserializerEntry {
             function,
             argument: text,
@@ -442,7 +442,7 @@ impl<'a> CodeGenerator<'a> {
             argument: row,
         } = self.begin_deserializer(&full_name)?;
 
-        let instance = self.call_returning_ptr(&format!("{}.new", name), &[])?;
+        let instance = self.call_returning_ptr(&format!("{name}.new"), &[])?;
 
         for field in fields {
             self.read_cell_into(function, name, field, row, instance)?;
@@ -613,7 +613,7 @@ impl<'a> CodeGenerator<'a> {
     /// singular form would only work for a file with exactly one row and would
     /// read as a promise the format cannot keep.
     fn emit_list_from_csv(&mut self, name: &str) -> Result<(), String> {
-        let full_name = format!("{}.list_from_csv", name);
+        let full_name = format!("{name}.list_from_csv");
         let DeserializerEntry {
             function,
             argument: text,
@@ -1029,7 +1029,7 @@ impl<'a> CodeGenerator<'a> {
     fn build_global_cstring(&mut self, text: &str) -> Result<PointerValue<'a>, String> {
         self.builder
             .build_global_string_ptr(text, &format!("json_key_{text}"))
-            .map(|g| g.as_pointer_value())
+            .map(inkwell::values::GlobalValue::as_pointer_value)
             .map_err(|e| e.to_string())
     }
 

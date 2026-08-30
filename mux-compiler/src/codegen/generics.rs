@@ -435,7 +435,7 @@ impl<'a> CodeGenerator<'a> {
             .map(|t| self.sanitize_type_name(t))
             .collect::<Vec<_>>()
             .join("$");
-        format!("{}${}", class_name, variant_suffix)
+        format!("{class_name}${variant_suffix}")
     }
 
     fn mark_variant_processing(&mut self, variant_key: &str) -> bool {
@@ -505,8 +505,7 @@ impl<'a> CodeGenerator<'a> {
             if let Some(existing) = type_map.get(name) {
                 if existing != arg_type {
                     return Err(format!(
-                        "Type mismatch for generic parameter {}: expected {:?}, got {:?}",
-                        name, existing, arg_type
+                        "Type mismatch for generic parameter {name}: expected {existing:?}, got {arg_type:?}"
                     ));
                 }
             } else {
@@ -518,8 +517,7 @@ impl<'a> CodeGenerator<'a> {
         let expected_concrete = self.type_node_to_type(param_type);
         if expected_concrete != *arg_type {
             return Err(format!(
-                "Type mismatch: expected {:?}, got {:?}",
-                expected_concrete, arg_type
+                "Type mismatch: expected {expected_concrete:?}, got {arg_type:?}"
             ));
         }
 
@@ -537,8 +535,7 @@ impl<'a> CodeGenerator<'a> {
             Type::Named(arg_name, arg_type_args) => {
                 if name != arg_name {
                     return Err(format!(
-                        "Type name mismatch: expected {}, got {}",
-                        name, arg_name
+                        "Type name mismatch: expected {name}, got {arg_name}"
                     ));
                 }
                 if type_args.len() != arg_type_args.len() {
@@ -565,7 +562,7 @@ impl<'a> CodeGenerator<'a> {
                 self.infer_types_from_signature(&type_args[0], ok, type_map)?;
                 self.infer_types_from_signature(&type_args[1], err, type_map)
             }
-            _ => Err(format!("Expected named type with args, got {:?}", arg_type)),
+            _ => Err(format!("Expected named type with args, got {arg_type:?}")),
         }
     }
 
@@ -608,7 +605,7 @@ impl<'a> CodeGenerator<'a> {
         // get the class symbol to access methods
         let class_symbol = self
             .lookup_class_symbol(class_name)
-            .ok_or(format!("Class {} not found", class_name))?;
+            .ok_or(format!("Class {class_name} not found"))?;
 
         // Set class-level type parameter bounds for specialized method generation
         self.set_class_type_param_bounds_if_needed(&class_symbol);
@@ -617,7 +614,7 @@ impl<'a> CodeGenerator<'a> {
 
         let mut specialized_methods = Vec::new();
 
-        let method_prefix = format!("{}.", class_name);
+        let method_prefix = format!("{class_name}.");
         let original_methods: Vec<crate::ast::FunctionNode> = self
             .function_nodes
             .iter()
@@ -718,12 +715,11 @@ impl<'a> CodeGenerator<'a> {
                 }
             } else {
                 return Err(format!(
-                    "Type argument count mismatch for class {}",
-                    class_name
+                    "Type argument count mismatch for class {class_name}"
                 ));
             }
         } else {
-            return Err(format!("Class {} not found", class_name));
+            return Err(format!("Class {class_name} not found"));
         }
 
         Ok(type_params)
@@ -739,7 +735,7 @@ impl<'a> CodeGenerator<'a> {
             .function_nodes
             .get(func_name)
             .cloned()
-            .ok_or(format!("Generic function {} not found", func_name))?;
+            .ok_or(format!("Generic function {func_name} not found"))?;
 
         let concrete_types = self.infer_concrete_types_for_generic_function(&func_node, args)?;
         let instance_name =
@@ -749,7 +745,7 @@ impl<'a> CodeGenerator<'a> {
         let func = self
             .module
             .get_function(&instance_name)
-            .ok_or(format!("Instantiated function {} not found", instance_name))?;
+            .ok_or(format!("Instantiated function {instance_name} not found"))?;
 
         let mut call_args = vec![];
         for arg in args {
@@ -776,7 +772,7 @@ impl<'a> CodeGenerator<'a> {
         let func_node = self
             .function_nodes
             .get(func_name)
-            .ok_or(format!("Generic function {} not found", func_name))?;
+            .ok_or(format!("Generic function {func_name} not found"))?;
 
         // create type substitution map
         let mut type_map = std::collections::HashMap::new();
@@ -1150,7 +1146,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         match inner_arg {
             Some(inner_arg) => self.infer_types_from_signature(inner_param, inner_arg, type_map),
-            None => Err(format!("Expected {} type, got {:?}", label, arg_type)),
+            None => Err(format!("Expected {label} type, got {arg_type:?}")),
         }
     }
 
@@ -1165,7 +1161,7 @@ impl<'a> CodeGenerator<'a> {
         type_map: &mut std::collections::HashMap<String, Type>,
     ) -> Result<(), String> {
         let Some((left_arg, right_arg)) = parts else {
-            return Err(format!("Expected {} type, got {:?}", label, arg_type));
+            return Err(format!("Expected {label} type, got {arg_type:?}"));
         };
         self.infer_types_from_signature(left_param, left_arg, type_map)?;
         self.infer_types_from_signature(right_param, right_arg, type_map)
@@ -1219,7 +1215,7 @@ impl<'a> CodeGenerator<'a> {
             ..
         } = arg_type
         else {
-            return Err(format!("Expected function type, got {:?}", arg_type));
+            return Err(format!("Expected function type, got {arg_type:?}"));
         };
         if param_params.len() != arg_params.len() {
             return Err(format!(
@@ -1241,12 +1237,11 @@ impl<'a> CodeGenerator<'a> {
             | PrimitiveType::Bool
             | PrimitiveType::Str
             | PrimitiveType::Char => Type::Primitive(primitive.clone()),
-            _ => return Err(format!("Unsupported primitive type {:?}", primitive)),
+            _ => return Err(format!("Unsupported primitive type {primitive:?}")),
         };
         if expected != *arg_type {
             return Err(format!(
-                "Primitive type mismatch: expected {:?}, got {:?}",
-                expected, arg_type
+                "Primitive type mismatch: expected {expected:?}, got {arg_type:?}"
             ));
         }
         Ok(())
@@ -1267,7 +1262,7 @@ impl<'a> CodeGenerator<'a> {
 
             let arg_type = self
                 .resolve_expression_type_with_fallback(&args[param_idx])
-                .map_err(|e| format!("Failed to get argument type: {}", e))?;
+                .map_err(|e| format!("Failed to get argument type: {e}"))?;
 
             // recursively match the parameter type against the argument type to infer generic parameters
             self.infer_types_from_signature(&param.type_, &arg_type, &mut type_map)?;

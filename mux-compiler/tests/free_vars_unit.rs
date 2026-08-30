@@ -40,7 +40,7 @@ fn assert_clean(src: &str) {
 #[test]
 fn captures_in_binary_and_call_positions() {
     assert_clean(
-        r#"
+        r"
 func apply(func(int) returns int f, int x) returns int {
     return f(x)
 }
@@ -54,14 +54,14 @@ func main() returns void {
     print(r.to_string())
     return
 }
-"#,
+",
     );
 }
 
 #[test]
 fn captures_through_nested_lambdas() {
     assert_clean(
-        r#"
+        r"
 func main() returns void {
     int base = 5
     auto outer = func(int a) returns int {
@@ -73,14 +73,14 @@ func main() returns void {
     print(outer(2).to_string())
     return
 }
-"#,
+",
     );
 }
 
 #[test]
 fn captures_in_list_literal_and_index() {
     assert_clean(
-        r#"
+        r"
 func main() returns void {
     int idx = 1
     int bump = 100
@@ -91,14 +91,14 @@ func main() returns void {
     print(pick().to_string())
     return
 }
-"#,
+",
     );
 }
 
 #[test]
 fn captures_in_while_and_if_statements() {
     assert_clean(
-        r#"
+        r"
 func main() returns void {
     int limit = 3
     auto run = func() returns int {
@@ -116,14 +116,14 @@ func main() returns void {
     print(run().to_string())
     return
 }
-"#,
+",
     );
 }
 
 #[test]
 fn captures_in_for_loop_and_unary() {
     assert_clean(
-        r#"
+        r"
 func main() returns void {
     int limit = 4
     bool flag = true
@@ -139,14 +139,14 @@ func main() returns void {
     print(run().to_string())
     return
 }
-"#,
+",
     );
 }
 
 #[test]
 fn non_capturing_lambda_is_clean() {
     assert_clean(
-        r#"
+        r"
 func main() returns void {
     auto square = func(int n) returns int {
         return n * n
@@ -154,6 +154,6 @@ func main() returns void {
     print(square(6).to_string())
     return
 }
-"#,
+",
     );
 }

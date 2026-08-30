@@ -182,7 +182,7 @@ impl SemanticAnalyzer {
                     let key = (type_name.clone(), field.to_string());
                     if let Some(pre) = self.enum_variant_preconditions.get(&key) {
                         let pre = pre.clone();
-                        let display = format!("{}.{}", type_name, field);
+                        let display = format!("{type_name}.{field}");
                         return self.check_variant_preconditions(expr, &display, &pre, args);
                     }
                     return Ok(());
@@ -207,7 +207,7 @@ impl SemanticAnalyzer {
                             .and_then(|methods| methods.get(field))
                             .cloned();
                         if let Some(pre) = inherited {
-                            let display = format!("{}.{}", type_name, field);
+                            let display = format!("{type_name}.{field}");
                             let pre = WherePreconditions {
                                 param_defaults: vec![None; pre.interface_param_names.len()],
                                 param_names: pre.interface_param_names,
@@ -234,7 +234,7 @@ impl SemanticAnalyzer {
         method_name: &str,
         args: &[ExpressionNode],
     ) -> Result<(), SemanticError> {
-        let display = format!("{}.{}", class_name, method_name);
+        let display = format!("{class_name}.{method_name}");
         let key = (class_name.to_string(), method_name.to_string());
         if let Some(pre) = self.function_preconditions.get(&key) {
             let pre = pre.clone();
@@ -276,10 +276,7 @@ impl SemanticAnalyzer {
             }
         }
         Self::report_false_predicate(&pre.predicates, &env, expr.span, || {
-            format!(
-                "arguments to '{}' violate its where constraint",
-                display_name
-            )
+            format!("arguments to '{display_name}' violate its where constraint")
         })
     }
 
@@ -302,10 +299,7 @@ impl SemanticAnalyzer {
             }
         }
         Self::report_false_predicate(&pre.predicates, &env, expr.span, || {
-            format!(
-                "arguments to '{}' violate its where constraint",
-                display_name
-            )
+            format!("arguments to '{display_name}' violate its where constraint")
         })
     }
 
@@ -359,7 +353,7 @@ impl SemanticAnalyzer {
                     };
                     return Err(SemanticError::with_help(
                         DiagnosticCode::DivisionByZero,
-                        format!("{} by zero", operation),
+                        format!("{operation} by zero"),
                         *op_span,
                         "The divisor is always zero, so this operation would panic on every execution",
                     ));
@@ -405,10 +399,7 @@ impl SemanticAnalyzer {
             if const_fold::fold_with_env(predicate, &env) == Some(ConstValue::Bool(false)) {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::CannotAssign,
-                    format!(
-                        "assignment violates where constraint of '{}.{}'",
-                        class_name, field
-                    ),
+                    format!("assignment violates where constraint of '{class_name}.{field}'"),
                     right.span,
                     format!(
                         "The where predicate at {}:{} is always false for this value, so this assignment would panic on every execution",
@@ -447,7 +438,7 @@ impl SemanticAnalyzer {
                     if effective < 0 || effective >= len {
                         return Err(SemanticError::with_help(
                             DiagnosticCode::InvalidOperation,
-                            format!("list index out of bounds: index {}, length {}", value, len),
+                            format!("list index out of bounds: index {value}, length {len}"),
                             index.span,
                             "The index is always outside this list, so the access would panic on every execution",
                         ));
@@ -488,7 +479,7 @@ impl SemanticAnalyzer {
         }
         Err(SemanticError::with_help(
             DiagnosticCode::InvalidOperation,
-            format!("key not found in map: key {}", lookup),
+            format!("key not found in map: key {lookup}"),
             index.span,
             "The key is never present in this map literal, so the lookup would panic on every execution",
         ))

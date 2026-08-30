@@ -25,22 +25,24 @@ pub enum ConstValue {
 impl fmt::Display for ConstValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConstValue::Int(v) => write!(f, "{}", v),
-            ConstValue::Float(v) => write!(f, "{}", v),
-            ConstValue::Bool(v) => write!(f, "{}", v),
-            ConstValue::Str(v) => write!(f, "{}", v),
-            ConstValue::Char(v) => write!(f, "{}", v),
+            ConstValue::Int(v) => write!(f, "{v}"),
+            ConstValue::Float(v) => write!(f, "{v}"),
+            ConstValue::Bool(v) => write!(f, "{v}"),
+            ConstValue::Str(v) => write!(f, "{v}"),
+            ConstValue::Char(v) => write!(f, "{v}"),
         }
     }
 }
 
 /// Fold an expression with no bindings: only literal-derived values succeed.
+#[must_use]
 pub fn fold(expr: &ExpressionNode) -> Option<ConstValue> {
     fold_with_env(expr, &HashMap::new())
 }
 
 /// Fold an expression, resolving bare identifiers through `env`. Identifiers
 /// absent from `env` make the whole fold return `None`.
+#[must_use]
 pub fn fold_with_env(
     expr: &ExpressionNode,
     env: &HashMap<String, ConstValue>,

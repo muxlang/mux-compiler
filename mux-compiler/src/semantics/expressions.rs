@@ -108,18 +108,14 @@ impl SemanticAnalyzer {
         if let Some(kind) = self.type_name_kind(name) {
             let help = if self.symbol_has_type_params(name) {
                 format!(
-                    "'{}' is a {} name and needs type arguments to be used, e.g. {}<int>; it is not a value.",
-                    name, kind, name
+                    "'{name}' is a {kind} name and needs type arguments to be used, e.g. {name}<int>; it is not a value."
                 )
             } else {
-                format!(
-                    "'{}' is a {} name and cannot be used as a value.",
-                    name, kind
-                )
+                format!("'{name}' is a {kind} name and cannot be used as a value.")
             };
             return Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,
-                format!("'{}' is a type, not a value", name),
+                format!("'{name}' is a type, not a value"),
                 expr.span,
                 help,
             ));
@@ -134,13 +130,12 @@ impl SemanticAnalyzer {
             if let Some(namespace) = self.stdlib_namespace_holding_class(name) {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::UndefinedName,
-                    format!("Undefined variable '{}'", name),
+                    format!("Undefined variable '{name}'"),
                     expr.span,
                     format!(
-                        "'{0}' comes from '{1}', which was imported as a namespace, so it is \
-                         reached as '{1}.{0}'. To use the bare name, import it directly with \
-                         'import std.{1}.{0}' or bring the whole module in with 'import std.{1}.*'",
-                        name, namespace
+                        "'{name}' comes from '{namespace}', which was imported as a namespace, so it is \
+                         reached as '{namespace}.{name}'. To use the bare name, import it directly with \
+                         'import std.{namespace}.{name}' or bring the whole module in with 'import std.{namespace}.*'"
                     ),
                 ));
             }
@@ -149,7 +144,7 @@ impl SemanticAnalyzer {
             {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::UndefinedName,
-                    format!("Undefined variable '{}'", name),
+                    format!("Undefined variable '{name}'"),
                     expr.span,
                     help,
                 ));
@@ -176,8 +171,7 @@ impl SemanticAnalyzer {
     fn symbol_has_type_params(&self, name: &str) -> bool {
         self.symbol_table
             .lookup(name)
-            .map(|symbol| !symbol.type_params.is_empty())
-            .unwrap_or(false)
+            .is_some_and(|symbol| !symbol.type_params.is_empty())
     }
 
     /// Walk the base of a field access.
@@ -270,7 +264,7 @@ impl SemanticAnalyzer {
     fn stdlib_namespace_holding_class(&self, name: &str) -> Option<String> {
         let stdlib_names: std::collections::HashSet<String> = std_module_registry()
             .keys()
-            .filter_map(|s| s.strip_prefix("std.").map(|name| name.to_string()))
+            .filter_map(|s| s.strip_prefix("std.").map(std::string::ToString::to_string))
             .collect();
         self.imported_symbols
             .iter()
@@ -374,7 +368,7 @@ impl SemanticAnalyzer {
         {
             return Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,
-                format!("Cannot modify constant '{}'", name),
+                format!("Cannot modify constant '{name}'"),
                 op_span,
                 "Constants cannot be modified after initialization",
             ));
@@ -393,7 +387,7 @@ impl SemanticAnalyzer {
             {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::UnknownMember,
-                    format!("Cannot modify const field '{}'", field),
+                    format!("Cannot modify const field '{field}'"),
                     op_span,
                     "Const fields cannot be modified after initialization. Remove the 'const' modifier from the field declaration if mutation is needed.",
                 ));
@@ -424,27 +418,19 @@ impl SemanticAnalyzer {
         {
             let help = match kind {
                 "enum" => format!(
-                    "'{}' is an enum; build a value with one of its variants, e.g. {}.Variant(...)",
-                    name, name
+                    "'{name}' is an enum; build a value with one of its variants, e.g. {name}.Variant(...)"
                 ),
                 "interface" => {
-                    format!(
-                        "'{}' is an interface and cannot be instantiated directly",
-                        name
-                    )
+                    format!("'{name}' is an interface and cannot be instantiated directly")
                 }
-                _ if self.symbol_has_type_params(name) => format!(
-                    "'{}' is a class; construct an instance with {}<...>.new()",
-                    name, name
-                ),
-                _ => format!(
-                    "'{}' is a class; construct an instance with {}.new()",
-                    name, name
-                ),
+                _ if self.symbol_has_type_params(name) => {
+                    format!("'{name}' is a class; construct an instance with {name}<...>.new()")
+                }
+                _ => format!("'{name}' is a class; construct an instance with {name}.new()"),
             };
             return Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,
-                format!("'{}' is a type and cannot be called", name),
+                format!("'{name}' is a type and cannot be called"),
                 func.span,
                 help,
             ));
@@ -457,7 +443,7 @@ impl SemanticAnalyzer {
         // checks the arity and argument types.
         match &func.kind {
             ExpressionKind::FieldAccess { expr: base, .. } => {
-                self.analyze_field_access_base(base)?
+                self.analyze_field_access_base(base)?;
             }
             _ => self.analyze_expression(func)?,
         }
@@ -965,7 +951,7 @@ impl SemanticAnalyzer {
         {
             return Err(SemanticError::with_help(
                 DiagnosticCode::UndefinedName,
-                format!("Undefined type '{}'", name),
+                format!("Undefined type '{name}'"),
                 expr.span,
                 help,
             ));

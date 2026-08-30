@@ -39,13 +39,13 @@ impl<'a> CodeGenerator<'a> {
                 .expect("Builder should have an insertion block")
                 .get_parent()
                 .ok_or("No current function")?;
-            let prefix = format!("{}_{}", block_prefix, i);
+            let prefix = format!("{block_prefix}_{i}");
             let fail_bb = self
                 .context
-                .append_basic_block(current_function, &format!("{}_fail", prefix));
+                .append_basic_block(current_function, &format!("{prefix}_fail"));
             let ok_bb = self
                 .context
-                .append_basic_block(current_function, &format!("{}_ok", prefix));
+                .append_basic_block(current_function, &format!("{prefix}_ok"));
             self.builder
                 .build_conditional_branch(cond, ok_bb, fail_bb)
                 .map_err(|e| e.to_string())?;
@@ -104,7 +104,7 @@ impl<'a> CodeGenerator<'a> {
             }
             self.emit_where_checks(
                 &precondition.predicates,
-                &format!("where_iface_{}", set_index),
+                &format!("where_iface_{set_index}"),
             )?;
         }
         self.variables = snapshot;
@@ -179,16 +179,16 @@ impl<'a> CodeGenerator<'a> {
         let struct_type = *self
             .type_map
             .get(class_name)
-            .ok_or_else(|| format!("Class {} not found in type map", class_name))?;
+            .ok_or_else(|| format!("Class {class_name} not found in type map"))?;
         let field_indices = self
             .field_map
             .get(class_name)
-            .ok_or_else(|| format!("Class {} not found in field map", class_name))?
+            .ok_or_else(|| format!("Class {class_name} not found in field map"))?
             .clone();
         let field_llvm_types = self
             .field_types_map
             .get(class_name)
-            .ok_or_else(|| format!("Class {} not found in field types map", class_name))?
+            .ok_or_else(|| format!("Class {class_name} not found in field types map"))?
             .clone();
         let declared_name = Self::declared_class_name(class_name);
         let mut field_semantic_types: Vec<(String, Type)> = {
@@ -196,7 +196,7 @@ impl<'a> CodeGenerator<'a> {
                 .analyzer
                 .symbol_table()
                 .lookup(declared_name)
-                .ok_or_else(|| format!("Class {} not found in symbol table", declared_name))?;
+                .ok_or_else(|| format!("Class {declared_name} not found in symbol table"))?;
             class_symbol
                 .fields
                 .iter()
@@ -218,12 +218,12 @@ impl<'a> CodeGenerator<'a> {
                     struct_type.into_struct_type(),
                     struct_ptr,
                     index as u32,
-                    &format!("where_field_{}", field_name),
+                    &format!("where_field_{field_name}"),
                 )
                 .map_err(|e| e.to_string())?;
             let llvm_type = *field_llvm_types
                 .get(index)
-                .ok_or_else(|| format!("Field {} index out of range", field_name))?;
+                .ok_or_else(|| format!("Field {field_name} index out of range"))?;
             self.variables
                 .insert(field_name, (field_ptr, llvm_type, semantic_type));
         }

@@ -40,6 +40,7 @@ impl SemanticError {
         }
     }
 
+    #[must_use]
     pub fn with_span_edit(mut self, edit: SpanEdit) -> Self {
         let mut edits = self
             .span_edits

@@ -481,7 +481,7 @@ impl<'a> Lexer<'a> {
             self.consume_remaining_invalid(&mut num, &mut start_span);
             return Err(LexerError::with_help(
                 DiagnosticCode::LexInvalidNumber,
-                format!("Invalid float literal: {}", num),
+                format!("Invalid float literal: {num}"),
                 start_span,
                 "A number can only have one decimal point. Use separate expressions for chained field access.",
             ));
@@ -495,7 +495,7 @@ impl<'a> Lexer<'a> {
             self.consume_remaining_invalid(&mut num, &mut start_span);
             return Err(LexerError::with_help(
                 DiagnosticCode::LexInvalidNumber,
-                format!("Invalid float literal: {}", num),
+                format!("Invalid float literal: {num}"),
                 start_span,
                 "Float literals cannot contain letters. Use a space or separate expression.",
             ));
@@ -509,7 +509,7 @@ impl<'a> Lexer<'a> {
             .map_err(|_| {
                 LexerError::new(
                     DiagnosticCode::LexInvalidNumber,
-                    format!("Invalid float literal: {}", num),
+                    format!("Invalid float literal: {num}"),
                     start_span,
                 )
             })
@@ -528,7 +528,7 @@ impl<'a> Lexer<'a> {
             self.consume_remaining_invalid(&mut num, &mut start_span);
             return Err(LexerError::with_help(
                 DiagnosticCode::LexInvalidNumber,
-                format!("Invalid integer literal: {}", num),
+                format!("Invalid integer literal: {num}"),
                 start_span,
                 "Integer literals cannot contain letters. Variable names must not start with a digit.",
             ));
@@ -541,7 +541,7 @@ impl<'a> Lexer<'a> {
             .map_err(|_| {
                 LexerError::with_help(
                 DiagnosticCode::LexInvalidNumber,
-                    format!("Invalid integer literal: {}", num),
+                    format!("Invalid integer literal: {num}"),
                     start_span,
                     "The integer value is out of range. Valid integers are between -9223372036854775808 and 9223372036854775807.",
                 )
@@ -574,7 +574,7 @@ impl<'a> Lexer<'a> {
             'a'..='z' | 'A'..='Z' => Ok(self.read_identifier_or_keyword(first_char, start_span)),
             _ => Err(LexerError::with_help(
                 DiagnosticCode::LexUnexpectedCharacter,
-                format!("Unexpected character: '{}'", first_char),
+                format!("Unexpected character: '{first_char}'"),
                 start_span,
                 "This character is not recognized as valid Mux syntax. Check for accidental special characters or encoding issues.",
             )),
@@ -782,7 +782,7 @@ impl<'a> Lexer<'a> {
             } else {
                 return Err(LexerError::with_help(
                     DiagnosticCode::LexUnknownEscape,
-                    format!("Unknown escape sequence: \\{}", c),
+                    format!("Unknown escape sequence: \\{c}"),
                     Span::new(self.source.line, self.source.col - 1),
                     "Valid escape sequences: \\n, \\t, \\r, \\0, \\\\, \\', \\\"",
                 ));
@@ -878,7 +878,7 @@ impl<'a> Lexer<'a> {
             } else {
                 return Err(LexerError::with_help(
                     DiagnosticCode::LexUnknownEscape,
-                    format!("Unknown escape sequence: \\{}", c),
+                    format!("Unknown escape sequence: \\{c}"),
                     Span::new(self.source.line, self.source.col - 1),
                     "Valid escape sequences: \\n, \\t, \\r, \\0, \\\\, \\'",
                 ));
@@ -943,10 +943,7 @@ mod tests {
         expected_col: usize,
     ) {
         match result {
-            Ok(tokens) => panic!(
-                "Expected error '{}' but got tokens: {:?}",
-                expected_msg, tokens
-            ),
+            Ok(tokens) => panic!("Expected error '{expected_msg}' but got tokens: {tokens:?}"),
             Err(e) => {
                 assert!(
                     e.message.contains(expected_msg),
@@ -983,7 +980,7 @@ mod tests {
         assert_eq!(lexer.next_token().unwrap().token_type, TokenType::Eq);
         match lexer.next_token().unwrap().token_type {
             TokenType::Int(42) => {}
-            other => panic!("Expected Int(42), got {:?}", other),
+            other => panic!("Expected Int(42), got {other:?}"),
         }
         assert_eq!(lexer.next_token().unwrap().token_type, TokenType::NewLine);
 
@@ -1063,10 +1060,7 @@ auto y = 42"#;
 
         match result {
             Ok(tokens) => {
-                panic!(
-                    "Expected error for invalid escape sequence but got tokens: {:?}",
-                    tokens
-                );
+                panic!("Expected error for invalid escape sequence but got tokens: {tokens:?}");
             }
             Err(e) => {
                 assert!(
@@ -1149,7 +1143,7 @@ auto y = 42"#;
 
         // The lexer will stop at the first error, so we should only get one error
         match result {
-            Ok(tokens) => panic!("Expected error but got tokens: {:?}", tokens),
+            Ok(tokens) => panic!("Expected error but got tokens: {tokens:?}"),
             Err(e) => {
                 // The first error should be about the unterminated string
                 assert!(
@@ -1176,7 +1170,7 @@ auto y = 42"#;
         let mut source = Source::from_test_str(input);
         let result = Lexer::new(&mut source).lex_all();
         match result {
-            Ok(tokens) => panic!("Expected error but got tokens: {:?}", tokens),
+            Ok(tokens) => panic!("Expected error but got tokens: {tokens:?}"),
             Err(e) => {
                 assert!(
                     e.message.contains("Unterminated string"),
@@ -1208,7 +1202,7 @@ auto y = 42"#;
                 );
             }
             Err(e) => {
-                panic!("Expected successful tokenization but got error: {}", e);
+                panic!("Expected successful tokenization but got error: {e}");
             }
         }
     }
@@ -1238,7 +1232,7 @@ auto y = 42"#;
         let tokens = Lexer::new(&mut source).lex_all().unwrap();
         match tokens.last().map(|t| &t.token_type) {
             Some(TokenType::Float(f)) => assert!((f.into_inner() - 0.5).abs() < f64::EPSILON),
-            other => panic!("Expected Float(0.5), got {:?}", other),
+            other => panic!("Expected Float(0.5), got {other:?}"),
         }
     }
 
@@ -1260,7 +1254,7 @@ auto y = 42"#;
             ] if (*f1 - 3.45).abs() < f64::EPSILON
                 && (*f2 - 0.5).abs() < f64::EPSILON
                 && (*f3 - 5.0).abs() < f64::EPSILON => {}
-            _ => panic!("Unexpected token types: {:?}", token_types),
+            _ => panic!("Unexpected token types: {token_types:?}"),
         }
     }
 
@@ -1417,7 +1411,7 @@ world"
         for name in ["_x", "_123", "__", "_x_1", "_X"] {
             match &lex_types(name)[..] {
                 [TokenType::Id(id)] => assert_eq!(id, name),
-                other => panic!("'{}' should lex as one identifier, got {:?}", name, other),
+                other => panic!("'{name}' should lex as one identifier, got {other:?}"),
             }
         }
     }
@@ -1496,7 +1490,7 @@ world"
                 assert_eq!(ok, "ok");
                 assert_eq!(err, "err");
             }
-            _ => panic!("Unexpected token sequence: {:?}", token_types),
+            _ => panic!("Unexpected token sequence: {token_types:?}"),
         }
     }
 
@@ -1582,7 +1576,7 @@ world"
                 assert_eq!(c, "c");
                 assert_eq!(d, "d");
             }
-            _ => panic!("Unexpected token sequence: {:?}", token_types),
+            _ => panic!("Unexpected token sequence: {token_types:?}"),
         }
     }
 

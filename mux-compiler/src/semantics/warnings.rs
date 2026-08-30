@@ -94,7 +94,7 @@ impl BindingWarnings {
         if shadowed {
             self.warnings.push(SemanticError::new(
                 DiagnosticCode::ShadowedBinding,
-                format!("binding '{}' shadows an outer binding", name),
+                format!("binding '{name}' shadows an outer binding"),
                 span,
             ));
         }
@@ -136,7 +136,7 @@ impl BindingWarnings {
         {
             self.warnings.push(SemanticError::new(
                 DiagnosticCode::DeadAssignment,
-                format!("assignment to '{}' is overwritten before it is read", name),
+                format!("assignment to '{name}' is overwritten before it is read"),
                 previous,
             ));
         }
@@ -253,7 +253,7 @@ fn collect_binding_statement(statement: &StatementNode, analysis: &mut BindingWa
             analysis.clear_assignment_tracking();
         }
         StatementKind::Return(Some(expression)) | StatementKind::Expression(expression) => {
-            collect_binding_expression(expression, analysis)
+            collect_binding_expression(expression, analysis);
         }
         StatementKind::Block(statements) => {
             analysis.clear_assignment_tracking();
@@ -310,7 +310,7 @@ fn collect_binding_expression(expression: &ExpressionNode, analysis: &mut Bindin
             collect_binding_expression(index, analysis);
         }
         ExpressionKind::Slice { expr, start, end } => {
-            collect_binding_slice(expr, start.as_deref(), end.as_deref(), analysis)
+            collect_binding_slice(expr, start.as_deref(), end.as_deref(), analysis);
         }
         ExpressionKind::ListLiteral(elements)
         | ExpressionKind::SetLiteral(elements)
@@ -326,7 +326,7 @@ fn collect_binding_expression(expression: &ExpressionNode, analysis: &mut Bindin
             collect_binding_expression(else_expr, analysis);
         }
         ExpressionKind::Lambda { params, body, .. } => {
-            collect_binding_lambda(params, body, analysis)
+            collect_binding_lambda(params, body, analysis);
         }
         ExpressionKind::Literal(_) | ExpressionKind::None | ExpressionKind::GenericType(_, _) => {}
     }

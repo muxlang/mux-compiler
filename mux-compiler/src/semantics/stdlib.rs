@@ -410,6 +410,7 @@ fn tcp_listener_methods() -> HashMap<String, MethodSig> {
     }
 }
 
+#[must_use]
 pub fn net_module_class_symbols(span: Span) -> HashMap<String, Symbol> {
     let mut classes = HashMap::new();
     classes.insert(
@@ -553,6 +554,7 @@ fn sql_value_methods() -> HashMap<String, MethodSig> {
     }
 }
 
+#[must_use]
 pub fn sql_module_class_symbols(span: Span) -> HashMap<String, Symbol> {
     let mut classes = HashMap::new();
     classes.insert(
@@ -663,6 +665,7 @@ fn insert_sync_unlock_method(methods: &mut HashMap<String, MethodSig>) {
     });
 }
 
+#[must_use]
 pub fn sync_module_class_symbols(span: Span) -> HashMap<String, Symbol> {
     let mut classes = HashMap::new();
     classes.insert(
@@ -1090,6 +1093,7 @@ pub fn all_stdlib_items() -> impl Iterator<Item = (String, StdlibItem)> {
         )
 }
 
+#[must_use]
 pub fn lookup_stdlib_item(name: &str) -> Option<StdlibItem> {
     if let Some(item) = STDLIB_ITEMS.get(name) {
         return Some(materialize_stdlib_item(item));
@@ -1108,6 +1112,7 @@ pub fn lookup_stdlib_item(name: &str) -> Option<StdlibItem> {
 }
 
 /// Convert a canonical `StdlibItem` into a `Symbol` suitable for registration in a SymbolTable.
+#[must_use]
 pub fn stdlib_item_to_symbol(item: &StdlibItem, span: Span) -> Symbol {
     match item {
         StdlibItem::Function {

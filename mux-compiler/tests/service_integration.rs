@@ -9,14 +9,14 @@ fn service_tests_enabled() -> bool {
 }
 
 fn required_env(key: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| panic!("missing required environment variable: {}", key))
+    std::env::var(key).unwrap_or_else(|_| panic!("missing required environment variable: {key}"))
 }
 
 fn resolve_ipv4_addr(addr: &str) -> String {
     addr.to_socket_addrs()
-        .unwrap_or_else(|e| panic!("failed to resolve {}: {}", addr, e))
+        .unwrap_or_else(|e| panic!("failed to resolve {addr}: {e}"))
         .find(std::net::SocketAddr::is_ipv4)
-        .unwrap_or_else(|| panic!("no IPv4 address found for {}", addr))
+        .unwrap_or_else(|| panic!("no IPv4 address found for {addr}"))
         .to_string()
 }
 
@@ -39,7 +39,7 @@ fn ensure_runtime_built(repo_root: &Path) {
             .current_dir(repo_root)
             .env("CARGO_TARGET_DIR", integration_target_dir())
             .output()
-            .unwrap_or_else(|e| panic!("failed to build mux-runtime: {}", e));
+            .unwrap_or_else(|e| panic!("failed to build mux-runtime: {e}"));
 
         assert!(
             output.status.success(),
@@ -101,7 +101,7 @@ fn compile_and_execute_file(
 
     let compile_output = compile_cmd
         .output()
-        .unwrap_or_else(|e| panic!("Failed to execute compile command for {}: {}", path_str, e));
+        .unwrap_or_else(|e| panic!("Failed to execute compile command for {path_str}: {e}"));
 
     let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
     if !exec_path.exists() {
@@ -118,7 +118,7 @@ fn compile_and_execute_file(
         Ok(output) => output,
         Err(e) => {
             let _ = fs::remove_file(&exec_path);
-            return (String::new(), format!("Failed to execute binary: {}", e));
+            return (String::new(), format!("Failed to execute binary: {e}"));
         }
     };
 
@@ -181,11 +181,10 @@ fn test_postgres_service_script() {
     }
 
     let (stdout, stderr) = run_service_script("test_std_sql_postgres.mux");
-    assert!(stderr.is_empty(), "expected empty stderr, got: {}", stderr);
+    assert!(stderr.is_empty(), "expected empty stderr, got: {stderr}");
     assert!(
         stdout.contains("postgres integration test passed"),
-        "missing success marker in stdout: {}",
-        stdout
+        "missing success marker in stdout: {stdout}"
     );
 }
 
@@ -197,11 +196,10 @@ fn test_http_service_script() {
     }
 
     let (stdout, stderr) = run_service_script("test_std_http_external.mux");
-    assert!(stderr.is_empty(), "expected empty stderr, got: {}", stderr);
+    assert!(stderr.is_empty(), "expected empty stderr, got: {stderr}");
     assert!(
         stdout.contains("external http integration test passed"),
-        "missing success marker in stdout: {}",
-        stdout
+        "missing success marker in stdout: {stdout}"
     );
 }
 
@@ -213,11 +211,10 @@ fn test_tcp_service_script() {
     }
 
     let (stdout, stderr) = run_service_script("test_std_tcp_external.mux");
-    assert!(stderr.is_empty(), "expected empty stderr, got: {}", stderr);
+    assert!(stderr.is_empty(), "expected empty stderr, got: {stderr}");
     assert!(
         stdout.contains("external tcp integration test passed"),
-        "missing success marker in stdout: {}",
-        stdout
+        "missing success marker in stdout: {stdout}"
     );
 }
 
@@ -229,10 +226,9 @@ fn test_udp_service_script() {
     }
 
     let (stdout, stderr) = run_service_script("test_std_udp_external.mux");
-    assert!(stderr.is_empty(), "expected empty stderr, got: {}", stderr);
+    assert!(stderr.is_empty(), "expected empty stderr, got: {stderr}");
     assert!(
         stdout.contains("external udp integration test passed"),
-        "missing success marker in stdout: {}",
-        stdout
+        "missing success marker in stdout: {stdout}"
     );
 }

@@ -221,7 +221,7 @@ impl<'a> CodeGenerator<'a> {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         for interface_name in interfaces.keys() {
             field_types.push(ptr_type.into());
-            field_indices.insert(format!("vtable_{}", interface_name), field_types.len() - 1);
+            field_indices.insert(format!("vtable_{interface_name}"), field_types.len() - 1);
         }
 
         for field in fields {
@@ -258,13 +258,13 @@ impl<'a> CodeGenerator<'a> {
         let i8_ptr = self.context.ptr_type(AddressSpace::default());
         let fn_type = void_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
         let copy_fn = self.module.add_function(
-            &format!("{}.copy", name),
+            &format!("{name}.copy"),
             fn_type,
             Some(inkwell::module::Linkage::External),
         );
         let destructor_type = void_type.fn_type(&[i8_ptr.into()], false);
         let destructor_fn = self.module.add_function(
-            &format!("{}.destructor", name),
+            &format!("{name}.destructor"),
             destructor_type,
             Some(inkwell::module::Linkage::External),
         );
@@ -280,10 +280,10 @@ impl<'a> CodeGenerator<'a> {
         let class_type = *self
             .type_map
             .get(name)
-            .ok_or_else(|| format!("Class {} not in type map", name))?;
+            .ok_or_else(|| format!("Class {name} not in type map"))?;
         let class_size = class_type
             .size_of()
-            .ok_or_else(|| format!("Cannot get size of class {}", name))?;
+            .ok_or_else(|| format!("Cannot get size of class {name}"))?;
 
         // Build the copy function body.
         let copy_entry = self.context.append_basic_block(copy_fn, "entry");
@@ -352,7 +352,7 @@ impl<'a> CodeGenerator<'a> {
         if is_generic {
             return None;
         }
-        self.module.get_function(&format!("{}.{}", name, method))
+        self.module.get_function(&format!("{name}.{method}"))
     }
 
     /// Generate the wrappers that let the runtime call a class's `eq` and `cmp`
@@ -376,7 +376,7 @@ impl<'a> CodeGenerator<'a> {
                 self.context.i32_type()
             };
             let glue = self.module.add_function(
-                &format!("{}.{}", name, suffix),
+                &format!("{name}.{suffix}"),
                 return_type.fn_type(&[ptr_type.into(), ptr_type.into()], false),
                 Some(inkwell::module::Linkage::External),
             );
@@ -390,7 +390,7 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?
                 .try_as_basic_value()
                 .basic()
-                .ok_or_else(|| format!("{}.{} should return a value", name, method))?
+                .ok_or_else(|| format!("{name}.{method} should return a value"))?
                 .into_int_value();
             let narrowed = if is_equality {
                 self.builder
@@ -615,11 +615,10 @@ impl<'a> CodeGenerator<'a> {
             }
             let mut vtable_values = Vec::new();
             for method_name in interface_methods.keys() {
-                let class_method_name = format!("{}.{}", class_name, method_name);
+                let class_method_name = format!("{class_name}.{method_name}");
                 let func = self.functions.get(&class_method_name).ok_or_else(|| {
                     format!(
-                        "Class {} does not implement method {} for interface {}",
-                        class_name, method_name, interface_name
+                        "Class {class_name} does not implement method {method_name} for interface {interface_name}"
                     )
                 })?;
                 vtable_values.push(func.as_global_value().as_pointer_value().into());
@@ -631,13 +630,13 @@ impl<'a> CodeGenerator<'a> {
                 .expect("vtable_type should be registered during interface generation");
             let vtable_const = vtable_type.const_named_struct(&vtable_values);
             // create global
-            let vtable_name = format!("{}_{}_vtable", class_name, interface_name);
+            let vtable_name = format!("{class_name}_{interface_name}_vtable");
             let global =
                 self.module
                     .add_global(vtable_type.as_basic_type_enum(), None, &vtable_name);
             global.set_initializer(&vtable_const);
             self.vtable_map.insert(
-                format!("{}_{}", class_name, interface_name),
+                format!("{class_name}_{interface_name}"),
                 global.as_pointer_value(),
             );
         }
@@ -668,7 +667,7 @@ impl<'a> CodeGenerator<'a> {
         let (_, interface_methods) = symbol
             .interfaces
             .get(name)
-            .ok_or_else(|| format!("Interface methods for '{}' not found", name))?;
+            .ok_or_else(|| format!("Interface methods for '{name}' not found"))?;
 
         // create vtable as struct of function pointers (all (void*) -> void* for now)
         let ptr_type = self.context.ptr_type(AddressSpace::default());
@@ -746,10 +745,10 @@ impl<'a> CodeGenerator<'a> {
                         .iter()
                         .position(|v| v == variant_name)
                         .ok_or_else(|| {
-                            format!("Variant {} not found in enum {}", variant_name, enum_name)
+                            format!("Variant {variant_name} not found in enum {enum_name}")
                         })
                 } else {
-                    Err(format!("Enum {} not found", enum_name))
+                    Err(format!("Enum {enum_name} not found"))
                 }
             }
         }
@@ -772,7 +771,7 @@ impl<'a> CodeGenerator<'a> {
                 };
                 let func = self
                     .runtime_function(discriminant_func)
-                    .ok_or(format!("{} not found", discriminant_func))?;
+                    .ok_or(format!("{discriminant_func} not found"))?;
 
                 let discriminant_call = self
                     .builder
@@ -790,7 +789,7 @@ impl<'a> CodeGenerator<'a> {
                 let struct_type = self
                     .type_map
                     .get(enum_name)
-                    .ok_or_else(|| format!("Enum {} not found in type map", enum_name))?
+                    .ok_or_else(|| format!("Enum {enum_name} not found in type map"))?
                     .into_struct_type();
 
                 // allocate temporary storage for the enum value
@@ -856,7 +855,7 @@ impl<'a> CodeGenerator<'a> {
             // find the maximum number of fields across all variants
             let max_fields = variant_fields
                 .values()
-                .map(|fields| fields.len())
+                .map(std::vec::Vec::len)
                 .max()
                 .unwrap_or(0);
 

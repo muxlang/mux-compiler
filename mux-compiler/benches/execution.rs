@@ -54,10 +54,10 @@ fn workloads() -> &'static [Workload] {
         let mut built = Vec::new();
         let mut failed = Vec::new();
         for src in sources {
-            let name = src
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| src.to_string_lossy().into_owned());
+            let name = src.file_stem().map_or_else(
+                || src.to_string_lossy().into_owned(),
+                |s| s.to_string_lossy().into_owned(),
+            );
             let exe = out_dir.join(&name);
 
             let status = Command::new(mux)

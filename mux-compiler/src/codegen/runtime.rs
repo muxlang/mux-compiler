@@ -49,7 +49,7 @@ impl<'a> CodeGenerator<'a> {
         let func = match self.runtime_function(name) {
             Some(f) => f,
             None => {
-                panic!("Function '{}' not found in module", name);
+                panic!("Function '{name}' not found in module");
             }
         };
         let call = self
@@ -1365,7 +1365,7 @@ impl<'a> CodeGenerator<'a> {
     {
         let func = self
             .runtime_function(getter_func_name)
-            .ok_or(format!("{} not found", getter_func_name))?;
+            .ok_or(format!("{getter_func_name} not found"))?;
         let result = self
             .builder
             .build_call(func, &[ptr.into()], "extract")
@@ -1375,7 +1375,7 @@ impl<'a> CodeGenerator<'a> {
             .ok_or(error_msg)?;
         result
             .try_into()
-            .map_err(|_| format!("Conversion failed for {}", getter_func_name))
+            .map_err(|_| format!("Conversion failed for {getter_func_name}"))
     }
 
     pub(super) fn get_raw_int_value(
@@ -1486,8 +1486,7 @@ impl<'a> CodeGenerator<'a> {
             // Primitive types need to be extracted from *mut Value
             Type::Primitive(PrimitiveType::Int) => {
                 let get_int_func = self.runtime_function("mux_value_get_int").ok_or(format!(
-                    "Failed to extract int from {}: mux_value_get_int not found",
-                    variant_name
+                    "Failed to extract int from {variant_name}: mux_value_get_int not found"
                 ))?;
                 let val = self
                     .builder
@@ -1502,8 +1501,7 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Float) => {
                 let get_float_func =
                     self.runtime_function("mux_value_get_float").ok_or(format!(
-                        "Failed to extract float from {}: mux_value_get_float not found",
-                        variant_name
+                        "Failed to extract float from {variant_name}: mux_value_get_float not found"
                     ))?;
                 let val = self
                     .builder
@@ -1517,8 +1515,7 @@ impl<'a> CodeGenerator<'a> {
             }
             Type::Primitive(PrimitiveType::Bool) => {
                 let get_bool_func = self.runtime_function("mux_value_get_bool").ok_or(format!(
-                    "Failed to extract bool from {}: mux_value_get_bool not found",
-                    variant_name
+                    "Failed to extract bool from {variant_name}: mux_value_get_bool not found"
                 ))?;
                 let val = self
                     .builder
@@ -1538,8 +1535,7 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Char) => {
                 // Char is stored as int
                 let get_int_func = self.runtime_function("mux_value_get_int").ok_or(format!(
-                    "Failed to extract char from {}: mux_value_get_int not found",
-                    variant_name
+                    "Failed to extract char from {variant_name}: mux_value_get_int not found"
                 ))?;
                 let val = self
                     .builder
@@ -1556,8 +1552,7 @@ impl<'a> CodeGenerator<'a> {
                 let get_string_func =
                     self.runtime_function("mux_value_get_string")
                         .ok_or(format!(
-                            "Failed to extract string from {}: mux_value_get_string not found",
-                            variant_name
+                            "Failed to extract string from {variant_name}: mux_value_get_string not found"
                         ))?;
                 let c_str = self
                     .builder
@@ -1585,12 +1580,10 @@ impl<'a> CodeGenerator<'a> {
                 Ok((mux_string, Type::Primitive(PrimitiveType::Str)))
             }
             Type::Primitive(PrimitiveType::Void) => Err(format!(
-                "Unsupported type Void for extraction from {}",
-                variant_name
+                "Unsupported type Void for extraction from {variant_name}"
             )),
             Type::Primitive(PrimitiveType::Auto) => Err(format!(
-                "Unsupported type Auto for extraction from {}",
-                variant_name
+                "Unsupported type Auto for extraction from {variant_name}"
             )),
             // Collections, custom types, and nested Optional/Result stay as *mut Value
             Type::List(_)
@@ -1607,15 +1600,11 @@ impl<'a> CodeGenerator<'a> {
             // Reference types - unwrap the reference
             Type::Reference(inner) => self.extract_value_from_ptr(data_ptr, inner, variant_name),
             // Other types that shouldn't appear in Optional/Result
-            Type::Void | Type::Never | Type::EmptyList | Type::EmptyMap | Type::EmptySet => {
-                Err(format!(
-                    "Unsupported type {:?} for extraction from {}",
-                    wrapped_type, variant_name
-                ))
-            }
+            Type::Void | Type::Never | Type::EmptyList | Type::EmptyMap | Type::EmptySet => Err(
+                format!("Unsupported type {wrapped_type:?} for extraction from {variant_name}"),
+            ),
             Type::Function { .. } => Err(format!(
-                "Unsupported type Function for extraction from {}",
-                variant_name
+                "Unsupported type Function for extraction from {variant_name}"
             )),
             // Inside a specialized body the parameter has a concrete binding,
             // so resolve it and extract that instead. Failing here made
@@ -1624,8 +1613,7 @@ impl<'a> CodeGenerator<'a> {
             Type::Variable(v) | Type::Generic(v) => match self.resolve_generic_param(v).cloned() {
                 Some(concrete) => self.extract_value_from_ptr(data_ptr, &concrete, variant_name),
                 None => Err(format!(
-                    "Unresolved generic type {} for extraction from {}",
-                    v, variant_name
+                    "Unresolved generic type {v} for extraction from {variant_name}"
                 )),
             },
             Type::Module(_) => {
@@ -1643,13 +1631,13 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<PointerValue<'a>, String> {
         let func = self
             .runtime_function(func_name)
-            .ok_or_else(|| format!("{} not found", func_name))?;
+            .ok_or_else(|| format!("{func_name} not found"))?;
         self.builder
             .build_call(func, &[value_ptr.into()], result_name)
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| format!("{} returned no value", func_name))
+            .ok_or_else(|| format!("{func_name} returned no value"))
             .map(|v| v.into_pointer_value())
     }
 
