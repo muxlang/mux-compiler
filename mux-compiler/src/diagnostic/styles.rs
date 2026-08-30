@@ -2,7 +2,7 @@
 //!
 //! Styles always render ANSI escape codes. The emitter writes through
 //! anstream, which strips the codes when stderr is not a terminal or when
-//! NO_COLOR is set, so no manual TTY detection is needed here.
+//! `NO_COLOR` is set, so no manual TTY detection is needed here.
 
 use anstyle::{AnsiColor, Color, RgbColor, Style};
 
@@ -31,6 +31,7 @@ pub enum ColorConfig {
 pub struct Styles;
 
 impl Styles {
+    #[must_use]
     pub fn new(_config: ColorConfig) -> Self {
         Self
     }
@@ -39,34 +40,42 @@ impl Styles {
         format!("{style}{text}{style:#}")
     }
 
+    #[must_use]
     pub fn error(&self, text: &str) -> String {
         Self::styled(ERROR, text)
     }
 
+    #[must_use]
     pub fn warning(&self, text: &str) -> String {
         Self::styled(WARNING, text)
     }
 
+    #[must_use]
     pub fn help(&self, text: &str) -> String {
         Self::styled(HELP, text)
     }
 
+    #[must_use]
     pub fn bold(&self, text: &str) -> String {
         Self::styled(BOLD, text)
     }
 
+    #[must_use]
     pub fn location(&self, text: &str) -> String {
         Self::styled(LOCATION, text)
     }
 
+    #[must_use]
     pub fn primary_label(&self, text: &str) -> String {
         Self::styled(PRIMARY_LABEL, text)
     }
 
+    #[must_use]
     pub fn secondary_label(&self, text: &str) -> String {
         Self::styled(SECONDARY_LABEL, text)
     }
 
+    #[must_use]
     pub fn line_number(&self, text: &str) -> String {
         Self::styled(LINE_NUMBER, text)
     }
