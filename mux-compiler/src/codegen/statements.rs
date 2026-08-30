@@ -29,6 +29,18 @@ struct ForLoopIteration<'a> {
     exit_bb: BasicBlock<'a>,
 }
 
+struct ForLoopBlocks<'a> {
+    index_alloca: PointerValue<'a>,
+    var_alloca: PointerValue<'a>,
+    slot_type: BasicTypeEnum<'a>,
+    index_load: BasicValueEnum<'a>,
+    header_bb: BasicBlock<'a>,
+    body_bb: BasicBlock<'a>,
+    continue_bb: BasicBlock<'a>,
+    break_cleanup_bb: BasicBlock<'a>,
+    exit_bb: BasicBlock<'a>,
+}
+
 impl<'a> CodeGenerator<'a> {
     fn declare_variable(
         &mut self,
@@ -405,63 +417,44 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_store(index_alloca, start_val)
             .map_err(|e| e.to_string())?;
-        let (var_alloca, slot_type) = self.bind_loop_variable(function, var, &resolved_var_type)?;
-        let label_id = self.label_counter;
-        self.label_counter += 1;
-        let header_bb = self
-            .context
-            .append_basic_block(*function, &format!("for_header_{label_id}"));
-        let body_bb = self
-            .context
-            .append_basic_block(*function, &format!("for_body_{label_id}"));
-        let exit_bb = self
-            .context
-            .append_basic_block(*function, &format!("for_exit_{label_id}"));
-        let continue_bb = self
-            .context
-            .append_basic_block(*function, &format!("for_continue_{label_id}"));
-        let break_cleanup_bb = self
-            .context
-            .append_basic_block(*function, &format!("for_break_{label_id}"));
-        self.builder
-            .build_unconditional_branch(header_bb)
-            .map_err(|e| e.to_string())?;
-        self.builder.position_at_end(header_bb);
-        let index_load = self
-            .builder
-            .build_load(index_type, index_alloca, "index_load")
-            .map_err(|e| e.to_string())?;
+        let blocks =
+            self.setup_for_loop(function, var, &resolved_var_type, index_alloca, index_type)?;
         let cmp = self
             .builder
             .build_int_compare(
                 inkwell::IntPredicate::SLT,
-                index_load.into_int_value(),
+                blocks.index_load.into_int_value(),
                 end_val.into_int_value(),
                 "cmp",
             )
             .map_err(|e| e.to_string())?;
         self.builder
-            .build_conditional_branch(cmp, body_bb, exit_bb)
+            .build_conditional_branch(cmp, blocks.body_bb, blocks.exit_bb)
             .map_err(|e| e.to_string())?;
-        self.builder.position_at_end(body_bb);
+        self.builder.position_at_end(blocks.body_bb);
         let index_load2 = self
             .builder
-            .build_load(index_type, index_alloca, "index_load2")
+            .build_load(index_type, blocks.index_alloca, "index_load2")
             .map_err(|e| e.to_string())?;
         // Box the current index and transfer it into the loop slot,
         // releasing the previous iteration's boxed index so the loop
         // does not accumulate leaks.
-        self.overwrite_slot_of_type(var_alloca, slot_type, index_load2, &resolved_var_type)?;
+        self.overwrite_slot_of_type(
+            blocks.var_alloca,
+            blocks.slot_type,
+            index_load2,
+            &resolved_var_type,
+        )?;
         let iteration = ForLoopIteration {
-            index_alloca,
+            index_alloca: blocks.index_alloca,
             index_load: index_load2,
-            header_bb,
-            continue_bb,
-            break_cleanup_bb,
-            exit_bb,
+            header_bb: blocks.header_bb,
+            continue_bb: blocks.continue_bb,
+            break_cleanup_bb: blocks.break_cleanup_bb,
+            exit_bb: blocks.exit_bb,
         };
         self.close_loop_iteration(function, body, iteration)?;
-        self.builder.position_at_end(exit_bb);
+        self.builder.position_at_end(blocks.exit_bb);
         Ok(())
     }
 
@@ -516,7 +509,73 @@ impl<'a> CodeGenerator<'a> {
         self.builder
             .build_store(index_alloca, zero)
             .map_err(|e| e.to_string())?;
-        let (var_alloca, slot_type) = self.bind_loop_variable(function, var, &resolved_var_type)?;
+        let blocks =
+            self.setup_for_loop(function, var, &resolved_var_type, index_alloca, index_type)?;
+        let cmp = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                blocks.index_load.into_int_value(),
+                len_val,
+                "cmp",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(cmp, blocks.body_bb, blocks.exit_bb)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(blocks.body_bb);
+        let index_load2 = self
+            .builder
+            .build_load(index_type, blocks.index_alloca, "index_load2")
+            .map_err(|e| e.to_string())?;
+        let get_call = self
+            .builder
+            .build_call(
+                self.runtime_function("mux_value_list_get_value")
+                    .expect("mux_value_list_get_value must be declared in runtime"),
+                &[list_val.into(), index_load2.into()],
+                "list_get_value",
+            )
+            .map_err(|e| e.to_string())?;
+        let value_ptr = get_call
+            .try_as_basic_value()
+            .basic()
+            .expect("mux_value_list_get_value should return a basic value")
+            .into_pointer_value();
+        // `mux_value_list_get_value` returns an owned (+1) copy of the
+        // element. Registering it lets `overwrite_slot_with_owned` transfer
+        // that ownership into the slot (rather than deep-cloning it, which
+        // would leak the copy) while releasing the previous iteration's
+        // element so long-running loops do not accumulate leaks.
+        self.register_temp(value_ptr.into());
+        self.overwrite_slot_of_type(
+            blocks.var_alloca,
+            blocks.slot_type,
+            value_ptr.into(),
+            &resolved_var_type,
+        )?;
+        let iteration = ForLoopIteration {
+            index_alloca: blocks.index_alloca,
+            index_load: index_load2,
+            header_bb: blocks.header_bb,
+            continue_bb: blocks.continue_bb,
+            break_cleanup_bb: blocks.break_cleanup_bb,
+            exit_bb: blocks.exit_bb,
+        };
+        self.close_loop_iteration(function, body, iteration)?;
+        self.builder.position_at_end(blocks.exit_bb);
+        Ok(())
+    }
+
+    fn setup_for_loop(
+        &mut self,
+        function: &FunctionValue<'a>,
+        var: &str,
+        resolved_var_type: &Type,
+        index_alloca: PointerValue<'a>,
+        index_type: inkwell::types::IntType<'a>,
+    ) -> Result<ForLoopBlocks<'a>, String> {
+        let (var_alloca, slot_type) = self.bind_loop_variable(function, var, resolved_var_type)?;
         let label_id = self.label_counter;
         self.label_counter += 1;
         let header_bb = self
@@ -542,55 +601,17 @@ impl<'a> CodeGenerator<'a> {
             .builder
             .build_load(index_type, index_alloca, "index_load")
             .map_err(|e| e.to_string())?;
-        let cmp = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::SLT,
-                index_load.into_int_value(),
-                len_val,
-                "cmp",
-            )
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_conditional_branch(cmp, body_bb, exit_bb)
-            .map_err(|e| e.to_string())?;
-        self.builder.position_at_end(body_bb);
-        let index_load2 = self
-            .builder
-            .build_load(index_type, index_alloca, "index_load2")
-            .map_err(|e| e.to_string())?;
-        let get_call = self
-            .builder
-            .build_call(
-                self.runtime_function("mux_value_list_get_value")
-                    .expect("mux_value_list_get_value must be declared in runtime"),
-                &[list_val.into(), index_load2.into()],
-                "list_get_value",
-            )
-            .map_err(|e| e.to_string())?;
-        let value_ptr = get_call
-            .try_as_basic_value()
-            .basic()
-            .expect("mux_value_list_get_value should return a basic value")
-            .into_pointer_value();
-        // `mux_value_list_get_value` returns an owned (+1) copy of the
-        // element. Registering it lets `overwrite_slot_with_owned` transfer
-        // that ownership into the slot (rather than deep-cloning it, which
-        // would leak the copy) while releasing the previous iteration's
-        // element so long-running loops do not accumulate leaks.
-        self.register_temp(value_ptr.into());
-        self.overwrite_slot_of_type(var_alloca, slot_type, value_ptr.into(), &resolved_var_type)?;
-        let iteration = ForLoopIteration {
+        Ok(ForLoopBlocks {
             index_alloca,
-            index_load: index_load2,
+            var_alloca,
+            slot_type,
+            index_load,
             header_bb,
+            body_bb,
             continue_bb,
             break_cleanup_bb,
             exit_bb,
-        };
-        self.close_loop_iteration(function, body, iteration)?;
-        self.builder.position_at_end(exit_bb);
-        Ok(())
+        })
     }
 
     fn prepare_match_expression(
