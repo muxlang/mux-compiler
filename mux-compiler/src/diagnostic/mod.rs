@@ -45,6 +45,7 @@ pub struct Label {
 }
 
 impl Label {
+    #[must_use]
     pub fn primary(span: Span, message: impl Into<String>) -> Self {
         let msg = message.into();
         Self {
@@ -106,6 +107,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    #[must_use]
     pub fn new(code: DiagnosticCode) -> Self {
         Self {
             code,
@@ -119,31 +121,37 @@ impl Diagnostic {
         }
     }
 
+    #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = message.into();
         self
     }
 
+    #[must_use]
     pub fn with_label(mut self, label: Label) -> Self {
         self.labels.push(label);
         self
     }
 
+    #[must_use]
     pub fn with_help(mut self, help: Option<impl Into<String>>) -> Self {
         self.help = help.map(Into::into);
         self
     }
 
+    #[must_use]
     pub fn with_file_id(mut self, file_id: FileId) -> Self {
         self.file_id = Some(file_id);
         self
     }
 
+    #[must_use]
     pub fn with_span_edit(mut self, edit: SpanEdit) -> Self {
         self.span_edits.push(edit);
         self
     }
 
+    #[must_use]
     pub fn with_span_edits(mut self, edits: impl IntoIterator<Item = SpanEdit>) -> Self {
         self.span_edits.extend(edits);
         self
@@ -155,6 +163,7 @@ pub trait ToDiagnostic {
     fn to_diagnostic(&self, file_id: FileId) -> Diagnostic;
 }
 
+#[must_use]
 pub fn diagnostic_from_parts_with_help(
     code: DiagnosticCode,
     message: &str,
