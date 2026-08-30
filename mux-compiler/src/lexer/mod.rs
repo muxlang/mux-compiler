@@ -1189,10 +1189,10 @@ auto y = 42"#;
         }
 
         // Test with a valid variable declaration
-        let fixed_input = r#"
+        let fixed_input = r"
             auto x = 42
             auto y = 1.2
-        "#;
+        ";
         let mut source = Source::from_test_str(fixed_input);
         let result = Lexer::new(&mut source).lex_all();
         match result {
@@ -1303,7 +1303,7 @@ world"
 
     #[test]
     fn test_char_literals() {
-        let input = r#"'a''\n''\''"#; // No spaces between characters
+        let input = r"'a''\n''\''"; // No spaces between characters
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
         let tokens = lexer.lex_all().unwrap();
@@ -1748,11 +1748,11 @@ world"
     fn test_multiline_span() {
         // Using raw string literal with triple quotes to avoid escape sequence issues
         // Note: The first line is empty due to the newline after the opening """
-        let input = r###"
+        let input = r#"
         let message = """This is a 
         multi-line 
         string"""
-        "###;
+        "#;
 
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);

@@ -3987,7 +3987,7 @@ mod tests {
 
     #[test]
     fn test_error_recovery() {
-        let source = r#"
+        let source = r"
             let x = 5
             auto y = 10
 
@@ -4016,7 +4016,7 @@ mod tests {
             }
 
             auto valid3 = 300
-        "#;
+        ";
 
         let mut parser = create_parser(source);
         let result = parser.parse();
