@@ -221,7 +221,7 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Bind a closure-typed variable. Closures are not RC `Value`s; they carry
-    /// their own refcount and are released with mux_closure_release. If the bound
+    /// their own refcount and are released with `mux_closure_release`. If the bound
     /// value is an owned closure temporary, transfer ownership into a tracked
     /// closure variable so the scope releases it; a borrowed closure (a parameter
     /// or an alias of another variable) is stored without tracking. Returns
@@ -2242,7 +2242,7 @@ impl<'a> CodeGenerator<'a> {
     /// Unbox a boxed user-enum match subject (a `*mut Value`) into its inline
     /// struct value, so the discriminant load and payload binding operate on a
     /// real enum rather than a heap pointer (issue #309). Handles both a managed
-    /// BoxedEnum and a raw Opaque via `mux_value_unbox_enum`.
+    /// `BoxedEnum` and a raw Opaque via `mux_value_unbox_enum`.
     pub(super) fn unbox_enum_subject_value(
         &mut self,
         enum_name: &str,
@@ -2473,9 +2473,8 @@ impl<'a> CodeGenerator<'a> {
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| format!("{func_name} returned no value"))?;
-        let int_val = match result {
-            BasicValueEnum::IntValue(v) => v,
-            _ => return Err(format!("runtime function {func_name} must return i32")),
+        let BasicValueEnum::IntValue(int_val) = result else {
+            return Err(format!("runtime function {func_name} must return i32"));
         };
         self.i32_to_bool(int_val).map(|v| v.into_int_value())
     }

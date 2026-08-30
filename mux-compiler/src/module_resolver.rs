@@ -271,7 +271,7 @@ impl ModuleResolver {
     }
 
     /// Check if a module path resolves to a file, directory, both, or neither.
-    /// Returns (has_file, has_directory) tuple.
+    /// Returns (`has_file`, `has_directory`) tuple.
     #[must_use]
     pub fn check_module_path(&self, module_path: &str) -> (bool, bool) {
         if self.has_embedded_module(module_path) {

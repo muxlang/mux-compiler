@@ -1401,18 +1401,16 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
 
         // Parse then block using the block() function directly
-        let then_block = match self.block()? {
-            AstNode::Statement(StatementNode {
-                kind: StatementKind::Block(block),
-                ..
-            }) => block,
-            _ => {
-                return Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    "Expected block after if condition",
-                    self.peek().span,
-                ));
-            }
+        let AstNode::Statement(StatementNode {
+            kind: StatementKind::Block(then_block),
+            ..
+        }) = self.block()?
+        else {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                "Expected block after if condition",
+                self.peek().span,
+            ));
         };
 
         self.skip_newlines();
@@ -1470,18 +1468,16 @@ impl<'a> Parser<'a> {
             ));
         }
         // Parse the else block using block() which handles the opening brace
-        let else_block = match self.block()? {
-            AstNode::Statement(StatementNode {
-                kind: StatementKind::Block(block),
-                ..
-            }) => block,
-            _ => {
-                return Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    "Expected block after else",
-                    self.peek().span,
-                ));
-            }
+        let AstNode::Statement(StatementNode {
+            kind: StatementKind::Block(else_block),
+            ..
+        }) = self.block()?
+        else {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                "Expected block after else",
+                self.peek().span,
+            ));
         };
         let end_span = else_block
             .last()
@@ -3931,6 +3927,39 @@ mod tests {
     fn test_control_flow() {
         let stmts = parse_stmts("if x {\n  auto y = 1\n}\n");
         assert!(!stmts.is_empty());
+    }
+
+    #[test]
+    fn if_block_destructuring_preserves_nested_statement_and_span() {
+        let stmts = parse_stmts("if true {\n  auto y = 1\n}\n");
+        let StatementKind::If {
+            cond,
+            then_block,
+            else_block,
+        } = &stmts[0].kind
+        else {
+            panic!("expected an if statement, got {:?}", stmts[0].kind);
+        };
+
+        assert!(matches!(cond.kind, ExpressionKind::Literal(_)));
+        assert_eq!(then_block.len(), 1);
+        assert!(matches!(then_block[0].kind, StatementKind::AutoDecl(..)));
+        assert!(else_block.is_none());
+        assert_eq!(stmts[0].span.row_start, 1);
+        assert_eq!(stmts[0].span.row_end, Some(2));
+    }
+
+    #[test]
+    fn if_without_block_reports_the_expected_diagnostic() {
+        let mut parser = create_parser("if true\nauto y = 1\n");
+        let result = parser.parse();
+        let (_, errors) = result.expect_err("an if without a block must fail");
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| { error.message.contains("Expected '{' before block") })
+        );
     }
 
     #[test]

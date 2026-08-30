@@ -10,7 +10,7 @@ use inkwell::AddressSpace;
 use inkwell::types::BasicTypeEnum;
 use std::collections::HashSet;
 
-/// Placeholder span for synthetically-constructed TypeNodes in codegen.
+/// Placeholder span for synthetically-constructed `TypeNodes` in codegen.
 const SYNTHETIC_SPAN: Span = Span {
     row_start: 0,
     col_start: 0,
@@ -31,7 +31,7 @@ impl<'a> CodeGenerator<'a> {
             .and_then(|ctx| ctx.type_params.get(name))
     }
 
-    /// Create a synthetic TypeNode (no source location) from a TypeKind.
+    /// Create a synthetic `TypeNode` (no source location) from a `TypeKind`.
     fn synthetic_type_node(kind: TypeKind) -> TypeNode {
         TypeNode {
             kind,
@@ -416,8 +416,8 @@ impl<'a> CodeGenerator<'a> {
 
     /// Shared recursive type traversal helper. Walks all Type variants and recursively
     /// processes containers (Named, List, Map, etc.). Delegates to `handle_var_fn` for
-    /// Variable/Generic leaf nodes. This reduces duplication between resolve_type_with_seen
-    /// and substitute_type_with_map.
+    /// Variable/Generic leaf nodes. This reduces duplication between `resolve_type_with_seen`
+    /// and `substitute_type_with_map`.
     fn traverse_type_recursive<F>(&self, type_: &Type, handle_var_fn: F) -> Result<Type, String>
     where
         F: Fn(&str) -> Result<Type, String> + Copy,

@@ -935,7 +935,7 @@ impl SemanticAnalyzer {
     /// Resolve a `TypeKind::Named` annotation: a generic type parameter, a
     /// built-in wrapper (`optional`/`result`), or a user class/enum/interface.
     /// Split out of `resolve_type` to keep that dispatcher's cognitive
-    /// complexity within the gate (SonarQube rust:S3776).
+    /// complexity within the gate (`SonarQube` rust:S3776).
     /// Resolve a module-qualified name in a type position, `graph.Graph`.
     ///
     /// Written in a type position it means exactly what the unqualified name

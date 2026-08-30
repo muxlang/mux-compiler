@@ -72,7 +72,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// Consume the next character after a successful peek.
-    /// Only call this when peek() has already confirmed a character exists.
+    /// Only call this when `peek()` has already confirmed a character exists.
     fn consume_char(&mut self) -> char {
         self.source
             .next_char()
@@ -162,9 +162,8 @@ impl<'a> Lexer<'a> {
         }
 
         let start_span = Span::new(self.source.line, self.source.col);
-        let c = match self.source.next_char() {
-            Some(c) => c,
-            None => return Ok(Token::new(TokenType::Eof, start_span)),
+        let Some(c) = self.source.next_char() else {
+            return Ok(Token::new(TokenType::Eof, start_span));
         };
 
         match c {
@@ -1684,6 +1683,16 @@ world"
         }
         assert_eq!(tokens[4].span.row_start, 3);
         assert_eq!(tokens[4].span.col_start, 1);
+    }
+
+    #[test]
+    fn eof_token_preserves_empty_source_position() {
+        let mut source = Source::from_test_str("");
+        let mut lexer = Lexer::new(&mut source);
+        let eof = lexer.next_token().expect("empty input must lex to EOF");
+
+        assert_eq!(eof.token_type, TokenType::Eof);
+        assert_eq!(eof.span, Span::new(1, 1));
     }
 
     #[test]

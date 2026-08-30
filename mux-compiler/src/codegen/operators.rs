@@ -386,7 +386,7 @@ impl<'a> CodeGenerator<'a> {
     /// - an inline struct value (a local, a constructor result), which is
     ///   spilled to a stack slot, and
     /// - a POINTER, which for a user enum means a BOXED value - a managed
-    ///   BoxedEnum or Opaque out of a collection, as in `items[0] == Red`. It is
+    ///   `BoxedEnum` or Opaque out of a collection, as in `items[0] == Red`. It is
     ///   unboxed here for the same reason `generate_enum_match` unboxes its
     ///   subject (issue #309).
     ///
@@ -632,9 +632,8 @@ impl<'a> CodeGenerator<'a> {
     }
 
     fn resolve_identifier_type(&mut self, expr: &ExpressionNode) -> Result<Type, String> {
-        let name = match &expr.kind {
-            ExpressionKind::Identifier(name) => name,
-            _ => return Err("Expected identifier expression".to_string()),
+        let ExpressionKind::Identifier(name) = &expr.kind else {
+            return Err("Expected identifier expression".to_string());
         };
         if let Some((_, _, ty)) = self
             .variables

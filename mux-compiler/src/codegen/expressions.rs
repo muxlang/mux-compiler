@@ -125,7 +125,7 @@ impl<'a> CodeGenerator<'a> {
     /// Coerce arguments for FFI/calling convention compatibility.
     /// This is NOT type coercion (types are already verified by semantic analysis).
     /// Instead, this converts from Mux representation to C/FFI representation:
-    /// - Strings: extract raw *mut c_char from boxed Mux string
+    /// - Strings: extract raw *mut `c_char` from boxed Mux string
     /// - Complex types (Variable, Optional, Named): box the value
     ///
     /// This is necessary infrastructure for calling external/runtime functions.
@@ -236,8 +236,8 @@ impl<'a> CodeGenerator<'a> {
             .ok_or_else(|| "mux_new_string_from_cstr should return a value".to_string())
     }
 
-    /// Helper to generate a call to the mux_print runtime function.
-    /// Used for both direct print() calls and std.print() static method calls.
+    /// Helper to generate a call to the `mux_print` runtime function.
+    /// Used for both direct `print()` calls and `std.print()` static method calls.
     pub(super) fn generate_print_call(
         &mut self,
         args: &[ExpressionNode],
@@ -256,8 +256,8 @@ impl<'a> CodeGenerator<'a> {
         Ok(self.context.i32_type().const_int(0, false).into())
     }
 
-    /// Helper to generate a call to the mux_read_line runtime function.
-    /// Used for both direct read_line() calls and std.read_line() static method calls.
+    /// Helper to generate a call to the `mux_read_line` runtime function.
+    /// Used for both direct `read_line()` calls and `std.read_line()` static method calls.
     pub(super) fn generate_read_line_call(
         &mut self,
         args: &[ExpressionNode],
@@ -287,23 +287,20 @@ impl<'a> CodeGenerator<'a> {
         method_name: &str,
         args: &[ExpressionNode],
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        let symbol = match self.analyzer.symbol_table().lookup(module_name) {
-            Some(s) => s,
-            None => return Ok(None),
+        let Some(symbol) = self.analyzer.symbol_table().lookup(module_name) else {
+            return Ok(None);
         };
 
         if symbol.kind != crate::semantics::SymbolKind::Import {
             return Ok(None);
         }
 
-        let module_syms = match self.analyzer.imported_symbols().get(module_name) {
-            Some(syms) => syms,
-            None => return Ok(None),
+        let Some(module_syms) = self.analyzer.imported_symbols().get(module_name) else {
+            return Ok(None);
         };
 
-        let class_symbol = match module_syms.get(class_name) {
-            Some(sym) => sym,
-            None => return Ok(None),
+        let Some(class_symbol) = module_syms.get(class_name) else {
+            return Ok(None);
         };
 
         // An imported enum reaches its variants the same way a class reaches a
@@ -935,7 +932,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(closure_mem)
     }
 
-    /// Allocate a closure struct (fn_ptr + captures + capture_count) with a
+    /// Allocate a closure struct (`fn_ptr` + captures + `capture_count`) with a
     /// refcount header. The closure is allocated as
     /// `[RefHeader (i64) | fn_ptr | captures | capture_count (i64)]`.
     /// The `capture_count` lets the runtime teardown (`mux_closure_release`)
@@ -1037,7 +1034,7 @@ impl<'a> CodeGenerator<'a> {
         false
     }
 
-    /// check if a TypeNode contains any of the given names (for generic type parameters)
+    /// check if a `TypeNode` contains any of the given names (for generic type parameters)
     fn type_node_contains_names(type_node: &TypeNode, names: &[&str]) -> bool {
         match &type_node.kind {
             TypeKind::Named(n, args) => {
@@ -3671,7 +3668,7 @@ impl<'a> CodeGenerator<'a> {
     /// `xs[a:b]` on a list or a string.
     ///
     /// An omitted bound becomes the extreme the runtime clamps to: 0 for the
-    /// start, and i64::MAX for the end rather than the actual length, since the
+    /// start, and `i64::MAX` for the end rather than the actual length, since the
     /// runtime clamps anyway and asking for the length here would mean an extra
     /// call and a second place for the two to disagree.
     fn generate_slice_expression(
@@ -4262,9 +4259,8 @@ impl<'a> CodeGenerator<'a> {
             .variables
             .get(obj_name)
             .or_else(|| self.global_variables.get(obj_name))?;
-        let type_args = match obj_type {
-            Type::Named(_, type_args) | Type::Instantiated(_, type_args) => type_args,
-            _ => return None,
+        let (Type::Named(_, type_args) | Type::Instantiated(_, type_args)) = obj_type else {
+            return None;
         };
         if type_args.is_empty() {
             return None;
@@ -5057,7 +5053,7 @@ impl<'a> CodeGenerator<'a> {
     /// - If index >= 0, returns index as-is
     /// - If index < 0, returns length + index (wraparound from end)
     ///
-    /// This matches the behavior of mux_list_set_value in the runtime.
+    /// This matches the behavior of `mux_list_set_value` in the runtime.
     fn normalize_list_index(
         &mut self,
         index_val: BasicValueEnum<'a>,
@@ -5115,7 +5111,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(normalized_index)
     }
 
-    /// Extracts the base expression and all indices from a nested ListAccess chain.
+    /// Extracts the base expression and all indices from a nested `ListAccess` chain.
     ///
     /// For example, `matrix[0][1]` returns `(matrix, [0, 1])`
     /// For `hypercube[0][1][2][3]` returns `(hypercube, [0, 1, 2, 3])`
@@ -5344,7 +5340,7 @@ impl<'a> CodeGenerator<'a> {
 
     /// Helper to apply a chain of indices to a value and set the final element.
     /// This handles: `value[i1][i2]...[iN] = new_value`
-    /// where `value` is a BasicValueEnum (*mut Value), not an ExpressionNode.
+    /// where `value` is a `BasicValueEnum` (*mut Value), not an `ExpressionNode`.
     ///
     /// Requires the type of `current_val` to determine if it's a List or Map.
     fn apply_indices_and_set(

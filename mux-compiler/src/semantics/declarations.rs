@@ -1491,7 +1491,7 @@ impl SemanticAnalyzer {
 
     /// Returns true if the given statement terminates this code path with a
     /// return. Used by `all_paths_return` to keep the recursive function
-    /// under SonarQube's cognitive complexity threshold.
+    /// under `SonarQube`'s cognitive complexity threshold.
     #[allow(clippy::only_used_in_recursion)]
     fn statement_returns(&self, stmt: &StatementNode) -> bool {
         match &stmt.kind {

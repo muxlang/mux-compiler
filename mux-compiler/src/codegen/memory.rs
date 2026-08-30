@@ -1,4 +1,4 @@
-//! Reference counting (RC) scope management for CodeGenerator.
+//! Reference counting (RC) scope management for `CodeGenerator`.
 //!
 //! This module handles tracking RC-allocated variables and generating cleanup code.
 
@@ -182,7 +182,7 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Track an RC-allocated variable in the current scope.
-    /// The variable will have mux_rc_dec called on it when the scope ends.
+    /// The variable will have `mux_rc_dec` called on it when the scope ends.
     pub(super) fn track_rc_variable(&mut self, name: &str, alloca: PointerValue<'a>) {
         self.track_slot(name, RcSlot::Boxed(alloca));
     }
@@ -226,7 +226,7 @@ impl<'a> CodeGenerator<'a> {
     /// owned. Treating it as borrowed costs a deep clone that does nothing: a
     /// variant written without parentheses has no payload by definition, so
     /// `emit_enum_payload_op` skips it as scalar-only. Widening this to include
-    /// FieldAccess would be an optimization, not a fix, and would need to
+    /// `FieldAccess` would be an optimization, not a fix, and would need to
     /// distinguish a variant construction from an ordinary field load first.
     pub(super) fn rhs_produces_owned_enum(kind: &crate::ast::ExpressionKind) -> bool {
         matches!(
@@ -255,7 +255,7 @@ impl<'a> CodeGenerator<'a> {
     /// Convert a user-enum value to the inline struct every consumer expects.
     ///
     /// A user enum is normally an inline `{ i32 tag, fields... }` struct. When
-    /// one arrives as a POINTER it is boxed - a managed BoxedEnum, or an Opaque
+    /// one arrives as a POINTER it is boxed - a managed `BoxedEnum`, or an Opaque
     /// read out of a collection (`items[0]`, `m[k]`) - and the struct has to be
     /// loaded back out before anything can use it.
     ///
