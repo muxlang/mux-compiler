@@ -23,6 +23,7 @@ impl Source {
         Err(Error::new(ErrorKind::NotFound, "File does not exist"))
     }
 
+    #[must_use]
     pub fn from_string(input: String) -> Self {
         Self {
             input,
@@ -33,6 +34,7 @@ impl Source {
     }
 
     #[allow(dead_code)]
+    #[must_use]
     pub fn from_test_str(string: &str) -> Source {
         Source::from_string(string.to_string())
     }
@@ -57,6 +59,7 @@ impl Source {
         Some(ch)
     }
 
+    #[must_use]
     pub fn peek(&self) -> Option<char> {
         if self.pos >= self.input.len() {
             return None;
@@ -64,6 +67,7 @@ impl Source {
         self.input[self.pos..].chars().next()
     }
 
+    #[must_use]
     pub fn peek_nth(&self, n: usize) -> Option<char> {
         if self.pos >= self.input.len() {
             return None;
