@@ -339,13 +339,12 @@ pub fn unified_diff(files: &Files, applied: &AppliedEdits) -> String {
         let new_lines = diff_lines(updated);
         let old_start = i32::from(!old_lines.is_empty());
         let new_start = i32::from(!new_lines.is_empty());
-        write!(
+        let _ = write!(
             &mut output,
             "--- {path}\n+++ {path}\n@@ -{old_start},{} +{new_start},{} @@\n",
             old_lines.len(),
             new_lines.len()
-        )
-        .expect("writing unified diff to String cannot fail");
+        );
         for (line, has_newline) in old_lines {
             append_diff_line(&mut output, '-', line, has_newline);
         }

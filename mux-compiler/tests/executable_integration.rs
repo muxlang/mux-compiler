@@ -130,12 +130,11 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
 
     // If binary exited with non-zero status, append exit status to output
     if !exec_output.status.success() {
-        writeln!(
+        let _ = writeln!(
             &mut exec_stdout,
             "Program exited with status: {}",
             exec_output.status
-        )
-        .expect("writing execution status to String cannot fail");
+        );
     }
 
     // Clean up the executable

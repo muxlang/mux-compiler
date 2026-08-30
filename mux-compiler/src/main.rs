@@ -820,14 +820,13 @@ fn banner_sweep_frame(
     for char_row in combined {
         for (col, ch) in char_row.iter().enumerate().take(cols) {
             let s = palette.for_distance(cols - 1 - col);
-            write!(&mut buf, "{s}{ch}{s:#}").expect("writing banner frame to String cannot fail");
+            let _ = write!(&mut buf, "{s}{ch}{s:#}");
         }
         buf.push('\n');
     }
     buf.push('\n');
     let settled = &palette.settled;
-    writeln!(&mut buf, "{settled}{BANNER_MSG}{settled:#}")
-        .expect("writing banner frame to String cannot fail");
+    let _ = writeln!(&mut buf, "{settled}{BANNER_MSG}{settled:#}");
     buf
 }
 
@@ -836,12 +835,10 @@ fn banner_settled_frame(combined: &[Vec<char>], settled: &anstyle::Style) -> Str
     buf.push('\n');
     for char_row in combined {
         let s: String = char_row.iter().collect();
-        writeln!(&mut buf, "{settled}{s}{settled:#}")
-            .expect("writing banner frame to String cannot fail");
+        let _ = writeln!(&mut buf, "{settled}{s}{settled:#}");
     }
     buf.push('\n');
-    writeln!(&mut buf, "{settled}{BANNER_MSG}{settled:#}")
-        .expect("writing banner frame to String cannot fail");
+    let _ = writeln!(&mut buf, "{settled}{BANNER_MSG}{settled:#}");
     buf
 }
 
@@ -907,8 +904,7 @@ fn fix_json_escape(value: &str) -> String {
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
             character if character.is_control() => {
-                write!(&mut escaped, "\\u{:04x}", character as u32)
-                    .expect("writing JSON escape to String cannot fail");
+                let _ = write!(&mut escaped, "\\u{:04x}", character as u32);
             }
             character => escaped.push(character),
         }
@@ -1873,8 +1869,7 @@ fn internal_compiler_error_report(
         }
     }
     if let Some(file) = file {
-        writeln!(&mut out, "  while compiling: {file}")
-            .expect("writing compiler error to String cannot fail");
+        let _ = writeln!(&mut out, "  while compiling: {file}");
     }
     // The "tip:" wording requested in mux-context#24: point the user at where to
     // report and what to include, without implying their code is at fault. Only
@@ -1885,11 +1880,10 @@ fn internal_compiler_error_report(
     } else {
         "the file you ran"
     };
-    writeln!(
+    let _ = writeln!(
         &mut out,
         "tip: please report this error, along with {subject} and your system details"
-    )
-    .expect("writing compiler error to String cannot fail");
+    );
     out.push_str(
         "     (the output of `mux --version`), to the Mux maintainers at https://github.com/muxlang/mux-compiler\n",
     );

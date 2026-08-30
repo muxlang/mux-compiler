@@ -24,7 +24,7 @@ fn parse_file_to_ast(test_file: &Path) -> String {
     // Convert the AST to a nicely formatted string for snapshots
     let mut output = String::new();
     for node in result {
-        writeln!(&mut output, "{node:#?}").expect("writing parser snapshot to String cannot fail");
+        let _ = writeln!(&mut output, "{node:#?}");
         output.push('\n');
     }
     output
