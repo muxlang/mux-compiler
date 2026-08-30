@@ -18,6 +18,7 @@ pub struct SourceRange {
 }
 
 impl SourceRange {
+    #[must_use]
     pub const fn new(start_byte: usize, end_byte: usize) -> Self {
         Self {
             start_byte,
@@ -25,6 +26,7 @@ impl SourceRange {
         }
     }
 
+    #[must_use]
     pub const fn is_empty(self) -> bool {
         self.start_byte == self.end_byte
     }
@@ -44,6 +46,7 @@ pub enum Applicability {
 }
 
 impl Applicability {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::MachineApplicable => "machine-applicable",
@@ -75,6 +78,7 @@ pub struct SpanEdit {
 }
 
 impl SpanEdit {
+    #[must_use]
     pub fn machine_applicable_text(
         target: Span,
         replacement: impl Into<String>,
@@ -91,6 +95,7 @@ impl SpanEdit {
         }
     }
 
+    #[must_use]
     pub fn machine_applicable_source(
         target: Span,
         source: Span,
@@ -107,16 +112,19 @@ impl SpanEdit {
         }
     }
 
+    #[must_use]
     pub const fn for_file(mut self, file_id: FileId) -> Self {
         self.target_file = Some(file_id);
         self
     }
 
+    #[must_use]
     pub const fn replacement_from_file(mut self, file_id: FileId) -> Self {
         self.replacement_file = Some(file_id);
         self
     }
 
+    #[must_use]
     pub const fn in_solution(mut self, solution_id: usize) -> Self {
         self.solution_id = Some(solution_id);
         self
@@ -135,6 +143,7 @@ pub struct TextEdit {
 }
 
 impl TextEdit {
+    #[must_use]
     pub fn machine_applicable(
         file_id: FileId,
         range: SourceRange,
@@ -151,10 +160,12 @@ impl TextEdit {
         }
     }
 
+    #[must_use]
     pub const fn is_machine_applicable(&self) -> bool {
         matches!(self.applicability, Applicability::MachineApplicable)
     }
 
+    #[must_use]
     pub const fn with_solution(mut self, solution_id: Option<usize>) -> Self {
         self.solution_id = solution_id;
         self
