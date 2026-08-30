@@ -59,6 +59,7 @@ pub struct DiagnosticInfo {
 
 impl DiagnosticCode {
     /// Every registered code, in stable numeric order.
+    #[must_use]
     pub const fn all() -> &'static [Self] {
         &[
             Self::LexUnexpectedCharacter,
@@ -103,10 +104,12 @@ impl DiagnosticCode {
     /// Allocated codes reserved for a future producer. These remain separate
     /// from `all` so the embedded registry never advertises an unimplemented
     /// diagnostic.
+    #[must_use]
     pub const fn reserved() -> &'static [Self] {
         &[Self::UninitializedRead]
     }
 
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::LexUnexpectedCharacter => "E0100",
@@ -149,6 +152,7 @@ impl DiagnosticCode {
         }
     }
 
+    #[must_use]
     pub const fn level(self) -> Level {
         match self {
             Self::UnusedBinding
@@ -163,6 +167,7 @@ impl DiagnosticCode {
     }
 
     /// Return the user-facing metadata embedded in the compiler.
+    #[must_use]
     pub const fn info(self) -> DiagnosticInfo {
         let (title, trigger, example, explanation, fix) = match self {
             Self::LexUnexpectedCharacter => (
@@ -436,6 +441,7 @@ impl DiagnosticCode {
         }
     }
 
+    #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         Self::all()
             .iter()
