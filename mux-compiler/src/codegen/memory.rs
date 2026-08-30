@@ -1506,15 +1506,15 @@ impl<'a> CodeGenerator<'a> {
             let (lt, gt) = (inkwell::FloatPredicate::OLT, inkwell::FloatPredicate::OGT);
             let a = la.into_float_value();
             let b = lb.into_float_value();
-            let is_lt = self
+            let less_than = self
                 .builder
                 .build_float_compare(lt, a, b, "cmp_flt")
                 .map_err(|e| e.to_string())?;
-            let is_gt = self
+            let greater_than = self
                 .builder
                 .build_float_compare(gt, a, b, "cmp_fgt")
                 .map_err(|e| e.to_string())?;
-            self.select_three_way(is_lt, is_gt)
+            self.select_three_way(less_than, greater_than)
         } else {
             Err("unsupported scalar type in enum comparison".to_string())
         }
@@ -1532,22 +1532,22 @@ impl<'a> CodeGenerator<'a> {
         } else {
             (inkwell::IntPredicate::ULT, inkwell::IntPredicate::UGT)
         };
-        let is_lt = self
+        let less_than = self
             .builder
             .build_int_compare(lt_pred, a, b, "cmp_ilt")
             .map_err(|e| e.to_string())?;
-        let is_gt = self
+        let greater_than = self
             .builder
             .build_int_compare(gt_pred, a, b, "cmp_igt")
             .map_err(|e| e.to_string())?;
-        self.select_three_way(is_lt, is_gt)
+        self.select_three_way(less_than, greater_than)
     }
 
-    /// Fold `is_lt`/`is_gt` booleans into an `i32` of -1/1/0.
+    /// Fold less-than/greater-than booleans into an `i32` of -1/1/0.
     fn select_three_way(
         &self,
-        is_lt: inkwell::values::IntValue<'a>,
-        is_gt: inkwell::values::IntValue<'a>,
+        less_than: inkwell::values::IntValue<'a>,
+        greater_than: inkwell::values::IntValue<'a>,
     ) -> Result<inkwell::values::IntValue<'a>, String> {
         let i32_type = self.context.i32_type();
         let neg_one = i32_type.const_int((-1i64) as u64, true);
@@ -1555,12 +1555,12 @@ impl<'a> CodeGenerator<'a> {
         let zero = i32_type.const_zero();
         let gt_or_zero = self
             .builder
-            .build_select(is_gt, one, zero, "cmp_gt0")
+            .build_select(greater_than, one, zero, "cmp_gt0")
             .map_err(|e| e.to_string())?
             .into_int_value();
         Ok(self
             .builder
-            .build_select(is_lt, neg_one, gt_or_zero, "cmp_sel")
+            .build_select(less_than, neg_one, gt_or_zero, "cmp_sel")
             .map_err(|e| e.to_string())?
             .into_int_value())
     }
