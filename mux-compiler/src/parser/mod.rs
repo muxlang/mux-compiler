@@ -982,16 +982,16 @@ impl<'a> Parser<'a> {
             // Could be ./ or ../
             if self.matches(&[TokenType::Slash]) {
                 // ./module
-                parts.push("".to_string()); // Will join as ./
+                parts.push(String::new()); // Will join as ./
             } else if self.matches(&[TokenType::Dot]) {
                 // ../module
                 parts.push(".".to_string());
                 self.consume_token(TokenType::Slash, "Expected '/' after '..'")?;
-                parts.push("".to_string());
+                parts.push(String::new());
             }
         } else if self.matches(&[TokenType::Slash]) {
             // Absolute path /module
-            parts.push("".to_string()); // Leading slash
+            parts.push(String::new()); // Leading slash
         }
 
         // Parse first identifier
