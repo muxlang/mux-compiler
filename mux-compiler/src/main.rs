@@ -293,19 +293,30 @@ fn runtime_static_lib_path(dir: &Path) -> PathBuf {
     } else {
         "libmux_runtime-"
     };
-    std::fs::read_dir(deps)
+    let candidates: Vec<PathBuf> = std::fs::read_dir(deps)
         .ok()
         .into_iter()
         .flat_map(|entries| entries.flatten())
         .map(|entry| entry.path())
-        .find(|path| {
+        .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| {
-                    name.starts_with(prefix) && (name.ends_with(".a") || name.ends_with(".lib"))
+                    path.is_file()
+                        && name.starts_with(prefix)
+                        && (name.ends_with(".a") || name.ends_with(".lib"))
                 })
         })
-        .unwrap_or(expected)
+        .collect();
+    // Cargo can leave archives from previous builds in `deps/`, and directory
+    // iteration order is unspecified. If more than one hash is present, fail
+    // closed instead of guessing and potentially linking a stale runtime.
+    // `cargo clean` (or a fresh target directory) makes the intended artifact
+    // unambiguous; a uniquely matching archive is safe to use.
+    match candidates.as_slice() {
+        [candidate] => candidate.clone(),
+        _ => expected,
+    }
 }
 
 /// Path to the dynamic runtime library in `dir` for the target platform. Shared
@@ -2056,12 +2067,7 @@ fn build_linker_args_for(
     if runtime_static.exists()
         && runtime_static.file_name().and_then(|name| name.to_str()) != Some(expected_static_name)
     {
-        linker_args.push(
-            runtime_static
-                .to_str()
-                .expect("runtime library path should be valid Unicode")
-                .to_string(),
-        );
+        linker_args.push(runtime_static.to_string_lossy().into_owned());
     } else {
         linker_args.push("-lmux_runtime".to_string());
     }
@@ -2237,6 +2243,9 @@ mod tests {
     use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, SpanEdit};
     use crate::lexer::Span;
     use std::path::{Path, PathBuf};
+
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
 
     #[test]
     fn materializes_text_span_edits_against_the_current_source() {
@@ -2661,6 +2670,34 @@ mod tests {
                 .any(|arg| arg.ends_with("libmux_runtime-0123456789abcdef.a"))
         );
         std::fs::remove_dir_all(&hashed_dir).ok();
+    }
+
+    #[test]
+    fn hashed_runtime_resolution_fails_closed_on_ambiguous_archives() {
+        let dir = unique_tmp("rtlib_hashed_ambiguous");
+        let deps = dir.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let stale = deps.join("libmux_runtime-stale.a");
+        let current = deps.join("libmux_runtime-current.a");
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::write(&current, b"current").unwrap();
+
+        assert!(find_runtime_lib_in_dir(&dir).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linker_args_handle_non_utf8_runtime_paths_without_panicking() {
+        let root = unique_tmp("rtlib_non_utf8");
+        let dir = root.join(std::ffi::OsString::from_vec(vec![b'r', 0x80]));
+        let deps = dir.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::write(deps.join("libmux_runtime-nonutf8.a"), b"x").unwrap();
+
+        let args = build_linker_args_for("linux", "scratch.o", "/tmp", &dir);
+        assert!(args.iter().any(|arg| arg.contains('\u{FFFD}')));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A packaged Windows install keeps the DLL beside the executable so the
