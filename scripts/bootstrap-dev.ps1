@@ -6,8 +6,8 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-Write-Host "Installing LLVM 17 and clang toolchain"
-choco install llvm --version=17.0.6 -y --no-progress
+Write-Host "Installing LLVM 22 and clang toolchain"
+choco install llvm --version=22.1.0 -y --no-progress
 
 Write-Host "Installed contributor dependencies."
 

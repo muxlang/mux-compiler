@@ -273,11 +273,39 @@ fn print_llvm_install_help() {
 /// single source of the archive filename, so runtime discovery and static-only
 /// classification cannot disagree.
 fn runtime_static_lib_path(dir: &Path) -> PathBuf {
-    if cfg!(target_family = "windows") {
+    let expected = if cfg!(target_family = "windows") {
         dir.join("mux_runtime.lib")
     } else {
         dir.join("libmux_runtime.a")
+    };
+    if expected.exists() {
+        return expected;
     }
+
+    // A git dependency selected with `cargo build -p mux-runtime` is built as
+    // a dependency artifact, so Cargo puts its hash-suffixed archive under
+    // `target/<profile>/deps/` instead of beside the profile directory.
+    // Resolve that form too; otherwise source-checkout tests cannot link even
+    // immediately after the documented runtime build command.
+    let deps = dir.join("deps");
+    let prefix = if cfg!(target_family = "windows") {
+        "mux_runtime-"
+    } else {
+        "libmux_runtime-"
+    };
+    std::fs::read_dir(deps)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with(prefix) && (name.ends_with(".a") || name.ends_with(".lib"))
+                })
+        })
+        .unwrap_or(expected)
 }
 
 /// Path to the dynamic runtime library in `dir` for the target platform. Shared
@@ -2019,7 +2047,24 @@ fn build_linker_args_for(
         });
     }
 
-    linker_args.push("-lmux_runtime".to_string());
+    let runtime_static = runtime_static_lib_path(lib_dir);
+    let expected_static_name = if windows {
+        "mux_runtime.lib"
+    } else {
+        "libmux_runtime.a"
+    };
+    if runtime_static.exists()
+        && runtime_static.file_name().and_then(|name| name.to_str()) != Some(expected_static_name)
+    {
+        linker_args.push(
+            runtime_static
+                .to_str()
+                .expect("runtime library path should be valid Unicode")
+                .to_string(),
+        );
+    } else {
+        linker_args.push("-lmux_runtime".to_string());
+    }
 
     // A static runtime carries no record of its own dependencies, so its
     // undefined native symbols must be resolved explicitly - otherwise a program
@@ -2602,6 +2647,20 @@ mod tests {
             assert_eq!(find_runtime_lib_in_dir(&dyn_dir), Some(dyn_path));
         }
         std::fs::remove_dir_all(&dyn_dir).ok();
+
+        // A dependency build puts hash-suffixed artifacts in target/.../deps.
+        let hashed_dir = unique_tmp("rtlib_hashed");
+        let deps_dir = hashed_dir.join("deps");
+        std::fs::create_dir_all(&deps_dir).unwrap();
+        let hashed_path = deps_dir.join("libmux_runtime-0123456789abcdef.a");
+        std::fs::write(&hashed_path, b"x").unwrap();
+        assert_eq!(find_runtime_lib_in_dir(&hashed_dir), Some(hashed_path));
+        let args = build_linker_args("scratch.o", hashed_dir.to_str().unwrap(), &hashed_dir);
+        assert!(
+            args.iter()
+                .any(|arg| arg.ends_with("libmux_runtime-0123456789abcdef.a"))
+        );
+        std::fs::remove_dir_all(&hashed_dir).ok();
     }
 
     /// A packaged Windows install keeps the DLL beside the executable so the

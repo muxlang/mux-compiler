@@ -271,6 +271,18 @@ fn test_executable_all_mux_files_in_dir() {
     let mut test_files = collect_mux_files(&dir_path);
     test_files.sort();
 
+    let fixture_stems: Vec<_> = test_files
+        .iter()
+        .filter_map(|path| path.file_stem().map(|stem| stem.to_os_string()))
+        .collect();
+    let unique_fixture_stems: std::collections::BTreeSet<_> =
+        fixture_stems.iter().cloned().collect();
+    assert_eq!(
+        fixture_stems.len(),
+        unique_fixture_stems.len(),
+        "executable fixtures must have unique stems so each fixture maps to one snapshot"
+    );
+
     let ipv4_re = Regex::new(r"(?P<host>\b(?:\d{1,3}\.){3}\d{1,3}):\d+\b").unwrap();
     let ipv6_re = Regex::new(r"\[(?P<host>[0-9a-fA-F:]+)\]:\d+\b").unwrap();
 

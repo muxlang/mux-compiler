@@ -7,25 +7,25 @@ if ($args.Count -eq 0) {
 
 $llvmConfig = $null
 
-if (Get-Command llvm-config-17 -ErrorAction SilentlyContinue) {
-    $llvmConfig = (Get-Command llvm-config-17).Source
+if (Get-Command llvm-config-22 -ErrorAction SilentlyContinue) {
+    $llvmConfig = (Get-Command llvm-config-22).Source
 } elseif (Test-Path "C:\Program Files\LLVM\bin\llvm-config.exe") {
     $llvmConfig = "C:\Program Files\LLVM\bin\llvm-config.exe"
 } else {
-    Write-Host "Could not find llvm-config-17. Run scripts/bootstrap-dev.ps1 first."
+    Write-Host "Could not find llvm-config-22. Run scripts/bootstrap-dev.ps1 first."
     exit 1
 }
 
 $llvmPrefix = & $llvmConfig --prefix
 $env:LLVM_CONFIG_PATH = $llvmConfig
-$env:LLVM_SYS_170_PREFIX = $llvmPrefix
+$env:LLVM_SYS_221_PREFIX = $llvmPrefix
 
-if (Get-Command clang-17 -ErrorAction SilentlyContinue) {
-    $env:CC = (Get-Command clang-17).Source
+if (Get-Command clang-22 -ErrorAction SilentlyContinue) {
+    $env:CC = (Get-Command clang-22).Source
 }
 
-if (Get-Command clang++-17 -ErrorAction SilentlyContinue) {
-    $env:CXX = (Get-Command clang++-17).Source
+if (Get-Command clang++-22 -ErrorAction SilentlyContinue) {
+    $env:CXX = (Get-Command clang++-22).Source
 }
 
 & cargo @args
