@@ -3,7 +3,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DIAGNOSTIC_PROBE: &str = r#"
+const LABEL_PROBE: &str = r#"
+#![deny(unused_must_use)]
+
+use mux_lang::diagnostic::Label;
+use mux_lang::lexer::Span;
+
+fn main() {
+    Label::primary(Span::new(1, 1), "label");
+}
+"#;
+
+const NEW_PROBE: &str = r#"
+#![deny(unused_must_use)]
+
+use mux_lang::diagnostic::{Diagnostic, DiagnosticCode};
+
+fn main() {
+    Diagnostic::new(DiagnosticCode::InternalCompiler);
+}
+"#;
+
+const BUILDER_PROBE: &str = r#"
 #![deny(unused_must_use)]
 
 use mux_lang::diagnostic::{
@@ -16,8 +37,6 @@ fn main() {
     let mut files = Files::new();
     let file_id = files.add("fixture.mux", "value".to_owned());
 
-    Label::primary(span, "label");
-    Diagnostic::new(DiagnosticCode::InternalCompiler);
     diagnostic_from_parts_with_help(
         DiagnosticCode::InternalCompiler,
         "message",
@@ -25,7 +44,6 @@ fn main() {
         span,
         file_id,
     );
-
     Diagnostic::new(DiagnosticCode::InternalCompiler).with_message("message");
     Diagnostic::new(DiagnosticCode::InternalCompiler)
         .with_label(Label::primary(span, "label"));
@@ -44,61 +62,106 @@ fn cargo_executable() -> String {
     env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned())
 }
 
-struct ProbeFile {
-    path: PathBuf,
-    directory: Option<PathBuf>,
-}
+struct ProbeDirectory(PathBuf);
 
-impl Drop for ProbeFile {
+impl Drop for ProbeDirectory {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-        if let Some(directory) = &self.directory {
-            let _ = fs::remove_dir(directory);
-        }
+        let _ = fs::remove_dir(&self.0);
     }
 }
 
-#[test]
-fn diagnostic_values_are_compile_time_must_use_contracts() {
-    let package_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let examples_dir = package_root.join("examples");
-    let directory = if examples_dir.exists() {
-        None
-    } else {
-        fs::create_dir(&examples_dir).expect("create diagnostic probe examples directory");
-        Some(examples_dir.clone())
-    };
-    let example_name = format!("diagnostic_must_use_probe_{}", std::process::id());
-    let probe = ProbeFile {
-        path: examples_dir.join(format!("{example_name}.rs")),
-        directory,
-    };
-    fs::write(&probe.path, DIAGNOSTIC_PROBE).expect("write diagnostic must-use probe");
+struct ProbeFile(PathBuf);
 
+impl Drop for ProbeFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn write_probe(examples_dir: &Path, name: &str, source: &str) -> Result<ProbeFile, String> {
+    let path = examples_dir.join(format!("{name}.rs"));
+    fs::write(&path, source).map_err(|error| format!("write {}: {error}", path.display()))?;
+    Ok(ProbeFile(path))
+}
+
+fn run_probe(
+    package_root: &Path,
+    examples_dir: &Path,
+    name: &str,
+    source: &str,
+) -> Result<String, String> {
+    let _probe = write_probe(examples_dir, name, source)?;
     let result = Command::new(cargo_executable())
         .arg("check")
         .arg("--manifest-path")
         .arg(package_root.join("Cargo.toml"))
         .arg("--example")
-        .arg(example_name)
+        .arg(name)
         .arg("--locked")
         .arg("--offline")
         .current_dir(package_root)
         .output()
-        .expect("run cargo for diagnostic must-use probe");
+        .map_err(|error| format!("run cargo for {name} must-use probe: {error}"))?;
 
-    assert!(
-        !result.status.success(),
-        "diagnostic must-use probe unexpectedly compiled; an annotation may be missing"
-    );
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(
-        stderr.contains("unused_must_use"),
-        "diagnostic must-use probe failed for an unexpected reason:\n{stderr}"
-    );
+    let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+    if result.status.success() {
+        return Err(format!(
+            "{name} must-use probe unexpectedly compiled; its annotation may be missing"
+        ));
+    }
+    if !stderr.contains("unused_must_use") {
+        return Err(format!(
+            "{name} must-use probe failed for an unexpected reason:\n{stderr}"
+        ));
+    }
+    Ok(stderr)
+}
+
+fn require_diagnostic(stderr: &str, method: &str) -> Result<(), String> {
+    if stderr.contains(method) {
+        Ok(())
+    } else {
+        Err(format!(
+            "must-use probe did not report discarded {method} result:\n{stderr}"
+        ))
+    }
+}
+
+#[test]
+fn diagnostic_values_are_compile_time_must_use_contracts() -> Result<(), String> {
+    let package_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let examples_dir = package_root.join("examples");
+    let directory = if examples_dir.exists() {
+        None
+    } else {
+        fs::create_dir(&examples_dir)
+            .map_err(|error| format!("create {}: {error}", examples_dir.display()))?;
+        Some(ProbeDirectory(examples_dir.clone()))
+    };
+    let pid = std::process::id();
+    let label_stderr = run_probe(
+        package_root,
+        &examples_dir,
+        &format!("diagnostic_label_must_use_{pid}"),
+        LABEL_PROBE,
+    )?;
+    require_diagnostic(&label_stderr, "Label::primary")?;
+
+    let new_stderr = run_probe(
+        package_root,
+        &examples_dir,
+        &format!("diagnostic_new_must_use_{pid}"),
+        NEW_PROBE,
+    )?;
+    require_diagnostic(&new_stderr, "Diagnostic::new")?;
+
+    let builder_stderr = run_probe(
+        package_root,
+        &examples_dir,
+        &format!("diagnostic_builder_must_use_{pid}"),
+        BUILDER_PROBE,
+    )?;
     for method in [
-        "primary",
-        "new",
         "diagnostic_from_parts_with_help",
         "with_message",
         "with_label",
@@ -107,9 +170,8 @@ fn diagnostic_values_are_compile_time_must_use_contracts() {
         "with_span_edit",
         "with_span_edits",
     ] {
-        assert!(
-            stderr.contains(method),
-            "diagnostic must-use probe did not report discarded {method} result:\n{stderr}"
-        );
+        require_diagnostic(&builder_stderr, method)?;
     }
+    drop(directory);
+    Ok(())
 }
