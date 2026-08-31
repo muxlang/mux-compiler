@@ -12,6 +12,17 @@ use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use std::collections::HashMap;
 
+/// Convert a source-level class field index to the width required by LLVM.
+///
+/// Class layouts are emitted through LLVM's struct APIs, whose indices are
+/// `u32`.  The parser and semantic analyzer produce these indices from the
+/// class's field vector, so an index larger than `u32::MAX` cannot describe a
+/// representable LLVM class layout.  Keep that invariant explicit instead of
+/// silently wrapping on 64-bit hosts.
+fn llvm_struct_index(index: usize) -> u32 {
+    u32::try_from(index).expect("class field index exceeds LLVM's u32 limit")
+}
+
 impl<'a> CodeGenerator<'a> {
     /// The LLVM type of a field the class stores inline as a scalar, or `None`
     /// when the slot holds a `*mut Value`.
@@ -485,7 +496,12 @@ impl<'a> CodeGenerator<'a> {
                 if let Some(enum_name) = self.nested_user_enum_name(&field.type_) {
                     let field_ptr = self
                         .builder
-                        .build_struct_gep(class_type, dst_typed, field_index as u32, &field.name)
+                        .build_struct_gep(
+                            class_type,
+                            dst_typed,
+                            llvm_struct_index(field_index),
+                            &field.name,
+                        )
                         .map_err(|e| e.to_string())?;
                     self.emit_enum_deep_clone(&enum_name, field_ptr)?;
                 }
@@ -493,7 +509,12 @@ impl<'a> CodeGenerator<'a> {
             }
             let field_ptr = self
                 .builder
-                .build_struct_gep(class_type, dst_typed, field_index as u32, &field.name)
+                .build_struct_gep(
+                    class_type,
+                    dst_typed,
+                    llvm_struct_index(field_index),
+                    &field.name,
+                )
                 .map_err(|e| e.to_string())?;
             let field_val = self
                 .builder
@@ -547,7 +568,12 @@ impl<'a> CodeGenerator<'a> {
                 if let Some(enum_name) = self.nested_user_enum_name(&field.type_) {
                     let field_ptr = self
                         .builder
-                        .build_struct_gep(class_type, obj_typed, field_index as u32, &field.name)
+                        .build_struct_gep(
+                            class_type,
+                            obj_typed,
+                            llvm_struct_index(field_index),
+                            &field.name,
+                        )
                         .map_err(|e| e.to_string())?;
                     self.emit_enum_drop(&enum_name, field_ptr)?;
                 }
@@ -555,7 +581,12 @@ impl<'a> CodeGenerator<'a> {
             }
             let field_ptr = self
                 .builder
-                .build_struct_gep(class_type, obj_typed, field_index as u32, &field.name)
+                .build_struct_gep(
+                    class_type,
+                    obj_typed,
+                    llvm_struct_index(field_index),
+                    &field.name,
+                )
                 .map_err(|e| e.to_string())?;
             let field_val = self
                 .builder
@@ -575,7 +606,7 @@ impl<'a> CodeGenerator<'a> {
         matches!(
             class_type
                 .into_struct_type()
-                .get_field_type_at_index(field_index as u32),
+                .get_field_type_at_index(llvm_struct_index(field_index)),
             Some(t) if t.is_pointer_type()
         )
     }
@@ -943,6 +974,27 @@ impl<'a> CodeGenerator<'a> {
             max_size = max_size.max(self.abi_store_size(&candidate));
         }
         let words = max_size.div_ceil(8).max(1);
-        Some(self.context.i64_type().array_type(words as u32).into())
+        let words = u32::try_from(words).ok()?;
+        Some(self.context.i64_type().array_type(words).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::llvm_struct_index;
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn llvm_struct_index_accepts_the_largest_representable_index() {
+        let largest = usize::try_from(u32::MAX).expect("u32 fits in a 64-bit usize");
+        assert_eq!(llvm_struct_index(largest), u32::MAX);
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    #[should_panic(expected = "class field index exceeds LLVM's u32 limit")]
+    fn llvm_struct_index_rejects_unrepresentable_indices() {
+        let unrepresentable = usize::try_from(u32::MAX).expect("u32 fits in a 64-bit usize") + 1;
+        llvm_struct_index(unrepresentable);
     }
 }
