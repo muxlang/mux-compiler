@@ -1,0 +1,82 @@
+name: Installer Scripts
+
+# Installer validation has no dependency on the compiler build matrix. Keeping
+# it in its own workflow gives failures a stable owner and lets the source
+# build workflow focus on Rust and generated artifacts. Both workflows read the
+# same checked-in path definition so their required checks cannot drift apart.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  detect-changes:
+    name: Detect Installer Paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: .github/paths-filter.yml
+
+  installer_scripts:
+    # Nothing else runs the installers, so a syntax error in either one ships
+    # silently and only surfaces when a user pipes it into their shell. Parsing
+    # is cheap and catches that class of break; PSScriptAnalyzer adds the
+    # PowerShell-specific ones.
+    name: Installer Scripts
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Parse and analyze install.ps1
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/install.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) {
+            $errors | ForEach-Object { Write-Host $_ }
+            throw "install.ps1 failed to parse"
+          }
+
+          # Import explicitly and stop on failure. Without this a module that
+          # cannot load leaves $findings null, and the step passes green having
+          # analyzed nothing.
+          # Pinned: newer PSScriptAnalyzer requires pwsh 7.4.6+, which not every
+          # runner image has. 1.22.0 loads on 7.4.2 and on current pwsh alike.
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.22.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module PSScriptAnalyzer -ErrorAction Stop
+          $findings = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Error -ErrorAction Stop
+          if ($findings) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer reported errors"
+          }
+          Write-Host "install.ps1 parses cleanly and is analyzer clean"
+
+      - name: Check install.sh
+        run: |
+          set -euo pipefail
+          bash -n scripts/install.sh
+          # Info level only reports SC2016 on the awk program, where the single
+          # quotes are deliberate; warnings and above are real.
+          shellcheck --severity=warning scripts/install.sh
+          echo "install.sh parses cleanly and is shellcheck clean"
