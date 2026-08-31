@@ -1,0 +1,98 @@
+name: Packaged Artifact
+
+on:
+  workflow_call:
+    inputs:
+      rust:
+        description: Whether Rust source paths changed
+        required: true
+        type: boolean
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  packaged_artifact:
+    # Reproduces a binary install: the compiler plus the bundled runtime library
+    # in bin/ and lib/, and nothing else. No other job runs the compiler from
+    # that layout, which is how a release that could not compile hello world
+    # reached users.
+    #
+    # This is also the ONLY place a compiled Mux program is executed on macOS.
+    # Everything else in CI is Linux, so the platform-specific work in #318 was
+    # shipped unexercised there.
+    #
+    # GitHub-hosted on purpose: public repos get macOS unmetered here, and a
+    # macOS minute is ~20x on metered runners.
+    name: Packaged Artifact (${{ matrix.label }})
+    if: ${{ inputs.rust || github.event_name == 'push' }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    strategy:
+      # One platform failing must not hide the others - telling "broken on
+      # macOS" apart from "broken everywhere" is the entire point of a matrix.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+          - os: macos-14
+            label: macos-aarch64
+          - os: windows-latest
+            label: windows-x86_64
+    # Every step runs under bash, including on Windows, so the build and the
+    # smoke script are one code path rather than three.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
+        with:
+          toolchain: 1.93.1
+      - name: Setup LLVM 22
+        uses: ./.github/actions/setup-llvm
+        with:
+          extra-components: lld
+      - name: Build compiler and runtime
+        # No explicit --target: the host triple is the shipped one on all three
+        # runners, so output lands in target/<profile>/ and the smoke script
+        # needs no per-platform path knowledge.
+        run: |
+          cargo build -p mux-runtime --locked
+          cargo build -p mux-lang --locked
+      - name: Stage and smoke-test the packaged layout
+        run: ./scripts/ci/smoke-packaged.sh debug
+
+  packaged_artifact_result:
+    # The caller keeps the required "Packaged Artifact Smoke Test" status. This
+    # private aggregation job makes the reusable workflow itself fail when any
+    # platform fails, so the caller can consume the called-job result without
+    # changing the branch-protection context.
+    name: Packaged Artifact Matrix Result
+    needs: packaged_artifact
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: Check matrix result
+        env:
+          RESULT: ${{ needs.packaged_artifact.result }}
+        run: |
+          set -euo pipefail
+          echo "packaged_artifact matrix result: ${RESULT}"
+          # `skipped` is a pass: the whole job is path-gated, so a docs-only PR
+          # legitimately never runs it.
+          case "${RESULT}" in
+            success|skipped) ;;
+            *)
+              echo "packaged artifact smoke test did not pass (${RESULT})" >&2
+              printf '::error::packaged artifact smoke test did not pass (%s)\n' "${RESULT}"
+              exit 1
+              ;;
+          esac
