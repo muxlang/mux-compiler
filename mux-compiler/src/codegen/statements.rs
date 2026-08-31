@@ -95,7 +95,7 @@ impl<'a> CodeGenerator<'a> {
                 rhs_owned,
             )?;
         } else if let Some(func) = function {
-            self.declare_local_in_function(name, value, resolved_type, func)?;
+            self.declare_local_in_function(name, value, resolved_type, *func)?;
         } else {
             self.declare_local_without_function(name, value, resolved_type)?;
         }
@@ -119,18 +119,18 @@ impl<'a> CodeGenerator<'a> {
         name: &str,
         value: BasicValueEnum<'a>,
         resolved_type: &ResolvedType,
-        func: &FunctionValue<'a>,
+        func: FunctionValue<'a>,
     ) -> Result<(), String> {
         let ptr_slot = self.context.ptr_type(AddressSpace::default()).into();
         let (slot, slot_type) = if self.captured_names.contains(name) {
-            let cell = self.create_entry_block_cell(*func, name)?;
+            let cell = self.create_entry_block_cell(func, name)?;
             self.track_cell_variable(name, cell);
             (cell, ptr_slot)
         } else {
             let slot_type = self
                 .scalar_slot_for_binding(name, resolved_type)
                 .unwrap_or(ptr_slot);
-            let alloca = self.create_entry_block_alloca(*func, slot_type, name)?;
+            let alloca = self.create_entry_block_alloca(func, slot_type, name)?;
             // Tracked when the slot owns a box - which a scalar's slot does when
             // its address is taken, since that keeps it boxed.
             if self.slot_owns_boxed_contents(slot_type, resolved_type) {
@@ -301,7 +301,7 @@ impl<'a> CodeGenerator<'a> {
     /// null the scope cleanup can safely decrement.
     fn bind_loop_variable(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         var: &str,
         resolved_var_type: &ResolvedType,
     ) -> Result<(inkwell::values::PointerValue<'a>, BasicTypeEnum<'a>), String> {
@@ -309,7 +309,7 @@ impl<'a> CodeGenerator<'a> {
         // A captured loop variable gets the shared cell too, so a closure built
         // in the body writes to the variable the body reads.
         if self.captured_names.contains(var) {
-            let cell = self.create_entry_block_cell(*function, var)?;
+            let cell = self.create_entry_block_cell(function, var)?;
             self.track_cell_variable(var, cell);
             self.variables
                 .insert(var.to_string(), (cell, ptr_slot, resolved_var_type.clone()));
@@ -318,7 +318,7 @@ impl<'a> CodeGenerator<'a> {
         let slot_type = self
             .scalar_slot_for_binding(var, resolved_var_type)
             .unwrap_or(ptr_slot);
-        let var_alloca = self.create_entry_block_alloca(*function, slot_type, var)?;
+        let var_alloca = self.create_entry_block_alloca(function, slot_type, var)?;
         self.variables.insert(
             var.to_string(),
             (var_alloca, slot_type, resolved_var_type.clone()),
@@ -337,14 +337,14 @@ impl<'a> CodeGenerator<'a> {
     /// only in how they test the index and fetch the element.
     fn close_loop_iteration(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         body: &[StatementNode],
         iteration: ForLoopIteration<'a>,
     ) -> Result<(), String> {
         let temp_mark = self.temp_mark();
         self.push_loop_targets(iteration.break_cleanup_bb, iteration.continue_bb, temp_mark);
         for stmt in body {
-            self.generate_statement(stmt, Some(function))?;
+            self.generate_statement(stmt, Some(&function))?;
         }
         self.pop_loop_targets();
         if self.current_block_is_live() {
@@ -375,7 +375,7 @@ impl<'a> CodeGenerator<'a> {
 
     fn generate_for_statement_inner(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         var: &str,
         var_type: &crate::ast::TypeNode,
         iter: &ExpressionNode,
@@ -400,7 +400,7 @@ impl<'a> CodeGenerator<'a> {
     /// `for <var> in range(<start>, <end>)`: iterate the integers [start, end).
     fn generate_range_for_loop(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         var: &str,
         start: &ExpressionNode,
         end: &ExpressionNode,
@@ -461,7 +461,7 @@ impl<'a> CodeGenerator<'a> {
     /// `for <var> in <list-identifier>`: iterate a list value's elements.
     fn generate_list_for_loop(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         var: &str,
         var_type: &crate::ast::TypeNode,
         iter: &ExpressionNode,
@@ -569,7 +569,7 @@ impl<'a> CodeGenerator<'a> {
 
     fn setup_for_loop(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         var: &str,
         resolved_var_type: &Type,
         index_alloca: PointerValue<'a>,
@@ -580,19 +580,19 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let header_bb = self
             .context
-            .append_basic_block(*function, &format!("for_header_{label_id}"));
+            .append_basic_block(function, &format!("for_header_{label_id}"));
         let body_bb = self
             .context
-            .append_basic_block(*function, &format!("for_body_{label_id}"));
+            .append_basic_block(function, &format!("for_body_{label_id}"));
         let exit_bb = self
             .context
-            .append_basic_block(*function, &format!("for_exit_{label_id}"));
+            .append_basic_block(function, &format!("for_exit_{label_id}"));
         let continue_bb = self
             .context
-            .append_basic_block(*function, &format!("for_continue_{label_id}"));
+            .append_basic_block(function, &format!("for_continue_{label_id}"));
         let break_cleanup_bb = self
             .context
-            .append_basic_block(*function, &format!("for_break_{label_id}"));
+            .append_basic_block(function, &format!("for_break_{label_id}"));
         self.builder
             .build_unconditional_branch(header_bb)
             .map_err(|e| e.to_string())?;
@@ -777,7 +777,7 @@ impl<'a> CodeGenerator<'a> {
 
     fn generate_match_statement_inner(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         expr: &ExpressionNode,
         arms: &[crate::ast::MatchArm],
     ) -> Result<(), String> {
@@ -792,7 +792,7 @@ impl<'a> CodeGenerator<'a> {
 
     fn generate_match_body(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         expr: &ExpressionNode,
         arms: &[crate::ast::MatchArm],
     ) -> Result<(), String> {
@@ -1148,7 +1148,7 @@ impl<'a> CodeGenerator<'a> {
 
     fn generate_if_statement(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         cond: &ExpressionNode,
         then_block: &[StatementNode],
         else_block: &Option<Vec<StatementNode>>,
@@ -1159,10 +1159,10 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let then_bb = self
             .context
-            .append_basic_block(*function, &format!("if_then_{if_id}"));
+            .append_basic_block(function, &format!("if_then_{if_id}"));
         let else_bb = self
             .context
-            .append_basic_block(*function, &format!("if_else_{if_id}"));
+            .append_basic_block(function, &format!("if_else_{if_id}"));
         let then_ends_with_return = then_block
             .last()
             .is_some_and(|s| matches!(s.kind, StatementKind::Return(_)));
@@ -1177,7 +1177,7 @@ impl<'a> CodeGenerator<'a> {
         let merge_bb = if needs_merge {
             Some(
                 self.context
-                    .append_basic_block(*function, &format!("if_merge_{if_id}")),
+                    .append_basic_block(function, &format!("if_merge_{if_id}")),
             )
         } else {
             None
@@ -1188,7 +1188,7 @@ impl<'a> CodeGenerator<'a> {
 
         self.builder.position_at_end(then_bb);
         for stmt in then_block {
-            self.generate_statement(stmt, Some(function))?;
+            self.generate_statement(stmt, Some(&function))?;
         }
         if self.current_block_is_live()
             && let Some(merge_bb) = merge_bb
@@ -1201,7 +1201,7 @@ impl<'a> CodeGenerator<'a> {
         self.builder.position_at_end(else_bb);
         if let Some(else_stmts) = else_block {
             for stmt in else_stmts {
-                self.generate_statement(stmt, Some(function))?;
+                self.generate_statement(stmt, Some(&function))?;
             }
         }
         if self.current_block_is_live()
@@ -1221,15 +1221,15 @@ impl<'a> CodeGenerator<'a> {
 
     fn generate_while_statement(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         cond: &ExpressionNode,
         body: &[StatementNode],
     ) -> Result<(), String> {
-        let header_bb = self.context.append_basic_block(*function, "while_header");
-        let body_bb = self.context.append_basic_block(*function, "while_body");
-        let exit_bb = self.context.append_basic_block(*function, "while_exit");
-        let continue_bb = self.context.append_basic_block(*function, "while_continue");
-        let break_cleanup_bb = self.context.append_basic_block(*function, "while_break");
+        let header_bb = self.context.append_basic_block(function, "while_header");
+        let body_bb = self.context.append_basic_block(function, "while_body");
+        let exit_bb = self.context.append_basic_block(function, "while_exit");
+        let continue_bb = self.context.append_basic_block(function, "while_continue");
+        let break_cleanup_bb = self.context.append_basic_block(function, "while_break");
         self.builder
             .build_unconditional_branch(header_bb)
             .map_err(|e| e.to_string())?;
@@ -1245,7 +1245,7 @@ impl<'a> CodeGenerator<'a> {
         let temp_mark = self.temp_mark();
         self.push_loop_targets(break_cleanup_bb, continue_bb, temp_mark);
         for stmt in body {
-            self.generate_statement(stmt, Some(function))?;
+            self.generate_statement(stmt, Some(&function))?;
         }
         self.pop_loop_targets();
         if self.current_block_is_live() {
@@ -1437,12 +1437,12 @@ impl<'a> CodeGenerator<'a> {
             } => {
                 let function = *function.ok_or("If statement not in function")?;
                 self.in_block_scope(|me| {
-                    me.generate_if_statement(&function, cond, then_block, else_block)
+                    me.generate_if_statement(function, cond, then_block, else_block)
                 })?;
             }
             StatementKind::While { cond, body } => {
                 let function = *function.ok_or("While statement not in function")?;
-                self.in_block_scope(|me| me.generate_while_statement(&function, cond, body))?;
+                self.in_block_scope(|me| me.generate_while_statement(function, cond, body))?;
             }
             StatementKind::For {
                 var,
@@ -1452,12 +1452,12 @@ impl<'a> CodeGenerator<'a> {
             } => {
                 let function = *function.ok_or("For statement not in function")?;
                 self.in_block_scope(|me| {
-                    me.generate_for_statement_inner(&function, var, var_type, iter, body)
+                    me.generate_for_statement_inner(function, var, var_type, iter, body)
                 })?;
             }
             StatementKind::Match { expr, arms } => {
                 let function = function.ok_or("Match not in function")?;
-                self.generate_match_statement_inner(function, expr, arms)?;
+                self.generate_match_statement_inner(*function, expr, arms)?;
             }
             StatementKind::Expression(expr) => {
                 // A discarded owned enum value (a bare `Enum.Variant(x)`
@@ -1683,7 +1683,7 @@ impl<'a> CodeGenerator<'a> {
 
     fn emit_match_guard_and_body(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         arm: &crate::ast::MatchArm,
         next_bb: inkwell::basic_block::BasicBlock<'a>,
         end_bb: inkwell::basic_block::BasicBlock<'a>,
@@ -1693,7 +1693,7 @@ impl<'a> CodeGenerator<'a> {
             let guard_val = self.generate_expression(guard)?;
             let guard_pass_bb = self
                 .context
-                .append_basic_block(*function, &format!("match_guard_pass_{arm_index}"));
+                .append_basic_block(function, &format!("match_guard_pass_{arm_index}"));
             self.builder
                 .build_conditional_branch(guard_val.into_int_value(), guard_pass_bb, next_bb)
                 .map_err(|e| e.to_string())?;
@@ -1701,7 +1701,7 @@ impl<'a> CodeGenerator<'a> {
         }
 
         for stmt in &arm.body {
-            self.generate_statement(stmt, Some(function))?;
+            self.generate_statement(stmt, Some(&function))?;
         }
         if self
             .builder
@@ -2272,7 +2272,7 @@ impl<'a> CodeGenerator<'a> {
     /// Generate match code for enum types using discriminant-based comparison.
     fn generate_enum_match(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         match_expr: &ExpressionNode,
         match_expr_type: &Type,
         expr_val: BasicValueEnum<'a>,
@@ -2319,15 +2319,15 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let end_bb = self
             .context
-            .append_basic_block(*function, &format!("match_end_{match_id}"));
+            .append_basic_block(function, &format!("match_end_{match_id}"));
 
         for (i, arm) in arms.iter().enumerate() {
             let arm_bb = self
                 .context
-                .append_basic_block(*function, &format!("match_arm_{match_id}_{i}"));
+                .append_basic_block(function, &format!("match_arm_{match_id}_{i}"));
             let next_bb = if i < arms.len() - 1 {
                 self.context
-                    .append_basic_block(*function, &format!("match_next_{match_id}_{i}"))
+                    .append_basic_block(function, &format!("match_next_{match_id}_{i}"))
             } else {
                 end_bb
             };
@@ -2379,7 +2379,7 @@ impl<'a> CodeGenerator<'a> {
     /// Generate match code for non-enum types using equality-based comparison.
     fn generate_switch_match(
         &mut self,
-        function: &FunctionValue<'a>,
+        function: FunctionValue<'a>,
         match_expr_type: &Type,
         match_val: BasicValueEnum<'a>,
         arms: &[crate::ast::MatchArm],
@@ -2397,15 +2397,15 @@ impl<'a> CodeGenerator<'a> {
         self.label_counter += 1;
         let end_bb = self
             .context
-            .append_basic_block(*function, &format!("match_end_{match_id}"));
+            .append_basic_block(function, &format!("match_end_{match_id}"));
 
         for (i, arm) in arms.iter().enumerate() {
             let arm_bb = self
                 .context
-                .append_basic_block(*function, &format!("match_arm_{match_id}_{i}"));
+                .append_basic_block(function, &format!("match_arm_{match_id}_{i}"));
             let next_bb = if i < arms.len() - 1 {
                 self.context
-                    .append_basic_block(*function, &format!("match_next_{match_id}_{i}"))
+                    .append_basic_block(function, &format!("match_next_{match_id}_{i}"))
             } else {
                 end_bb
             };
