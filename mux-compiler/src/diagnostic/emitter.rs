@@ -29,7 +29,7 @@ impl StandardEmitter {
     }
 
     /// Get the line number width for proper alignment.
-    fn line_number_width(&self, max_line: usize) -> usize {
+    fn line_number_width(max_line: usize) -> usize {
         max_line.to_string().len().max(2)
     }
 
@@ -40,7 +40,7 @@ impl StandardEmitter {
     }
 
     /// Render the gutter (line number column) without source.
-    fn render_gutter(&self, width: usize) -> String {
+    fn render_gutter(width: usize) -> String {
         format!("{:width$} |", "", width = width)
     }
 
@@ -53,7 +53,7 @@ impl StandardEmitter {
         style: LabelStyle,
         width: usize,
     ) -> String {
-        let gutter = self.render_gutter(width);
+        let gutter = Self::render_gutter(width);
 
         // Calculate column positions
         let start_col = if span.row_start == line_number {
@@ -93,8 +93,8 @@ impl StandardEmitter {
         }
 
         let lines: Vec<&str> = source.lines().collect();
-        let (min_line, max_line) = self.label_line_range(diagnostic);
-        let width = self.line_number_width(max_line);
+        let (min_line, max_line) = Self::label_line_range(diagnostic);
+        let width = Self::line_number_width(max_line);
 
         self.emit_file_location(diagnostic, file_path, min_line, width);
         for line_num in min_line..=max_line {
@@ -120,7 +120,7 @@ impl StandardEmitter {
         );
     }
 
-    fn label_line_range(&self, diagnostic: &Diagnostic) -> (usize, usize) {
+    fn label_line_range(diagnostic: &Diagnostic) -> (usize, usize) {
         let mut min_line = usize::MAX;
         let mut max_line = 0;
 
@@ -146,10 +146,10 @@ impl StandardEmitter {
             diagnostic.labels.first().map_or(1, |l| l.span.col_start)
         );
         eprintln!("{}", self.styles.location(&location));
-        eprintln!("{}", self.render_gutter(width));
+        eprintln!("{}", Self::render_gutter(width));
     }
 
-    fn label_covers_line(&self, line_num: usize, span: &Span) -> bool {
+    fn label_covers_line(line_num: usize, span: &Span) -> bool {
         span.row_start == line_num
             || span
                 .row_end
@@ -162,7 +162,7 @@ impl StandardEmitter {
                 LabelStyle::Primary => self.styles.primary_label(msg),
                 LabelStyle::Secondary => self.styles.secondary_label(msg),
             };
-            eprintln!("{} {}", self.render_gutter(width), colored_msg);
+            eprintln!("{} {}", Self::render_gutter(width), colored_msg);
         }
     }
 
@@ -182,7 +182,7 @@ impl StandardEmitter {
         eprintln!("{}", self.render_source_line(line_num, line_content, width));
 
         for label in &diagnostic.labels {
-            if !self.label_covers_line(line_num, &label.span) {
+            if !Self::label_covers_line(line_num, &label.span) {
                 continue;
             }
 
@@ -202,7 +202,7 @@ impl StandardEmitter {
 
     fn emit_help(&self, diagnostic: &Diagnostic, width: usize) {
         if let Some(ref help) = diagnostic.help {
-            eprintln!("{}", self.render_gutter(width));
+            eprintln!("{}", Self::render_gutter(width));
             eprintln!(
                 "{} {} {}",
                 self.styles.line_number("="),
