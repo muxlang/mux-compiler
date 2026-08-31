@@ -13,7 +13,10 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn previous(&self) -> &Token {
-        self.tokens[(self.current - 1).max(0)]
+        self.tokens
+            .get(self.current.saturating_sub(1))
+            .copied()
+            .unwrap_or_else(|| self.peek())
     }
 
     #[must_use]
@@ -45,9 +48,12 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn consume(&mut self) -> &Token {
-        let ret = &self.tokens[self.current];
-        self.current += 1;
-        ret
+        if let Some(token) = self.tokens.get(self.current).copied() {
+            self.current += 1;
+            token
+        } else {
+            self.peek()
+        }
     }
 
     /// Look ahead `n` tokens without consuming.
@@ -242,5 +248,20 @@ mod tests {
         );
         assert!(parser.matches(&[TokenType::NewLine]));
         assert!(parser.is_at_end());
+    }
+
+    #[test]
+    fn cursor_bounds_are_safe_at_start_and_end() {
+        let tokens = [Token::new(TokenType::Eof, Span::new(1, 1))];
+        let mut parser = Parser::new(&tokens);
+
+        assert_eq!(parser.previous().token_type, TokenType::Eof);
+        assert_eq!(parser.advance().token_type, TokenType::Eof);
+        assert_eq!(parser.consume().token_type, TokenType::Eof);
+
+        let mut empty = Parser::new(&[]);
+        assert_eq!(empty.previous().token_type, TokenType::Eof);
+        assert_eq!(empty.advance().token_type, TokenType::Eof);
+        assert_eq!(empty.consume().token_type, TokenType::Eof);
     }
 }
