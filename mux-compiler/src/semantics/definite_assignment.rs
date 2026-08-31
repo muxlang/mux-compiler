@@ -106,8 +106,6 @@ fn analyze_statement(stmt: &StatementNode, name: &str) -> Flow {
         }
 
         // A loop body may not run, so it never establishes an assignment.
-        StatementKind::While { .. } | StatementKind::For { .. } => Flow::FallsThrough,
-
         _ => Flow::FallsThrough,
     }
 }
@@ -158,8 +156,8 @@ pub(super) fn first_read_before_assignment<'a>(
 fn read_in_statement<'a>(stmt: &'a StatementNode, name: &str) -> Option<&'a ExpressionNode> {
     match &stmt.kind {
         StatementKind::Expression(expr) => read_in_expression_skipping_assignment(expr, name),
-        StatementKind::Return(Some(expr)) => read_in_expression(expr, name),
-        StatementKind::AutoDecl(_, _, expr)
+        StatementKind::Return(Some(expr))
+        | StatementKind::AutoDecl(_, _, expr)
         | StatementKind::TypedDecl(_, _, expr)
         | StatementKind::ConstDecl(_, _, expr) => read_in_expression(expr, name),
         StatementKind::Block(inner) => first_read_in_block(inner, name),
@@ -215,14 +213,14 @@ fn read_in_expression<'a>(expr: &'a ExpressionNode, name: &str) -> Option<&'a Ex
         ExpressionKind::Binary { left, right, .. } => {
             read_in_expression(left, name).or_else(|| read_in_expression(right, name))
         }
-        ExpressionKind::Unary { expr: inner, .. } => read_in_expression(inner, name),
+        ExpressionKind::Unary { expr: inner, .. }
+        | ExpressionKind::FieldAccess { expr: inner, .. }
+        | ExpressionKind::Slice { expr: inner, .. } => read_in_expression(inner, name),
         ExpressionKind::Call { func, args } => read_in_expression(func, name)
             .or_else(|| args.iter().find_map(|a| read_in_expression(a, name))),
-        ExpressionKind::FieldAccess { expr: inner, .. } => read_in_expression(inner, name),
         ExpressionKind::ListAccess { expr: inner, index } => {
             read_in_expression(inner, name).or_else(|| read_in_expression(index, name))
         }
-        ExpressionKind::Slice { expr: inner, .. } => read_in_expression(inner, name),
         ExpressionKind::ListLiteral(items)
         | ExpressionKind::SetLiteral(items)
         | ExpressionKind::TupleLiteral(items) => {

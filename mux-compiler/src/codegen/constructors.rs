@@ -2,7 +2,7 @@
 //!
 //! This module handles generating constructors and related initialization code.
 
-use super::CodeGenerator;
+use super::{CodeGenerator, llvm_index};
 use crate::ast::{EnumVariant, ExpressionNode, Field, LiteralNode, PrimitiveType, TypeKind};
 use crate::semantics::{GenericContext, MethodSig, Type, mangle_type_name};
 use inkwell::AddressSpace;
@@ -159,11 +159,11 @@ impl<'a> CodeGenerator<'a> {
         i: usize,
     ) -> Result<(), String> {
         let arg = function
-            .get_nth_param(i as u32)
+            .get_nth_param(llvm_index(i))
             .expect("function parameter should exist at expected index");
         let data_ptr = self
             .builder
-            .build_struct_gep(struct_type, temp_ptr, (i + 1) as u32, "data_ptr")
+            .build_struct_gep(struct_type, temp_ptr, llvm_index(i + 1), "data_ptr")
             .map_err(|e| e.to_string())?;
         let nested_enum = variant
             .data
@@ -189,7 +189,7 @@ impl<'a> CodeGenerator<'a> {
         // to a pointer slot. Such a payload is heap-boxed into a Value::Opaque
         // instead of stored inline (issue #309).
         let slot_fits = match (
-            struct_type.get_field_type_at_index((i + 1) as u32),
+            struct_type.get_field_type_at_index(llvm_index(i + 1)),
             self.type_map.get(&inner).copied(),
         ) {
             (Some(slot), Some(inner_ty)) => {
@@ -226,7 +226,7 @@ impl<'a> CodeGenerator<'a> {
                 continue;
             };
             let arg = function
-                .get_nth_param(i as u32)
+                .get_nth_param(llvm_index(i))
                 .expect("function parameter should exist at expected index");
             let semantic_type = self.type_node_to_type(type_node);
             self.store_function_parameter_value(field_name, arg, semantic_type)?;
@@ -504,7 +504,7 @@ impl<'a> CodeGenerator<'a> {
                 .build_struct_gep(
                     class_type_clone,
                     struct_ptr_typed,
-                    *field_index as u32,
+                    llvm_index(*field_index),
                     &field.name,
                 )
                 .map_err(|e| e.to_string())?;
@@ -538,7 +538,7 @@ impl<'a> CodeGenerator<'a> {
                 .build_struct_gep(
                     class_type_clone,
                     struct_ptr_typed,
-                    *field_index as u32,
+                    llvm_index(*field_index),
                     &vtable_field_name,
                 )
                 .map_err(|e| e.to_string())?;
@@ -928,7 +928,7 @@ impl<'a> CodeGenerator<'a> {
                     .build_struct_gep(
                         class_type.into_struct_type(),
                         struct_ptr,
-                        field_index as u32,
+                        llvm_index(field_index),
                         &field.name,
                     )
                     .map_err(|e| e.to_string())?;
@@ -968,7 +968,7 @@ impl<'a> CodeGenerator<'a> {
                 .build_struct_gep(
                     class_type.into_struct_type(),
                     struct_ptr,
-                    field_index as u32,
+                    llvm_index(field_index),
                     &vtable_field_name,
                 )
                 .map_err(|e| e.to_string())?;

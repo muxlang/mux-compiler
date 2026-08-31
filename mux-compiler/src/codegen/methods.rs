@@ -940,8 +940,7 @@ impl<'a> CodeGenerator<'a> {
                         .map_err(|e| e.to_string())?;
                     Ok(float_val.into())
                 }
-                "to_int" => Ok(obj_value),
-                "to_char" => Ok(obj_value),
+                "to_int" | "to_char" => Ok(obj_value),
                 _ => Err(format!("Method {method_name} not implemented for int")),
             },
             PrimitiveType::Float => match method_name {

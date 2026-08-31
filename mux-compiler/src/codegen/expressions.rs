@@ -23,7 +23,7 @@ use crate::ast::{
 use crate::lexer::Span;
 use crate::semantics::{GenericContext, SymbolKind, Type};
 
-use super::CodeGenerator;
+use super::{CodeGenerator, llvm_index};
 
 /// Stdlib module prefixes that map to runtime functions via the "mux_" prefix.
 /// Adding a new stdlib module only requires adding its prefix here and
@@ -664,11 +664,11 @@ impl<'a> CodeGenerator<'a> {
         }
         for (i, param) in params.iter().enumerate() {
             let arg = function
-                .get_nth_param((i + param_offset) as u32)
+                .get_nth_param(llvm_index(i + param_offset))
                 .expect("function parameter should exist at expected index");
             arg.set_name(&param.name);
         }
-        param_offset as u32
+        llvm_index(param_offset)
     }
 
     fn extract_captures_from_struct(
@@ -692,7 +692,7 @@ impl<'a> CodeGenerator<'a> {
                 .build_struct_gep(
                     capture_struct_type,
                     captures_ptr,
-                    i as u32,
+                    llvm_index(i),
                     &format!("cap_{name}_ptr"),
                 )
                 .map_err(|e| e.to_string())?;
@@ -728,7 +728,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         for (i, param) in params.iter().enumerate() {
             let arg = function
-                .get_nth_param(i as u32 + param_offset)
+                .get_nth_param(llvm_index(i) + param_offset)
                 .expect("function parameter should exist at expected index");
             let boxed = self.box_value(arg);
             let alloca = self
@@ -883,7 +883,7 @@ impl<'a> CodeGenerator<'a> {
                 .build_struct_gep(
                     capture_struct_type,
                     capture_mem,
-                    i as u32,
+                    llvm_index(i),
                     &format!("cap_field_{i}"),
                 )
                 .map_err(|e| e.to_string())?;
@@ -1048,11 +1048,12 @@ impl<'a> CodeGenerator<'a> {
                 }
                 false
             }
-            TypeKind::List(inner) => Self::type_node_contains_names(inner, names),
+            TypeKind::List(inner) | TypeKind::Set(inner) => {
+                Self::type_node_contains_names(inner, names)
+            }
             TypeKind::Map(k, v) => {
                 Self::type_node_contains_names(k, names) || Self::type_node_contains_names(v, names)
             }
-            TypeKind::Set(inner) => Self::type_node_contains_names(inner, names),
             _ => false,
         }
     }
@@ -1874,7 +1875,13 @@ impl<'a> CodeGenerator<'a> {
         match kind {
             // String literals allocate a new Value; other literals are unboxed
             // scalars and are filtered out by the pointer check in register_temp.
-            ExpressionKind::Literal(_) => true,
+            ExpressionKind::Literal(_)
+            | ExpressionKind::Call { .. }
+            | ExpressionKind::ListAccess { .. }
+            | ExpressionKind::ListLiteral(_)
+            | ExpressionKind::MapLiteral { .. }
+            | ExpressionKind::SetLiteral(_)
+            | ExpressionKind::TupleLiteral(_) => true,
             // A non-assignment binary op builds a new value (string/list concat)
             // or an unboxed scalar (arithmetic/comparison, ignored by
             // register_temp). An assignment op instead yields the assigned value,
@@ -1885,12 +1892,6 @@ impl<'a> CodeGenerator<'a> {
             // that register_temp ignores): calls (functions and methods return
             // +1), collection literals, and indexed access (the runtime getters
             // clone the element out).
-            ExpressionKind::Call { .. }
-            | ExpressionKind::ListAccess { .. }
-            | ExpressionKind::ListLiteral(_)
-            | ExpressionKind::MapLiteral { .. }
-            | ExpressionKind::SetLiteral(_)
-            | ExpressionKind::TupleLiteral(_) => true,
             // Everything else is either borrowed or not reference counted, and
             // must never be tracked — freeing a borrowed value (a field load, a
             // dereference, an identifier, a ternary arm that yields one of its
@@ -1962,18 +1963,12 @@ impl<'a> CodeGenerator<'a> {
         type_node: &Type,
     ) -> Result<BasicValueEnum<'a>, String> {
         match type_node {
-            Type::Optional(_) | Type::Result(_, _) => self
-                .load_boxed_ptr_from_alloca(ptr, name)
-                .map(std::convert::Into::into),
             Type::Named(type_name, _) => {
                 self.generate_named_identifier_from_binding(name, ptr, var_type, type_name)
             }
             Type::Primitive(prim) => {
                 self.generate_primitive_identifier_from_binding(name, ptr, var_type, prim)
             }
-            Type::Function { .. } => self
-                .load_boxed_ptr_from_alloca(ptr, name)
-                .map(std::convert::Into::into),
             _ => self
                 .load_boxed_ptr_from_alloca(ptr, name)
                 .map(std::convert::Into::into),
@@ -2053,7 +2048,7 @@ impl<'a> CodeGenerator<'a> {
         }
         let boxed_ptr = self.load_boxed_ptr_from_alloca(ptr, name)?;
         match prim {
-            PrimitiveType::Int => self
+            PrimitiveType::Int | PrimitiveType::Char => self
                 .get_raw_int_value(boxed_ptr.into())
                 .map(std::convert::Into::into),
             PrimitiveType::Float => self
@@ -2063,9 +2058,6 @@ impl<'a> CodeGenerator<'a> {
                 .get_raw_bool_value(boxed_ptr.into())
                 .map(std::convert::Into::into),
             PrimitiveType::Str => Ok(boxed_ptr.into()),
-            PrimitiveType::Char => self
-                .get_raw_int_value(boxed_ptr.into())
-                .map(std::convert::Into::into),
             PrimitiveType::Void | PrimitiveType::Auto => {
                 Err(format!("Unsupported primitive type {prim:?}"))
             }
@@ -2139,7 +2131,7 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(
                 *class_type,
                 struct_ptr_typed,
-                *field_index as u32,
+                llvm_index(*field_index),
                 "field_ptr",
             )
             .map_err(|e| e.to_string())?;
@@ -2207,7 +2199,7 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(
                 *struct_type,
                 data_ptr,
-                field_index as u32,
+                llvm_index(field_index),
                 &format!("{name}_ptr"),
             )
             .map_err(|e| e.to_string())?;
@@ -2470,7 +2462,7 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(
                 *struct_type,
                 data_ptr,
-                field_index as u32,
+                llvm_index(field_index),
                 &format!("{name}_ptr"),
             )
             .map_err(|e| e.to_string())?;
@@ -2639,7 +2631,7 @@ impl<'a> CodeGenerator<'a> {
         if let BasicTypeEnum::StructType(st) = *struct_type {
             return self
                 .builder
-                .build_struct_gep(st, struct_ptr, index as u32, field)
+                .build_struct_gep(st, struct_ptr, llvm_index(index), field)
                 .map_err(|e| e.to_string());
         }
         Err("Struct type expected".to_string())
@@ -2712,7 +2704,6 @@ impl<'a> CodeGenerator<'a> {
         };
 
         match concrete_type {
-            Type::Primitive(_) => self.box_value(right_val).into(),
             Type::Named(_, _) => right_val,
             _ => self.box_value(right_val).into(),
         }
@@ -4314,7 +4305,7 @@ impl<'a> CodeGenerator<'a> {
         ty: &Type,
     ) -> Result<BasicValueEnum<'a>, String> {
         match ty {
-            Type::Primitive(PrimitiveType::Int) => {
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
                 self.get_raw_int_value(value).map(std::convert::Into::into)
             }
             Type::Primitive(PrimitiveType::Float) => self
@@ -4323,10 +4314,6 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Bool) => {
                 self.get_raw_bool_value(value).map(std::convert::Into::into)
             }
-            Type::Primitive(PrimitiveType::Char) => {
-                self.get_raw_int_value(value).map(std::convert::Into::into)
-            }
-            Type::Primitive(PrimitiveType::Str) => Ok(value),
             Type::Primitive(PrimitiveType::Void | PrimitiveType::Auto) => {
                 Err(format!("Unsupported tuple field type {ty:?}"))
             }
@@ -4379,8 +4366,7 @@ impl<'a> CodeGenerator<'a> {
                     .map_err(|e| e.to_string())?;
                 Ok(Some(float_val.into()))
             }
-            "to_int" => self.generate_expression(expr).map(Some),
-            "to_char" => self.generate_expression(expr).map(Some),
+            "to_int" | "to_char" => self.generate_expression(expr).map(Some),
             _ => Ok(None),
         }
     }
@@ -5010,7 +4996,7 @@ impl<'a> CodeGenerator<'a> {
                     values.push(self.context.i8_type().const_int(b as u64, false));
                 }
                 values.push(self.context.i8_type().const_int(0, false));
-                let array_type = self.context.i8_type().array_type(values.len() as u32);
+                let array_type = self.context.i8_type().array_type(llvm_index(values.len()));
                 let const_array = self.context.i8_type().const_array(&values);
                 let global =
                     self.module

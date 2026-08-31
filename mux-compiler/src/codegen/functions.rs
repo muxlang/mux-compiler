@@ -14,8 +14,8 @@ use inkwell::values::FunctionValue;
 use crate::ast::{AstNode, FunctionNode, PrimitiveType, StatementNode, TypeKind};
 use crate::semantics::{Type, mangle_module_path};
 
-use super::CodeGenerator;
 use super::scoped_vars::ScopedVars;
+use super::{CodeGenerator, llvm_index};
 
 impl<'a> CodeGenerator<'a> {
     fn resolve_base_class_name_for_method(method_name: &str) -> &str {
@@ -202,7 +202,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         for (i, param) in func.params.iter().enumerate() {
             let arg = function
-                .get_nth_param((i as u32) + start_param_index)
+                .get_nth_param(llvm_index(i) + start_param_index)
                 .expect("function parameter should exist at expected index");
             let resolved_type = self
                 .analyzer

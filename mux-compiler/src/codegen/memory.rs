@@ -2,7 +2,7 @@
 //!
 //! This module handles tracking RC-allocated variables and generating cleanup code.
 
-use super::{CodeGenerator, RcSlot};
+use super::{CodeGenerator, RcSlot, llvm_index};
 use crate::semantics::Type;
 use inkwell::AddressSpace;
 use inkwell::types::BasicTypeEnum;
@@ -355,7 +355,7 @@ impl<'a> CodeGenerator<'a> {
         let inner = self.nested_user_enum_name(&fields.get(field_index)?.1)?;
         let slot = match self.type_map.get(enum_name) {
             Some(BasicTypeEnum::StructType(st)) => {
-                st.get_field_type_at_index((field_index + 1) as u32)?
+                st.get_field_type_at_index(llvm_index(field_index + 1))?
             }
             _ => return None,
         };
@@ -694,7 +694,7 @@ impl<'a> CodeGenerator<'a> {
                             .build_struct_gep(
                                 struct_type,
                                 struct_alloca,
-                                (field_index + 1) as u32,
+                                llvm_index(field_index + 1),
                                 "enum_nested_ptr",
                             )
                             .map_err(|e| e.to_string())?;
@@ -757,7 +757,7 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(
                 struct_type,
                 struct_alloca,
-                (field_index + 1) as u32,
+                llvm_index(field_index + 1),
                 "enum_op_field_ptr",
             )
             .map_err(|e| e.to_string())?;
@@ -1254,7 +1254,7 @@ impl<'a> CodeGenerator<'a> {
         let i64_type = self.context.i64_type();
         let gep = self
             .builder
-            .build_struct_gep(struct_type, a, (idx + 1) as u32, "hash_fa")
+            .build_struct_gep(struct_type, a, llvm_index(idx + 1), "hash_fa")
             .map_err(|e| e.to_string())?;
         match kind {
             CompareKind::Scalar(ty) => {
@@ -1393,11 +1393,11 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<inkwell::values::IntValue<'a>, String> {
         let gep_a = self
             .builder
-            .build_struct_gep(struct_type, a, (idx + 1) as u32, "cmp_fa")
+            .build_struct_gep(struct_type, a, llvm_index(idx + 1), "cmp_fa")
             .map_err(|e| e.to_string())?;
         let gep_b = self
             .builder
-            .build_struct_gep(struct_type, b, (idx + 1) as u32, "cmp_fb")
+            .build_struct_gep(struct_type, b, llvm_index(idx + 1), "cmp_fb")
             .map_err(|e| e.to_string())?;
         match kind {
             CompareKind::Scalar(ty) => {
@@ -1585,7 +1585,7 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(
                 struct_type,
                 struct_alloca,
-                (field_index + 1) as u32,
+                llvm_index(field_index + 1),
                 "boxed_field_ptr",
             )
             .map_err(|e| e.to_string())?;
@@ -2351,30 +2351,27 @@ impl<'a> CodeGenerator<'a> {
             // `string` is the exception among the primitives: it is a
             // reference-counted heap value, so its slot holds a pointer.
             Type::Primitive(_) => self.scalar_slot_type(ty).is_none(),
-            // Named types (classes) are RC-allocated
-            Type::Named(_, _) => true,
-            // Generic types that resolve to RC types
-            Type::Generic(_) | Type::Variable(_) => true,
-            // Collections contain Values which are RC-allocated
-            Type::List(_) | Type::Map(_, _) | Type::Set(_) => true,
-            // Tuples contain Values which are RC-allocated
-            Type::Tuple(_, _) => true,
-            // Optional contains boxed values
-            Type::Optional(_) => true,
-            // Result contains boxed values
-            Type::Result(_, _) => true,
-            // References are pointers to RC values
-            Type::Reference(_) => true,
+            // All non-scalar value types below are RC-allocated or contain
+            // RC-allocated values.
+            Type::Named(_, _)
+            | Type::Generic(_)
+            | Type::Variable(_)
+            | Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::Tuple(_, _)
+            | Type::Optional(_)
+            | Type::Result(_, _)
+            | Type::Reference(_)
+            | Type::Instantiated(_, _) => true,
             // Function types are pointers, not RC
-            Type::Function { .. } => false,
-            // Void doesn't need tracking
-            Type::Void | Type::Never => false,
-            // Empty collections don't need tracking
-            Type::EmptyList | Type::EmptyMap | Type::EmptySet => false,
-            // Instantiated types (like Pair<string, bool>) need RC
-            Type::Instantiated(_, _) => true,
-            // Module references don't need RC
-            Type::Module(_) => false,
+            Type::Function { .. }
+            | Type::Void
+            | Type::Never
+            | Type::EmptyList
+            | Type::EmptyMap
+            | Type::EmptySet
+            | Type::Module(_) => false,
         }
     }
 

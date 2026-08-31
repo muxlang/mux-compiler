@@ -42,6 +42,14 @@ use scoped_vars::ScopedVars;
 type ClassTypeParamBounds = Vec<(String, Vec<(String, Vec<Type>)>)>;
 type EnumVariantFieldMap = HashMap<String, HashMap<String, Vec<EnumVariantField>>>;
 
+/// Convert a source-level collection index to the width required by LLVM's
+/// indexed APIs. These APIs cannot represent indices wider than `u32`; keeping
+/// the conversion checked prevents a 64-bit host from silently wrapping an
+/// invalid layout index.
+pub(super) fn llvm_index(index: usize) -> u32 {
+    u32::try_from(index).expect("LLVM index exceeds u32::MAX")
+}
+
 /// What a tracked RC scope slot holds, so end-of-scope cleanup releases it the
 /// right way. A boxed value is a `*mut Value` decremented directly; a custom
 /// enum is stored inline as a `{ i32 tag, fields... }` struct, so it needs

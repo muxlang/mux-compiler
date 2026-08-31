@@ -1552,8 +1552,9 @@ impl SemanticAnalyzer {
             Type::Void
         } else {
             match &body.last().expect("body is not empty").kind {
-                StatementKind::Expression(expr) => self.get_expression_type(expr)?,
-                StatementKind::Return(Some(expr)) => self.get_expression_type(expr)?,
+                StatementKind::Expression(expr) | StatementKind::Return(Some(expr)) => {
+                    self.get_expression_type(expr)?
+                }
                 _ => Type::Void,
             }
         };
@@ -2488,10 +2489,6 @@ impl SemanticAnalyzer {
                     left, left_type, right_type, op, expr_span, op_span,
                 )?;
             }
-            crate::ast::ExpressionKind::Unary {
-                op: crate::ast::UnaryOp::Deref,
-                ..
-            } => {}
             _ => {}
         }
 
@@ -3476,10 +3473,10 @@ impl SemanticAnalyzer {
                 | PrimitiveType::Bool
                 | PrimitiveType::Char
                 | PrimitiveType::Str,
-            ) => true,
+            )
             // Compared structurally by the runtime, which is the same
             // comparison that already makes them usable as map keys.
-            Type::List(_)
+            | Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
             | Type::Tuple(_, _)

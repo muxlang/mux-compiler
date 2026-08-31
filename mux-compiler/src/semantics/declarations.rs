@@ -1313,14 +1313,15 @@ impl SemanticAnalyzer {
                 self.arity_check_expr(left, params);
                 self.arity_check_expr(right, params);
             }
-            ExpressionKind::Unary { expr, .. } => self.arity_check_expr(expr, params),
+            ExpressionKind::Unary { expr, .. } | ExpressionKind::FieldAccess { expr, .. } => {
+                self.arity_check_expr(expr, params)
+            }
             ExpressionKind::Call { func, args } => {
                 self.arity_check_expr(func, params);
                 for arg in args {
                     self.arity_check_expr(arg, params);
                 }
             }
-            ExpressionKind::FieldAccess { expr, .. } => self.arity_check_expr(expr, params),
             ExpressionKind::ListAccess { expr, index } => {
                 self.arity_check_expr(expr, params);
                 self.arity_check_expr(index, params);

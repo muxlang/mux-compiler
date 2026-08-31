@@ -19,7 +19,7 @@
 //! registers the type, sets vtable fields and runs construction invariants, and
 //! duplicating that here would mean two places to keep in step.
 
-use super::CodeGenerator;
+use super::{CodeGenerator, llvm_index};
 use crate::ast::{Field, PrimitiveType, TypeKind};
 use crate::semantics::Type;
 use inkwell::AddressSpace;
@@ -1072,7 +1072,7 @@ impl<'a> CodeGenerator<'a> {
         let data_ptr = self.call_returning_ptr("mux_get_object_ptr", &[instance.into()])?;
         let slot = self
             .builder
-            .build_struct_gep(class_type, data_ptr, field_index as u32, &field.name)
+            .build_struct_gep(class_type, data_ptr, llvm_index(field_index), &field.name)
             .map_err(|e| e.to_string())?;
 
         let field_type = self.resolve_field_semantic_type(field)?;

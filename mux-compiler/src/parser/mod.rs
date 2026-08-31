@@ -1325,12 +1325,11 @@ impl<'a> Parser<'a> {
             && j + 1 < n
         {
             return match &self.tokens[j + 1].token_type {
-                TokenType::Eq => true,
+                TokenType::Eq | TokenType::NewLine | TokenType::CloseBrace | TokenType::Eof => true,
                 // `Type name` with no initializer (#393). A type followed by a
                 // name followed by the end of the statement is unambiguously a
                 // declaration - Mux has no expression form where two
                 // identifiers sit side by side.
-                TokenType::NewLine | TokenType::CloseBrace | TokenType::Eof => true,
                 _ => false,
             };
         }
@@ -2267,24 +2266,19 @@ impl<'a> Parser<'a> {
                 | TokenType::Class
                 | TokenType::Interface
                 | TokenType::Enum
-                | TokenType::Import => {
-                    break;
-                }
-                TokenType::If
+                | TokenType::Import
+                | TokenType::If
                 | TokenType::Else
                 | TokenType::While
                 | TokenType::For
                 | TokenType::Match
-                | TokenType::Return => {
-                    break;
-                }
-                TokenType::OpenBrace | TokenType::CloseBrace => {
-                    break;
-                }
-                TokenType::OpenParen | TokenType::CloseParen => {
-                    break;
-                }
-                TokenType::OpenBracket | TokenType::CloseBracket => {
+                | TokenType::Return
+                | TokenType::OpenBrace
+                | TokenType::CloseBrace
+                | TokenType::OpenParen
+                | TokenType::CloseParen
+                | TokenType::OpenBracket
+                | TokenType::CloseBracket => {
                     break;
                 }
                 _ => {
