@@ -357,4 +357,14 @@ mod tests {
 
         assert!(std::panic::catch_unwind(|| emitter.emit(&diagnostic, &files)).is_ok());
     }
+
+    #[test]
+    fn source_line_fixture_preserves_numbering_and_trimmed_content() {
+        let emitter = StandardEmitter::new(super::ColorConfig::Auto);
+
+        assert_eq!(
+            emitter.render_source_line(3, "  let answer = 42;  ", 2),
+            "\u{1b}[1m\u{1b}[38;2;96;165;250m 3\u{1b}[0m |   let answer = 42;"
+        );
+    }
 }
