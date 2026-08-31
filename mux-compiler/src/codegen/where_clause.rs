@@ -13,7 +13,7 @@ use crate::ast::{ExpressionNode, FunctionNode};
 use crate::semantics::Type;
 use crate::semantics::const_fold::{self, ConstValue};
 
-use super::CodeGenerator;
+use super::{CodeGenerator, llvm_index};
 
 impl<'a> CodeGenerator<'a> {
     /// Evaluate each predicate and panic if any is false. Positions the
@@ -217,7 +217,7 @@ impl<'a> CodeGenerator<'a> {
                 .build_struct_gep(
                     struct_type.into_struct_type(),
                     struct_ptr,
-                    index as u32,
+                    llvm_index(index),
                     &format!("where_field_{field_name}"),
                 )
                 .map_err(|e| e.to_string())?;

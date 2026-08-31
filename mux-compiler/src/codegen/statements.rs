@@ -18,7 +18,7 @@ use crate::ast::{
 };
 use crate::semantics::{Type, Type as ResolvedType};
 
-use super::{CodeGenerator, LoopTargets};
+use super::{CodeGenerator, LoopTargets, llvm_index};
 
 struct ForLoopIteration<'a> {
     index_alloca: PointerValue<'a>,
@@ -2070,7 +2070,7 @@ impl<'a> CodeGenerator<'a> {
                 let data_index = i + 1;
                 let data_ptr = self
                     .builder
-                    .build_struct_gep(struct_type, temp_ptr, data_index as u32, "data_ptr")
+                    .build_struct_gep(struct_type, temp_ptr, llvm_index(data_index), "data_ptr")
                     .map_err(|e| e.to_string())?;
 
                 let field_type: BasicTypeEnum<'_> =

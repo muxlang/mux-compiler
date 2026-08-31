@@ -23,7 +23,7 @@ use crate::ast::{
 use crate::lexer::Span;
 use crate::semantics::{GenericContext, SymbolKind, Type};
 
-use super::CodeGenerator;
+use super::{CodeGenerator, llvm_index};
 
 /// Stdlib module prefixes that map to runtime functions via the "mux_" prefix.
 /// Adding a new stdlib module only requires adding its prefix here and
@@ -664,11 +664,11 @@ impl<'a> CodeGenerator<'a> {
         }
         for (i, param) in params.iter().enumerate() {
             let arg = function
-                .get_nth_param((i + param_offset) as u32)
+                .get_nth_param(llvm_index(i + param_offset))
                 .expect("function parameter should exist at expected index");
             arg.set_name(&param.name);
         }
-        param_offset as u32
+        llvm_index(param_offset)
     }
 
     fn extract_captures_from_struct(
@@ -692,7 +692,7 @@ impl<'a> CodeGenerator<'a> {
                 .build_struct_gep(
                     capture_struct_type,
                     captures_ptr,
-                    i as u32,
+                    llvm_index(i),
                     &format!("cap_{name}_ptr"),
                 )
                 .map_err(|e| e.to_string())?;
@@ -728,7 +728,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         for (i, param) in params.iter().enumerate() {
             let arg = function
-                .get_nth_param(i as u32 + param_offset)
+                .get_nth_param(llvm_index(i) + param_offset)
                 .expect("function parameter should exist at expected index");
             let boxed = self.box_value(arg);
             let alloca = self
@@ -883,7 +883,7 @@ impl<'a> CodeGenerator<'a> {
                 .build_struct_gep(
                     capture_struct_type,
                     capture_mem,
-                    i as u32,
+                    llvm_index(i),
                     &format!("cap_field_{i}"),
                 )
                 .map_err(|e| e.to_string())?;
@@ -2139,7 +2139,7 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(
                 *class_type,
                 struct_ptr_typed,
-                *field_index as u32,
+                llvm_index(*field_index),
                 "field_ptr",
             )
             .map_err(|e| e.to_string())?;
@@ -2207,7 +2207,7 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(
                 *struct_type,
                 data_ptr,
-                field_index as u32,
+                llvm_index(field_index),
                 &format!("{name}_ptr"),
             )
             .map_err(|e| e.to_string())?;
@@ -2470,7 +2470,7 @@ impl<'a> CodeGenerator<'a> {
             .build_struct_gep(
                 *struct_type,
                 data_ptr,
-                field_index as u32,
+                llvm_index(field_index),
                 &format!("{name}_ptr"),
             )
             .map_err(|e| e.to_string())?;
@@ -2639,7 +2639,7 @@ impl<'a> CodeGenerator<'a> {
         if let BasicTypeEnum::StructType(st) = *struct_type {
             return self
                 .builder
-                .build_struct_gep(st, struct_ptr, index as u32, field)
+                .build_struct_gep(st, struct_ptr, llvm_index(index), field)
                 .map_err(|e| e.to_string());
         }
         Err("Struct type expected".to_string())
@@ -5010,7 +5010,7 @@ impl<'a> CodeGenerator<'a> {
                     values.push(self.context.i8_type().const_int(b as u64, false));
                 }
                 values.push(self.context.i8_type().const_int(0, false));
-                let array_type = self.context.i8_type().array_type(values.len() as u32);
+                let array_type = self.context.i8_type().array_type(llvm_index(values.len()));
                 let const_array = self.context.i8_type().const_array(&values);
                 let global =
                     self.module
