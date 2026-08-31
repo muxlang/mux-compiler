@@ -208,51 +208,58 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::source::Source;
 
-    fn parse_type(source: &str) -> TypeKind {
+    fn parse_type(source: &str) -> Result<TypeKind, String> {
         let mut source = Source::from_test_str(source);
         let tokens = Lexer::new(&mut source)
             .lex_all()
-            .expect("type fixture should lex");
+            .map_err(|error| format!("type fixture should lex: {error:?}"))?;
         let mut parser = Parser::new(&tokens);
-        parser.parse_type().expect("type fixture should parse").kind
+        parser
+            .parse_type()
+            .map(|node| node.kind)
+            .map_err(|error| format!("type fixture should parse: {error:?}"))
     }
 
     #[test]
-    fn parses_nested_container_types() {
-        let kind = parse_type("map<string, list<int>>");
+    fn parses_nested_container_types() -> Result<(), String> {
+        let kind = parse_type("map<string, list<int>>")?;
         let TypeKind::Map(key, value) = kind else {
-            panic!("expected map type");
+            return Err("expected map type".to_owned());
         };
         assert!(matches!(key.kind, TypeKind::Primitive(PrimitiveType::Str)));
         let TypeKind::List(element) = value.kind else {
-            panic!("expected list value type");
+            return Err("expected list value type".to_owned());
         };
         assert!(matches!(
             element.kind,
             TypeKind::Primitive(PrimitiveType::Int)
         ));
+        Ok(())
     }
 
     #[test]
-    fn parses_function_reference_types() {
-        let kind = parse_type("&func(int, string) returns bool");
+    fn parses_function_reference_types() -> Result<(), String> {
+        let kind = parse_type("&func(int, string) returns bool")?;
         let TypeKind::Reference(function) = kind else {
-            panic!("expected reference type");
+            return Err("expected reference type".to_owned());
         };
         let TypeKind::Function { params, returns } = function.kind else {
-            panic!("expected function type");
+            return Err("expected function type".to_owned());
         };
+        let first_param = params.first().ok_or("missing first parameter")?;
+        let second_param = params.get(1).ok_or("missing second parameter")?;
         assert!(matches!(
-            params[0].kind,
+            first_param.kind,
             TypeKind::Primitive(PrimitiveType::Int)
         ));
         assert!(matches!(
-            params[1].kind,
+            second_param.kind,
             TypeKind::Primitive(PrimitiveType::Str)
         ));
         assert!(matches!(
             returns.kind,
             TypeKind::Primitive(PrimitiveType::Bool)
         ));
+        Ok(())
     }
 }
