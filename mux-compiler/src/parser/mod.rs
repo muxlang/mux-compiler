@@ -2,6 +2,7 @@
 //!
 //! This module contains the parser which converts a stream of tokens into an AST.
 
+mod cursor;
 mod error;
 mod types;
 
@@ -83,17 +84,6 @@ impl<'a> Parser<'a> {
         } else {
             self.errors.push(error);
         }
-    }
-
-    fn advance(&mut self) -> &Token {
-        if !self.is_at_end() {
-            self.current += 1;
-        }
-        self.previous()
-    }
-
-    fn previous(&self) -> &Token {
-        self.tokens[(self.current - 1).max(0)]
     }
 
     fn is_statement_starter(&self, token_type: &TokenType) -> bool {
@@ -1047,11 +1037,6 @@ impl<'a> Parser<'a> {
 
         self.consume_token(TokenType::CloseParen, "Expected ')' after import items")?;
         Ok(ImportSpec::Items { items })
-    }
-
-    // Look ahead n tokens without consuming
-    fn peek_ahead(&self, n: usize) -> Option<&Token> {
-        self.tokens.get(self.current + n).copied()
     }
 
     fn function_declaration(&mut self, is_common: bool) -> ParserResult<AstNode> {
@@ -2102,40 +2087,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    #[must_use]
-    pub fn is_at_end(&self) -> bool {
-        self.current >= self.tokens.len()
-    }
-
-    fn peek(&self) -> &Token {
-        if self.is_at_end() {
-            // Return the last token if available, otherwise use a default EOF token
-            // This prevents "line 0" errors
-            if let Some(last_token) = self.tokens.last() {
-                last_token
-            } else {
-                static EOF_TOKEN: Token = Token {
-                    token_type: TokenType::Eof,
-                    span: Span {
-                        row_start: 1,
-                        row_end: None,
-                        col_start: 1,
-                        col_end: None,
-                    },
-                };
-                &EOF_TOKEN
-            }
-        } else {
-            self.tokens[self.current]
-        }
-    }
-
-    fn consume(&mut self) -> &Token {
-        let ret = &self.tokens[self.current];
-        self.current += 1;
-        ret
-    }
-
     pub fn parse_expression(&mut self) -> ParserResult<ExpressionNode> {
         self.parse_precedence(Precedence::Assignment)
     }
@@ -3007,165 +2958,6 @@ impl<'a> Parser<'a> {
         }
 
         Ok(expr)
-    }
-
-    fn matches(&mut self, types: &[TokenType]) -> bool {
-        if self.is_at_end() {
-            return false;
-        }
-
-        let token = self.peek();
-        for ty in types {
-            if token.token_type == *ty {
-                if token.token_type == TokenType::Eof {
-                    return false;
-                }
-                self.current += 1;
-                return true;
-            }
-        }
-        false
-    }
-
-    fn check(&self, ty: TokenType) -> bool {
-        if self.is_at_end() {
-            return false;
-        }
-        self.peek().token_type == ty
-    }
-
-    fn consume_token(&mut self, expected: TokenType, error_msg: &str) -> ParserResult<Span> {
-        if self.is_at_end() {
-            return Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                format!("{error_msg}, but reached end of file"),
-                self.tokens.last().map_or_else(
-                    || Span {
-                        row_start: 1,
-                        row_end: None,
-                        col_start: 1,
-                        col_end: None,
-                    },
-                    |t| t.span,
-                ),
-            ));
-        }
-
-        let token = &self.tokens[self.current];
-        if token.token_type == expected {
-            self.current += 1;
-            Ok(token.span)
-        } else {
-            let found_desc = Self::describe_token(&token.token_type);
-            Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                format!("{error_msg}, found {found_desc}"),
-                token.span,
-            ))
-        }
-    }
-
-    fn consume_identifier(&mut self, error_msg: &str) -> ParserResult<String> {
-        if self.is_at_end() {
-            return Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                format!("{error_msg}, but reached end of file"),
-                self.peek().span,
-            ));
-        }
-
-        match &self.peek().token_type {
-            TokenType::Id(name) => {
-                let name_clone = name.clone();
-                self.current += 1;
-                Ok(name_clone)
-            }
-            TokenType::Underscore => {
-                let name_clone = "_".to_string();
-                self.current += 1;
-                Ok(name_clone)
-            }
-            _ => {
-                let found_desc = Self::describe_token(&self.peek().token_type);
-                Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    format!("{error_msg}, found {found_desc}"),
-                    self.peek().span,
-                ))
-            }
-        }
-    }
-
-    /// Format a human-readable description of a token type for use in error messages.
-    fn describe_token(token_type: &TokenType) -> String {
-        match token_type {
-            TokenType::Auto => "'auto' keyword".to_string(),
-            TokenType::Func => "'func' keyword".to_string(),
-            TokenType::Returns => "'returns' keyword".to_string(),
-            TokenType::Return => "'return' keyword".to_string(),
-            TokenType::Class => "'class' keyword".to_string(),
-            TokenType::Interface => "'interface' keyword".to_string(),
-            TokenType::Enum => "'enum' keyword".to_string(),
-            TokenType::If => "'if' keyword".to_string(),
-            TokenType::Else => "'else' keyword".to_string(),
-            TokenType::For => "'for' keyword".to_string(),
-            TokenType::While => "'while' keyword".to_string(),
-            TokenType::Match => "'match' keyword".to_string(),
-            TokenType::Const => "'const' keyword".to_string(),
-            TokenType::Import => "'import' keyword".to_string(),
-            TokenType::Break => "'break' keyword".to_string(),
-            TokenType::Continue => "'continue' keyword".to_string(),
-            TokenType::In => "'in' keyword".to_string(),
-            TokenType::Is => "'is' keyword".to_string(),
-            TokenType::As => "'as' keyword".to_string(),
-            TokenType::Common => "'common' keyword".to_string(),
-            TokenType::Where => "'where' keyword".to_string(),
-            TokenType::None => "'none' keyword".to_string(),
-            TokenType::OpenBrace => "'{'".to_string(),
-            TokenType::CloseBrace => "'}'".to_string(),
-            TokenType::OpenParen => "'('".to_string(),
-            TokenType::CloseParen => "')'".to_string(),
-            TokenType::OpenBracket => "'['".to_string(),
-            TokenType::CloseBracket => "']'".to_string(),
-            TokenType::Dot => "'.'".to_string(),
-            TokenType::DotDot => "'..'".to_string(),
-            TokenType::Comma => "','".to_string(),
-            TokenType::Colon => "':'".to_string(),
-            TokenType::Eq => "'='".to_string(),
-            TokenType::Plus => "'+'".to_string(),
-            TokenType::Minus => "'-'".to_string(),
-            TokenType::Star => "'*'".to_string(),
-            TokenType::Slash => "'/'".to_string(),
-            TokenType::Percent => "'%'".to_string(),
-            TokenType::Lt => "'<'".to_string(),
-            TokenType::Gt => "'>'".to_string(),
-            TokenType::EqEq => "'=='".to_string(),
-            TokenType::NotEq => "'!='".to_string(),
-            TokenType::Bang => "'!'".to_string(),
-            TokenType::And => "'&&'".to_string(),
-            TokenType::Or => "'||'".to_string(),
-            TokenType::Id(name) => format!("identifier '{name}'"),
-            TokenType::Int(n) => format!("integer literal '{n}'"),
-            TokenType::Float(n) => format!("float literal '{n}'"),
-            TokenType::Str(s) => format!("string literal \"{s}\""),
-            TokenType::Bool(b) => format!("boolean literal '{b}'"),
-            TokenType::Char(c) => format!("character literal '{c}'"),
-            TokenType::Eof => "end of file".to_string(),
-            TokenType::NewLine => "newline".to_string(),
-            TokenType::StarStar => "'**'".to_string(),
-            TokenType::Le => "'<='".to_string(),
-            TokenType::Ge => "'>='".to_string(),
-            TokenType::Incr => "'++'".to_string(),
-            TokenType::Decr => "'--'".to_string(),
-            TokenType::PlusEq => "'+='".to_string(),
-            TokenType::MinusEq => "'-='".to_string(),
-            TokenType::StarEq => "'*='".to_string(),
-            TokenType::SlashEq => "'/='".to_string(),
-            TokenType::PercentEq => "'%='".to_string(),
-            TokenType::Ref => "'&'".to_string(),
-            TokenType::Underscore => "'_'".to_string(),
-            _ => format!("{token_type:?}"),
-        }
     }
 
     fn consume_operator(&mut self) -> Option<BinaryOp> {
