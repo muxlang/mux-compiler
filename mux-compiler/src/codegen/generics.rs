@@ -298,9 +298,9 @@ impl<'a> CodeGenerator<'a> {
         // insertion point has to be put back - the same reason
         // `generate_specialized_methods` saves it.
         let saved_block = self.builder.get_insert_block();
+        self.generate_enum_type(&key, &substituted);
         let result = self
-            .generate_enum_type(&key, &substituted)
-            .and_then(|()| self.generate_enum_constructors(&key, &substituted))
+            .generate_enum_constructors(&key, &substituted)
             // An instantiation needs its own drop, deep-clone, retain and
             // compare glue, exactly as a declared enum does. Without it a
             // `Box<string>` in a collection fails with "deep-clone glue
