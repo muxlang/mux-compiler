@@ -1161,6 +1161,7 @@ impl<'a> CodeGenerator<'a> {
 // Re-export all submodules
 mod address_taken;
 mod classes;
+mod closure_temps;
 mod constructors;
 mod deserialize;
 mod expressions;
