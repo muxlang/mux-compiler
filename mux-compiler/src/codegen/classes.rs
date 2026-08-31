@@ -74,7 +74,7 @@ impl<'a> CodeGenerator<'a> {
                         self.instantiate_generic_types_in_type_node(type_node)?;
                     }
                 }
-                self.generate_enum_type(name, variants)?;
+                self.generate_enum_type(name, variants);
             }
         }
         for node in nodes {
@@ -704,11 +704,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    pub(super) fn generate_enum_type(
-        &mut self,
-        name: &str,
-        variants: &[EnumVariant],
-    ) -> Result<(), String> {
+    pub(super) fn generate_enum_type(&mut self, name: &str, variants: &[EnumVariant]) {
         // Tagged union: {i32 discriminant, <union fields...>}
         // Union fields are determined by analyzing all variant field types.
         let i32_type = self.context.i32_type();
@@ -731,7 +727,6 @@ impl<'a> CodeGenerator<'a> {
         struct_fields.extend(union_field_types);
         let struct_type = self.context.struct_type(&struct_fields, false);
         self.type_map.insert(name.to_string(), struct_type.into());
-        Ok(())
     }
 
     pub(super) fn get_variant_index(
