@@ -83,6 +83,20 @@
    ...
 }
 
+# ureq's TLS transport writes a fully initialised prefix of its lazily-sized
+# output buffer with `write_vectored`. Memcheck follows the backing allocation
+# rather than the slice length and reports the syscall's unused vector bytes as
+# undefined. The stack is entirely in ureq, Rust's I/O adapter, and rustls; a
+# Mux-owned buffer would not match this suppression.
+{
+   mux-thirdparty-tls-ureq-syscall-sendto-uninitialised
+   Memcheck:Param
+   socketcall.sendto(msg)
+   ...
+   fun:*ureq*
+   ...
+}
+
 # ---------------------------------------------------------------------------
 # "POSSIBLY LOST" blocks inside the TLS stack
 # ---------------------------------------------------------------------------
