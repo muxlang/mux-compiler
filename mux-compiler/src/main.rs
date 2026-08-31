@@ -2718,6 +2718,7 @@ mod tests {
             )
             .unwrap();
             let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            // NOSONAR rust:S2612: this private temporary test fixture must be executable.
             perms.set_mode(0o755);
             std::fs::set_permissions(&path, perms).unwrap();
             path
