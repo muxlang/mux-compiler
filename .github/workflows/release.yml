@@ -233,26 +233,6 @@ jobs:
             dist/mux-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
 
   verify-install:
-    # Install the artifact that is about to be published, exactly the way a user
-    # would, and compile and run programs with it.
-    #
-    # This is the gate that makes "publish a compiler that cannot compile hello
-    # world" impossible - the failure that shipped in v0.6.0. It is also the only
-    # thing that ever EXECUTES scripts/install.sh and install.ps1; build.yml only
-    # parses them. Writing it immediately found that install.ps1 had never worked
-    # on any release: the zip packed bin/ at its root while the script looked for
-    # mux-<target>/bin/mux.exe, and it installed only mux.exe without the LLVM
-    # DLLs beside it. Both are fixed in this change.
-    #
-    # The installers take MUX_RELEASE_BASE_URL, so they run unmodified against
-    # the artifacts from this run rather than a published release that does not
-    # exist yet.
-    #
-    # NOTE on gating: `needs` is not the same as a required status check. A
-    # skipped or failed job here genuinely skips publish-release, so this does
-    # NOT need the aggregator pattern build.yml uses for its matrix - that exists
-    # because required checks treat a skipped job as green, which `needs` does
-    # not.
     name: Verify Install (${{ matrix.label }})
     needs: build-artifacts
     runs-on: ${{ matrix.os }}
@@ -294,119 +274,13 @@ jobs:
           # this is the leg to restore first once it is fixed, because it is the
           # only one that would catch a glibc regression.
     steps:
-      - name: Install container prerequisites
-        if: ${{ matrix.container != '' }}
-        shell: sh
-        run: |
-          set -eu
-          # A C toolchain is required: mux links compiled programs with cc.
-          # Deliberately gcc rather than clang - it also proves the "any C
-          # driver of any version" claim from #318. curl, tar, gzip and
-          # ca-certificates are already present in these images.
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl gcc libc6-dev tar gzip git python3
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Download the artifact built by this run
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Verify published artifact installation and behavior
+        uses: ./.github/actions/verify-release-install
         with:
-          # This leg's platform only. Downloading the whole set would pull ~200MB
-          # to serve one file.
-          name: ${{ matrix.artifact }}
-          path: artifacts
-
-      - name: Serve the artifacts over loopback
-        shell: bash
-        run: |
-          set -euo pipefail
-          ls -l artifacts
-          # Output is redirected to a file rather than inherited. A backgrounded
-          # process holding the step's stdout keeps the runner's stream readers
-          # open, which makes it kill the whole process tree ~5s after the step
-          # ends - on Windows that reaches this server, and the install step
-          # would then get connection-refused. Redirecting sidesteps that path
-          # entirely and drops the 5s stall with it.
-          python3 -m http.server 8000 --directory artifacts --bind 127.0.0.1 \
-            > "${RUNNER_TEMP}/artifact-server.log" 2>&1 &
-          for _ in $(seq 1 30); do
-            if curl -fsS "http://127.0.0.1:8000/" >/dev/null 2>&1; then
-              echo "artifact server up"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "artifact server did not come up:" >&2
-          cat "${RUNNER_TEMP}/artifact-server.log" >&2
-          exit 1
-
-      - name: Install with scripts/install.sh
-        if: ${{ runner.os != 'Windows' }}
-        shell: bash
-        env:
-          MUX_RELEASE_BASE_URL: http://127.0.0.1:8000
-          MUX_INSTALL_DIR: ${{ github.workspace }}/installed/bin
-          MUX_LIB_DIR: ${{ github.workspace }}/installed/lib
-        run: sh scripts/install.sh
-
-      - name: Install with scripts/install.ps1
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        env:
-          MUX_RELEASE_BASE_URL: http://127.0.0.1:8000
-          MUX_INSTALL_DIR: ${{ github.workspace }}\installed\bin
-          MUX_LIB_DIR: ${{ github.workspace }}\installed\lib
-        run: ./scripts/install.ps1
-
-      - name: Compile and run programs with the installed compiler
-        shell: bash
-        run: |
-          set -euo pipefail
-          exe=""
-          if [ "${RUNNER_OS}" = "Windows" ]; then exe=".exe"; fi
-          ./scripts/ci/smoke-run.sh "installed/bin/mux${exe}"
-
-      # The published examples have to work with the compiler being published.
-      # mux-examples' own CI runs this same script against mux-compiler `main`,
-      # which is a weaker claim: an example can be correct on main and broken
-      # for everyone who installs the release. This is the only place that gap
-      # is closed, and it uses the artifact a user actually receives rather than
-      # a build from source.
-      #
-      # Linux only, deliberately. The examples are platform-independent Mux
-      # programs, so running them on five platforms tests the installer five
-      # times over rather than the examples - and the installer already has its
-      # own coverage in the step above.
-      - name: Check out mux-examples
-        if: ${{ runner.os == 'Linux' }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: muxlang/mux-examples
-          ref: main
-          path: mux-examples
-
-      - name: Run the published examples against the installed compiler
-        if: ${{ runner.os == 'Linux' }}
-        shell: bash
-        working-directory: mux-examples
-        env:
-          # The absolute path matters: the runner cds into each example's
-          # directory before invoking the compiler.
-          MUX_BIN: ${{ github.workspace }}/installed/bin/mux
-          MUX_RUNTIME_LIB: ${{ github.workspace }}/installed/lib/libmux_runtime.a
-        run: ./scripts/run-examples.sh
-
-      - name: Show what was installed
-        # Only on failure, and it is the first question anyone asks: a missing
-        # runtime library or a DLL left behind in the bundle looks identical to a
-        # compiler bug from the error alone.
-        if: ${{ failure() }}
-        shell: bash
-        run: |
-          echo "--- installed/bin ---"; ls -l installed/bin || true
-          echo "--- installed/lib ---"; ls -l installed/lib || true
-          echo "--- artifact server log ---"; cat "${RUNNER_TEMP}/artifact-server.log" || true
+          artifact: ${{ matrix.artifact }}
+          container: ${{ matrix.container }}
 
   publish-release:
     name: Publish Release
