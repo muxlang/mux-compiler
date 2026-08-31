@@ -274,6 +274,8 @@ jobs:
           # this is the leg to restore first once it is fixed, because it is the
           # only one that would catch a glibc regression.
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Verify published artifact installation and behavior
         uses: ./.github/actions/verify-release-install
         with:
