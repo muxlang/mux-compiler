@@ -1,0 +1,14 @@
+# Shared by Build and Installer Scripts. Keep the broad scripts/ and workflow
+# entries: every job in the source gate exercises one of those surfaces, and a
+# workflow-only change must still run the workflow being changed.
+rust:
+  - 'mux-compiler/**'
+  - 'mux-runtime/**'
+  - 'Cargo.toml'
+  - 'Cargo.lock'
+  - 'clippy.toml'
+  - 'scripts/**'
+  - 'test_scripts/**'
+  - 'infra/**'
+  - '.github/workflows/**'
+  - '.github/paths-filter.yml'
