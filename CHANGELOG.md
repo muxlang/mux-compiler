@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Cargo dependency checks now enforce advisory, license, and source policy with
   a checked-in `deny.toml` and a pinned Rust toolchain.
+- The release records the exact `mux-runtime` source commit in `Cargo.lock` so
+  the compiler and runtime inputs can be reproduced together.
 
 ## [0.10.1] - 2026-08-21
 
