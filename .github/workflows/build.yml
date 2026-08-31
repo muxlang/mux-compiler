@@ -450,71 +450,19 @@ jobs:
           echo "install.sh parses cleanly and is shellcheck clean"
 
   packaged_artifact:
-    # Reproduces a binary install: the compiler plus the bundled runtime library
-    # in bin/ and lib/, and nothing else. No other job runs the compiler from
-    # that layout, which is how a release that could not compile hello world
-    # reached users.
-    #
-    # This is also the ONLY place a compiled Mux program is executed on macOS.
-    # Everything else in CI is Linux, so the platform-specific work in #318 was
-    # shipped unexercised there.
-    #
-    # GitHub-hosted on purpose: public repos get macOS unmetered here, and a
-    # macOS minute is ~20x on metered runners.
-    name: Packaged Artifact (${{ matrix.label }})
+    # The packaged-artifact workflow owns the cross-platform installation smoke
+    # test. Keep this caller in Build so the required "Packaged Artifact Smoke
+    # Test" status remains part of the normal source-check workflow.
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ${{ matrix.os }}
+    uses: ./.github/workflows/packaged-artifact.yml
+    with:
+      rust: ${{ needs.detect-changes.outputs.rust == 'true' }}
     permissions:
       contents: read
-    timeout-minutes: 45
-    strategy:
-      # One platform failing must not hide the others - telling "broken on
-      # macOS" apart from "broken everywhere" is the entire point of a matrix.
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            label: linux-x86_64
-          - os: macos-14
-            label: macos-aarch64
-          - os: windows-latest
-            label: windows-x86_64
-    # Every step runs under bash, including on Windows, so the build and the
-    # smoke script are one code path rather than three.
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
-        with:
-          toolchain: 1.93.1
-      - name: Setup LLVM 22
-        uses: ./.github/actions/setup-llvm
-        with:
-          extra-components: lld
-      - name: Build compiler and runtime
-        # No explicit --target: the host triple is the shipped one on all three
-        # runners, so output lands in target/<profile>/ and the smoke script
-        # needs no per-platform path knowledge.
-        run: |
-          cargo build -p mux-runtime --locked
-          cargo build -p mux-lang --locked
-      - name: Stage and smoke-test the packaged layout
-        run: ./scripts/ci/smoke-packaged.sh debug
 
   packaged_artifact_result:
-    # Aggregates the matrix under the single stable name that the branch ruleset
-    # requires. Without this, matrixing renames the check to
-    # "Packaged Artifact (linux-x86_64)" and the required context
-    # "Packaged Artifact Smoke Test" would never report again, wedging every PR.
-    #
-    # `always()` plus an explicit result test is load-bearing: a job whose
-    # dependency failed is SKIPPED, and GitHub reports a skipped job as
-    # successful to required checks. Without the test below, a macOS failure
-    # would surface as a green required check.
+    # Keep this aggregator in Build so the required check name is unchanged
+    # when the platform matrix moves into the reusable workflow.
     name: Packaged Artifact Smoke Test
     needs: packaged_artifact
     if: ${{ always() }}
