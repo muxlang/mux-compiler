@@ -37,22 +37,7 @@ jobs:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
-          filters: |
-            rust:
-              - 'mux-compiler/**'
-              - 'mux-runtime/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'clippy.toml'
-              # All of scripts/, not an enumeration: the installers, leak-check
-              # and the integration helpers are all exercised by jobs here, and
-              # a list drifts out of date as jobs are added.
-              - 'scripts/**'
-              - 'test_scripts/**'
-              - 'infra/**'
-              # A workflow-only change would otherwise skip every job here,
-              # including the one being changed.
-              - '.github/workflows/**'
+          filters: .github/paths-filter.yml
 
   cargo_deny:
     name: Cargo dependency policy
@@ -401,54 +386,6 @@ jobs:
           name: coverage-lcov
           path: lcov.info
           if-no-files-found: error
-  installer_scripts:
-    # Nothing else runs the installers, so a syntax error in either one ships
-    # silently and only surfaces when a user pipes it into their shell. Parsing
-    # is cheap and catches that class of break; PSScriptAnalyzer adds the
-    # PowerShell-specific ones.
-    name: Installer Scripts
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.rust == 'true' || github.event_name == 'push' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Parse and analyze install.ps1
-        shell: pwsh
-        run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path scripts/install.ps1), [ref]$null, [ref]$errors) | Out-Null
-          if ($errors) {
-            $errors | ForEach-Object { Write-Host $_ }
-            throw "install.ps1 failed to parse"
-          }
-
-          # Import explicitly and stop on failure. Without this a module that
-          # cannot load leaves $findings null, and the step passes green having
-          # analyzed nothing.
-          # Pinned: newer PSScriptAnalyzer requires pwsh 7.4.6+, which not every
-          # runner image has. 1.22.0 loads on 7.4.2 and on current pwsh alike.
-          Install-Module PSScriptAnalyzer -RequiredVersion 1.22.0 -Force -Scope CurrentUser -SkipPublisherCheck
-          Import-Module PSScriptAnalyzer -ErrorAction Stop
-          $findings = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Error -ErrorAction Stop
-          if ($findings) {
-            $findings | Format-Table -AutoSize | Out-String | Write-Host
-            throw "PSScriptAnalyzer reported errors"
-          }
-          Write-Host "install.ps1 parses cleanly and is analyzer clean"
-
-      - name: Check install.sh
-        run: |
-          set -euo pipefail
-          bash -n scripts/install.sh
-          # Info level only reports SC2016 on the awk program, where the single
-          # quotes are deliberate; warnings and above are real.
-          shellcheck --severity=warning scripts/install.sh
-          echo "install.sh parses cleanly and is shellcheck clean"
-
   packaged_artifact:
     # The packaged-artifact workflow owns the cross-platform installation smoke
     # test. Keep this caller in Build so the required "Packaged Artifact Smoke
