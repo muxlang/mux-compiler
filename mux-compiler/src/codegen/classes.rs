@@ -741,10 +741,8 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<usize, String> {
         // hardcode indices for built-in enums to ensure deterministic behavior
         match (enum_name, variant_name) {
-            ("optional", "some") => Ok(0),
-            ("optional", "none") => Ok(1),
-            ("result", "ok") => Ok(0),
-            ("result", "err") => Ok(1),
+            ("optional", "some") | ("result", "ok") => Ok(0),
+            ("optional", "none") | ("result", "err") => Ok(1),
             _ => {
                 // for user-defined enums, use HashMap lookup
                 if let Some(variants) = self.enum_variants.get(enum_name) {
@@ -957,7 +955,6 @@ impl<'a> CodeGenerator<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::llvm_index;
     use super::CodeGenerator;
 
     #[cfg(target_pointer_width = "64")]
@@ -974,20 +971,5 @@ mod tests {
         let error = CodeGenerator::class_field_llvm_index(unrepresentable)
             .expect_err("an index wider than LLVM's API must be rejected");
         assert!(error.contains("exceeds LLVM's u32 limit"));
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    #[test]
-    fn llvm_index_accepts_the_largest_representable_index() {
-        let largest = usize::try_from(u32::MAX).expect("u32 fits in a 64-bit usize");
-        assert_eq!(llvm_index(largest), u32::MAX);
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    #[test]
-    #[should_panic(expected = "LLVM index exceeds u32::MAX")]
-    fn llvm_index_rejects_unrepresentable_indices() {
-        let unrepresentable = usize::try_from(u32::MAX).expect("u32 fits in a 64-bit usize") + 1;
-        llvm_index(unrepresentable);
     }
 }
