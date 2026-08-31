@@ -2,7 +2,7 @@
 //!
 //! This module handles generating LLVM types for classes, interfaces, and enums.
 
-use super::{CodeGenerator, llvm_index};
+use super::CodeGenerator;
 use crate::ast::{
     AstNode, EnumVariant, EnumVariantField, Field, PrimitiveType, TypeKind, TypeNode,
 };
@@ -476,21 +476,17 @@ impl<'a> CodeGenerator<'a> {
                 .and_then(|m| m.get(&field.name))
                 .copied()
                 .ok_or_else(|| format!("Field {} not in field_map for {}", field.name, name))?;
+            let llvm_field_index = Self::class_field_llvm_index(field_index)?;
             // Inline fields were bulk-copied above. A plain scalar is fully
             // duplicated by that memcpy, but an inline enum field's copy still
             // aliases the source's RC payloads (a string, a nested or boxed
             // recursive enum), so deep-clone them in place to make the copy
             // independent; the memcpy alone would double-free.
-            if !Self::class_field_is_boxed_pointer(class_type, field_index) {
+            if !Self::class_field_is_boxed_pointer(class_type, llvm_field_index) {
                 if let Some(enum_name) = self.nested_user_enum_name(&field.type_) {
                     let field_ptr = self
                         .builder
-                        .build_struct_gep(
-                            class_type,
-                            dst_typed,
-                            llvm_index(field_index),
-                            &field.name,
-                        )
+                        .build_struct_gep(class_type, dst_typed, llvm_field_index, &field.name)
                         .map_err(|e| e.to_string())?;
                     self.emit_enum_deep_clone(&enum_name, field_ptr)?;
                 }
@@ -498,7 +494,7 @@ impl<'a> CodeGenerator<'a> {
             }
             let field_ptr = self
                 .builder
-                .build_struct_gep(class_type, dst_typed, llvm_index(field_index), &field.name)
+                .build_struct_gep(class_type, dst_typed, llvm_field_index, &field.name)
                 .map_err(|e| e.to_string())?;
             let field_val = self
                 .builder
@@ -542,22 +538,18 @@ impl<'a> CodeGenerator<'a> {
                 .and_then(|m| m.get(&field.name))
                 .copied()
                 .ok_or_else(|| format!("Field {} not in field_map for {}", field.name, name))?;
+            let llvm_field_index = Self::class_field_llvm_index(field_index)?;
             // Fields stored inline (e.g. an enum held as a struct) are not boxed
             // `*mut Value` pointers; loading their first word and decrementing it
             // as a refcount would corrupt memory. An inline enum field still owns
             // its active variant's RC payloads (a string, a nested or boxed
             // recursive enum), so release those with the enum drop glue; other
             // inline scalars own nothing and are skipped.
-            if !Self::class_field_is_boxed_pointer(class_type, field_index) {
+            if !Self::class_field_is_boxed_pointer(class_type, llvm_field_index) {
                 if let Some(enum_name) = self.nested_user_enum_name(&field.type_) {
                     let field_ptr = self
                         .builder
-                        .build_struct_gep(
-                            class_type,
-                            obj_typed,
-                            llvm_index(field_index),
-                            &field.name,
-                        )
+                        .build_struct_gep(class_type, obj_typed, llvm_field_index, &field.name)
                         .map_err(|e| e.to_string())?;
                     self.emit_enum_drop(&enum_name, field_ptr)?;
                 }
@@ -565,7 +557,7 @@ impl<'a> CodeGenerator<'a> {
             }
             let field_ptr = self
                 .builder
-                .build_struct_gep(class_type, obj_typed, llvm_index(field_index), &field.name)
+                .build_struct_gep(class_type, obj_typed, llvm_field_index, &field.name)
                 .map_err(|e| e.to_string())?;
             let field_val = self
                 .builder
@@ -581,11 +573,16 @@ impl<'a> CodeGenerator<'a> {
     /// Whether class field `field_index` is stored as a boxed `*mut Value`
     /// pointer (and therefore participates in reference counting) rather than
     /// inline data such as an enum struct.
-    fn class_field_is_boxed_pointer(class_type: BasicTypeEnum<'a>, field_index: usize) -> bool {
+    fn class_field_llvm_index(field_index: usize) -> Result<u32, String> {
+        u32::try_from(field_index)
+            .map_err(|_| format!("class field index {field_index} exceeds LLVM's u32 limit"))
+    }
+
+    fn class_field_is_boxed_pointer(class_type: BasicTypeEnum<'a>, field_index: u32) -> bool {
         matches!(
             class_type
                 .into_struct_type()
-                .get_field_type_at_index(llvm_index(field_index)),
+                .get_field_type_at_index(field_index),
             Some(t) if t.is_pointer_type()
         )
     }
@@ -961,6 +958,23 @@ impl<'a> CodeGenerator<'a> {
 #[cfg(test)]
 mod tests {
     use super::super::llvm_index;
+    use super::CodeGenerator;
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn class_field_index_accepts_the_largest_representable_index() {
+        let largest = usize::try_from(u32::MAX).expect("u32 fits in a 64-bit usize");
+        assert_eq!(CodeGenerator::class_field_llvm_index(largest), Ok(u32::MAX));
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn class_field_index_reports_unrepresentable_indices() {
+        let unrepresentable = usize::try_from(u32::MAX).expect("u32 fits in a 64-bit usize") + 1;
+        let error = CodeGenerator::class_field_llvm_index(unrepresentable)
+            .expect_err("an index wider than LLVM's API must be rejected");
+        assert!(error.contains("exceeds LLVM's u32 limit"));
+    }
 
     #[cfg(target_pointer_width = "64")]
     #[test]
