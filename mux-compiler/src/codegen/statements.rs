@@ -41,6 +41,11 @@ struct ForLoopBlocks<'a> {
     exit_bb: BasicBlock<'a>,
 }
 
+struct MatchBlocks<'a> {
+    end: BasicBlock<'a>,
+    arms: Vec<(BasicBlock<'a>, BasicBlock<'a>)>,
+}
+
 impl<'a> CodeGenerator<'a> {
     fn declare_variable(
         &mut self,
@@ -1717,6 +1722,33 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    fn create_match_blocks(
+        &self,
+        function: FunctionValue<'a>,
+        arm_count: usize,
+        match_id: usize,
+    ) -> MatchBlocks<'a> {
+        let end = self
+            .context
+            .append_basic_block(function, &format!("match_end_{match_id}"));
+        let mut arms = Vec::with_capacity(arm_count);
+
+        for i in 0..arm_count {
+            let arm_bb = self
+                .context
+                .append_basic_block(function, &format!("match_arm_{match_id}_{i}"));
+            let next_bb = if i < arm_count - 1 {
+                self.context
+                    .append_basic_block(function, &format!("match_next_{match_id}_{i}"))
+            } else {
+                end
+            };
+            arms.push((arm_bb, next_bb));
+        }
+
+        MatchBlocks { end, arms }
+    }
+
     fn evaluate_switch_pattern_condition(
         &mut self,
         match_val: BasicValueEnum<'a>,
@@ -2317,20 +2349,10 @@ impl<'a> CodeGenerator<'a> {
         });
         let match_id = self.label_counter;
         self.label_counter += 1;
-        let end_bb = self
-            .context
-            .append_basic_block(function, &format!("match_end_{match_id}"));
+        let match_blocks = self.create_match_blocks(function, arms.len(), match_id);
 
         for (i, arm) in arms.iter().enumerate() {
-            let arm_bb = self
-                .context
-                .append_basic_block(function, &format!("match_arm_{match_id}_{i}"));
-            let next_bb = if i < arms.len() - 1 {
-                self.context
-                    .append_basic_block(function, &format!("match_next_{match_id}_{i}"))
-            } else {
-                end_bb
-            };
+            let (arm_bb, next_bb) = match_blocks.arms[i];
 
             self.builder.position_at_end(current_bb);
             if current_bb.get_terminator().is_some() {
@@ -2361,14 +2383,14 @@ impl<'a> CodeGenerator<'a> {
                     expr_ptr_opt,
                     temp_ptr_opt,
                 )?;
-                me.emit_match_guard_and_body(function, arm, next_bb, end_bb, i)
+                me.emit_match_guard_and_body(function, arm, next_bb, match_blocks.end, i)
             })?;
 
             current_bb = next_bb;
         }
 
-        self.builder.position_at_end(end_bb);
-        if all_arms_return && end_bb.get_terminator().is_none() {
+        self.builder.position_at_end(match_blocks.end);
+        if all_arms_return && match_blocks.end.get_terminator().is_none() {
             self.builder
                 .build_unreachable()
                 .map_err(|e| e.to_string())?;
@@ -2395,20 +2417,10 @@ impl<'a> CodeGenerator<'a> {
         });
         let match_id = self.label_counter;
         self.label_counter += 1;
-        let end_bb = self
-            .context
-            .append_basic_block(function, &format!("match_end_{match_id}"));
+        let match_blocks = self.create_match_blocks(function, arms.len(), match_id);
 
         for (i, arm) in arms.iter().enumerate() {
-            let arm_bb = self
-                .context
-                .append_basic_block(function, &format!("match_arm_{match_id}_{i}"));
-            let next_bb = if i < arms.len() - 1 {
-                self.context
-                    .append_basic_block(function, &format!("match_next_{match_id}_{i}"))
-            } else {
-                end_bb
-            };
+            let (arm_bb, next_bb) = match_blocks.arms[i];
 
             self.builder.position_at_end(current_bb);
             if current_bb.get_terminator().is_some() {
@@ -2439,14 +2451,14 @@ impl<'a> CodeGenerator<'a> {
                     )?;
                 }
 
-                me.emit_match_guard_and_body(function, arm, next_bb, end_bb, i)
+                me.emit_match_guard_and_body(function, arm, next_bb, match_blocks.end, i)
             })?;
 
             current_bb = next_bb;
         }
 
-        self.builder.position_at_end(end_bb);
-        if all_arms_return && end_bb.get_terminator().is_none() {
+        self.builder.position_at_end(match_blocks.end);
+        if all_arms_return && match_blocks.end.get_terminator().is_none() {
             self.builder
                 .build_unreachable()
                 .map_err(|e| e.to_string())?;
