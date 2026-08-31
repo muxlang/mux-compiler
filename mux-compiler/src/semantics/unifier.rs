@@ -73,32 +73,32 @@ impl Unifier {
                 }
                 self.unify(r1, r2, span)?;
             }
-            (Type::Reference(t1), Type::Reference(t2)) => self.unify(t1, t2, span)?,
-            (Type::List(t1), Type::List(t2)) => self.unify(t1, t2, span)?,
+            (Type::Reference(t1), Type::Reference(t2))
+            | (Type::List(t1), Type::List(t2))
+            | (Type::Set(t1), Type::Set(t2))
+            | (Type::Optional(t1), Type::Optional(t2)) => self.unify(t1, t2, span)?,
             (Type::Map(k1, v1), Type::Map(k2, v2)) => {
                 self.unify(k1, k2, span)?;
                 self.unify(v1, v2, span)?;
             }
-            (Type::Set(t1), Type::Set(t2)) => self.unify(t1, t2, span)?,
             (Type::Tuple(l1, r1), Type::Tuple(l2, r2)) => {
                 self.unify(l1, l2, span)?;
                 self.unify(r1, r2, span)?;
             }
 
-            (Type::Optional(t1), Type::Optional(t2)) => self.unify(t1, t2, span)?,
             (Type::Result(o1, e1), Type::Result(o2, e2)) => {
                 self.unify(o1, o2, span)?;
                 self.unify(e1, e2, span)?;
             }
-            (Type::Void, Type::Void) => {}
-            (Type::EmptyList, Type::EmptyList) => {}
-            (Type::EmptyMap, Type::EmptyMap) => {}
-            (Type::EmptySet, Type::EmptySet) => {}
-            (Type::List(_), Type::EmptyList) | (Type::EmptyList, Type::List(_)) => {}
-            (Type::Map(_, _), Type::EmptyMap) | (Type::EmptyMap, Type::Map(_, _)) => {}
-            (Type::Set(_), Type::EmptySet) | (Type::EmptySet, Type::Set(_)) => {}
-            (Type::Never, _) => {}
-            (_, Type::Never) => {}
+            (Type::Void, Type::Void)
+            | (Type::EmptyList | Type::List(_), Type::EmptyList)
+            | (Type::EmptyList, Type::List(_))
+            | (Type::EmptyMap | Type::Map(_, _), Type::EmptyMap)
+            | (Type::EmptyMap, Type::Map(_, _))
+            | (Type::EmptySet | Type::Set(_), Type::EmptySet)
+            | (Type::EmptySet, Type::Set(_))
+            | (Type::Never, _)
+            | (_, Type::Never) => {}
             _ => {
                 return Err(SemanticError::new(
                     DiagnosticCode::TypeMismatch,

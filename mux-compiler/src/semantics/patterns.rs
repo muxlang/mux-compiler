@@ -278,7 +278,7 @@ impl SemanticAnalyzer {
     #[allow(clippy::only_used_in_recursion)]
     pub(super) fn analyze_pattern(&mut self, pattern: &PatternNode) -> Result<(), SemanticError> {
         match pattern {
-            PatternNode::Identifier(_) => {}
+            PatternNode::Identifier(_) | PatternNode::Literal(_) | PatternNode::Wildcard => {}
             PatternNode::EnumVariant { args, .. } => {
                 for arg in args {
                     self.analyze_pattern(arg)?;
@@ -292,8 +292,6 @@ impl SemanticAnalyzer {
                     self.analyze_pattern(rest_pat)?;
                 }
             }
-            PatternNode::Literal(_) => {}
-            PatternNode::Wildcard => {}
         }
         Ok(())
     }

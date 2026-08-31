@@ -54,7 +54,6 @@ fn visit_statement(stmt: &StatementNode, found: &mut HashSet<String>) {
         | StatementKind::ConstDecl(_, _, expr)
         | StatementKind::Expression(expr) => visit_expression(expr, found),
         // No initializer, so no expression to walk.
-        StatementKind::UninitDecl(_, _) => {}
         StatementKind::Return(expr) => {
             if let Some(expr) = expr {
                 visit_expression(expr, found);
@@ -90,7 +89,10 @@ fn visit_statement(stmt: &StatementNode, found: &mut HashSet<String>) {
             }
         }
         StatementKind::Block(stmts) => visit_block(stmts, found),
-        StatementKind::Import { .. } | StatementKind::Break | StatementKind::Continue => {}
+        StatementKind::UninitDecl(_, _)
+        | StatementKind::Import { .. }
+        | StatementKind::Break
+        | StatementKind::Continue => {}
     }
 }
 

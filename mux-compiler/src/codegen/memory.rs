@@ -2351,30 +2351,27 @@ impl<'a> CodeGenerator<'a> {
             // `string` is the exception among the primitives: it is a
             // reference-counted heap value, so its slot holds a pointer.
             Type::Primitive(_) => self.scalar_slot_type(ty).is_none(),
-            // Named types (classes) are RC-allocated
-            Type::Named(_, _) => true,
-            // Generic types that resolve to RC types
-            Type::Generic(_) | Type::Variable(_) => true,
-            // Collections contain Values which are RC-allocated
-            Type::List(_) | Type::Map(_, _) | Type::Set(_) => true,
-            // Tuples contain Values which are RC-allocated
-            Type::Tuple(_, _) => true,
-            // Optional contains boxed values
-            Type::Optional(_) => true,
-            // Result contains boxed values
-            Type::Result(_, _) => true,
-            // References are pointers to RC values
-            Type::Reference(_) => true,
+            // All non-scalar value types below are RC-allocated or contain
+            // RC-allocated values.
+            Type::Named(_, _)
+            | Type::Generic(_)
+            | Type::Variable(_)
+            | Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::Tuple(_, _)
+            | Type::Optional(_)
+            | Type::Result(_, _)
+            | Type::Reference(_)
+            | Type::Instantiated(_, _) => true,
             // Function types are pointers, not RC
-            Type::Function { .. } => false,
-            // Void doesn't need tracking
-            Type::Void | Type::Never => false,
-            // Empty collections don't need tracking
-            Type::EmptyList | Type::EmptyMap | Type::EmptySet => false,
-            // Instantiated types (like Pair<string, bool>) need RC
-            Type::Instantiated(_, _) => true,
-            // Module references don't need RC
-            Type::Module(_) => false,
+            Type::Function { .. }
+            | Type::Void
+            | Type::Never
+            | Type::EmptyList
+            | Type::EmptyMap
+            | Type::EmptySet
+            | Type::Module(_) => false,
         }
     }
 

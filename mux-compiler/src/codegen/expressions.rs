@@ -1048,11 +1048,12 @@ impl<'a> CodeGenerator<'a> {
                 }
                 false
             }
-            TypeKind::List(inner) => Self::type_node_contains_names(inner, names),
+            TypeKind::List(inner) | TypeKind::Set(inner) => {
+                Self::type_node_contains_names(inner, names)
+            }
             TypeKind::Map(k, v) => {
                 Self::type_node_contains_names(k, names) || Self::type_node_contains_names(v, names)
             }
-            TypeKind::Set(inner) => Self::type_node_contains_names(inner, names),
             _ => false,
         }
     }
@@ -1874,7 +1875,13 @@ impl<'a> CodeGenerator<'a> {
         match kind {
             // String literals allocate a new Value; other literals are unboxed
             // scalars and are filtered out by the pointer check in register_temp.
-            ExpressionKind::Literal(_) => true,
+            ExpressionKind::Literal(_)
+            | ExpressionKind::Call { .. }
+            | ExpressionKind::ListAccess { .. }
+            | ExpressionKind::ListLiteral(_)
+            | ExpressionKind::MapLiteral { .. }
+            | ExpressionKind::SetLiteral(_)
+            | ExpressionKind::TupleLiteral(_) => true,
             // A non-assignment binary op builds a new value (string/list concat)
             // or an unboxed scalar (arithmetic/comparison, ignored by
             // register_temp). An assignment op instead yields the assigned value,
@@ -1885,12 +1892,6 @@ impl<'a> CodeGenerator<'a> {
             // that register_temp ignores): calls (functions and methods return
             // +1), collection literals, and indexed access (the runtime getters
             // clone the element out).
-            ExpressionKind::Call { .. }
-            | ExpressionKind::ListAccess { .. }
-            | ExpressionKind::ListLiteral(_)
-            | ExpressionKind::MapLiteral { .. }
-            | ExpressionKind::SetLiteral(_)
-            | ExpressionKind::TupleLiteral(_) => true,
             // Everything else is either borrowed or not reference counted, and
             // must never be tracked — freeing a borrowed value (a field load, a
             // dereference, an identifier, a ternary arm that yields one of its
@@ -1962,18 +1963,12 @@ impl<'a> CodeGenerator<'a> {
         type_node: &Type,
     ) -> Result<BasicValueEnum<'a>, String> {
         match type_node {
-            Type::Optional(_) | Type::Result(_, _) => self
-                .load_boxed_ptr_from_alloca(ptr, name)
-                .map(std::convert::Into::into),
             Type::Named(type_name, _) => {
                 self.generate_named_identifier_from_binding(name, ptr, var_type, type_name)
             }
             Type::Primitive(prim) => {
                 self.generate_primitive_identifier_from_binding(name, ptr, var_type, prim)
             }
-            Type::Function { .. } => self
-                .load_boxed_ptr_from_alloca(ptr, name)
-                .map(std::convert::Into::into),
             _ => self
                 .load_boxed_ptr_from_alloca(ptr, name)
                 .map(std::convert::Into::into),
@@ -2053,7 +2048,7 @@ impl<'a> CodeGenerator<'a> {
         }
         let boxed_ptr = self.load_boxed_ptr_from_alloca(ptr, name)?;
         match prim {
-            PrimitiveType::Int => self
+            PrimitiveType::Int | PrimitiveType::Char => self
                 .get_raw_int_value(boxed_ptr.into())
                 .map(std::convert::Into::into),
             PrimitiveType::Float => self
@@ -2063,9 +2058,6 @@ impl<'a> CodeGenerator<'a> {
                 .get_raw_bool_value(boxed_ptr.into())
                 .map(std::convert::Into::into),
             PrimitiveType::Str => Ok(boxed_ptr.into()),
-            PrimitiveType::Char => self
-                .get_raw_int_value(boxed_ptr.into())
-                .map(std::convert::Into::into),
             PrimitiveType::Void | PrimitiveType::Auto => {
                 Err(format!("Unsupported primitive type {prim:?}"))
             }
@@ -2712,7 +2704,6 @@ impl<'a> CodeGenerator<'a> {
         };
 
         match concrete_type {
-            Type::Primitive(_) => self.box_value(right_val).into(),
             Type::Named(_, _) => right_val,
             _ => self.box_value(right_val).into(),
         }
@@ -4314,7 +4305,7 @@ impl<'a> CodeGenerator<'a> {
         ty: &Type,
     ) -> Result<BasicValueEnum<'a>, String> {
         match ty {
-            Type::Primitive(PrimitiveType::Int) => {
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
                 self.get_raw_int_value(value).map(std::convert::Into::into)
             }
             Type::Primitive(PrimitiveType::Float) => self
@@ -4323,10 +4314,6 @@ impl<'a> CodeGenerator<'a> {
             Type::Primitive(PrimitiveType::Bool) => {
                 self.get_raw_bool_value(value).map(std::convert::Into::into)
             }
-            Type::Primitive(PrimitiveType::Char) => {
-                self.get_raw_int_value(value).map(std::convert::Into::into)
-            }
-            Type::Primitive(PrimitiveType::Str) => Ok(value),
             Type::Primitive(PrimitiveType::Void | PrimitiveType::Auto) => {
                 Err(format!("Unsupported tuple field type {ty:?}"))
             }
@@ -4379,8 +4366,7 @@ impl<'a> CodeGenerator<'a> {
                     .map_err(|e| e.to_string())?;
                 Ok(Some(float_val.into()))
             }
-            "to_int" => self.generate_expression(expr).map(Some),
-            "to_char" => self.generate_expression(expr).map(Some),
+            "to_int" | "to_char" => self.generate_expression(expr).map(Some),
             _ => Ok(None),
         }
     }

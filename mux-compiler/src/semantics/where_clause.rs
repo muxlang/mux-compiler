@@ -322,7 +322,7 @@ fn collect_identifiers(
             collect_identifiers(left, fields, found, contains_lambda);
             collect_identifiers(right, fields, found, contains_lambda);
         }
-        ExpressionKind::Unary { expr, .. } => {
+        ExpressionKind::Unary { expr, .. } | ExpressionKind::FieldAccess { expr, .. } => {
             collect_identifiers(expr, fields, found, contains_lambda);
         }
         ExpressionKind::Call { func, args } => {
@@ -330,9 +330,6 @@ fn collect_identifiers(
             for arg in args {
                 collect_identifiers(arg, fields, found, contains_lambda);
             }
-        }
-        ExpressionKind::FieldAccess { expr, .. } => {
-            collect_identifiers(expr, fields, found, contains_lambda);
         }
         ExpressionKind::ListAccess { expr, index } => {
             collect_identifiers(expr, fields, found, contains_lambda);

@@ -171,8 +171,7 @@ fn collect_binding_warnings(nodes: &[AstNode]) -> Vec<SemanticError> {
                     collect_function_bindings(function, &mut analysis);
                 }
             }
-            AstNode::Interface { .. } => {}
-            AstNode::Enum { .. } => {}
+            AstNode::Interface { .. } | AstNode::Enum { .. } => {}
         }
     }
     analysis.warnings
@@ -302,9 +301,10 @@ fn collect_binding_expression(expression: &ExpressionNode, analysis: &mut Bindin
             collect_binding_expression(left, analysis);
             collect_binding_expression(right, analysis);
         }
-        ExpressionKind::Unary { expr, .. } => collect_binding_expression(expr, analysis),
+        ExpressionKind::Unary { expr, .. } | ExpressionKind::FieldAccess { expr, .. } => {
+            collect_binding_expression(expr, analysis)
+        }
         ExpressionKind::Call { func, args } => collect_binding_call(func, args, analysis),
-        ExpressionKind::FieldAccess { expr, .. } => collect_binding_expression(expr, analysis),
         ExpressionKind::ListAccess { expr, index } => {
             collect_binding_expression(expr, analysis);
             collect_binding_expression(index, analysis);
@@ -454,8 +454,8 @@ fn collect_statement(statement: &StatementNode, warnings: &mut Vec<SemanticError
             collect_block(body, warnings);
         }
         StatementKind::Match { expr, arms } => collect_match_statement(expr, arms, warnings),
-        StatementKind::Return(Some(expression)) => collect_expression(expression, warnings),
-        StatementKind::Expression(expression)
+        StatementKind::Return(Some(expression))
+        | StatementKind::Expression(expression)
         | StatementKind::AutoDecl(_, _, expression)
         | StatementKind::TypedDecl(_, _, expression)
         | StatementKind::ConstDecl(_, _, expression) => collect_expression(expression, warnings),
@@ -534,14 +534,15 @@ fn collect_expression(expression: &ExpressionNode, warnings: &mut Vec<SemanticEr
             collect_expression(left, warnings);
             collect_expression(right, warnings);
         }
-        ExpressionKind::Unary { expr, .. } => collect_expression(expr, warnings),
+        ExpressionKind::Unary { expr, .. } | ExpressionKind::FieldAccess { expr, .. } => {
+            collect_expression(expr, warnings)
+        }
         ExpressionKind::Call { func, args } => {
             collect_expression(func, warnings);
             for arg in args {
                 collect_expression(arg, warnings);
             }
         }
-        ExpressionKind::FieldAccess { expr, .. } => collect_expression(expr, warnings),
         ExpressionKind::ListAccess { expr, index } => {
             collect_expression(expr, warnings);
             collect_expression(index, warnings);
@@ -693,9 +694,6 @@ fn statement_may_break_loop(statement: &StatementNode) -> bool {
         },
         StatementKind::Match { arms, .. } => arms.iter().any(|arm| block_may_break_loop(&arm.body)),
         // A break in a nested loop targets that loop, not this one.
-        StatementKind::While { .. } | StatementKind::For { .. } | StatementKind::Function(_) => {
-            false
-        }
         _ => false,
     }
 }

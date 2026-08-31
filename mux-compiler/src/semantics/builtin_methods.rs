@@ -194,22 +194,12 @@ impl SemanticAnalyzer {
 
     fn get_list_method_sig(&self, elem_type: &Type, method_name: &str) -> Option<MethodSig> {
         match method_name {
-            "push_back" => Some(MethodSig {
+            "push_back" | "push" => Some(MethodSig {
                 params: vec![elem_type.clone()],
                 return_type: Type::Void,
                 is_static: false,
             }),
-            "pop_back" => Some(MethodSig {
-                params: vec![],
-                return_type: Type::Optional(Box::new(elem_type.clone())),
-                is_static: false,
-            }),
-            "push" => Some(MethodSig {
-                params: vec![elem_type.clone()],
-                return_type: Type::Void,
-                is_static: false,
-            }),
-            "pop" => Some(MethodSig {
+            "pop_back" | "pop" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Optional(Box::new(elem_type.clone())),
                 is_static: false,
@@ -264,7 +254,7 @@ impl SemanticAnalyzer {
                 return_type: Type::Void,
                 is_static: false,
             }),
-            "get" => Some(MethodSig {
+            "get" | "remove" => Some(MethodSig {
                 params: vec![key_type.clone()],
                 return_type: Type::Optional(Box::new(value_type.clone())),
                 is_static: false,
@@ -279,7 +269,7 @@ impl SemanticAnalyzer {
                 return_type: Type::List(Box::new(value_type.clone())),
                 is_static: false,
             }),
-            "get_pairs" => Some(MethodSig {
+            "get_pairs" | "to_list" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::List(Box::new(Type::Tuple(
                     Box::new(key_type.clone()),
@@ -292,11 +282,6 @@ impl SemanticAnalyzer {
                 return_type: Type::Primitive(PrimitiveType::Bool),
                 is_static: false,
             }),
-            "remove" => Some(MethodSig {
-                params: vec![key_type.clone()],
-                return_type: Type::Optional(Box::new(value_type.clone())),
-                is_static: false,
-            }),
             "size" | "len" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Int),
@@ -305,17 +290,6 @@ impl SemanticAnalyzer {
             "is_empty" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Bool),
-                is_static: false,
-            }),
-            // A map's elements are its key/value pairs, so `to_list` matches
-            // `get_pairs`. (A map is deliberately not a `Collection<T>`: its
-            // `contains` takes a key while this yields pairs, so T is ambiguous.)
-            "to_list" => Some(MethodSig {
-                params: vec![],
-                return_type: Type::List(Box::new(Type::Tuple(
-                    Box::new(key_type.clone()),
-                    Box::new(value_type.clone()),
-                ))),
                 is_static: false,
             }),
             "to_string" => Some(MethodSig {
@@ -334,12 +308,7 @@ impl SemanticAnalyzer {
                 return_type: Type::Void,
                 is_static: false,
             }),
-            "remove" => Some(MethodSig {
-                params: vec![elem_type.clone()],
-                return_type: Type::Primitive(PrimitiveType::Bool),
-                is_static: false,
-            }),
-            "contains" => Some(MethodSig {
+            "remove" | "contains" => Some(MethodSig {
                 params: vec![elem_type.clone()],
                 return_type: Type::Primitive(PrimitiveType::Bool),
                 is_static: false,

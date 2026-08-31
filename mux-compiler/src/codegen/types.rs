@@ -44,11 +44,23 @@ impl<'a> CodeGenerator<'a> {
         resolved_type: &Type,
     ) -> Result<BasicTypeEnum<'a>, String> {
         match resolved_type {
-            Type::Primitive(PrimitiveType::Int) => Ok(self.context.i64_type().into()),
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
+                Ok(self.context.i64_type().into())
+            }
             Type::Primitive(PrimitiveType::Float) => Ok(self.context.f64_type().into()),
             Type::Primitive(PrimitiveType::Bool) => Ok(self.context.bool_type().into()),
-            Type::Primitive(PrimitiveType::Str) => Ok(self.ptr_type()),
-            Type::Primitive(PrimitiveType::Char) => Ok(self.context.i64_type().into()),
+            Type::Primitive(PrimitiveType::Str)
+            | Type::Function { .. }
+            | Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::Tuple(_, _)
+            | Type::Optional(_)
+            | Type::Result(_, _)
+            | Type::Reference(_)
+            | Type::EmptyList
+            | Type::EmptyMap
+            | Type::EmptySet => Ok(self.ptr_type()),
             Type::Primitive(PrimitiveType::Void) | Type::Void => {
                 Err("Void type not allowed here".to_string())
             }
@@ -65,17 +77,6 @@ impl<'a> CodeGenerator<'a> {
                     Err(format!("Unknown type: {name}"))
                 }
             }
-            Type::Function { .. }
-            | Type::List(_)
-            | Type::Map(_, _)
-            | Type::Set(_)
-            | Type::Tuple(_, _)
-            | Type::Optional(_)
-            | Type::Result(_, _)
-            | Type::Reference(_)
-            | Type::EmptyList
-            | Type::EmptyMap
-            | Type::EmptySet => Ok(self.ptr_type()),
             Type::Generic(_) => Err("Generic types should be resolved".to_string()),
             Type::Instantiated(_, _) => Err("Instantiated types should be resolved".to_string()),
             Type::Variable(name) => {
@@ -145,11 +146,10 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicTypeEnum<'a>, String> {
         match sem_type {
             Type::Primitive(prim) => match prim {
-                PrimitiveType::Int => Ok(self.context.i64_type().into()),
+                PrimitiveType::Int | PrimitiveType::Char => Ok(self.context.i64_type().into()),
                 PrimitiveType::Float => Ok(self.context.f64_type().into()),
                 PrimitiveType::Bool => Ok(self.context.bool_type().into()),
                 PrimitiveType::Str => Ok(self.ptr_type()),
-                PrimitiveType::Char => Ok(self.context.i64_type().into()),
                 PrimitiveType::Void => Err("Void type not allowed in fields".to_string()),
                 PrimitiveType::Auto => Err("Auto type should be resolved".to_string()),
             },
@@ -171,11 +171,19 @@ impl<'a> CodeGenerator<'a> {
         type_kind: &TypeKind,
     ) -> Result<BasicTypeEnum<'a>, String> {
         match type_kind {
-            TypeKind::Primitive(PrimitiveType::Int) => Ok(self.context.i64_type().into()),
+            TypeKind::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
+                Ok(self.context.i64_type().into())
+            }
             TypeKind::Primitive(PrimitiveType::Float) => Ok(self.context.f64_type().into()),
             TypeKind::Primitive(PrimitiveType::Bool) => Ok(self.context.bool_type().into()),
-            TypeKind::Primitive(PrimitiveType::Str) => Ok(self.ptr_type()),
-            TypeKind::Primitive(PrimitiveType::Char) => Ok(self.context.i64_type().into()),
+            TypeKind::Primitive(PrimitiveType::Str)
+            | TypeKind::List(_)
+            | TypeKind::Map(_, _)
+            | TypeKind::Set(_)
+            | TypeKind::Tuple(_, _)
+            | TypeKind::Reference(_)
+            | TypeKind::Function { .. }
+            | TypeKind::TraitObject(_) => Ok(self.ptr_type()),
             TypeKind::Named(name, args) => {
                 if let Some(concrete) = self.resolve_generic_param(name) {
                     return self.llvm_type_from_resolved_type(&concrete.clone());
@@ -200,13 +208,6 @@ impl<'a> CodeGenerator<'a> {
                     Ok(self.ptr_type())
                 }
             }
-            TypeKind::List(_)
-            | TypeKind::Map(_, _)
-            | TypeKind::Set(_)
-            | TypeKind::Tuple(_, _)
-            | TypeKind::Reference(_)
-            | TypeKind::Function { .. }
-            | TypeKind::TraitObject(_) => Ok(self.ptr_type()),
             TypeKind::Primitive(PrimitiveType::Void) => {
                 Err("Void type cannot be used in enum variant fields".to_string())
             }

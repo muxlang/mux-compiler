@@ -17,8 +17,7 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         match &expr.kind {
             ExpressionKind::Identifier(name) => self.analyze_identifier_expr(name, expr),
-            ExpressionKind::Literal(_) => Ok(()),
-            ExpressionKind::None => Ok(()),
+            ExpressionKind::Literal(_) | ExpressionKind::None => Ok(()),
             ExpressionKind::Binary {
                 left,
                 op,
@@ -288,7 +287,6 @@ impl SemanticAnalyzer {
         match op {
             UnaryOp::Not => self.check_not_operator_type(&operand_type, op_span),
             UnaryOp::Neg => self.check_neg_operator_type(&operand_type, op_span),
-            UnaryOp::Ref => Ok(()),
             UnaryOp::Incr | UnaryOp::Decr => {
                 self.check_incr_decr_operator_type(&operand_type, op_span)?;
                 self.check_incr_decr_const_modification(expr, op_span)

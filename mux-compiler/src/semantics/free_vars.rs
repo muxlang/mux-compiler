@@ -53,13 +53,9 @@ impl SemanticAnalyzer {
             StatementKind::Expression(expr) | StatementKind::Return(Some(expr)) => {
                 self.find_free_variables_in_expression(expr, local_vars, free_vars)?;
             }
-            StatementKind::AutoDecl(name, _, expr) => {
-                self.handle_variable_declaration(name, expr, local_vars, free_vars)?;
-            }
-            StatementKind::TypedDecl(name, _, expr) => {
-                self.handle_variable_declaration(name, expr, local_vars, free_vars)?;
-            }
-            StatementKind::ConstDecl(name, _, expr) => {
+            StatementKind::AutoDecl(name, _, expr)
+            | StatementKind::TypedDecl(name, _, expr)
+            | StatementKind::ConstDecl(name, _, expr) => {
                 self.handle_variable_declaration(name, expr, local_vars, free_vars)?;
             }
             StatementKind::If {

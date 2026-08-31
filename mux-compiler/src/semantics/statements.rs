@@ -135,8 +135,9 @@ impl SemanticAnalyzer {
                 Self::type_contains_empty_collection(key_type)
                     || Self::type_contains_empty_collection(value_type)
             }
-            Type::Set(elem_type) => Self::type_contains_empty_collection(elem_type),
-            Type::List(elem_type) => Self::type_contains_empty_collection(elem_type),
+            Type::Set(elem_type) | Type::List(elem_type) => {
+                Self::type_contains_empty_collection(elem_type)
+            }
             Type::Optional(inner) => Self::type_contains_empty_collection(inner),
             Type::Result(ok, err) => {
                 Self::type_contains_empty_collection(ok)
@@ -184,10 +185,7 @@ impl SemanticAnalyzer {
             ExpressionKind::MapLiteral { entries, .. } => {
                 self.resolve_map_literal_children(expected_type, entries)?;
             }
-            ExpressionKind::SetLiteral(elements) => {
-                self.resolve_typed_collection_elements(expected_type, elements)?;
-            }
-            ExpressionKind::ListLiteral(elements) => {
+            ExpressionKind::SetLiteral(elements) | ExpressionKind::ListLiteral(elements) => {
                 self.resolve_typed_collection_elements(expected_type, elements)?;
             }
             _ => {}
@@ -244,8 +242,7 @@ impl SemanticAnalyzer {
         elements: &[ExpressionNode],
     ) -> Result<(), SemanticError> {
         let elem_type = match expected_type {
-            Type::Set(elem) => elem,
-            Type::List(elem) => elem,
+            Type::Set(elem) | Type::List(elem) => elem,
             _ => return Ok(()),
         };
         for element in elements {

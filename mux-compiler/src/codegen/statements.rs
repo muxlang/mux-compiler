@@ -2645,7 +2645,6 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<(), String> {
         let inner_type = match match_expr_type {
             Type::List(inner) => (**inner).clone(),
-            Type::EmptyList => return Ok(()),
             _ => return Ok(()),
         };
 
