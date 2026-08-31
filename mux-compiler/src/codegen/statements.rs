@@ -10,11 +10,11 @@
 use inkwell::AddressSpace;
 use inkwell::basic_block::BasicBlock;
 use inkwell::types::{BasicType, BasicTypeEnum};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 
 use crate::ast::{
-    EnumVariantField, ExpressionKind, ExpressionNode, LiteralNode, PatternNode, PrimitiveType,
-    StatementKind, StatementNode,
+    EnumVariantField, ExpressionKind, ExpressionNode, LiteralNode, MatchArm, PatternNode,
+    PrimitiveType, StatementKind, StatementNode,
 };
 use crate::semantics::{Type, Type as ResolvedType};
 
@@ -1749,6 +1749,62 @@ impl<'a> CodeGenerator<'a> {
         MatchBlocks { end, arms }
     }
 
+    fn generate_match_arms<Condition, Binding>(
+        &mut self,
+        function: FunctionValue<'a>,
+        arms: &[MatchArm],
+        mut condition: Condition,
+        mut binding: Binding,
+    ) -> Result<(), String>
+    where
+        Condition: FnMut(&mut Self, &MatchArm) -> Result<IntValue<'a>, String>,
+        Binding: FnMut(&mut Self, &MatchArm) -> Result<(), String>,
+    {
+        let mut current_bb = self
+            .builder
+            .get_insert_block()
+            .expect("Builder should have an insertion block");
+        let all_arms_return = arms.iter().all(|arm| {
+            arm.body
+                .last()
+                .is_some_and(|s| matches!(s.kind, StatementKind::Return(_)))
+        });
+        let match_id = self.label_counter;
+        self.label_counter += 1;
+        let match_blocks = self.create_match_blocks(function, arms.len(), match_id);
+
+        for (i, arm) in arms.iter().enumerate() {
+            let (arm_bb, next_bb) = match_blocks.arms[i];
+
+            self.builder.position_at_end(current_bb);
+            if current_bb.get_terminator().is_some() {
+                current_bb = next_bb;
+                continue;
+            }
+
+            let condition = condition(self, arm)?;
+            self.builder
+                .build_conditional_branch(condition, arm_bb, next_bb)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(arm_bb);
+            self.in_block_scope(|me| {
+                binding(me, arm)?;
+                me.emit_match_guard_and_body(function, arm, next_bb, match_blocks.end, i)
+            })?;
+
+            current_bb = next_bb;
+        }
+
+        self.builder.position_at_end(match_blocks.end);
+        if all_arms_return && match_blocks.end.get_terminator().is_none() {
+            self.builder
+                .build_unreachable()
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     fn evaluate_switch_pattern_condition(
         &mut self,
         match_val: BasicValueEnum<'a>,
@@ -2338,64 +2394,20 @@ impl<'a> CodeGenerator<'a> {
         let discriminant = self.load_enum_discriminant(&enum_name, expr_val)?;
         let temp_ptr_opt = self.enum_temp_struct_ptr(&enum_name, expr_val)?;
 
-        let mut current_bb = self
-            .builder
-            .get_insert_block()
-            .expect("Builder should have an insertion block");
-        let all_arms_return = arms.iter().all(|arm| {
-            arm.body
-                .last()
-                .is_some_and(|s| matches!(s.kind, StatementKind::Return(_)))
-        });
-        let match_id = self.label_counter;
-        self.label_counter += 1;
-        let match_blocks = self.create_match_blocks(function, arms.len(), match_id);
-
-        for (i, arm) in arms.iter().enumerate() {
-            let (arm_bb, next_bb) = match_blocks.arms[i];
-
-            self.builder.position_at_end(current_bb);
-            if current_bb.get_terminator().is_some() {
-                current_bb = next_bb;
-                continue;
-            }
-
-            let pattern_matches =
-                self.enum_pattern_matches(&enum_name, discriminant, &arm.pattern)?;
-
-            self.builder
-                .build_conditional_branch(pattern_matches, arm_bb, next_bb)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(arm_bb);
-
-            // Each arm gets its own scope, so a pattern binding belongs to the
-            // arm that introduced it. The match as a whole already opened one,
-            // but that is not enough: without a per-arm scope, `ok(v)` was still
-            // bound when the `err` arm was generated, so a later arm reading an
-            // outer `v` resolved to the earlier arm's slot - which holds nothing
-            // on the path where that arm did not run.
-            self.in_block_scope(|me| {
+        self.generate_match_arms(
+            function,
+            arms,
+            |me, arm| me.enum_pattern_matches(&enum_name, discriminant, &arm.pattern),
+            |me, arm| {
                 me.bind_enum_arm_variables(
                     arm,
                     &enum_name,
                     match_expr_type,
                     expr_ptr_opt,
                     temp_ptr_opt,
-                )?;
-                me.emit_match_guard_and_body(function, arm, next_bb, match_blocks.end, i)
-            })?;
-
-            current_bb = next_bb;
-        }
-
-        self.builder.position_at_end(match_blocks.end);
-        if all_arms_return && match_blocks.end.get_terminator().is_none() {
-            self.builder
-                .build_unreachable()
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+                )
+            },
+        )
     }
 
     /// Generate match code for non-enum types using equality-based comparison.
@@ -2406,42 +2418,13 @@ impl<'a> CodeGenerator<'a> {
         match_val: BasicValueEnum<'a>,
         arms: &[crate::ast::MatchArm],
     ) -> Result<(), String> {
-        let mut current_bb = self
-            .builder
-            .get_insert_block()
-            .expect("Builder should have an insertion block");
-        let all_arms_return = arms.iter().all(|arm| {
-            arm.body
-                .last()
-                .is_some_and(|s| matches!(s.kind, StatementKind::Return(_)))
-        });
-        let match_id = self.label_counter;
-        self.label_counter += 1;
-        let match_blocks = self.create_match_blocks(function, arms.len(), match_id);
-
-        for (i, arm) in arms.iter().enumerate() {
-            let (arm_bb, next_bb) = match_blocks.arms[i];
-
-            self.builder.position_at_end(current_bb);
-            if current_bb.get_terminator().is_some() {
-                current_bb = next_bb;
-                continue;
-            }
-
-            let condition =
-                self.evaluate_switch_pattern_condition(match_val, match_expr_type, &arm.pattern)?;
-
-            self.builder
-                .build_conditional_branch(condition, arm_bb, next_bb)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(arm_bb);
-
-            // Per-arm scope, for the same reason as the enum path above: a
-            // pattern binding must not still be visible when the next arm is
-            // generated.
-            self.in_block_scope(|me| {
-                // For list patterns, bind variables after the condition check succeeds
+        self.generate_match_arms(
+            function,
+            arms,
+            |me, arm| {
+                me.evaluate_switch_pattern_condition(match_val, match_expr_type, &arm.pattern)
+            },
+            |me, arm| {
                 if let PatternNode::List { elements, rest } = &arm.pattern {
                     me.bind_list_pattern_variables(
                         match_val,
@@ -2450,20 +2433,9 @@ impl<'a> CodeGenerator<'a> {
                         rest.as_deref(),
                     )?;
                 }
-
-                me.emit_match_guard_and_body(function, arm, next_bb, match_blocks.end, i)
-            })?;
-
-            current_bb = next_bb;
-        }
-
-        self.builder.position_at_end(match_blocks.end);
-        if all_arms_return && match_blocks.end.get_terminator().is_none() {
-            self.builder
-                .build_unreachable()
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+                Ok(())
+            },
+        )
     }
 
     /// Call a runtime function that returns an i32 and convert the result to an
