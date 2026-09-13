@@ -1032,6 +1032,151 @@ pub(crate) fn make_enum_symbol(name: &str, variants: &[&str], span: Span) -> Sym
     }
 }
 
+/// Runtime-backed enums have no source AST. Keep their ordered variants in one
+/// descriptor so semantic registration and LLVM materialization use the same
+/// discriminant order.
+pub(crate) fn runtime_enum_descriptors() -> &'static [(&'static str, &'static [&'static str])] {
+    static DESCRIPTORS: &[(&str, &[&str])] = &[
+        (
+            "HttpErrorKind",
+            &[
+                "Invalid",
+                "Transport",
+                "Timeout",
+                "Resolve",
+                "Protocol",
+                "Status",
+            ],
+        ),
+        (
+            "SqlErrorKind",
+            &[
+                "Constraint",
+                "Timeout",
+                "Unsupported",
+                "Invalid",
+                "Database",
+            ],
+        ),
+        ("EnvErrorKind", &["Invalid", "NotUnicode", "Os"]),
+        (
+            "FsErrorKind",
+            &[
+                "Invalid",
+                "Io",
+                "NotFound",
+                "Permission",
+                "NotUnicode",
+                "Os",
+            ],
+        ),
+        (
+            "IoErrorKind",
+            &[
+                "Invalid",
+                "Io",
+                "NotFound",
+                "Permission",
+                "NotUnicode",
+                "Closed",
+                "Os",
+            ],
+        ),
+        (
+            "DateTimeErrorKind",
+            &["Invalid", "Parse", "Range", "Format", "System"],
+        ),
+        (
+            "NetErrorKind",
+            &["Invalid", "Timeout", "Resolve", "Unsupported", "Io"],
+        ),
+        ("UrlErrorKind", &["Invalid", "Unsupported", "Parse"]),
+        ("UuidErrorKind", &["Invalid", "Parse", "NotUnicode"]),
+        (
+            "JsonErrorKind",
+            &[
+                "Invalid",
+                "Parse",
+                "Type",
+                "Missing",
+                "Duplicate",
+                "Limit",
+                "Io",
+            ],
+        ),
+        ("JsonDuplicatePolicy", &["Reject", "First", "Last"]),
+        (
+            "JsonTokenKind",
+            &[
+                "StartObject",
+                "EndObject",
+                "StartArray",
+                "EndArray",
+                "Colon",
+                "Comma",
+                "String",
+                "Number",
+                "Bool",
+                "Null",
+            ],
+        ),
+        ("CsvErrorKind", &["Invalid", "Parse", "Type", "Limit", "Io"]),
+        (
+            "ByteErrorKind",
+            &[
+                "Invalid",
+                "Parse",
+                "Range",
+                "Overflow",
+                "DivideByZero",
+                "Shift",
+                "Io",
+            ],
+        ),
+        (
+            "BytesErrorKind",
+            &[
+                "Invalid", "Parse", "Range", "Overflow", "Bounds", "Utf8", "Io",
+            ],
+        ),
+        (
+            "SyncErrorKind",
+            &[
+                "Invalid", "State", "Timeout", "Closed", "Callback", "Spawn", "Io",
+            ],
+        ),
+        (
+            "ProcessErrorKind",
+            &["Invalid", "Io", "Spawn", "Timeout", "State", "NotFound"],
+        ),
+        (
+            "TlsErrorKind",
+            &[
+                "Invalid",
+                "Io",
+                "Timeout",
+                "Handshake",
+                "Certificate",
+                "Unsupported",
+                "Protocol",
+            ],
+        ),
+        ("MathErrorKind", &["Invalid", "Range", "Overflow", "Domain"]),
+        (
+            "RandomErrorKind",
+            &["Invalid", "Range", "Unsupported", "Io"],
+        ),
+        ("CliErrorKind", &["Invalid", "Parse", "Io"]),
+        (
+            "CryptoErrorKind",
+            &["Invalid", "Unsupported", "Authentication", "Io"],
+        ),
+        ("RegexErrorKind", &["Invalid", "Parse", "Match", "Capture"]),
+        ("LogErrorKind", &["Invalid", "Io", "Config", "State"]),
+    ];
+    DESCRIPTORS
+}
+
 pub(crate) fn make_error_class_symbol_with_fields(
     name: &str,
     methods: HashMap<String, MethodSig>,
