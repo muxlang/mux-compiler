@@ -23,8 +23,11 @@ pub fn runtime_library_for_child_process() -> PathBuf {
     .flatten();
 
     for runtime_root in runtime_roots {
-        for profile in ["debug", "release"] {
-            let profile_dir = runtime_root.join("target").join(profile);
+        for profile_dir in [
+            runtime_root.join("target/debug"),
+            runtime_root.join("target/release"),
+            runtime_root.join("target/llvm-cov-target/debug"),
+        ] {
             let exact = profile_dir.join(static_name);
             if exact.is_file() {
                 return exact;
