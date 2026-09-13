@@ -2069,8 +2069,44 @@ impl<'a> CodeGenerator<'a> {
         let Type::Named(type_name, _) = obj_type else {
             return Ok(None);
         };
-
         match type_name.as_str() {
+            "HttpError" | "EnvError" | "FsError" | "NetError" => {
+                self.generate_net_error_method(obj_value, type_name, method_name, args)
+            }
+            "Headers" | "HttpRequest" | "HttpResponse" | "HttpRouter" => {
+                self.generate_net_http_method(obj_value, type_name, method_name, args)
+            }
+            "OAuthClient" | "OAuthSession" => {
+                self.generate_net_oauth_method(obj_value, type_name, method_name, args)
+            }
+            "HttpNext" | "SseEvent" | "SseStream" | "WebSocketFrame" | "WebSocketHandshake"
+            | "WebSocketSession" => {
+                self.generate_net_realtime_method(obj_value, type_name, method_name, args)
+            }
+            "Poller" | "PollEvent" => {
+                self.generate_net_poller_method(obj_value, type_name, method_name, args)
+            }
+            "IpAddr" | "SocketAddr" | "Cidr" | "Endpoint" => {
+                self.generate_net_address_method(obj_value, type_name, method_name, args)
+            }
+            "TcpStream" | "TcpListener" | "LocalStream" | "LocalListener" => {
+                self.generate_net_stream_method(obj_value, type_name, method_name, args)
+            }
+            "UdpSocket" | "UdpDatagram" => {
+                self.generate_net_udp_method(obj_value, type_name, method_name, args)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_net_error_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        type_name: &str,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match type_name {
             "HttpError" => match method_name {
                 "message" => {
                     self.ensure_no_args(method_name, args)?;
@@ -2123,6 +2159,18 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => Ok(None),
             },
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_net_http_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        type_name: &str,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match type_name {
             "Headers" => match method_name {
                 "set" | "append" => {
                     let (name, value) = gen_two_expr(self, args)?;
@@ -2261,6 +2309,18 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => Ok(None),
             },
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_net_oauth_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        type_name: &str,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match type_name {
             "OAuthClient" => match method_name {
                 "discover" => {
                     self.ensure_no_args(method_name, args)?;
@@ -2376,6 +2436,18 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => Ok(None),
             },
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_net_realtime_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        type_name: &str,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match type_name {
             "HttpNext" => match method_name {
                 "handle" => {
                     let request = gen_one_expr(self, args)?;
@@ -2452,6 +2524,18 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => Ok(None),
             },
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_net_poller_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        type_name: &str,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match type_name {
             "Poller" => match method_name {
                 "register_tcp" => {
                     if args.len() != 3 {
@@ -2521,6 +2605,18 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => Ok(None),
             },
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_net_address_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        type_name: &str,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match type_name {
             "IpAddr" => {
                 let runtime_name = match method_name {
                     "to_string" => "mux_net_ip_to_string",
@@ -2581,6 +2677,18 @@ impl<'a> CodeGenerator<'a> {
                 self.call_runtime_function(runtime_name, &[obj_value])
                     .map(Some)
             }
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_net_stream_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        type_name: &str,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match type_name {
             "TcpStream" => match method_name {
                 "read" => {
                     let size = gen_one_expr(self, args)?;
@@ -2779,6 +2887,18 @@ impl<'a> CodeGenerator<'a> {
                 }
                 _ => Ok(None),
             },
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_net_udp_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        type_name: &str,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match type_name {
             "UdpSocket" => match method_name {
                 "send_to" => {
                     let (data, addr) = gen_two_expr(self, args)?;
@@ -2957,155 +3077,200 @@ impl<'a> CodeGenerator<'a> {
         let Type::Named(type_name, _) = obj_type else {
             return Ok(None);
         };
-        if type_name == "ProcessError" {
-            let runtime_name = match method_name {
-                "message" => "mux_process_error_message",
-                "to_string" => "mux_process_error_to_string",
-                _ => return Ok(None),
-            };
-            self.ensure_no_args(method_name, args)?;
-            return self.build_net_call(runtime_name, &[obj_value]).map(Some);
-        }
         match type_name.as_str() {
-            "Command" => match method_name {
-                "set_program" => {
-                    let program = gen_one_expr(self, args)?;
-                    let program_cstr = self.string_value_to_cstr(program)?;
-                    let call = self.build_net_call(
-                        "mux_process_command_set_program",
-                        &[obj_value, program_cstr],
-                    )?;
-                    self.free_cstrings(&[program_cstr])?;
-                    Ok(Some(call))
-                }
-                "arg" => {
-                    let arg = gen_one_expr(self, args)?;
-                    let arg_cstr = self.string_value_to_cstr(arg)?;
-                    let call =
-                        self.build_net_call("mux_process_command_arg", &[obj_value, arg_cstr])?;
-                    self.free_cstrings(&[arg_cstr])?;
-                    Ok(Some(call))
-                }
-                "env" => {
-                    let (key, value) = gen_two_expr(self, args)?;
-                    let key_cstr = self.string_value_to_cstr(key)?;
-                    let value_cstr = self.string_value_to_cstr(value)?;
-                    let call = self.build_net_call(
-                        "mux_process_command_env",
-                        &[obj_value, key_cstr, value_cstr],
-                    )?;
-                    self.free_cstrings(&[key_cstr, value_cstr])?;
-                    Ok(Some(call))
-                }
-                "cwd" => {
-                    let path = gen_one_expr(self, args)?;
-                    let path_cstr = self.string_value_to_cstr(path)?;
-                    let call =
-                        self.build_net_call("mux_process_command_cwd", &[obj_value, path_cstr])?;
-                    self.free_cstrings(&[path_cstr])?;
-                    Ok(Some(call))
-                }
-                "stdin_piped" | "stdout_piped" | "stderr_piped" | "stdin_null" | "stdout_null"
-                | "stderr_null" | "output" | "status" | "spawn" => {
-                    self.ensure_no_args(method_name, args)?;
-                    let runtime_name = match method_name {
-                        "stdin_piped" => "mux_process_command_stdin_piped",
-                        "stdout_piped" => "mux_process_command_stdout_piped",
-                        "stderr_piped" => "mux_process_command_stderr_piped",
-                        "stdin_null" => "mux_process_command_stdin_null",
-                        "stdout_null" => "mux_process_command_stdout_null",
-                        "stderr_null" => "mux_process_command_stderr_null",
-                        "output" => "mux_process_command_output",
-                        "status" => "mux_process_command_status",
-                        "spawn" => "mux_process_command_spawn",
-                        _ => unreachable!(),
-                    };
-                    self.build_net_call(runtime_name, &[obj_value]).map(Some)
-                }
-                _ => Ok(None),
-            },
-            "ProcessPool" => match method_name {
-                "submit" | "try_submit" => {
-                    let command = gen_one_expr(self, args)?;
-                    let runtime_name = if method_name == "submit" {
-                        "mux_process_pool_submit"
-                    } else {
-                        "mux_process_pool_try_submit"
-                    };
-                    self.build_net_call(runtime_name, &[obj_value, command])
-                        .map(Some)
-                }
-                "submit_timeout" => {
-                    let (command, timeout) = gen_two_expr(self, args)?;
-                    self.build_net_call(
-                        "mux_process_pool_submit_timeout",
-                        &[obj_value, command, timeout],
-                    )
+            "ProcessError" => self.generate_process_error_method(obj_value, method_name, args),
+            "Command" => self.generate_process_command_method(obj_value, method_name, args),
+            "ProcessPool" => self.generate_process_pool_method(obj_value, method_name, args),
+            "Child" | "process.Child" => {
+                self.generate_process_child_method(obj_value, method_name, args)
+            }
+            "Output" => self.generate_process_output_method(obj_value, method_name, args),
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_process_error_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let runtime_name = match method_name {
+            "message" => "mux_process_error_message",
+            "to_string" => "mux_process_error_to_string",
+            _ => return Ok(None),
+        };
+        self.ensure_no_args(method_name, args)?;
+        self.build_net_call(runtime_name, &[obj_value]).map(Some)
+    }
+
+    fn generate_process_command_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "set_program" => {
+                let program = gen_one_expr(self, args)?;
+                let program_cstr = self.string_value_to_cstr(program)?;
+                let call = self.build_net_call(
+                    "mux_process_command_set_program",
+                    &[obj_value, program_cstr],
+                )?;
+                self.free_cstrings(&[program_cstr])?;
+                Ok(Some(call))
+            }
+            "arg" => {
+                let arg = gen_one_expr(self, args)?;
+                let arg_cstr = self.string_value_to_cstr(arg)?;
+                let call =
+                    self.build_net_call("mux_process_command_arg", &[obj_value, arg_cstr])?;
+                self.free_cstrings(&[arg_cstr])?;
+                Ok(Some(call))
+            }
+            "env" => {
+                let (key, value) = gen_two_expr(self, args)?;
+                let key_cstr = self.string_value_to_cstr(key)?;
+                let value_cstr = self.string_value_to_cstr(value)?;
+                let call = self.build_net_call(
+                    "mux_process_command_env",
+                    &[obj_value, key_cstr, value_cstr],
+                )?;
+                self.free_cstrings(&[key_cstr, value_cstr])?;
+                Ok(Some(call))
+            }
+            "cwd" => {
+                let path = gen_one_expr(self, args)?;
+                let path_cstr = self.string_value_to_cstr(path)?;
+                let call =
+                    self.build_net_call("mux_process_command_cwd", &[obj_value, path_cstr])?;
+                self.free_cstrings(&[path_cstr])?;
+                Ok(Some(call))
+            }
+            "stdin_piped" | "stdout_piped" | "stderr_piped" | "stdin_null" | "stdout_null"
+            | "stderr_null" | "output" | "status" | "spawn" => {
+                self.ensure_no_args(method_name, args)?;
+                let runtime_name = match method_name {
+                    "stdin_piped" => "mux_process_command_stdin_piped",
+                    "stdout_piped" => "mux_process_command_stdout_piped",
+                    "stderr_piped" => "mux_process_command_stderr_piped",
+                    "stdin_null" => "mux_process_command_stdin_null",
+                    "stdout_null" => "mux_process_command_stdout_null",
+                    "stderr_null" => "mux_process_command_stderr_null",
+                    "output" => "mux_process_command_output",
+                    "status" => "mux_process_command_status",
+                    "spawn" => "mux_process_command_spawn",
+                    _ => unreachable!(),
+                };
+                self.build_net_call(runtime_name, &[obj_value]).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_process_pool_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "submit" | "try_submit" => {
+                let command = gen_one_expr(self, args)?;
+                let runtime_name = if method_name == "submit" {
+                    "mux_process_pool_submit"
+                } else {
+                    "mux_process_pool_try_submit"
+                };
+                self.build_net_call(runtime_name, &[obj_value, command])
                     .map(Some)
-                }
-                "cancel_pending" | "close" => {
-                    self.ensure_no_args(method_name, args)?;
-                    let runtime_name = if method_name == "cancel_pending" {
-                        "mux_process_pool_cancel_pending"
-                    } else {
-                        "mux_process_pool_close"
-                    };
-                    self.build_net_call(runtime_name, &[obj_value]).map(Some)
-                }
-                _ => Ok(None),
-            },
-            "Child" | "process.Child" => match method_name {
-                "wait" | "try_wait" | "kill" | "kill_group" => {
-                    self.ensure_no_args(method_name, args)?;
-                    let runtime_name = match method_name {
-                        "wait" => "mux_process_child_wait",
-                        "try_wait" => "mux_process_child_try_wait",
-                        "kill" => "mux_process_child_kill",
-                        "kill_group" => "mux_process_child_kill_group",
-                        _ => unreachable!(),
-                    };
-                    self.build_net_call(runtime_name, &[obj_value]).map(Some)
-                }
-                "wait_timeout" => {
-                    let timeout = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_process_child_wait_timeout", &[obj_value, timeout])
-                        .map(Some)
-                }
-                "write_stdin" => {
-                    let input = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_process_child_write_stdin", &[obj_value, input])
-                        .map(Some)
-                }
-                "close_stdin" => {
-                    self.ensure_no_args(method_name, args)?;
-                    self.build_net_call("mux_process_child_close_stdin", &[obj_value])
-                        .map(Some)
-                }
-                "read_stdout" | "read_stderr" => {
-                    let size = gen_one_expr(self, args)?;
-                    let runtime_name = match method_name {
-                        "read_stdout" => "mux_process_child_read_stdout",
-                        "read_stderr" => "mux_process_child_read_stderr",
-                        _ => unreachable!(),
-                    };
-                    self.build_net_call(runtime_name, &[obj_value, size])
-                        .map(Some)
-                }
-                _ => Ok(None),
-            },
-            "Output" => match method_name {
-                "status" | "stdout" | "stderr" => {
-                    self.ensure_no_args(method_name, args)?;
-                    let runtime_name = match method_name {
-                        "status" => "mux_process_output_status",
-                        "stdout" => "mux_process_output_stdout",
-                        "stderr" => "mux_process_output_stderr",
-                        _ => unreachable!(),
-                    };
-                    self.build_net_call(runtime_name, &[obj_value]).map(Some)
-                }
-                _ => Ok(None),
-            },
+            }
+            "submit_timeout" => {
+                let (command, timeout) = gen_two_expr(self, args)?;
+                self.build_net_call(
+                    "mux_process_pool_submit_timeout",
+                    &[obj_value, command, timeout],
+                )
+                .map(Some)
+            }
+            "cancel_pending" | "close" => {
+                self.ensure_no_args(method_name, args)?;
+                let runtime_name = if method_name == "cancel_pending" {
+                    "mux_process_pool_cancel_pending"
+                } else {
+                    "mux_process_pool_close"
+                };
+                self.build_net_call(runtime_name, &[obj_value]).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_process_child_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "wait" | "try_wait" | "kill" | "kill_group" => {
+                self.ensure_no_args(method_name, args)?;
+                let runtime_name = match method_name {
+                    "wait" => "mux_process_child_wait",
+                    "try_wait" => "mux_process_child_try_wait",
+                    "kill" => "mux_process_child_kill",
+                    "kill_group" => "mux_process_child_kill_group",
+                    _ => unreachable!(),
+                };
+                self.build_net_call(runtime_name, &[obj_value]).map(Some)
+            }
+            "wait_timeout" => {
+                let timeout = gen_one_expr(self, args)?;
+                self.build_net_call("mux_process_child_wait_timeout", &[obj_value, timeout])
+                    .map(Some)
+            }
+            "write_stdin" => {
+                let input = gen_one_expr(self, args)?;
+                self.build_net_call("mux_process_child_write_stdin", &[obj_value, input])
+                    .map(Some)
+            }
+            "close_stdin" => {
+                self.ensure_no_args(method_name, args)?;
+                self.build_net_call("mux_process_child_close_stdin", &[obj_value])
+                    .map(Some)
+            }
+            "read_stdout" | "read_stderr" => {
+                let size = gen_one_expr(self, args)?;
+                let runtime_name = match method_name {
+                    "read_stdout" => "mux_process_child_read_stdout",
+                    "read_stderr" => "mux_process_child_read_stderr",
+                    _ => unreachable!(),
+                };
+                self.build_net_call(runtime_name, &[obj_value, size])
+                    .map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_process_output_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "status" | "stdout" | "stderr" => {
+                self.ensure_no_args(method_name, args)?;
+                let runtime_name = match method_name {
+                    "status" => "mux_process_output_status",
+                    "stdout" => "mux_process_output_stdout",
+                    "stderr" => "mux_process_output_stderr",
+                    _ => unreachable!(),
+                };
+                self.build_net_call(runtime_name, &[obj_value]).map(Some)
+            }
             _ => Ok(None),
         }
     }
@@ -3299,299 +3464,356 @@ impl<'a> CodeGenerator<'a> {
             return Ok(None);
         };
 
-        if type_name == "SyncError" {
-            let runtime_name = match method_name {
-                "message" => "mux_sync_error_message",
-                "to_string" => "mux_sync_error_to_string",
-                _ => return Ok(None),
-            };
-            self.ensure_no_args(method_name, args)?;
-            return self.build_net_call(runtime_name, &[obj_value]).map(Some);
-        }
-
         match type_name.as_str() {
-            "AtomicInt" => {
-                let runtime_name = match method_name {
-                    "load" => "mux_atomic_int_load",
-                    "store" => "mux_atomic_int_store",
-                    "add" => "mux_atomic_int_add",
-                    "swap" => "mux_atomic_int_swap",
-                    "compare_exchange" => "mux_atomic_int_compare_exchange",
-                    _ => return Ok(None),
-                };
-                let expected = match method_name {
-                    "load" => 0,
-                    "compare_exchange" => 2,
-                    _ => 1,
-                };
-                if args.len() != expected {
-                    return Err(format!(
-                        "{method_name}() method takes exactly {expected} argument{}",
-                        if expected == 1 { "" } else { "s" }
-                    ));
-                }
-                let mut values = vec![obj_value];
-                values.extend(
-                    args.iter()
-                        .map(|arg| self.generate_expression(arg))
-                        .collect::<Result<Vec<_>, _>>()?,
-                );
-                self.build_net_call(runtime_name, &values).map(Some)
-            }
-            "AtomicBool" => {
-                let runtime_name = match method_name {
-                    "load" => "mux_atomic_bool_load",
-                    "store" => "mux_atomic_bool_store",
-                    "swap" => "mux_atomic_bool_swap",
-                    "compare_exchange" => "mux_atomic_bool_compare_exchange",
-                    _ => return Ok(None),
-                };
-                let expected = match method_name {
-                    "load" => 0,
-                    "compare_exchange" => 2,
-                    _ => 1,
-                };
-                if args.len() != expected {
-                    return Err(format!(
-                        "{method_name}() method takes exactly {expected} argument{}",
-                        if expected == 1 { "" } else { "s" }
-                    ));
-                }
-                let mut values = vec![obj_value];
-                values.extend(
-                    args.iter()
-                        .map(|arg| self.generate_expression(arg))
-                        .collect::<Result<Vec<_>, _>>()?,
-                );
-                self.build_net_call(runtime_name, &values).map(Some)
+            "SyncError" => self.generate_sync_error_method(obj_value, method_name, args),
+            "AtomicInt" | "AtomicBool" => {
+                self.generate_sync_atomic_method(type_name, obj_value, method_name, args)
             }
             "CancellationToken" => {
-                let runtime_name = match method_name {
-                    "cancel" => "mux_cancellation_cancel",
-                    "is_cancelled" => "mux_cancellation_is_cancelled",
-                    _ => return Ok(None),
-                };
-                self.ensure_no_args(method_name, args)?;
-                self.build_net_call(runtime_name, &[obj_value]).map(Some)
+                self.generate_sync_cancellation_method(obj_value, method_name, args)
             }
-            "Semaphore" => {
-                let runtime_name = match method_name {
-                    "acquire" => "mux_semaphore_acquire",
-                    "try_acquire" => "mux_semaphore_try_acquire",
-                    "acquire_timeout" => "mux_semaphore_acquire_timeout",
-                    "release" => "mux_semaphore_release",
-                    _ => return Ok(None),
-                };
-                if method_name == "acquire_timeout" {
-                    let timeout = gen_one_expr(self, args)?;
-                    self.build_net_call(runtime_name, &[obj_value, timeout])
-                        .map(Some)
-                } else {
-                    self.ensure_no_args(method_name, args)?;
-                    self.build_net_call(runtime_name, &[obj_value]).map(Some)
-                }
-            }
-            "Barrier" => {
-                if method_name != "wait" {
-                    return Ok(None);
-                }
-                self.ensure_no_args(method_name, args)?;
-                self.build_net_call("mux_barrier_wait", &[obj_value])
+            "Semaphore" => self.generate_sync_semaphore_method(obj_value, method_name, args),
+            "Barrier" => self.generate_sync_barrier_method(obj_value, method_name, args),
+            "Channel" => self.generate_sync_channel_method(obj_value, method_name, args),
+            "WorkerPool" => self.generate_sync_worker_pool_method(obj_value, method_name, args),
+            "Once" => self.generate_sync_once_method(obj_value, method_name, args),
+            "Thread" => self.generate_sync_thread_method(obj_value, method_name, args),
+            "Mutex" => self.generate_sync_mutex_method(obj_value, method_name, args),
+            "RwLock" => self.generate_sync_rwlock_method(obj_value, method_name, args),
+            "CondVar" => self.generate_sync_condvar_method(obj_value, method_name, args),
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_sync_error_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let runtime_name = match method_name {
+            "message" => "mux_sync_error_message",
+            "to_string" => "mux_sync_error_to_string",
+            _ => return Ok(None),
+        };
+        self.ensure_no_args(method_name, args)?;
+        self.build_net_call(runtime_name, &[obj_value]).map(Some)
+    }
+
+    fn generate_sync_atomic_method(
+        &mut self,
+        type_name: &str,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let prefix = if type_name == "AtomicInt" {
+            "mux_atomic_int_"
+        } else {
+            "mux_atomic_bool_"
+        };
+        let runtime_name = match method_name {
+            "load" => format!("{prefix}load"),
+            "store" => format!("{prefix}store"),
+            "add" if type_name == "AtomicInt" => format!("{prefix}add"),
+            "swap" => format!("{prefix}swap"),
+            "compare_exchange" => format!("{prefix}compare_exchange"),
+            _ => return Ok(None),
+        };
+        let expected = match method_name {
+            "load" => 0,
+            "compare_exchange" => 2,
+            _ => 1,
+        };
+        if args.len() != expected {
+            return Err(format!(
+                "{method_name}() method takes exactly {expected} argument{}",
+                if expected == 1 { "" } else { "s" }
+            ));
+        }
+        let mut values = vec![obj_value];
+        values.extend(
+            args.iter()
+                .map(|arg| self.generate_expression(arg))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        self.build_net_call(&runtime_name, &values).map(Some)
+    }
+
+    fn generate_sync_cancellation_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let runtime_name = match method_name {
+            "cancel" => "mux_cancellation_cancel",
+            "is_cancelled" => "mux_cancellation_is_cancelled",
+            _ => return Ok(None),
+        };
+        self.ensure_no_args(method_name, args)?;
+        self.build_net_call(runtime_name, &[obj_value]).map(Some)
+    }
+
+    fn generate_sync_semaphore_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let runtime_name = match method_name {
+            "acquire" => "mux_semaphore_acquire",
+            "try_acquire" => "mux_semaphore_try_acquire",
+            "acquire_timeout" => "mux_semaphore_acquire_timeout",
+            "release" => "mux_semaphore_release",
+            _ => return Ok(None),
+        };
+        if method_name == "acquire_timeout" {
+            let timeout = gen_one_expr(self, args)?;
+            self.build_net_call(runtime_name, &[obj_value, timeout])
+                .map(Some)
+        } else {
+            self.ensure_no_args(method_name, args)?;
+            self.build_net_call(runtime_name, &[obj_value]).map(Some)
+        }
+    }
+
+    fn generate_sync_barrier_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if method_name != "wait" {
+            return Ok(None);
+        }
+        self.ensure_no_args(method_name, args)?;
+        self.build_net_call("mux_barrier_wait", &[obj_value])
+            .map(Some)
+    }
+
+    fn generate_sync_channel_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let runtime_name = match method_name {
+            "send" => "mux_channel_send",
+            "try_send" => "mux_channel_try_send",
+            "send_timeout" => "mux_channel_send_timeout",
+            "send_cancelled" => "mux_channel_send_cancelled",
+            "recv" => "mux_channel_recv",
+            "try_recv" => "mux_channel_try_recv",
+            "recv_timeout" => "mux_channel_recv_timeout",
+            "recv_cancelled" => "mux_channel_recv_cancelled",
+            "close" => "mux_channel_close",
+            "is_closed" => "mux_channel_is_closed",
+            "capacity" => "mux_channel_capacity",
+            _ => return Ok(None),
+        };
+        match method_name {
+            "send" | "try_send" => {
+                self.ensure_arg_count(method_name, args, 1)?;
+                let generated = self.generate_expression(&args[0])?;
+                let value = self.box_value(generated);
+                self.call_runtime_function(runtime_name, &[obj_value, value.into()])
                     .map(Some)
             }
-            "Channel" => {
-                let runtime_name = match method_name {
-                    "send" => "mux_channel_send",
-                    "try_send" => "mux_channel_try_send",
-                    "send_timeout" => "mux_channel_send_timeout",
-                    "send_cancelled" => "mux_channel_send_cancelled",
-                    "recv" => "mux_channel_recv",
-                    "try_recv" => "mux_channel_try_recv",
-                    "recv_timeout" => "mux_channel_recv_timeout",
-                    "recv_cancelled" => "mux_channel_recv_cancelled",
-                    "close" => "mux_channel_close",
-                    "is_closed" => "mux_channel_is_closed",
-                    "capacity" => "mux_channel_capacity",
-                    _ => return Ok(None),
-                };
-                match method_name {
-                    "send" | "try_send" => {
-                        self.ensure_arg_count(method_name, args, 1)?;
-                        let generated = self.generate_expression(&args[0])?;
-                        let value = self.box_value(generated);
-                        self.call_runtime_function(runtime_name, &[obj_value, value.into()])
-                            .map(Some)
-                    }
-                    "send_cancelled" => {
-                        self.ensure_arg_count(method_name, args, 2)?;
-                        let generated = self.generate_expression(&args[0])?;
-                        let value = self.box_value(generated);
-                        let cancellation = self.generate_expression(&args[1])?;
-                        self.call_runtime_function(
-                            runtime_name,
-                            &[obj_value, value.into(), cancellation],
-                        )
-                        .map(Some)
-                    }
-                    "send_timeout" => {
-                        self.ensure_arg_count(method_name, args, 2)?;
-                        let generated = self.generate_expression(&args[0])?;
-                        let value = self.box_value(generated);
-                        let generated_timeout = self.generate_expression(&args[1])?;
-                        let timeout = self.get_raw_int_value(generated_timeout)?;
-                        self.call_runtime_function(
-                            runtime_name,
-                            &[obj_value, value.into(), timeout.into()],
-                        )
-                        .map(Some)
-                    }
-                    "recv_timeout" => {
-                        self.ensure_arg_count(method_name, args, 1)?;
-                        let generated_timeout = self.generate_expression(&args[0])?;
-                        let timeout = self.get_raw_int_value(generated_timeout)?;
-                        self.call_runtime_function(runtime_name, &[obj_value, timeout.into()])
-                            .map(Some)
-                    }
-                    "recv_cancelled" => {
-                        self.ensure_arg_count(method_name, args, 1)?;
-                        let cancellation = self.generate_expression(&args[0])?;
-                        self.call_runtime_function(runtime_name, &[obj_value, cancellation])
-                            .map(Some)
-                    }
-                    _ => {
-                        self.ensure_no_args(method_name, args)?;
-                        self.call_runtime_function(runtime_name, &[obj_value])
-                            .map(Some)
-                    }
-                }
+            "send_cancelled" => {
+                self.ensure_arg_count(method_name, args, 2)?;
+                let generated = self.generate_expression(&args[0])?;
+                let value = self.box_value(generated);
+                let cancellation = self.generate_expression(&args[1])?;
+                self.call_runtime_function(runtime_name, &[obj_value, value.into(), cancellation])
+                    .map(Some)
             }
-            "WorkerPool" => {
-                let runtime_name = match method_name {
-                    "submit" => "mux_pool_submit",
-                    "map" => "mux_pool_map",
-                    "try_submit" => "mux_pool_try_submit",
-                    "submit_timeout" => "mux_pool_submit_timeout",
-                    "cancel_pending" => "mux_pool_cancel_pending",
-                    "close" => "mux_pool_close",
-                    _ => return Ok(None),
-                };
-                match method_name {
-                    "map" => {
-                        self.ensure_arg_count(method_name, args, 2)?;
-                        let values = self.generate_expression(&args[0])?;
-                        let callback = self.generate_expression(&args[1])?;
-                        self.call_runtime_function(runtime_name, &[obj_value, values, callback])
-                            .map(Some)
-                    }
-                    "submit" | "try_submit" => {
-                        self.ensure_arg_count(method_name, args, 1)?;
-                        let callback = self.generate_expression(&args[0])?;
-                        self.call_runtime_function(runtime_name, &[obj_value, callback])
-                            .map(Some)
-                    }
-                    "submit_timeout" => {
-                        self.ensure_arg_count(method_name, args, 2)?;
-                        let callback = self.generate_expression(&args[0])?;
-                        let timeout = self.generate_expression(&args[1])?;
-                        let timeout = self.get_raw_int_value(timeout)?;
-                        self.call_runtime_function(
-                            runtime_name,
-                            &[obj_value, callback, timeout.into()],
-                        )
-                        .map(Some)
-                    }
-                    "cancel_pending" | "close" => {
-                        self.ensure_no_args(method_name, args)?;
-                        self.call_runtime_function(runtime_name, &[obj_value])
-                            .map(Some)
-                    }
-                    _ => Ok(None),
-                }
+            "send_timeout" => {
+                self.ensure_arg_count(method_name, args, 2)?;
+                let generated = self.generate_expression(&args[0])?;
+                let value = self.box_value(generated);
+                let generated_timeout = self.generate_expression(&args[1])?;
+                let timeout = self.get_raw_int_value(generated_timeout)?;
+                self.call_runtime_function(runtime_name, &[obj_value, value.into(), timeout.into()])
+                    .map(Some)
             }
-            "Once" => {
-                if method_name != "call" {
-                    return Ok(None);
-                }
+            "recv_timeout" => {
+                self.ensure_arg_count(method_name, args, 1)?;
+                let generated_timeout = self.generate_expression(&args[0])?;
+                let timeout = self.get_raw_int_value(generated_timeout)?;
+                self.call_runtime_function(runtime_name, &[obj_value, timeout.into()])
+                    .map(Some)
+            }
+            "recv_cancelled" => {
+                self.ensure_arg_count(method_name, args, 1)?;
+                let cancellation = self.generate_expression(&args[0])?;
+                self.call_runtime_function(runtime_name, &[obj_value, cancellation])
+                    .map(Some)
+            }
+            _ => {
+                self.ensure_no_args(method_name, args)?;
+                self.call_runtime_function(runtime_name, &[obj_value])
+                    .map(Some)
+            }
+        }
+    }
+
+    fn generate_sync_worker_pool_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let runtime_name = match method_name {
+            "submit" => "mux_pool_submit",
+            "map" => "mux_pool_map",
+            "try_submit" => "mux_pool_try_submit",
+            "submit_timeout" => "mux_pool_submit_timeout",
+            "cancel_pending" => "mux_pool_cancel_pending",
+            "close" => "mux_pool_close",
+            _ => return Ok(None),
+        };
+        match method_name {
+            "map" => {
+                self.ensure_arg_count(method_name, args, 2)?;
+                let values = self.generate_expression(&args[0])?;
+                let callback = self.generate_expression(&args[1])?;
+                self.call_runtime_function(runtime_name, &[obj_value, values, callback])
+                    .map(Some)
+            }
+            "submit" | "try_submit" => {
                 self.ensure_arg_count(method_name, args, 1)?;
                 let callback = self.generate_expression(&args[0])?;
-                self.call_runtime_function("mux_once_call", &[obj_value, callback])
+                self.call_runtime_function(runtime_name, &[obj_value, callback])
                     .map(Some)
             }
-            "Thread" => {
-                self.ensure_no_args("Thread", args)?;
-                match method_name {
-                    "join" => self
-                        .call_runtime_function("mux_thread_join", &[obj_value])
-                        .map(Some),
-                    "detach" => self
-                        .call_runtime_function("mux_thread_detach", &[obj_value])
-                        .map(Some),
-                    _ => Ok(None),
-                }
-            }
-            "Mutex" => match method_name {
-                "with_lock" => {
-                    if args.len() != 1 {
-                        return Err("with_lock() method takes exactly 1 argument".to_string());
-                    }
-                    let callback = self.generate_expression(&args[0])?;
-                    self.call_runtime_function("mux_mutex_with_lock", &[obj_value, callback])
-                        .map(Some)
-                }
-                _ => Ok(None),
-            },
-            "RwLock" => match method_name {
-                "with_read" | "with_write" => {
-                    if args.len() != 1 {
-                        return Err(format!("{method_name}() method takes exactly 1 argument"));
-                    }
-                    let callback = self.generate_expression(&args[0])?;
-                    let runtime_name = if method_name == "with_read" {
-                        "mux_rwlock_with_read"
-                    } else {
-                        "mux_rwlock_with_write"
-                    };
-                    self.call_runtime_function(runtime_name, &[obj_value, callback])
-                        .map(Some)
-                }
-                _ => Ok(None),
-            },
-            "CondVar" => match method_name {
-                "wait" => {
-                    if args.len() != 1 {
-                        return Err("wait() method takes exactly 1 argument".to_string());
-                    }
-                    let mutex_val = self.generate_expression(&args[0])?;
-                    let mutex_boxed = self.box_value(mutex_val);
-                    self.call_runtime_function("mux_condvar_wait", &[obj_value, mutex_boxed.into()])
-                        .map(Some)
-                }
-                "wait_timeout" => {
-                    if args.len() != 2 {
-                        return Err("wait_timeout() method takes exactly 2 arguments".to_string());
-                    }
-                    let mutex_val = self.generate_expression(&args[0])?;
-                    let mutex_boxed = self.box_value(mutex_val);
-                    let timeout = self.generate_expression(&args[1])?;
-                    let timeout = self.get_raw_int_value(timeout)?;
-                    self.call_runtime_function(
-                        "mux_condvar_wait_timeout",
-                        &[obj_value, mutex_boxed.into(), timeout.into()],
-                    )
+            "submit_timeout" => {
+                self.ensure_arg_count(method_name, args, 2)?;
+                let callback = self.generate_expression(&args[0])?;
+                let generated_timeout = self.generate_expression(&args[1])?;
+                let timeout = self.get_raw_int_value(generated_timeout)?;
+                self.call_runtime_function(runtime_name, &[obj_value, callback, timeout.into()])
                     .map(Some)
+            }
+            "cancel_pending" | "close" => {
+                self.ensure_no_args(method_name, args)?;
+                self.call_runtime_function(runtime_name, &[obj_value])
+                    .map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_sync_once_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if method_name != "call" {
+            return Ok(None);
+        }
+        self.ensure_arg_count(method_name, args, 1)?;
+        let callback = self.generate_expression(&args[0])?;
+        self.call_runtime_function("mux_once_call", &[obj_value, callback])
+            .map(Some)
+    }
+
+    fn generate_sync_thread_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        self.ensure_no_args("Thread", args)?;
+        let runtime_name = match method_name {
+            "join" => "mux_thread_join",
+            "detach" => "mux_thread_detach",
+            _ => return Ok(None),
+        };
+        self.call_runtime_function(runtime_name, &[obj_value])
+            .map(Some)
+    }
+
+    fn generate_sync_mutex_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if method_name != "with_lock" {
+            return Ok(None);
+        }
+        if args.len() != 1 {
+            return Err("with_lock() method takes exactly 1 argument".to_string());
+        }
+        let callback = self.generate_expression(&args[0])?;
+        self.call_runtime_function("mux_mutex_with_lock", &[obj_value, callback])
+            .map(Some)
+    }
+
+    fn generate_sync_rwlock_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if !matches!(method_name, "with_read" | "with_write") {
+            return Ok(None);
+        }
+        if args.len() != 1 {
+            return Err(format!("{method_name}() method takes exactly 1 argument"));
+        }
+        let callback = self.generate_expression(&args[0])?;
+        let runtime_name = if method_name == "with_read" {
+            "mux_rwlock_with_read"
+        } else {
+            "mux_rwlock_with_write"
+        };
+        self.call_runtime_function(runtime_name, &[obj_value, callback])
+            .map(Some)
+    }
+
+    fn generate_sync_condvar_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "wait" => {
+                if args.len() != 1 {
+                    return Err("wait() method takes exactly 1 argument".to_string());
                 }
-                "signal" => {
-                    self.ensure_no_args("signal", args)?;
-                    self.call_runtime_function("mux_condvar_signal", &[obj_value])
-                        .map(Some)
+                let generated_mutex = self.generate_expression(&args[0])?;
+                let mutex = self.box_value(generated_mutex);
+                self.call_runtime_function("mux_condvar_wait", &[obj_value, mutex.into()])
+                    .map(Some)
+            }
+            "wait_timeout" => {
+                if args.len() != 2 {
+                    return Err("wait_timeout() method takes exactly 2 arguments".to_string());
                 }
-                "broadcast" => {
-                    self.ensure_no_args("broadcast", args)?;
-                    self.call_runtime_function("mux_condvar_broadcast", &[obj_value])
-                        .map(Some)
-                }
-                _ => Ok(None),
-            },
+                let generated_mutex = self.generate_expression(&args[0])?;
+                let mutex = self.box_value(generated_mutex);
+                let generated_timeout = self.generate_expression(&args[1])?;
+                let timeout = self.get_raw_int_value(generated_timeout)?;
+                self.call_runtime_function(
+                    "mux_condvar_wait_timeout",
+                    &[obj_value, mutex.into(), timeout.into()],
+                )
+                .map(Some)
+            }
+            "signal" | "broadcast" => {
+                self.ensure_no_args(method_name, args)?;
+                let runtime_name = if method_name == "signal" {
+                    "mux_condvar_signal"
+                } else {
+                    "mux_condvar_broadcast"
+                };
+                self.call_runtime_function(runtime_name, &[obj_value])
+                    .map(Some)
+            }
             _ => Ok(None),
         }
     }
