@@ -2909,16 +2909,9 @@ impl<'a> CodeGenerator<'a> {
         Ok(right_val)
     }
 
-    fn assign_to_field_access(
-        &mut self,
-        expr: &ExpressionNode,
-        field: &str,
-        right_val: BasicValueEnum<'a>,
-        rhs_owned: bool,
-    ) -> Result<BasicValueEnum<'a>, String> {
-        let class_name_for_fields = self.resolve_expression_class_name(expr);
-        let runtime_name = if class_name_for_fields.as_deref() == Some("HttpRequest") {
-            match field {
+    fn runtime_field_setter(class_name: Option<&str>, field: &str) -> Option<&'static str> {
+        match class_name {
+            Some("HttpRequest") => match field {
                 "method" => Some("mux_net_http_request_set_method_field"),
                 "url" => Some("mux_net_http_request_set_url_field"),
                 "request_id" => Some("mux_net_http_request_set_id_field"),
@@ -2931,16 +2924,14 @@ impl<'a> CodeGenerator<'a> {
                 "retries" => Some("mux_net_http_request_set_retries_field"),
                 "retry_backoff_ms" => Some("mux_net_http_request_set_retry_backoff_field"),
                 _ => None,
-            }
-        } else if class_name_for_fields.as_deref() == Some("HttpResponse") {
-            match field {
+            },
+            Some("HttpResponse") => match field {
                 "status" => Some("mux_net_http_response_set_status_field"),
                 "headers" => Some("mux_net_http_response_set_headers_field"),
                 "body" => Some("mux_net_http_response_set_body_field"),
                 _ => None,
-            }
-        } else if class_name_for_fields.as_deref() == Some("HttpServerConfig") {
-            match field {
+            },
+            Some("HttpServerConfig") => match field {
                 "max_header_bytes" => Some("mux_net_http_server_config_set_max_header_bytes"),
                 "max_body_bytes" => Some("mux_net_http_server_config_set_max_body_bytes"),
                 "max_headers" => Some("mux_net_http_server_config_set_max_headers"),
@@ -2956,32 +2947,59 @@ impl<'a> CodeGenerator<'a> {
                     Some("mux_net_http_server_config_set_heartbeat_interval_ms")
                 }
                 _ => None,
-            }
-        } else if class_name_for_fields.as_deref() == Some("SseEvent") {
-            match field {
+            },
+            Some("SseEvent") => match field {
                 "event" => Some("mux_net_sse_event_set_event"),
                 "id" => Some("mux_net_sse_event_set_id"),
                 "retry_ms" => Some("mux_net_sse_event_set_retry_ms"),
                 "data" => Some("mux_net_sse_event_set_data"),
                 _ => None,
-            }
-        } else if class_name_for_fields.as_deref() == Some("WebSocketFrame") {
-            match field {
+            },
+            Some("WebSocketFrame") => match field {
                 "fin" => Some("mux_net_websocket_frame_set_fin"),
                 "opcode" => Some("mux_net_websocket_frame_set_opcode"),
                 "payload" => Some("mux_net_websocket_frame_set_payload"),
                 "masked" => Some("mux_net_websocket_frame_set_masked"),
                 _ => None,
-            }
-        } else if class_name_for_fields.as_deref() == Some("WebSocketHandshake") {
-            match field {
+            },
+            Some("WebSocketHandshake") => match field {
                 "key" => Some("mux_net_websocket_handshake_set_key"),
                 "protocol" => Some("mux_net_websocket_handshake_set_protocol"),
                 _ => None,
-            }
-        } else {
-            None
-        };
+            },
+            _ => None,
+        }
+    }
+
+    fn field_assignment_error(class_name: Option<&str>, field: &str) -> Option<String> {
+        match class_name {
+            Some(
+                "HttpRequest" | "HttpResponse" | "HttpServerConfig" | "WebSocketFrame"
+                | "WebSocketHandshake",
+            ) => Some(format!("unknown {class_name:?} field '{field}'")),
+            Some(
+                name @ ("SqlError" | "HttpError" | "EnvError" | "FsError" | "NetError" | "UrlError"
+                | "UuidError" | "LogError" | "RandomError" | "CryptoError" | "RegexError"
+                | "MathError" | "ProcessError" | "CliError" | "TlsError" | "DateTimeError"
+                | "IoError" | "SyncError"),
+            ) => Some(format!("{name} fields are read-only")),
+            Some("JsonError" | "CsvError" | "ByteError" | "BytesError") => Some(format!(
+                "{} fields are read-only",
+                class_name.unwrap_or("data error")
+            )),
+            _ => None,
+        }
+    }
+
+    fn assign_to_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+        right_val: BasicValueEnum<'a>,
+        rhs_owned: bool,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let class_name_for_fields = self.resolve_expression_class_name(expr);
+        let runtime_name = Self::runtime_field_setter(class_name_for_fields.as_deref(), field);
         if let Some(runtime_name) = runtime_name {
             let request = self.generate_expression(expr)?;
             // HTTP field setters consume boxed runtime Values. Primitive
@@ -2994,76 +3012,8 @@ impl<'a> CodeGenerator<'a> {
             self.emit_value_decref(result.into_pointer_value())?;
             return Ok(right_val);
         }
-        if class_name_for_fields.as_deref() == Some("HttpRequest")
-            || class_name_for_fields.as_deref() == Some("HttpResponse")
-            || class_name_for_fields.as_deref() == Some("HttpServerConfig")
-            || class_name_for_fields.as_deref() == Some("WebSocketFrame")
-            || class_name_for_fields.as_deref() == Some("WebSocketHandshake")
-        {
-            return Err(format!("unknown {class_name_for_fields:?} field '{field}'"));
-        }
-        if class_name_for_fields.as_deref() == Some("SqlError") {
-            return Err("SqlError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("HttpError") {
-            return Err("HttpError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("EnvError") {
-            return Err("EnvError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("FsError") {
-            return Err("FsError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("NetError") {
-            return Err("NetError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("UrlError") {
-            return Err("UrlError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("UuidError") {
-            return Err("UuidError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("LogError") {
-            return Err("LogError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("RandomError") {
-            return Err("RandomError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("CryptoError") {
-            return Err("CryptoError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("RegexError") {
-            return Err("RegexError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("MathError") {
-            return Err("MathError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("ProcessError") {
-            return Err("ProcessError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("CliError") {
-            return Err("CliError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("TlsError") {
-            return Err("TlsError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("DateTimeError") {
-            return Err("DateTimeError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("IoError") {
-            return Err("IoError fields are read-only".to_string());
-        }
-        if class_name_for_fields.as_deref() == Some("SyncError") {
-            return Err("SyncError fields are read-only".to_string());
-        }
-        if matches!(
-            class_name_for_fields.as_deref(),
-            Some("JsonError" | "CsvError" | "ByteError" | "BytesError")
-        ) {
-            return Err(format!(
-                "{} fields are read-only",
-                class_name_for_fields.as_deref().unwrap_or("data error")
-            ));
+        if let Some(error) = Self::field_assignment_error(class_name_for_fields.as_deref(), field) {
+            return Err(error);
         }
         let struct_ptr = self.resolve_struct_pointer_for_field_access(expr, "data_ptr_assign")?;
         let class_name = self

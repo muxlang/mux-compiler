@@ -9,7 +9,7 @@ use crate::semantics::Type;
 use inkwell::AddressSpace;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, PointerType};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, PointerType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue,
 };
@@ -29,6 +29,62 @@ pub(super) enum RuntimeErrorCode {
     WhereConstraintViolation = 604,
     IntegerOverflow = 605,
     InternalRuntime = 699,
+}
+
+fn add_i8_fn<'c>(
+    module: &Module<'c>,
+    i8_ptr: PointerType<'c>,
+    name: &str,
+    params: &[BasicTypeEnum<'c>],
+) -> FunctionValue<'c> {
+    let llvm_params: Vec<BasicMetadataTypeEnum<'c>> =
+        params.iter().copied().map(Into::into).collect();
+    module.add_function(name, i8_ptr.fn_type(&llvm_params, false), None)
+}
+
+fn add_conversion_fn<'c>(
+    module: &Module<'c>,
+    i8_ptr: PointerType<'c>,
+    mux_name: &str,
+    from: BasicTypeEnum<'c>,
+) -> FunctionValue<'c> {
+    add_i8_fn(module, i8_ptr, mux_name, &[from])
+}
+
+fn add_typed_getter<'c>(
+    module: &Module<'c>,
+    i8_ptr: PointerType<'c>,
+    name: &str,
+    return_type: BasicTypeEnum<'c>,
+) -> FunctionValue<'c> {
+    module.add_function(name, return_type.fn_type(&[i8_ptr.into()], false), None)
+}
+
+fn declare_functions<'c>(module: &Module<'c>, names: &[&str], function_type: FunctionType<'c>) {
+    for name in names {
+        module.add_function(name, function_type, None);
+    }
+}
+
+fn declare_i8_functions<'c>(
+    module: &Module<'c>,
+    i8_ptr: PointerType<'c>,
+    names: &[&str],
+    params: &[BasicTypeEnum<'c>],
+) {
+    for name in names {
+        add_i8_fn(module, i8_ptr, name, params);
+    }
+}
+
+fn declare_conversion_functions<'c>(
+    module: &Module<'c>,
+    i8_ptr: PointerType<'c>,
+    conversions: &[(&str, BasicTypeEnum<'c>)],
+) {
+    for &(name, from_type) in conversions {
+        add_conversion_fn(module, i8_ptr, name, from_type);
+    }
 }
 
 impl<'a> CodeGenerator<'a> {
@@ -58,27 +114,6 @@ impl<'a> CodeGenerator<'a> {
 
     /// Declare runtime functions used by codegen.
     pub(super) fn declare_runtime_functions<'b>(module: &Module<'b>, context: &'b Context) {
-        // local helpers
-        fn add_i8_fn<'c>(
-            module: &Module<'c>,
-            i8_ptr: PointerType<'c>,
-            name: &str,
-            params: &[BasicTypeEnum<'c>],
-        ) -> FunctionValue<'c> {
-            let llvm_params: Vec<BasicMetadataTypeEnum<'c>> =
-                params.iter().copied().map(Into::into).collect();
-            module.add_function(name, i8_ptr.fn_type(&llvm_params, false), None)
-        }
-
-        fn add_conversion_fn<'c>(
-            module: &Module<'c>,
-            i8_ptr: PointerType<'c>,
-            mux_name: &str,
-            from: BasicTypeEnum<'c>,
-        ) -> FunctionValue<'c> {
-            add_i8_fn(module, i8_ptr, mux_name, &[from])
-        }
-
         module.add_function(
             "mux_coverage_record",
             context.void_type().fn_type(
@@ -93,15 +128,6 @@ impl<'a> CodeGenerator<'a> {
             ),
             None,
         );
-
-        fn add_typed_getter<'c>(
-            module: &Module<'c>,
-            i8_ptr: PointerType<'c>,
-            name: &str,
-            return_type: BasicTypeEnum<'c>,
-        ) -> FunctionValue<'c> {
-            module.add_function(name, return_type.fn_type(&[i8_ptr.into()], false), None)
-        }
 
         let void_type = context.void_type();
         let i64_type = context.i64_type();
@@ -320,13 +346,15 @@ impl<'a> CodeGenerator<'a> {
 
         // Decomposition. Every position is a character position, matching
         // mux_string_length.
-        for owned in [
-            "mux_string_trim",
-            "mux_string_to_upper",
-            "mux_string_to_lower",
-        ] {
-            module.add_function(owned, i8_ptr.fn_type(&[i8_ptr.into()], false), None);
-        }
+        declare_functions(
+            module,
+            &[
+                "mux_string_trim",
+                "mux_string_to_upper",
+                "mux_string_to_lower",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+        );
         module.add_function(
             "mux_string_split",
             i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
@@ -347,15 +375,13 @@ impl<'a> CodeGenerator<'a> {
             i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into(), i64_type.into()], false),
             None,
         );
-        for pred in ["mux_string_starts_with", "mux_string_ends_with"] {
-            module.add_function(
-                pred,
-                context
-                    .bool_type()
-                    .fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
-                None,
-            );
-        }
+        declare_functions(
+            module,
+            &["mux_string_starts_with", "mux_string_ends_with"],
+            context
+                .bool_type()
+                .fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+        );
         module.add_function(
             "mux_string_index_of",
             i64_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
@@ -418,18 +444,20 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
-        for (name, from_ty) in [
-            ("mux_int_to_string", i64_type.into()),
-            ("mux_int_to_byte", i64_type.into()),
-            ("mux_int_to_float", i64_type.into()),
-            ("mux_float_to_int", f64_type.into()),
-            ("mux_float_to_string", f64_type.into()),
-            ("mux_bool_to_string", i32_type.into()),
-            ("mux_char_to_int", i64_type.into()),
-            ("mux_char_to_string", i64_type.into()),
-        ] {
-            add_conversion_fn(module, i8_ptr, name, from_ty);
-        }
+        declare_conversion_functions(
+            module,
+            i8_ptr,
+            &[
+                ("mux_int_to_string", i64_type.into()),
+                ("mux_int_to_byte", i64_type.into()),
+                ("mux_int_to_float", i64_type.into()),
+                ("mux_float_to_int", f64_type.into()),
+                ("mux_float_to_string", f64_type.into()),
+                ("mux_bool_to_string", i32_type.into()),
+                ("mux_char_to_int", i64_type.into()),
+                ("mux_char_to_string", i64_type.into()),
+            ],
+        );
         module.add_function(
             "mux_char_to_codepoint",
             i64_type.fn_type(&[i64_type.into()], false),
@@ -441,24 +469,27 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
-        for name in [
-            "mux_bool_to_int",
-            "mux_bool_to_float",
-            "mux_string_to_string",
-            "mux_string_to_int",
-            "mux_string_to_byte",
-            "mux_string_to_float",
-            "mux_string_to_bool",
-            "mux_string_to_char",
-            "mux_list_to_string",
-            "mux_list_value",
-            "mux_map_value",
-            "mux_set_value",
-            "mux_set_to_list",
-            "mux_map_to_string",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_bool_to_int",
+                "mux_bool_to_float",
+                "mux_string_to_string",
+                "mux_string_to_int",
+                "mux_string_to_byte",
+                "mux_string_to_float",
+                "mux_string_to_bool",
+                "mux_string_to_char",
+                "mux_list_to_string",
+                "mux_list_value",
+                "mux_map_value",
+                "mux_set_value",
+                "mux_set_to_list",
+                "mux_map_to_string",
+            ],
+            &[i8_ptr.into()],
+        );
 
         module.add_function(
             "mux_register_object_type",
@@ -481,17 +512,15 @@ impl<'a> CodeGenerator<'a> {
         // The equality, ordering and hash a class declares. Unlike the copy and
         // destructor callbacks above, these take the boxed object rather than
         // its data buffer, because they are the class's own methods.
-        for name in [
-            "mux_register_object_equals",
-            "mux_register_object_compare",
-            "mux_register_object_hash",
-        ] {
-            module.add_function(
-                name,
-                void_type.fn_type(&[i32_type.into(), i8_ptr.into()], false),
-                None,
-            );
-        }
+        declare_functions(
+            module,
+            &[
+                "mux_register_object_equals",
+                "mux_register_object_compare",
+                "mux_register_object_hash",
+            ],
+            void_type.fn_type(&[i32_type.into(), i8_ptr.into()], false),
+        );
 
         module.add_function(
             "mux_alloc_object",
@@ -657,13 +686,15 @@ impl<'a> CodeGenerator<'a> {
             void_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
             None,
         );
-        for name in [
-            "mux_bytes_pop_back",
-            "mux_bytes_pop_front",
-            "mux_bytes_to_utf8",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[i8_ptr.into()], false), None);
-        }
+        declare_functions(
+            module,
+            &[
+                "mux_bytes_pop_back",
+                "mux_bytes_pop_front",
+                "mux_bytes_to_utf8",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+        );
         module.add_function(
             "mux_bytes_to_utf8_lossy",
             i8_ptr.fn_type(&[i8_ptr.into()], false),
@@ -797,13 +828,15 @@ impl<'a> CodeGenerator<'a> {
             i8_ptr.fn_type(&[i8_ptr.into()], false),
             None,
         );
-        for name in [
-            "mux_bytes_cursor_position",
-            "mux_bytes_cursor_remaining",
-            "mux_bytes_cursor_into_bytes",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[i8_ptr.into()], false), None);
-        }
+        declare_functions(
+            module,
+            &[
+                "mux_bytes_cursor_position",
+                "mux_bytes_cursor_remaining",
+                "mux_bytes_cursor_into_bytes",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+        );
         module.add_function(
             "mux_bytes_cursor_read_bytes",
             i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false),
@@ -1141,44 +1174,51 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
-        for (name, from_ty) in [
-            ("mux_int_value", i64_type.into()),
-            ("mux_float_value", f64_type.into()),
-            ("mux_bool_value", i32_type.into()),
-        ] {
-            add_conversion_fn(module, i8_ptr, name, from_ty);
-        }
+        declare_conversion_functions(
+            module,
+            i8_ptr,
+            &[
+                ("mux_int_value", i64_type.into()),
+                ("mux_float_value", f64_type.into()),
+                ("mux_bool_value", i32_type.into()),
+            ],
+        );
         add_i8_fn(module, i8_ptr, "mux_string_value", &[i8_ptr.into()]);
         add_typed_getter(module, i8_ptr, "mux_int_from_value", i64_type.into());
         add_typed_getter(module, i8_ptr, "mux_float_from_value", f64_type.into());
         add_typed_getter(module, i8_ptr, "mux_bool_from_value", i32_type.into());
         add_i8_fn(module, i8_ptr, "mux_string_from_value", &[i8_ptr.into()]);
 
-        for (name, from_ty) in [
-            ("mux_optional_some_int", i64_type.into()),
-            ("mux_optional_some_float", f64_type.into()),
-            ("mux_optional_some_bool", i32_type.into()),
-            ("mux_optional_some_char", i64_type.into()),
-            ("mux_result_ok_int", i64_type.into()),
-            ("mux_result_ok_float", f64_type.into()),
-            ("mux_result_ok_bool", i32_type.into()),
-            ("mux_result_ok_char", i64_type.into()),
-        ] {
-            add_conversion_fn(module, i8_ptr, name, from_ty);
-        }
-        for name in [
-            "mux_optional_some_string",
-            "mux_optional_some_value",
-            "mux_result_ok_string",
-            "mux_result_ok_value",
-            "mux_result_err_str",
-            "mux_result_err_value",
-            "mux_optional_data",
-            "mux_optional_get_value",
-            "mux_result_data",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
+        declare_conversion_functions(
+            module,
+            i8_ptr,
+            &[
+                ("mux_optional_some_int", i64_type.into()),
+                ("mux_optional_some_float", f64_type.into()),
+                ("mux_optional_some_bool", i32_type.into()),
+                ("mux_optional_some_char", i64_type.into()),
+                ("mux_result_ok_int", i64_type.into()),
+                ("mux_result_ok_float", f64_type.into()),
+                ("mux_result_ok_bool", i32_type.into()),
+                ("mux_result_ok_char", i64_type.into()),
+            ],
+        );
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_optional_some_string",
+                "mux_optional_some_value",
+                "mux_result_ok_string",
+                "mux_result_ok_value",
+                "mux_result_err_str",
+                "mux_result_err_value",
+                "mux_optional_data",
+                "mux_optional_get_value",
+                "mux_result_data",
+            ],
+            &[i8_ptr.into()],
+        );
         i8ptr_void_fn!("mux_result_ok_unit");
         i8ptr_void_fn!("mux_optional_none");
         add_typed_getter(
@@ -1233,9 +1273,7 @@ impl<'a> CodeGenerator<'a> {
 
         macro_rules! declare_extern_batch {
             ($module:expr, $names:expr, $fn_type:expr) => {
-                for name in $names {
-                    $module.add_function(name, $fn_type, None);
-                }
+                declare_functions($module, $names, $fn_type);
             };
         }
 
@@ -1395,31 +1433,40 @@ impl<'a> CodeGenerator<'a> {
 
         module.add_function("mux_flush_stdout", void_type.fn_type(&[], false), None);
 
-        for name in [
-            "mux_io_read_file",
-            "mux_io_exists",
-            "mux_io_remove",
-            "mux_io_remove_dir_all",
-            "mux_io_is_file",
-            "mux_io_is_dir",
-            "mux_io_mkdir",
-            "mux_io_listdir",
-            "mux_io_basename",
-            "mux_io_dirname",
-            "mux_io_absolute",
-            "mux_io_canonical",
-            "mux_io_file_size",
-            "mux_io_is_symlink",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_io_read_file",
+                "mux_io_exists",
+                "mux_io_remove",
+                "mux_io_remove_dir_all",
+                "mux_io_is_file",
+                "mux_io_is_dir",
+                "mux_io_mkdir",
+                "mux_io_listdir",
+                "mux_io_basename",
+                "mux_io_dirname",
+                "mux_io_absolute",
+                "mux_io_canonical",
+                "mux_io_file_size",
+                "mux_io_is_symlink",
+            ],
+            &[i8_ptr.into()],
+        );
         add_i8_fn(module, i8_ptr, "mux_io_cwd", &[]);
-        for name in ["mux_io_copy", "mux_io_rename", "mux_io_replace_atomic"] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into(), i8_ptr.into()]);
-        }
-        for name in ["mux_fs_temp_file", "mux_fs_temp_dir"] {
-            add_i8_fn(module, i8_ptr, name, &[]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &["mux_io_copy", "mux_io_rename", "mux_io_replace_atomic"],
+            &[i8_ptr.into(), i8_ptr.into()],
+        );
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &["mux_fs_temp_file", "mux_fs_temp_dir"],
+            &[],
+        );
         add_i8_fn(module, i8_ptr, "mux_fs_is_readonly", &[i8_ptr.into()]);
         add_i8_fn(module, i8_ptr, "mux_fs_read_link", &[i8_ptr.into()]);
         add_i8_fn(module, i8_ptr, "mux_fs_directory_open", &[i8_ptr.into()]);
@@ -1523,17 +1570,20 @@ impl<'a> CodeGenerator<'a> {
             &[i8_ptr.into(), i8_ptr.into()],
         );
         // Typed accessors, each returning an owned optional<T>.
-        for accessor in [
-            "mux_json_as_string",
-            "mux_json_as_int",
-            "mux_json_as_float",
-            "mux_json_as_bool",
-            "mux_json_as_list",
-            "mux_json_as_map",
-            "mux_json_as_number",
-        ] {
-            add_i8_fn(module, i8_ptr, accessor, &[i8_ptr.into()]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_json_as_string",
+                "mux_json_as_int",
+                "mux_json_as_float",
+                "mux_json_as_bool",
+                "mux_json_as_list",
+                "mux_json_as_map",
+                "mux_json_as_number",
+            ],
+            &[i8_ptr.into()],
+        );
         module.add_function(
             "mux_json_is_null",
             context.bool_type().fn_type(&[i8_ptr.into()], false),
@@ -1992,25 +2042,31 @@ impl<'a> CodeGenerator<'a> {
         add_i8_fn(module, i8_ptr, "mux_cli_matches_help", &[i8_ptr.into()]);
         module.add_function("mux_fs_path_new", i8_ptr.fn_type(&[], false), None);
         add_i8_fn(module, i8_ptr, "mux_fs_path_from_string", &[i8_ptr.into()]);
-        for name in [
-            "mux_fs_path_to_string",
-            "mux_fs_path_display",
-            "mux_fs_path_is_absolute",
-            "mux_fs_path_is_relative",
-            "mux_fs_path_parent",
-            "mux_fs_path_file_name",
-            "mux_fs_path_extension",
-            "mux_fs_path_stem",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
-        for name in [
-            "mux_fs_path_join",
-            "mux_fs_path_with_file_name",
-            "mux_fs_path_with_extension",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into(), i8_ptr.into()]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_fs_path_to_string",
+                "mux_fs_path_display",
+                "mux_fs_path_is_absolute",
+                "mux_fs_path_is_relative",
+                "mux_fs_path_parent",
+                "mux_fs_path_file_name",
+                "mux_fs_path_extension",
+                "mux_fs_path_stem",
+            ],
+            &[i8_ptr.into()],
+        );
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_fs_path_join",
+                "mux_fs_path_with_file_name",
+                "mux_fs_path_with_extension",
+            ],
+            &[i8_ptr.into(), i8_ptr.into()],
+        );
         module.add_function(
             "mux_net_endpoint_from_host",
             i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false),
@@ -2022,14 +2078,17 @@ impl<'a> CodeGenerator<'a> {
             "mux_net_endpoint_from_socket_addr",
             &[i8_ptr.into()],
         );
-        for name in [
-            "mux_net_endpoint_to_string",
-            "mux_net_endpoint_host",
-            "mux_net_endpoint_port",
-            "mux_net_endpoint_resolve",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_net_endpoint_to_string",
+                "mux_net_endpoint_host",
+                "mux_net_endpoint_port",
+                "mux_net_endpoint_resolve",
+            ],
+            &[i8_ptr.into()],
+        );
         module.add_function(
             "mux_tls_connect",
             i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
@@ -2128,82 +2187,89 @@ impl<'a> CodeGenerator<'a> {
         );
         add_i8_fn(module, i8_ptr, "mux_tls_flush", &[i8_ptr.into()]);
         add_i8_fn(module, i8_ptr, "mux_tls_shutdown", &[i8_ptr.into()]);
-        for name in [
-            "mux_tls_peer_certificates",
-            "mux_tls_protocol_version",
-            "mux_tls_cipher_suite",
-            "mux_tls_alpn_protocol",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_tls_peer_certificates",
+                "mux_tls_protocol_version",
+                "mux_tls_cipher_suite",
+                "mux_tls_alpn_protocol",
+            ],
+            &[i8_ptr.into()],
+        );
         module.add_function(
             "mux_tls_error_from_message",
             i8_ptr.fn_type(&[i8_ptr.into()], false),
             None,
         );
-        for name in [
-            "mux_tls_error_kind",
-            "mux_tls_error_detail",
-            "mux_tls_error_message",
-            "mux_tls_error_to_string",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_tls_error_kind",
+                "mux_tls_error_detail",
+                "mux_tls_error_message",
+                "mux_tls_error_to_string",
+            ],
+            &[i8_ptr.into()],
+        );
 
-        for name in [
-            "mux_datetime_now",
-            "mux_datetime_now_millis",
-            "mux_datetime_now_micros",
-            "mux_datetime_now_nanos",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[], false), None);
-        }
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_now",
+                "mux_datetime_now_millis",
+                "mux_datetime_now_micros",
+                "mux_datetime_now_nanos",
+            ],
+            i8_ptr.fn_type(&[], false),
+        );
         module.add_function(
             "mux_datetime_error_from_message",
             i8_ptr.fn_type(&[i8_ptr.into()], false),
             None,
         );
-        for name in [
-            "mux_datetime_error_kind",
-            "mux_datetime_error_detail",
-            "mux_datetime_error_message",
-            "mux_datetime_error_to_string",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
-        for name in [
-            "mux_datetime_year",
-            "mux_datetime_month",
-            "mux_datetime_day",
-            "mux_datetime_hour",
-            "mux_datetime_minute",
-            "mux_datetime_second",
-            "mux_datetime_weekday",
-            "mux_datetime_sleep",
-            "mux_datetime_sleep_millis",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[i64_type.into()], false), None);
-        }
-        for name in [
-            "mux_datetime_format",
-            "mux_datetime_format_local",
-            "mux_datetime_parse_timestamp",
-            "mux_datetime_parse_datetime",
-            "mux_datetime_parse_http_date",
-        ] {
-            module.add_function(
-                name,
-                if name == "mux_datetime_parse_timestamp"
-                    || name == "mux_datetime_parse_datetime"
-                    || name == "mux_datetime_parse_http_date"
-                {
-                    i8_ptr.fn_type(&[i8_ptr.into()], false)
-                } else {
-                    i8_ptr.fn_type(&[i64_type.into(), i8_ptr.into()], false)
-                },
-                None,
-            );
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_datetime_error_kind",
+                "mux_datetime_error_detail",
+                "mux_datetime_error_message",
+                "mux_datetime_error_to_string",
+            ],
+            &[i8_ptr.into()],
+        );
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_year",
+                "mux_datetime_month",
+                "mux_datetime_day",
+                "mux_datetime_hour",
+                "mux_datetime_minute",
+                "mux_datetime_second",
+                "mux_datetime_weekday",
+                "mux_datetime_sleep",
+                "mux_datetime_sleep_millis",
+            ],
+            i8_ptr.fn_type(&[i64_type.into()], false),
+        );
+        declare_functions(
+            module,
+            &["mux_datetime_format", "mux_datetime_format_local"],
+            i8_ptr.fn_type(&[i64_type.into(), i8_ptr.into()], false),
+        );
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_parse_timestamp",
+                "mux_datetime_parse_datetime",
+                "mux_datetime_parse_http_date",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+        );
         module.add_function(
             "mux_datetime_format_timestamp",
             i8_ptr.fn_type(&[i64_type.into()], false),
@@ -2215,91 +2281,103 @@ impl<'a> CodeGenerator<'a> {
             None,
         );
 
-        for name in [
-            "mux_datetime_date_new",
-            "mux_datetime_time_new",
-            "mux_datetime_datetime_new",
-            "mux_datetime_datetime_now",
-            "mux_datetime_zoned_datetime_new",
-            "mux_datetime_instant_new",
-            "mux_datetime_instant_now",
-            "mux_datetime_duration_new",
-            "mux_datetime_period_new",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[], false), None);
-        }
-        for name in [
-            "mux_datetime_date_parse",
-            "mux_datetime_time_parse",
-            "mux_datetime_datetime_parse",
-            "mux_datetime_zoned_datetime_parse",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[i8_ptr.into()], false), None);
-        }
-        for name in [
-            "mux_datetime_zoned_datetime_to_string",
-            "mux_datetime_zoned_datetime_zone",
-            "mux_datetime_zoned_datetime_offset_seconds",
-            "mux_datetime_zoned_datetime_date",
-            "mux_datetime_zoned_datetime_time",
-            "mux_datetime_zoned_datetime_instant",
-            "mux_datetime_local_resolution_kind",
-            "mux_datetime_local_resolution_earlier",
-            "mux_datetime_local_resolution_later",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[i8_ptr.into()], false), None);
-        }
-        for name in [
-            "mux_datetime_instant_from_unix_nanos",
-            "mux_datetime_duration_from_seconds",
-            "mux_datetime_duration_from_millis",
-            "mux_datetime_duration_from_micros",
-            "mux_datetime_duration_from_nanos",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[i64_type.into()], false), None);
-        }
-        for name in [
-            "mux_datetime_date_to_string",
-            "mux_datetime_time_to_string",
-            "mux_datetime_datetime_to_string",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[i8_ptr.into()], false), None);
-        }
-        for name in [
-            "mux_datetime_date_format",
-            "mux_datetime_time_format",
-            "mux_datetime_datetime_format",
-            "mux_datetime_datetime_parse_pattern",
-        ] {
-            module.add_function(
-                name,
-                i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
-                None,
-            );
-        }
-        for name in [
-            "mux_datetime_date_year",
-            "mux_datetime_date_month",
-            "mux_datetime_date_day",
-            "mux_datetime_date_weekday",
-            "mux_datetime_time_hour",
-            "mux_datetime_time_minute",
-            "mux_datetime_time_second",
-            "mux_datetime_time_nanosecond",
-            "mux_datetime_period_years",
-            "mux_datetime_period_months",
-            "mux_datetime_period_days",
-        ] {
-            module.add_function(name, i64_type.fn_type(&[i8_ptr.into()], false), None);
-        }
-        for name in [
-            "mux_datetime_datetime_unix_seconds",
-            "mux_datetime_datetime_unix_nanos",
-            "mux_datetime_instant_unix_nanos",
-            "mux_datetime_duration_to_nanos",
-        ] {
-            module.add_function(name, i8_ptr.fn_type(&[i8_ptr.into()], false), None);
-        }
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_date_new",
+                "mux_datetime_time_new",
+                "mux_datetime_datetime_new",
+                "mux_datetime_datetime_now",
+                "mux_datetime_zoned_datetime_new",
+                "mux_datetime_instant_new",
+                "mux_datetime_instant_now",
+                "mux_datetime_duration_new",
+                "mux_datetime_period_new",
+            ],
+            i8_ptr.fn_type(&[], false),
+        );
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_date_parse",
+                "mux_datetime_time_parse",
+                "mux_datetime_datetime_parse",
+                "mux_datetime_zoned_datetime_parse",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+        );
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_zoned_datetime_to_string",
+                "mux_datetime_zoned_datetime_zone",
+                "mux_datetime_zoned_datetime_offset_seconds",
+                "mux_datetime_zoned_datetime_date",
+                "mux_datetime_zoned_datetime_time",
+                "mux_datetime_zoned_datetime_instant",
+                "mux_datetime_local_resolution_kind",
+                "mux_datetime_local_resolution_earlier",
+                "mux_datetime_local_resolution_later",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+        );
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_instant_from_unix_nanos",
+                "mux_datetime_duration_from_seconds",
+                "mux_datetime_duration_from_millis",
+                "mux_datetime_duration_from_micros",
+                "mux_datetime_duration_from_nanos",
+            ],
+            i8_ptr.fn_type(&[i64_type.into()], false),
+        );
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_date_to_string",
+                "mux_datetime_time_to_string",
+                "mux_datetime_datetime_to_string",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+        );
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_date_format",
+                "mux_datetime_time_format",
+                "mux_datetime_datetime_format",
+                "mux_datetime_datetime_parse_pattern",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+        );
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_date_year",
+                "mux_datetime_date_month",
+                "mux_datetime_date_day",
+                "mux_datetime_date_weekday",
+                "mux_datetime_time_hour",
+                "mux_datetime_time_minute",
+                "mux_datetime_time_second",
+                "mux_datetime_time_nanosecond",
+                "mux_datetime_period_years",
+                "mux_datetime_period_months",
+                "mux_datetime_period_days",
+            ],
+            i64_type.fn_type(&[i8_ptr.into()], false),
+        );
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_datetime_unix_seconds",
+                "mux_datetime_datetime_unix_nanos",
+                "mux_datetime_instant_unix_nanos",
+                "mux_datetime_duration_to_nanos",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into()], false),
+        );
         module.add_function(
             "mux_datetime_date_from_parts",
             i8_ptr.fn_type(&[i64_type.into(), i64_type.into(), i64_type.into()], false),
@@ -2328,37 +2406,33 @@ impl<'a> CodeGenerator<'a> {
             i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
             None,
         );
-        for name in [
-            "mux_datetime_zoned_datetime_from_local",
-            "mux_datetime_zoned_datetime_resolve_local",
-        ] {
-            module.add_function(
-                name,
-                i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()], false),
-                None,
-            );
-        }
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_zoned_datetime_from_local",
+                "mux_datetime_zoned_datetime_resolve_local",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()], false),
+        );
         module.add_function(
             "mux_datetime_period_from_parts",
             i8_ptr.fn_type(&[i64_type.into(), i64_type.into(), i64_type.into()], false),
             None,
         );
-        for name in [
-            "mux_datetime_datetime_from_date_time",
-            "mux_datetime_datetime_add_duration",
-            "mux_datetime_zoned_datetime_add_duration",
-            "mux_datetime_instant_add_duration",
-            "mux_datetime_instant_duration_since",
-            "mux_datetime_duration_add",
-            "mux_datetime_duration_sub",
-            "mux_datetime_period_add_to_date",
-        ] {
-            module.add_function(
-                name,
-                i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
-                None,
-            );
-        }
+        declare_functions(
+            module,
+            &[
+                "mux_datetime_datetime_from_date_time",
+                "mux_datetime_datetime_add_duration",
+                "mux_datetime_zoned_datetime_add_duration",
+                "mux_datetime_instant_add_duration",
+                "mux_datetime_instant_duration_since",
+                "mux_datetime_duration_add",
+                "mux_datetime_duration_sub",
+                "mux_datetime_period_add_to_date",
+            ],
+            i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
+        );
         module.add_function(
             "mux_datetime_date_add_days",
             i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false),
@@ -3101,15 +3175,18 @@ impl<'a> CodeGenerator<'a> {
             i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false),
             None,
         );
-        for name in [
-            "mux_poll_event_token",
-            "mux_poll_event_readable",
-            "mux_poll_event_writable",
-            "mux_poll_event_error",
-            "mux_poll_event_closed",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_poll_event_token",
+                "mux_poll_event_readable",
+                "mux_poll_event_writable",
+                "mux_poll_event_error",
+                "mux_poll_event_closed",
+            ],
+            &[i8_ptr.into()],
+        );
         i8ptr_i8ptr_fn!("mux_net_tcp_listener_accept");
         module.add_function(
             "mux_net_tcp_listener_set_nonblocking",
@@ -3438,28 +3515,35 @@ impl<'a> CodeGenerator<'a> {
             i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false),
             None,
         );
-        for name in [
-            "mux_sql_migrator_up",
-            "mux_sql_migrator_down",
-            "mux_sql_migrator_status",
-            "mux_sql_migrator_validate",
-            "mux_sql_migrator_dry_run",
-        ] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
-        for name in ["mux_sql_migrator_up_to", "mux_sql_migrator_down_to"] {
-            module.add_function(
-                name,
-                i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false),
-                None,
-            );
-        }
-        for name in ["mux_sql_pool_close", "mux_sql_pool_metrics"] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into()]);
-        }
-        for name in ["mux_sql_pool_execute", "mux_sql_pool_query"] {
-            add_i8_fn(module, i8_ptr, name, &[i8_ptr.into(), i8_ptr.into()]);
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_sql_migrator_up",
+                "mux_sql_migrator_down",
+                "mux_sql_migrator_status",
+                "mux_sql_migrator_validate",
+                "mux_sql_migrator_dry_run",
+            ],
+            &[i8_ptr.into()],
+        );
+        declare_functions(
+            module,
+            &["mux_sql_migrator_up_to", "mux_sql_migrator_down_to"],
+            i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false),
+        );
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &["mux_sql_pool_close", "mux_sql_pool_metrics"],
+            &[i8_ptr.into()],
+        );
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &["mux_sql_pool_execute", "mux_sql_pool_query"],
+            &[i8_ptr.into(), i8_ptr.into()],
+        );
         add_i8_fn(
             module,
             i8_ptr,
@@ -3472,47 +3556,41 @@ impl<'a> CodeGenerator<'a> {
             "mux_sql_pool_execute_many",
             &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
         );
-        for name in [
-            "mux_sql_pool_execute_params",
-            "mux_sql_pool_execute_named",
-            "mux_sql_pool_query_params",
-            "mux_sql_pool_query_named",
-        ] {
-            add_i8_fn(
-                module,
-                i8_ptr,
-                name,
-                &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
-            );
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_sql_pool_execute_params",
+                "mux_sql_pool_execute_named",
+                "mux_sql_pool_query_params",
+                "mux_sql_pool_query_named",
+            ],
+            &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
+        );
         module.add_function(
             "mux_sql_pool_query_with_timeout",
             i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into(), i64_type.into()], false),
             None,
         );
-        for name in [
-            "mux_sql_pool_query_params_with_timeout",
-            "mux_sql_pool_query_named_with_timeout",
-        ] {
-            add_i8_fn(
-                module,
-                i8_ptr,
-                name,
-                &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into(), i64_type.into()],
-            );
-        }
-        for name in [
-            "mux_sql_pool_query_with_cancellation",
-            "mux_sql_pool_query_params_with_cancellation",
-            "mux_sql_pool_query_named_with_cancellation",
-        ] {
-            add_i8_fn(
-                module,
-                i8_ptr,
-                name,
-                &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
-            );
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_sql_pool_query_params_with_timeout",
+                "mux_sql_pool_query_named_with_timeout",
+            ],
+            &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into(), i64_type.into()],
+        );
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_sql_pool_query_with_cancellation",
+                "mux_sql_pool_query_params_with_cancellation",
+                "mux_sql_pool_query_named_with_cancellation",
+            ],
+            &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
+        );
         module.add_function(
             "mux_sql_value_int",
             i8_ptr.fn_type(&[i64_type.into()], false),
@@ -3601,18 +3679,16 @@ impl<'a> CodeGenerator<'a> {
             ),
             None,
         );
-        for name in [
-            "mux_sql_connection_query_with_cancellation",
-            "mux_sql_connection_query_params_with_cancellation",
-            "mux_sql_connection_query_named_with_cancellation",
-        ] {
-            add_i8_fn(
-                module,
-                i8_ptr,
-                name,
-                &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
-            );
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_sql_connection_query_with_cancellation",
+                "mux_sql_connection_query_params_with_cancellation",
+                "mux_sql_connection_query_named_with_cancellation",
+            ],
+            &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
+        );
         i8ptr_i8ptr_fn!("mux_sql_connection_begin_transaction");
         i8ptr_i8ptr_fn!("mux_sql_transaction_begin_transaction");
         i8ptr_i8ptr_i8ptr_fn!("mux_sql_connection_prepare");
@@ -3650,55 +3726,47 @@ impl<'a> CodeGenerator<'a> {
             i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into(), i64_type.into()], false),
             None,
         );
-        for name in [
-            "mux_sql_transaction_query_params_with_timeout",
-            "mux_sql_transaction_query_named_with_timeout",
-        ] {
-            add_i8_fn(
-                module,
-                i8_ptr,
-                name,
-                &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into(), i64_type.into()],
-            );
-        }
-        for name in [
-            "mux_sql_transaction_query_with_cancellation",
-            "mux_sql_transaction_query_params_with_cancellation",
-            "mux_sql_transaction_query_named_with_cancellation",
-        ] {
-            add_i8_fn(
-                module,
-                i8_ptr,
-                name,
-                &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
-            );
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_sql_transaction_query_params_with_timeout",
+                "mux_sql_transaction_query_named_with_timeout",
+            ],
+            &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into(), i64_type.into()],
+        );
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_sql_transaction_query_with_cancellation",
+                "mux_sql_transaction_query_params_with_cancellation",
+                "mux_sql_transaction_query_named_with_cancellation",
+            ],
+            &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
+        );
         i8ptr_i8ptr_i8ptr_fn!("mux_sql_prepared_execute");
         i8ptr_i8ptr_i8ptr_fn!("mux_sql_prepared_execute_named");
         i8ptr_i8ptr_i8ptr_fn!("mux_sql_prepared_query");
         i8ptr_i8ptr_i8ptr_fn!("mux_sql_prepared_query_named");
-        for name in [
-            "mux_sql_prepared_query_with_timeout",
-            "mux_sql_prepared_query_named_with_timeout",
-        ] {
-            add_i8_fn(
-                module,
-                i8_ptr,
-                name,
-                &[i8_ptr.into(), i8_ptr.into(), i64_type.into()],
-            );
-        }
-        for name in [
-            "mux_sql_prepared_query_with_cancellation",
-            "mux_sql_prepared_query_named_with_cancellation",
-        ] {
-            add_i8_fn(
-                module,
-                i8_ptr,
-                name,
-                &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
-            );
-        }
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_sql_prepared_query_with_timeout",
+                "mux_sql_prepared_query_named_with_timeout",
+            ],
+            &[i8_ptr.into(), i8_ptr.into(), i64_type.into()],
+        );
+        declare_i8_functions(
+            module,
+            i8_ptr,
+            &[
+                "mux_sql_prepared_query_with_cancellation",
+                "mux_sql_prepared_query_named_with_cancellation",
+            ],
+            &[i8_ptr.into(), i8_ptr.into(), i8_ptr.into()],
+        );
         void_i8ptr_fn!("mux_sql_prepared_close");
         i8ptr_i8ptr_fn!("mux_sql_resultset_rows");
         i8ptr_i8ptr_fn!("mux_sql_resultset_close");
@@ -3996,9 +4064,9 @@ impl<'a> CodeGenerator<'a> {
             }
             Type::Primitive(PrimitiveType::Str) => {
                 // String needs special handling: get C string then wrap in Mux string
-                let get_string_func = self
-                    .runtime_function("mux_value_get_string")
-                    .ok_or(format!(
+                let get_string_func =
+                    self.runtime_function("mux_value_get_string")
+                        .ok_or(format!(
                     "Failed to extract string from {variant_name}: mux_value_get_string not found"
                 ))?;
                 let c_str = self
