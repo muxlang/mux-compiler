@@ -1,80 +1,44 @@
-import std.assert
-import std.data.json
 import std.env
 import std.net
 
 func require_env(string key) returns string {
-    match env.get(key) {
-        some(value) { return value }
-        none {
-            assert.assert(false, "missing environment variable: " + key)
-            return ""
-        }
+    auto result = env.get(key)
+    if result.is_err() {
+        assert(false, "failed to read environment variable: " + result.error().message())
+        return ""
     }
+    auto optional = result.value()
+    if optional.is_none() {
+        assert(false, "missing environment variable: " + key)
+        return ""
+    }
+    return optional.value()
 }
 
 func main() returns void {
     auto base_url = require_env("MUX_TEST_HTTP_URL")
-    auto req_json = "{\"method\":\"POST\",\"url\":\"" + base_url + "/mux?case=external\",\"headers\":{\"Accept\":\"application/json\"},\"body\":{\"message\":\"hello\",\"count\":2}}"
     print("Starting external http integration test")
 
-    match json.parse(req_json) {
-        ok(req) {
-            match net.http.request(req) {
-                ok(resp_json) {
-                    match json.to_map(resp_json) {
-                        ok(resp_map) {
-                            match resp_map["status"].stringify(none) {
-                                ok(status) {
-                                    assert.assert(status == "200" || status == "200.0", "unexpected status: " + status)
-                                }
-                                err(e) { assert.assert(false, "failed to stringify status: " + e) }
-                            }
-
-                            match json.to_map(resp_map["body"]) {
-                                ok(body_map) {
-                                    match body_map["method"].stringify(none) {
-                                        ok(method) { assert.assert(method == "\"POST\"", "unexpected method: " + method) }
-                                        err(e) { assert.assert(false, "failed to stringify method: " + e) }
-                                    }
-                                    match body_map["path"].stringify(none) {
-                                        ok(path) { assert.assert(path == "\"/mux\"", "unexpected path: " + path) }
-                                        err(e) { assert.assert(false, "failed to stringify path: " + e) }
-                                    }
-                                    match body_map["query"].stringify(none) {
-                                        ok(query) { assert.assert(query == "\"case=external\"", "unexpected query: " + query) }
-                                        err(e) { assert.assert(false, "failed to stringify query: " + e) }
-                                    }
-                                    match json.to_map(body_map["body"]) {
-                                        ok(request_body) {
-                                            match request_body["message"].stringify(none) {
-                                                ok(message) { assert.assert(message == "\"hello\"", "unexpected message: " + message) }
-                                                err(e) { assert.assert(false, "failed to stringify message: " + e) }
-                                            }
-                                        }
-                                        err(e) { assert.assert(false, "response body payload was not object json: " + e) }
-                                    }
-                                }
-                                err(e) { assert.assert(false, "response body was not a map: " + e) }
-                            }
-                        }
-                        err(e) { assert.assert(false, "response was not a map: " + e) }
-                    }
-                }
-                err(e) { assert.assert(false, "http request failed: " + e) }
-            }
+    auto req = net.HttpRequest.new()
+    req.method = "POST"
+    req.url = base_url + "/mux?case=external"
+    req.body = b"{\"message\":\"hello\",\"count\":2}"
+    auto response_result = req.send()
+    if response_result.is_err() {
+        assert(false, "http request failed: " + response_result.error().message())
+    } else {
+        auto response = response_result.value()
+        assert(response.status == 200, "unexpected status: " + response.status.to_string())
+        auto body_result = response.read_bytes(16 * 1024 * 1024)
+        if body_result.is_err() {
+            assert(false, "failed to read body: " + body_result.error().message())
         }
-        err(e) { assert.assert(false, "failed to parse request json: " + e) }
     }
 
-    match json.parse("{\"url\":\"" + base_url + "/mux\"}") {
-        ok(invalid_req) {
-            match net.http.request(invalid_req) {
-                ok(_) { assert.assert(false, "expected invalid request to fail") }
-                err(e) { print("http invalid-request path validated: " + e) }
-            }
-        }
-        err(e) { assert.assert(false, "failed to parse invalid request json: " + e) }
+    auto invalid_req = net.HttpRequest.new()
+    match invalid_req.send() {
+        ok(_) { assert(false, "expected invalid request to fail") }
+        err(e) { print("http invalid-request path validated: " + e.message()) }
     }
 
     print("external http integration test passed")

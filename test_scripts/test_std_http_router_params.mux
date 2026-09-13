@@ -1,0 +1,85 @@
+import std.net
+
+func main() returns void {
+    auto router = net.HttpRouter.new()
+    auto exact = router.route("GET", "/users/me", func(HttpRequest _request) returns result<HttpResponse, HttpError> {
+        auto response = net.HttpResponse.new()
+        response.body = b"exact"
+        return ok(response)
+    })
+    if exact.is_err() {
+        print("exact route registration failed")
+        return
+    }
+    auto parameter = router.route("GET", "/users/{id}", func(HttpRequest request) returns result<HttpResponse, HttpError> {
+        auto response = net.HttpResponse.new()
+        auto id_result = request.path_param("id")
+        if id_result.is_none() {
+            return err(HttpError.from_message("missing id"))
+        }
+        auto id = id_result.value()
+        print("id:" + id)
+        response.body = b"parameter"
+        return ok(response)
+    })
+    if parameter.is_err() {
+        print("parameter route registration failed")
+        return
+    }
+    auto catch_all = router.route("GET", "/files/{...path}", func(HttpRequest request) returns result<HttpResponse, HttpError> {
+        auto response = net.HttpResponse.new()
+        auto path_result = request.path_param("path")
+        if path_result.is_none() {
+            return err(HttpError.from_message("missing path"))
+        }
+        auto path = path_result.value()
+        print("path:" + path)
+        response.body = b"catch-all"
+        return ok(response)
+    })
+    if catch_all.is_err() {
+        print("catch-all route registration failed")
+        return
+    }
+
+    auto exact_request = net.HttpRequest.new()
+    exact_request.method = "GET"
+    exact_request.url = "/users/me?ignored=true"
+    auto exact_response = router.handle(exact_request)
+    if exact_response.is_err() {
+        print("exact route dispatch failed")
+        return
+    }
+    print(exact_response.value().body.to_string())
+
+    auto parameter_request = net.HttpRequest.new()
+    parameter_request.method = "GET"
+    parameter_request.url = "/users/a%2Fb"
+    auto parameter_response = router.handle(parameter_request)
+    if parameter_response.is_err() {
+        print("parameter route dispatch failed")
+        return
+    }
+    print(parameter_response.value().body.to_string())
+
+    auto catch_request = net.HttpRequest.new()
+    catch_request.method = "GET"
+    catch_request.url = "/files/one%2Ftwo/three"
+    auto catch_response = router.handle(catch_request)
+    if catch_response.is_err() {
+        print("catch-all route dispatch failed")
+        return
+    }
+    print(catch_response.value().body.to_string())
+
+    auto empty_request = net.HttpRequest.new()
+    empty_request.method = "GET"
+    empty_request.url = "/files"
+    auto empty_response = router.handle(empty_request)
+    if empty_response.is_err() {
+        print("empty catch-all dispatch failed")
+        return
+    }
+    print(empty_response.value().body.to_string())
+    return
+}

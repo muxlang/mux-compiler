@@ -29,6 +29,7 @@ pub enum TokenType {
     Func,
     Returns,
     Return,
+    Use,
     If,
     Else,
     For,
@@ -47,6 +48,7 @@ pub enum TokenType {
     None,
     Common,
     Where,
+    Test,
 
     // Delimiters
     OpenParen,    // (
@@ -92,6 +94,7 @@ pub enum TokenType {
     Bool(bool),
     Char(char),
     Str(String),
+    Bytes(Vec<u8>),
     Underscore,
 
     // Identifiers

@@ -1,0 +1,79 @@
+// Disjoint-set union with union by size and path compression. Values are
+// integer element IDs in the range [0, len()).
+class UnionFind {
+    list<int> parents
+    list<int> sizes
+
+    func len() returns int {
+        return self.parents.size()
+    }
+
+    func is_empty() returns bool {
+        return self.parents.is_empty()
+    }
+
+    func clear() returns void {
+        self.parents = []
+        self.sizes = []
+        return
+    }
+
+    func to_list() returns list<int> {
+        return self.parents
+    }
+
+    func contains(int value) returns bool {
+        return value >= 0 && value < self.parents.size()
+    }
+
+    func find(int value) returns int {
+        auto root = value
+        while self.parents[root] != root {
+            root = self.parents[root]
+        }
+
+        auto current = value
+        while self.parents[current] != current {
+            auto next = self.parents[current]
+            self.parents[current] = root
+            current = next
+        }
+        return root
+    }
+
+    func union(int left, int right) returns bool {
+        auto left_root = self.find(left)
+        auto right_root = self.find(right)
+        if left_root == right_root {
+            return false
+        }
+
+        if self.sizes[left_root] < self.sizes[right_root] {
+            self.parents[left_root] = right_root
+            self.sizes[right_root] = self.sizes[right_root] + self.sizes[left_root]
+        } else {
+            self.parents[right_root] = left_root
+            self.sizes[left_root] = self.sizes[left_root] + self.sizes[right_root]
+        }
+        return true
+    }
+
+    func connected(int left, int right) returns bool {
+        return self.find(left) == self.find(right)
+    }
+
+    func component_size(int value) returns int {
+        return self.sizes[self.find(value)]
+    }
+
+    common func with_size(int count) returns UnionFind {
+        auto out = UnionFind.new()
+        int i = 0
+        while i < count {
+            out.parents.push_back(i)
+            out.sizes.push_back(1)
+            i = i + 1
+        }
+        return out
+    }
+}

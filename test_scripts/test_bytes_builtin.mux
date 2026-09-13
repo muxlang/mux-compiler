@@ -1,0 +1,82 @@
+func cursor_test(bytes wire) returns result<int, BytesError> {
+    auto cursor = use wire.cursor()
+    auto value = use cursor.read_uint_le(2)
+    print("cursor:" + value.to_string())
+    auto position = use cursor.position()
+    print("position:" + position.to_string())
+    auto remaining = use cursor.remaining()
+    print("remaining:" + remaining.to_string())
+    auto cursor_bytes = use cursor.into_bytes()
+    print("cursor-bytes:" + cursor_bytes.to_string())
+    return ok(1)
+}
+
+bytes data
+auto literal = b"Mux\x00\xff"
+print(literal.to_string())
+print(literal[0].to_string())
+print(literal[1:3].to_string())
+print((b"a" < b"b").to_string())
+print((77 in b"Mux").to_string())
+byte exclamation = 33
+literal.insert(1, exclamation)
+print(literal.to_string())
+auto removed = literal.remove(-1)
+if removed.is_some() { print(removed.value().to_string()) } else { print("missing") }
+literal.copy_within(0, 1, 2)
+print(literal.to_string())
+match literal.to_hex() {
+    ok(value) { print(value.to_string()) }
+    err(error) { print(error.message()) }
+}
+auto wire = b"\x00\x00\x00\x00\x00\x00\x00\x00"
+match wire.write_uint_le(0, 258, 2) {
+    ok(_) { print("write-ok") }
+    err(error) { print(error.message()) }
+}
+match wire.read_uint_le(0, 2) {
+    ok(value) { print(value.to_string()) }
+    err(error) { print(error.message()) }
+}
+match wire.write_float_be(0, 1.5) {
+    ok(_) { print("float-write-ok") }
+    err(error) { print(error.message()) }
+}
+match wire.read_float_be(0) {
+    ok(value) { print(value.to_string()) }
+    err(error) { print(error.message()) }
+}
+auto octets = literal.to_list()
+print(octets[0].to_string())
+match octets.to_bytes() {
+    ok(value) { print(value.to_string()) }
+    err(error) { print(error.message()) }
+}
+match b"\x00".read_uint_le(0, 2) {
+    ok(_) { print("short read accepted") }
+    err(error) { print("short read: " + error.message()) }
+}
+byte first = 0
+byte last = 255
+data.push_back(first)
+data.push_back(last)
+print(data.to_string())
+print(data.size().to_string())
+print(data.contains(last).to_string())
+auto last_value = data.get(-1)
+if last_value.is_some() {
+    print(last_value.value().to_string())
+} else {
+    print("missing")
+}
+
+print(data.to_utf8_lossy())
+match b"\xff".to_utf8() {
+    ok(_) { print("invalid UTF-8 accepted") }
+    err(error) { print("utf8: " + error.message()) }
+}
+
+auto cursor_result = cursor_test(wire)
+if cursor_result.is_err() {
+    print(cursor_result.error().message())
+}

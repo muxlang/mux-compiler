@@ -26,14 +26,12 @@ func parse(string input) returns result<int, ParseError> {
 
 func main() returns void {
     auto good = parse("7")
-    print(good.is_ok().to_string())
     match good {
         ok(v) { print("parsed " + v.to_string()) }
         err(e) { print("unexpected: " + e.message()) }
     }
 
     auto bad = parse("nope")
-    print(bad.is_err().to_string())
     match bad {
         ok(v) { print("unexpected " + v.to_string()) }
         // The error is the class, so its own method answers.

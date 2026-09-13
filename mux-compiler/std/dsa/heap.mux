@@ -58,16 +58,14 @@ class Heap<T is Comparable> is Collection<T> {
             return some(root)
         }
 
-        match self.items.pop_back() {
-            some(last) {
-                self.items[0] = last
-                self.sift_down(0)
-                return some(root)
-            }
-            none {
-                return none
-            }
+        auto last_result = self.items.pop_back()
+        if last_result.is_none() {
+            return none
         }
+        auto last = last_result.value()
+        self.items[0] = last
+        self.sift_down(0)
+        return some(root)
     }
 
     func merge(Heap<T> other) returns void {

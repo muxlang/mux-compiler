@@ -100,6 +100,21 @@ class GeneratorTests(unittest.TestCase):
 
 
 class RunnerOracleTests(unittest.TestCase):
+    def test_windows_binary_resolution_adds_native_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            windows_binary = root / "mux.exe"
+            windows_binary.write_text("stub", encoding="utf-8")
+            candidates = runner.executable_candidates(root / "mux", windows=True)
+            self.assertEqual(candidates[0], windows_binary)
+            self.assertEqual(candidates[1], root / "mux")
+
+    def test_explicit_exe_path_is_not_changed(self):
+        candidate = Path("target") / "debug" / "mux.exe"
+        self.assertEqual(
+            runner.executable_candidates(candidate, windows=True), [candidate]
+        )
+
     def test_accepts_repeated_oracle_from_a_loop(self):
         output = """@@oracle:oracle1:p1: 4
 @@oracle:oracle1:p2: 4

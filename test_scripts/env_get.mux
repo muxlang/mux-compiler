@@ -1,18 +1,33 @@
 import std.env
-import std.assert
+
+auto synthetic_error = env.EnvError.from_message("synthetic environment failure")
+assert(synthetic_error.kind == env.EnvErrorKind.Os, "environment error kind")
+
+match env.set("MUX_TEST_ENV_FROM_MUX", "ready") {
+    ok(_) { print("env set: ok") }
+    err(e) { print("env set error: " + e.message()) }
+}
+match env.contains("MUX_TEST_ENV_FROM_MUX") {
+    ok(value) { print("env contains: " + value.to_string()) }
+    err(e) { print("env contains error: " + e.message()) }
+}
+match env.entries() {
+    ok(_) { print("env entries: ok") }
+    err(e) { print("env entries error: " + e.message()) }
+}
 
 // Use PATH as the canonical env var across dev and CI. Do not print its value.
 match env.get("PATH") {
-    some(_) {
+    ok(some(_)) {
         print("Got PATH env var")
     }
-    none {
-        assert.assert(false, "PATH environment variable not found; CI must provide PATH")
+    ok(none) {
+        assert(false, "PATH environment variable not found; CI must provide PATH")
     }
+    err(e) { assert(false, "PATH env read failed: " + e.message()) }
 }
 
-// Also test a variable that should not exist to exercise the `none` branch
-match env.get("MUX_TEST_NON_EXISTENT_ENV_VAR_12345") {
-    some(v) { print("UNEXPECTED: " + v) }
-    none { print("MISSING_ENV_VAR (expected)") }
+match env.remove("MUX_TEST_ENV_FROM_MUX") {
+    ok(_) { print("env remove: ok") }
+    err(e) { print("env remove error: " + e.message()) }
 }

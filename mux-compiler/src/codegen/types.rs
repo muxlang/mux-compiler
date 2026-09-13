@@ -44,12 +44,12 @@ impl<'a> CodeGenerator<'a> {
         resolved_type: &Type,
     ) -> Result<BasicTypeEnum<'a>, String> {
         match resolved_type {
-            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char | PrimitiveType::Byte) => {
                 Ok(self.context.i64_type().into())
             }
             Type::Primitive(PrimitiveType::Float) => Ok(self.context.f64_type().into()),
             Type::Primitive(PrimitiveType::Bool) => Ok(self.context.bool_type().into()),
-            Type::Primitive(PrimitiveType::Str)
+            Type::Primitive(PrimitiveType::Str | PrimitiveType::Bytes)
             | Type::Function { .. }
             | Type::List(_)
             | Type::Map(_, _)
@@ -58,6 +58,7 @@ impl<'a> CodeGenerator<'a> {
             | Type::Optional(_)
             | Type::Result(_, _)
             | Type::Reference(_)
+            | Type::TraitObject(_)
             | Type::EmptyList
             | Type::EmptyMap
             | Type::EmptySet => Ok(self.ptr_type()),
@@ -108,7 +109,7 @@ impl<'a> CodeGenerator<'a> {
     /// absent on purpose: it is a primitive to the language but a
     /// reference-counted heap value at runtime, so its slot holds a pointer.
     /// This is the same rule `scalar_field_type` applies to a class field.
-    /// `scalar_slot_type` for a named binding, which additionally stays boxed
+    /// `scalar_slot_type` for a named binding, which also stays boxed
     /// when its address is taken anywhere in the program.
     ///
     /// A reference has to mean one thing, and a reference to a list element is
@@ -146,10 +147,13 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<BasicTypeEnum<'a>, String> {
         match sem_type {
             Type::Primitive(prim) => match prim {
-                PrimitiveType::Int | PrimitiveType::Char => Ok(self.context.i64_type().into()),
+                PrimitiveType::Int | PrimitiveType::Char | PrimitiveType::Byte => {
+                    Ok(self.context.i64_type().into())
+                }
                 PrimitiveType::Float => Ok(self.context.f64_type().into()),
                 PrimitiveType::Bool => Ok(self.context.bool_type().into()),
                 PrimitiveType::Str => Ok(self.ptr_type()),
+                PrimitiveType::Bytes => Ok(self.ptr_type()),
                 PrimitiveType::Void => Err("Void type not allowed in fields".to_string()),
                 PrimitiveType::Auto => Err("Auto type should be resolved".to_string()),
             },
@@ -159,6 +163,7 @@ impl<'a> CodeGenerator<'a> {
             | Type::Set(_)
             | Type::Optional(_)
             | Type::Reference(_)
+            | Type::TraitObject(_)
             | Type::Function { .. } => Ok(self.ptr_type()),
             _ => Err(format!(
                 "Unsupported type in interface fields: {sem_type:?}"
@@ -171,12 +176,12 @@ impl<'a> CodeGenerator<'a> {
         type_kind: &TypeKind,
     ) -> Result<BasicTypeEnum<'a>, String> {
         match type_kind {
-            TypeKind::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
+            TypeKind::Primitive(PrimitiveType::Int | PrimitiveType::Char | PrimitiveType::Byte) => {
                 Ok(self.context.i64_type().into())
             }
             TypeKind::Primitive(PrimitiveType::Float) => Ok(self.context.f64_type().into()),
             TypeKind::Primitive(PrimitiveType::Bool) => Ok(self.context.bool_type().into()),
-            TypeKind::Primitive(PrimitiveType::Str)
+            TypeKind::Primitive(PrimitiveType::Str | PrimitiveType::Bytes)
             | TypeKind::List(_)
             | TypeKind::Map(_, _)
             | TypeKind::Set(_)
@@ -240,6 +245,9 @@ impl<'a> CodeGenerator<'a> {
                 vec![self.type_to_type_node(ok), self.type_to_type_node(err)],
             ),
             Type::Reference(inner) => TypeKind::Reference(Box::new(self.type_to_type_node(inner))),
+            Type::TraitObject(inner) => {
+                TypeKind::TraitObject(Box::new(self.type_to_type_node(inner)))
+            }
             Type::Void => TypeKind::Primitive(PrimitiveType::Void),
             Type::EmptyList => TypeKind::List(Box::new(auto_node())),
             Type::EmptyMap => TypeKind::Map(Box::new(auto_node()), Box::new(auto_node())),
@@ -277,7 +285,9 @@ impl<'a> CodeGenerator<'a> {
                 Box::new(self.type_node_to_type(r)),
             ),
 
-            TypeKind::TraitObject(_) => Type::Variable("trait_object".to_string()),
+            TypeKind::TraitObject(inner) => {
+                Type::TraitObject(Box::new(self.type_node_to_type(inner)))
+            }
 
             TypeKind::Reference(inner) => Type::Reference(Box::new(self.type_node_to_type(inner))),
             TypeKind::Named(name, generics) => {
@@ -390,6 +400,9 @@ impl<'a> CodeGenerator<'a> {
             Type::Reference(inner) => Ok(Type::Reference(Box::new(
                 self.resolve_type_with_seen(inner, seen_generic_params)?,
             ))),
+            Type::TraitObject(inner) => Ok(Type::TraitObject(Box::new(
+                self.resolve_type_with_seen(inner, seen_generic_params)?,
+            ))),
             Type::Function {
                 params,
                 returns,
@@ -468,6 +481,9 @@ impl<'a> CodeGenerator<'a> {
                 Box::new(self.traverse_type_recursive(err, handle_var_fn)?),
             )),
             Type::Reference(inner) => Ok(Type::Reference(Box::new(
+                self.traverse_type_recursive(inner, handle_var_fn)?,
+            ))),
+            Type::TraitObject(inner) => Ok(Type::TraitObject(Box::new(
                 self.traverse_type_recursive(inner, handle_var_fn)?,
             ))),
             Type::Function {

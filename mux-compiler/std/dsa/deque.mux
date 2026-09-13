@@ -1,0 +1,88 @@
+import std.dsa.collection.Collection
+
+class Deque<T is Equatable> is Collection<T> {
+    list<T> items
+
+    func len() returns int {
+        return self.items.size()
+    }
+
+    func is_empty() returns bool {
+        return self.items.is_empty()
+    }
+
+    func clear() returns void {
+        while !self.items.is_empty() {
+            self.items.pop_back()
+        }
+        return
+    }
+
+    func to_list() returns list<T> {
+        return self.items
+    }
+
+    func contains(T value) returns bool {
+        int i = 0
+        while i < self.items.size() {
+            if self.items[i] == value {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    func push_front(T value) returns void {
+        list<T> next = []
+        next.push_back(value)
+        int i = 0
+        while i < self.items.size() {
+            next.push_back(self.items[i])
+            i = i + 1
+        }
+        self.items = next
+        return
+    }
+
+    func push_back(T value) returns void {
+        self.items.push_back(value)
+        return
+    }
+
+    func pop_front() returns optional<T> {
+        if self.items.is_empty() {
+            return none
+        }
+        auto value = self.items[0]
+        list<T> next = []
+        int i = 1
+        while i < self.items.size() {
+            next.push_back(self.items[i])
+            i = i + 1
+        }
+        self.items = next
+        return some(value)
+    }
+
+    func pop_back() returns optional<T> {
+        return self.items.pop_back()
+    }
+
+    func front() returns optional<T> {
+        return self.items.get(0)
+    }
+
+    func back() returns optional<T> {
+        if self.items.is_empty() {
+            return none
+        }
+        return self.items.get(self.items.size() - 1)
+    }
+
+    common func from_list(list<T> values) returns Deque<T> {
+        auto out = Deque<T>.new()
+        out.items = values
+        return out
+    }
+}

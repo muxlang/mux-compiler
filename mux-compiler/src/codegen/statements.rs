@@ -859,6 +859,20 @@ impl<'a> CodeGenerator<'a> {
             .resolve_type(type_node)
             .map_err(|e| e.to_string())?;
 
+        if matches!(resolved_type, ResolvedType::Primitive(PrimitiveType::Bytes)) {
+            let value = self
+                .generate_runtime_call("mux_bytes_new", &[])
+                .ok_or("mux_bytes_new should always return a value")?;
+            // `generate_runtime_call` is a low-level helper and does not
+            // register owned results as statement temporaries.  Register this
+            // freshly-created bytes value before binding it so
+            // `box_value_owned_for_slot` can transfer the existing reference
+            // into the variable slot instead of deep-cloning it and leaking
+            // the original allocation (notably for top-level `bytes data`).
+            self.register_temp(value);
+            return self.declare_variable(name, var_type, value, &resolved_type, function, true);
+        }
+
         let zero = match var_type {
             BasicTypeEnum::IntType(t) => t.const_zero().into(),
             BasicTypeEnum::FloatType(t) => t.const_zero().into(),
@@ -891,6 +905,10 @@ impl<'a> CodeGenerator<'a> {
             .analyzer
             .resolve_type(type_node)
             .map_err(|e| format!("Failed to resolve type for {}: {}", name, e.message))?;
+        let actual_type = self
+            .resolve_expression_type_with_fallback(expr)
+            .map_err(|e| format!("Failed to get initializer type for {name}: {e}"))?;
+        let value = self.coerce_to_trait_object_value(value, &actual_type, &resolved_type)?;
         let rhs_owned = Self::rhs_produces_owned_enum(&expr.kind);
         self.declare_variable(name, var_type, value, &resolved_type, function, rhs_owned)
     }
@@ -1085,7 +1103,7 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
-    fn generate_typed_return(
+    pub(super) fn generate_typed_return(
         &mut self,
         return_type: ResolvedType,
         value: BasicValueEnum<'a>,
@@ -1135,6 +1153,10 @@ impl<'a> CodeGenerator<'a> {
 
         let value = self.generate_expression(expr)?;
         if let Some(return_type) = self.current_function_return_type.clone() {
+            let actual_type = self
+                .resolve_expression_type_with_fallback(expr)
+                .map_err(|e| format!("Failed to get return expression type: {e}"))?;
+            let value = self.coerce_to_trait_object_value(value, &actual_type, &return_type)?;
             // Returning an enum read out of a collection hands back the boxed
             // pointer where the signature says inline struct (issue #363).
             let value = self.coerce_boxed_enum_to_inline(value, &return_type)?;
@@ -1162,6 +1184,7 @@ impl<'a> CodeGenerator<'a> {
         let cond_int = cond_val.into_int_value();
         let if_id = self.label_counter;
         self.label_counter += 1;
+        self.emit_coverage_record(&cond.span, 1, if_id as i64, Some(cond_int))?;
         let then_bb = self
             .context
             .append_basic_block(function, &format!("if_then_{if_id}"));
@@ -1230,18 +1253,40 @@ impl<'a> CodeGenerator<'a> {
         cond: &ExpressionNode,
         body: &[StatementNode],
     ) -> Result<(), String> {
-        let header_bb = self.context.append_basic_block(function, "while_header");
-        let body_bb = self.context.append_basic_block(function, "while_body");
-        let exit_bb = self.context.append_basic_block(function, "while_exit");
-        let continue_bb = self.context.append_basic_block(function, "while_continue");
-        let break_cleanup_bb = self.context.append_basic_block(function, "while_break");
+        // Coverage branch IDs must distinguish conditions on the same source
+        // line. A fixed ID of zero merged two while loops into one LCOV site.
+        let while_id = self.label_counter;
+        self.label_counter += 1;
+        let header_bb = self
+            .context
+            .append_basic_block(function, &format!("while_header_{while_id}"));
+        let body_bb = self
+            .context
+            .append_basic_block(function, &format!("while_body_{while_id}"));
+        let exit_bb = self
+            .context
+            .append_basic_block(function, &format!("while_exit_{while_id}"));
+        let continue_bb = self
+            .context
+            .append_basic_block(function, &format!("while_continue_{while_id}"));
+        let break_cleanup_bb = self
+            .context
+            .append_basic_block(function, &format!("while_break_{while_id}"));
         self.builder
             .build_unconditional_branch(header_bb)
             .map_err(|e| e.to_string())?;
 
         self.builder.position_at_end(header_bb);
+        // The condition is generated once in this block but executes on every
+        // pass through the header.  A condition may contain an owned value
+        // (for example, a string list element used by a comparison), so clean
+        // those temporaries before either branch.  Leaving the slot live here
+        // overwrote its previous pointer on the next pass and leaked it.
+        let condition_temp_mark = self.temp_mark();
         let cond_val = self.generate_expression(cond)?;
         let cond_int = cond_val.into_int_value();
+        self.emit_coverage_record(&cond.span, 1, while_id as i64, Some(cond_int))?;
+        self.cleanup_temps_to(condition_temp_mark)?;
         self.builder
             .build_conditional_branch(cond_int, body_bb, exit_bb)
             .map_err(|e| e.to_string())?;
@@ -1400,6 +1445,7 @@ impl<'a> CodeGenerator<'a> {
         {
             return Ok(());
         }
+        self.emit_coverage_record(&stmt.span, 0, 0, None)?;
         // Statement boundary: any owned RC temporaries produced while evaluating
         // this statement's expressions and not transferred to a binding are
         // decremented here. `Return` manages its own temporaries (it must retain
@@ -1803,6 +1849,229 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    /// Generate a match whose arms produce a value.  The arm syntax is the
+    /// same as statement matches; an expression arm stores its value in a
+    /// shared slot, while `return value` leaves the function directly.  This
+    /// keeps propagation explicit without forcing callers into nested matches.
+    fn generate_match_value_arms<Condition, Binding>(
+        &mut self,
+        function: FunctionValue<'a>,
+        result_slot: PointerValue<'a>,
+        result_type: &Type,
+        arms: &[MatchArm],
+        mut condition: Condition,
+        mut binding: Binding,
+    ) -> Result<(), String>
+    where
+        Condition: FnMut(&mut Self, &MatchArm) -> Result<IntValue<'a>, String>,
+        Binding: FnMut(&mut Self, &MatchArm) -> Result<(), String>,
+    {
+        let mut current_bb = self
+            .builder
+            .get_insert_block()
+            .expect("Builder should have an insertion block");
+        let match_id = self.label_counter;
+        self.label_counter += 1;
+        let match_blocks = self.create_match_blocks(function, arms.len(), match_id);
+
+        for (i, arm) in arms.iter().enumerate() {
+            let (arm_bb, next_bb) = match_blocks.arms[i];
+            self.builder.position_at_end(current_bb);
+            if current_bb.get_terminator().is_some() {
+                current_bb = next_bb;
+                continue;
+            }
+
+            let cond = condition(self, arm)?;
+            self.builder
+                .build_conditional_branch(cond, arm_bb, next_bb)
+                .map_err(|e| e.to_string())?;
+            self.builder.position_at_end(arm_bb);
+            self.in_block_scope(|me| {
+                binding(me, arm)?;
+                if let Some(guard) = &arm.guard {
+                    let guard_val = me.generate_expression(guard)?;
+                    let pass_bb = me.context.append_basic_block(
+                        function,
+                        &format!("match_value_guard_pass_{match_id}_{i}"),
+                    );
+                    me.builder
+                        .build_conditional_branch(guard_val.into_int_value(), pass_bb, next_bb)
+                        .map_err(|e| e.to_string())?;
+                    me.builder.position_at_end(pass_bb);
+                }
+
+                let stmt = arm
+                    .body
+                    .first()
+                    .ok_or_else(|| "Match value arm cannot be empty".to_string())?;
+                match &stmt.kind {
+                    StatementKind::Expression(value) => {
+                        let generated = me.generate_expression(value)?;
+                        me.store_match_value(
+                            result_slot,
+                            generated,
+                            result_type,
+                            Self::rhs_produces_owned_enum(&value.kind),
+                        )?;
+                        if me
+                            .builder
+                            .get_insert_block()
+                            .and_then(|b| b.get_terminator())
+                            .is_none()
+                        {
+                            me.builder
+                                .build_unconditional_branch(match_blocks.end)
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
+                    StatementKind::Return(Some(value)) => {
+                        me.generate_return_with_value(value)?;
+                    }
+                    StatementKind::Return(None) => {
+                        me.generate_all_scopes_cleanup()?;
+                        me.builder.build_return(None).map_err(|e| e.to_string())?;
+                    }
+                    _ => {
+                        return Err(
+                            "Match value arms must contain one expression or return value"
+                                .to_string(),
+                        );
+                    }
+                }
+                Ok(())
+            })?;
+            current_bb = next_bb;
+        }
+
+        self.builder.position_at_end(match_blocks.end);
+        Ok(())
+    }
+
+    fn store_match_value(
+        &mut self,
+        slot: PointerValue<'a>,
+        value: BasicValueEnum<'a>,
+        result_type: &Type,
+        rhs_owned: bool,
+    ) -> Result<(), String> {
+        if let Some(scalar) = self.scalar_slot_type(result_type) {
+            let narrowed = self.coerce_to_scalar(value, scalar)?;
+            if value.is_pointer_value() && self.untrack_temp(value) {
+                self.emit_value_decref(value.into_pointer_value())?;
+            }
+            self.builder
+                .build_store(slot, narrowed)
+                .map_err(|e| e.to_string())?;
+        } else if value.is_struct_value() {
+            self.store_struct_value(slot, value, result_type, rhs_owned, false)?;
+        } else {
+            let owned = self.box_value_owned_for_slot(value, result_type)?;
+            self.builder
+                .build_store(slot, owned)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn generate_match_expression(
+        &mut self,
+        expr: &ExpressionNode,
+        arms: &[MatchArm],
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or("Match expression not in function")?;
+        let (expr_val, match_expr) = self.prepare_match_expression(expr)?;
+        let match_expr_type = self.resolve_match_expression_type(&match_expr)?;
+        let result_type = self
+            .resolve_expression_type_with_fallback(&ExpressionNode {
+                kind: ExpressionKind::Match {
+                    expr: Box::new(expr.clone()),
+                    arms: arms.to_vec(),
+                },
+                span: expr.span,
+            })
+            .map_err(|e| format!("Type inference failed: {e}"))?;
+        // Some stdlib handle classes (for example SQL's ResultSet) are
+        // declared to the semantic analyzer but are intentionally opaque to
+        // codegen. They are still pointer-backed values, just like user
+        // classes; keep match expressions usable for those handles.
+        let result_llvm = match &result_type {
+            Type::Named(name, _)
+                if !self.classes.contains_key(name) && !self.enum_variants.contains_key(name) =>
+            {
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
+            _ => self.semantic_type_to_llvm(&result_type)?,
+        };
+        let result_slot = self.create_entry_block_alloca(function, result_llvm, "match_result")?;
+
+        if self.is_enum_match_type(&match_expr_type) {
+            let enum_name = self.resolve_enum_match_name(&match_expr).or_else(|_| {
+                self.enum_name_from_type(&match_expr_type, "Match expression must be an enum type")
+            })?;
+            if let Type::Named(base, args) = &match_expr_type
+                && !args.is_empty()
+            {
+                self.ensure_enum_instantiated(base, args)?;
+            }
+            let subject = if !matches!(enum_name.as_str(), "optional" | "result")
+                && expr_val.is_pointer_value()
+            {
+                self.unbox_enum_subject_value(&enum_name, expr_val.into_pointer_value())?
+            } else {
+                expr_val
+            };
+            let expr_ptr = self.enum_expr_ptr_for_payload_access(&enum_name, subject)?;
+            let discriminant = self.load_enum_discriminant(&enum_name, subject)?;
+            let temp_ptr = self.enum_temp_struct_ptr(&enum_name, subject)?;
+            self.generate_match_value_arms(
+                function,
+                result_slot,
+                &result_type,
+                arms,
+                |me, arm| me.enum_pattern_matches(&enum_name, discriminant, &arm.pattern),
+                |me, arm| {
+                    me.bind_enum_arm_variables(
+                        arm,
+                        &enum_name,
+                        &match_expr_type,
+                        expr_ptr,
+                        temp_ptr,
+                    )
+                },
+            )?;
+        } else {
+            self.generate_match_value_arms(
+                function,
+                result_slot,
+                &result_type,
+                arms,
+                |me, arm| {
+                    me.evaluate_switch_pattern_condition(expr_val, &match_expr_type, &arm.pattern)
+                },
+                |me, arm| {
+                    if let PatternNode::List { elements, rest } = &arm.pattern {
+                        me.bind_list_pattern_variables(
+                            expr_val,
+                            &match_expr_type,
+                            elements,
+                            rest.as_deref(),
+                        )?;
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+
+        self.builder
+            .build_load(result_llvm, result_slot, "match_result_value")
+            .map_err(|e| e.to_string())
     }
 
     fn evaluate_switch_pattern_condition(

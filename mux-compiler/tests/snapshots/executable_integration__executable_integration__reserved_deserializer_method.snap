@@ -4,8 +4,10 @@ expression: normalized
 ---
 error: 1 error found
 
-error[E0200]: 'from_json' is reserved for building an instance from a JSON object and cannot be defined as a class method
---> test_scripts/error_cases/reserved_deserializer_method.mux:11:10
+error[E0307]: Field 'from_json' not found on type 'Config'
+--> test_scripts/error_cases/reserved_deserializer_method.mux:10:19
    |
-11 |     func from_json(string text) returns int {
-   |          ^^^^^^^^^
+10 |     auto parsed = Config.from_json("{}")
+   |                   ^^^^^^
+   |
+= help: Available fields: port

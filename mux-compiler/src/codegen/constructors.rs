@@ -366,6 +366,118 @@ impl<'a> CodeGenerator<'a> {
             .map(|value| value.into_int_value())
     }
 
+    pub(super) fn register_trait_object_type(
+        &mut self,
+        interface_name: &str,
+    ) -> Result<IntValue<'a>, String> {
+        let layout = *self
+            .trait_object_layouts
+            .get(interface_name)
+            .ok_or_else(|| format!("dynamic interface {interface_name} has no layout"))?;
+        let type_name = format!("dyn<{interface_name}>");
+        let name_global = self
+            .builder
+            .build_global_string_ptr(&type_name, &format!("dyn_type_name_{interface_name}"))
+            .map_err(|e| e.to_string())?
+            .as_pointer_value();
+        let slot_name = format!("dyn${interface_name}.type_id");
+        let i32_type = self.context.i32_type();
+        let slot = match self.module.get_global(&slot_name) {
+            Some(existing) => existing,
+            None => {
+                let global = self.module.add_global(i32_type, None, &slot_name);
+                global.set_initializer(&i32_type.const_zero());
+                global
+            }
+        };
+        let slot = slot.as_pointer_value();
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(inkwell::basic_block::BasicBlock::get_parent)
+            .ok_or("register_trait_object_type needs an enclosing function")?;
+        let register_block = self
+            .context
+            .append_basic_block(function, "register_dyn_type");
+        let registered_block = self
+            .context
+            .append_basic_block(function, "dyn_type_registered");
+        let existing = self
+            .builder
+            .build_load(i32_type, slot, "existing_dyn_type_id")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let unregistered = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                existing,
+                i32_type.const_zero(),
+                "dyn_unregistered",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(unregistered, register_block, registered_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(register_block);
+        let register = self
+            .runtime_function("mux_register_object_type")
+            .ok_or("mux_register_object_type not found")?;
+        let size = layout
+            .size_of()
+            .ok_or("dynamic interface layout has no size")?;
+        let type_id = self
+            .builder
+            .build_call(register, &[name_global.into(), size.into()], "dyn_type_id")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("dynamic interface type registration returned no id")?
+            .into_int_value();
+        let register_destructor = self
+            .runtime_function("mux_register_object_destructor")
+            .ok_or("mux_register_object_destructor not found")?;
+        let register_copy = self
+            .runtime_function("mux_register_object_copy")
+            .ok_or("mux_register_object_copy not found")?;
+        let copy = self
+            .trait_object_copies
+            .get(interface_name)
+            .copied()
+            .ok_or_else(|| format!("dynamic interface {interface_name} has no copy function"))?;
+        self.builder
+            .build_call(
+                register_copy,
+                &[type_id.into(), copy.into()],
+                "register_dyn_copy",
+            )
+            .map_err(|e| e.to_string())?;
+        let destructor = self
+            .trait_object_destructors
+            .get(interface_name)
+            .copied()
+            .ok_or_else(|| format!("dynamic interface {interface_name} has no destructor"))?;
+        self.builder
+            .build_call(
+                register_destructor,
+                &[type_id.into(), destructor.into()],
+                "register_dyn_destructor",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(slot, type_id)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_unconditional_branch(registered_block)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(registered_block);
+        self.builder
+            .build_load(i32_type, slot, "dyn_type_id_loaded")
+            .map_err(|e| e.to_string())
+            .map(|value| value.into_int_value())
+    }
+
     /// Hand the runtime the class's own equality, ordering and hash, so a map,
     /// a set or `contains` matches instances the way the operators do instead
     /// of comparing addresses. A capability the class did not declare is left
@@ -607,6 +719,14 @@ impl<'a> CodeGenerator<'a> {
                     .build_store(field_ptr, val)
                     .map_err(|e| e.to_string())?;
             }
+            Type::Primitive(PrimitiveType::Bytes) => {
+                let value = self
+                    .generate_runtime_call("mux_bytes_new", &[])
+                    .ok_or("mux_bytes_new should always return a value")?;
+                self.builder
+                    .build_store(field_ptr, value)
+                    .map_err(|e| e.to_string())?;
+            }
             Type::List(_) => {
                 let val = self.create_empty_collection_value("mux_new_list", "mux_list_value");
                 self.builder
@@ -758,6 +878,12 @@ impl<'a> CodeGenerator<'a> {
                     )
                     .expect("mux_new_string_from_cstr should always return a value");
                 Ok(value_ptr.into_pointer_value())
+            }
+            Type::Primitive(PrimitiveType::Bytes) => {
+                let value = self
+                    .generate_runtime_call("mux_bytes_new", &[])
+                    .ok_or("mux_bytes_new should always return a value")?;
+                Ok(value.into_pointer_value())
             }
             Type::List(_) => {
                 let val = self.create_empty_collection_value("mux_new_list", "mux_list_value");

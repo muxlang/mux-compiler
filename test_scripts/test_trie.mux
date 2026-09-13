@@ -1,0 +1,18 @@
+import std.dsa.trie
+
+func main() returns void {
+    auto trie = Trie.new()
+    trie.insert("car")
+    trie.insert("card")
+    trie.insert("cat")
+    trie.insert("car")
+    print(trie.len().to_string())
+    print(trie.contains("car").to_string())
+    print(trie.contains("ca").to_string())
+    print(trie.starts_with("ca").to_string())
+    print(trie.words_with_prefix("car").to_string())
+    print(trie.remove("car").to_string())
+    print(trie.contains("car").to_string())
+    print(trie.to_list().to_string())
+    return
+}

@@ -11,7 +11,7 @@ use super::const_fold::{self, ConstValue};
 use super::{SemanticAnalyzer, SemanticError, SymbolKind, Type, format_type};
 use crate::ast::{
     AstNode, EnumVariant, ExpressionKind, ExpressionNode, Field, FunctionNode, PrimitiveType,
-    TraitBound, TraitRef, WhereClause,
+    StatementKind, TraitBound, TraitRef, WhereClause,
 };
 use crate::diagnostic::DiagnosticCode;
 use std::collections::{HashMap, HashSet};
@@ -362,6 +362,19 @@ fn collect_identifiers(
             collect_identifiers(cond, fields, found, contains_lambda);
             collect_identifiers(then_expr, fields, found, contains_lambda);
             collect_identifiers(else_expr, fields, found, contains_lambda);
+        }
+        ExpressionKind::Match { expr, arms } => {
+            collect_identifiers(expr, fields, found, contains_lambda);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_identifiers(guard, fields, found, contains_lambda);
+                }
+                for statement in &arm.body {
+                    if let StatementKind::Expression(value) = &statement.kind {
+                        collect_identifiers(value, fields, found, contains_lambda);
+                    }
+                }
+            }
         }
         ExpressionKind::Lambda { .. } => {
             *contains_lambda = true;

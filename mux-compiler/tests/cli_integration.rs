@@ -7,7 +7,7 @@
 //! non-zero. The spawned binary is the llvm-cov-instrumented one, so these runs
 //! count toward coverage.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn mux() -> Command {
@@ -29,6 +29,132 @@ fn write_file(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
     path
+}
+
+fn runtime_library_for_child_process() -> PathBuf {
+    if let Ok(path) = std::env::var("MUX_RUNTIME_LIB") {
+        return PathBuf::from(path);
+    }
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("compiler repository root");
+    [
+        repo_root.join("mux-runtime/target/debug/libmux_runtime.a"),
+        repo_root.join("mux-runtime/target/release/libmux_runtime.a"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+    .expect("build mux-runtime or set MUX_RUNTIME_LIB before running CLI tests")
+}
+
+#[test]
+fn coverage_runner_maps_generated_test_lines_and_branches_to_source() {
+    let dir = unique_tmp_dir("coverage");
+    let file = write_file(
+        &dir,
+        "coverage.mux",
+        r#"test "source mapping" {
+    auto value = 1
+    helper()
+    if value == 1 {
+        print("taken")
+    } else {
+        print("uncovered")
+    }
+}
+
+func helper() returns void {
+    print("helper")
+    return
+}
+"#,
+    );
+    let output = mux()
+        .args(["test", file.to_str().unwrap(), "--coverage", "--jobs", "1"])
+        .current_dir(&dir)
+        .env("MUX_RUNTIME_LIB", runtime_library_for_child_process())
+        .output()
+        .expect("spawn mux test --coverage");
+    assert!(
+        output.status.success(),
+        "coverage runner failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report = std::fs::read_to_string(dir.join("lcov.info")).unwrap();
+    let source_path = file.to_string_lossy();
+    assert!(
+        report.contains(&format!("SF:{source_path}\n")),
+        "report: {report}"
+    );
+    assert!(report.contains("LF:7\nLH:6\n"), "report: {report}");
+    assert!(report.contains("DA:12,1\n"), "report: {report}");
+    assert!(report.contains("DA:13,1\n"), "report: {report}");
+    assert!(report.contains("BRF:2\nBRH:1\n"), "report: {report}");
+    assert!(report.contains("BRDA:4,0,0-1,1\n"), "report: {report}");
+    assert!(report.contains("BRDA:4,0,0-0,-\n"), "report: {report}");
+    assert!(
+        !report.contains(".mux-test-"),
+        "temporary path leaked: {report}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn dynamic_interface_values_deep_copy_the_wrapped_object() {
+    let dir = unique_tmp_dir("dynamic_copy");
+    let file = write_file(
+        &dir,
+        "dynamic_copy.mux",
+        r#"interface Greeter {
+    func greet() returns string
+}
+
+class Alpha is Greeter {
+    int count
+
+    func greet() returns string {
+        return "alpha-" + self.count.to_string()
+    }
+}
+
+func erase(dyn<Greeter> value) returns dyn<Greeter> {
+    return value
+}
+
+func main() returns void {
+    auto alpha = Alpha.new()
+    alpha.count = 1
+    auto erased = erase(alpha)
+    auto copied = erased
+    alpha.count = 2
+    print(copied.greet())
+    return
+}
+"#,
+    );
+    let output_path = dir.join("dynamic_copy_output");
+    let output = mux()
+        .args([
+            "run",
+            file.to_str().unwrap(),
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .current_dir(&dir)
+        .env("MUX_RUNTIME_LIB", runtime_library_for_child_process())
+        .output()
+        .expect("spawn mux run for dynamic interface copy");
+    assert!(
+        output.status.success(),
+        "dynamic interface copy failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "alpha-1");
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

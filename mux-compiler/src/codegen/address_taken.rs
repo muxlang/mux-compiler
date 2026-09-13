@@ -35,7 +35,7 @@ pub(super) fn collect(nodes: &[AstNode]) -> HashSet<String> {
                 }
             }
             AstNode::Statement(stmt) => visit_statement(stmt, &mut found),
-            AstNode::Enum { .. } | AstNode::Interface { .. } => {}
+            AstNode::Enum { .. } | AstNode::Interface { .. } | AstNode::Test { .. } => {}
         }
     }
     found
@@ -151,6 +151,15 @@ fn visit_expression(expr: &ExpressionNode, found: &mut HashSet<String>) {
             visit_expression(cond, found);
             visit_expression(then_expr, found);
             visit_expression(else_expr, found);
+        }
+        ExpressionKind::Match { expr, arms } => {
+            visit_expression(expr, found);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    visit_expression(guard, found);
+                }
+                visit_block(&arm.body, found);
+            }
         }
         ExpressionKind::Lambda { body, .. } => visit_block(body, found),
         ExpressionKind::Identifier(_)

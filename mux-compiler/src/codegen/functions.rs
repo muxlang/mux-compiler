@@ -84,8 +84,7 @@ impl<'a> CodeGenerator<'a> {
     pub(super) fn is_enum_type(&self, resolved_type: &Type) -> bool {
         matches!(resolved_type, Type::Named(type_name, _) if self
             .analyzer
-            .symbol_table()
-            .lookup(type_name)
+            .lookup_named_type_symbol(type_name)
             .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum))
     }
 
@@ -343,6 +342,7 @@ impl<'a> CodeGenerator<'a> {
         // pre-declared global slots (the `existing_var` path in declare_variable)
         // and are NOT tracked here, so they survive for a later user `main()`.
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
+        let saved_return_cleanup_blocks = std::mem::take(&mut self.return_cleanup_blocks);
         let saved_temp_values = std::mem::take(&mut self.temp_values);
         let saved_enum_temp_values = std::mem::take(&mut self.enum_temp_values);
         let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
@@ -365,13 +365,15 @@ impl<'a> CodeGenerator<'a> {
             self.generate_all_scopes_cleanup()?;
         }
 
+        self.builder.build_return(None).map_err(|e| e.to_string())?;
+        self.finalize_return_scope_cleanup()?;
+
         self.rc_scope_stack = saved_rc_scope_stack;
+        self.return_cleanup_blocks = saved_return_cleanup_blocks;
         self.temp_values = saved_temp_values;
         self.enum_temp_values = saved_enum_temp_values;
         self.closure_scope_stack = saved_closure_scope_stack;
         self.closure_temp_values = saved_closure_temp_values;
-
-        self.builder.build_return(None).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -544,6 +546,7 @@ impl<'a> CodeGenerator<'a> {
         // (specialized methods, generic instantiation, etc.) should not see or clean up
         // variables from the calling function's scope.
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
+        let saved_return_cleanup_blocks = std::mem::take(&mut self.return_cleanup_blocks);
         // Statement temporaries are likewise per-function: a temporary produced
         // while generating this body must never be cleaned up in another
         // function (which would emit a cross-function instruction reference).
@@ -620,10 +623,13 @@ impl<'a> CodeGenerator<'a> {
                 .map_err(|e| e.to_string())?;
         }
 
+        self.finalize_return_scope_cleanup()?;
+
         // Pop the function's RC scope (no cleanup needed here since we already
         // cleaned up before returns, and non-void functions must have explicit returns)
         self.rc_scope_stack.pop();
         self.closure_scope_stack.pop();
+        self.return_cleanup_blocks = saved_return_cleanup_blocks;
 
         self.analyzer.symbol_table_mut().close_codegen_scope();
 

@@ -1,0 +1,14 @@
+test "ignored during normal builds" {
+    print("this must not run")
+}
+
+test "nested test statements execute" {
+    if true {
+        print("nested test body")
+    }
+}
+
+func main() returns void {
+    print("normal main")
+    return
+}

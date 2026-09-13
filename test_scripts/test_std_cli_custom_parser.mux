@@ -1,0 +1,45 @@
+import std.cli
+
+func main() returns void {
+    auto parser = cli.CliParser.new()
+    auto option_result = parser.add_option("mode", "m", true, true)
+    if option_result.is_err() {
+        print(option_result.error().message())
+        return
+    }
+
+    auto parser_result = parser.set_option_parser("mode", func(string value) returns result<string, string> {
+        if value == "fast" {
+            return ok("FAST")
+        }
+        if value == "safe" {
+            return ok("SAFE")
+        }
+        return err("mode must be fast or safe")
+    })
+    if parser_result.is_err() {
+        print(parser_result.error().message())
+        return
+    }
+
+    auto parsed = parser.parse(["--mode", "fast"])
+    if parsed.is_err() {
+        print(parsed.error().message())
+        return
+    }
+    auto matches = parsed.value()
+    auto values_result = matches.values("mode")
+    if values_result.is_err() {
+        print(values_result.error().message())
+        return
+    }
+    auto values = values_result.value()
+    print(values[0])
+
+    auto rejected = parser.parse(["--mode", "turbo"])
+    if rejected.is_err() {
+        assert(rejected.error().kind == cli.CliErrorKind.Parse, "CLI parse error kind")
+        print("custom parser rejected invalid mode")
+    }
+    return
+}

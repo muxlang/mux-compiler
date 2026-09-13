@@ -122,6 +122,91 @@ impl<'a> CodeGenerator<'a> {
         Ok(value)
     }
 
+    pub(super) fn coerce_to_trait_object_value(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        actual_type: &Type,
+        expected_type: &Type,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let Type::TraitObject(target) = expected_type else {
+            return Ok(value);
+        };
+        if let Type::TraitObject(actual_target) = actual_type {
+            if actual_target == target {
+                return Ok(value);
+            }
+            return Err(format!(
+                "cannot convert {} to {}",
+                crate::semantics::format::format_type(actual_type),
+                crate::semantics::format::format_type(expected_type)
+            ));
+        }
+        let Type::Named(interface_name, interface_args) = target.as_ref() else {
+            return Err("dynamic interface target must be a named interface".to_string());
+        };
+        let Type::Named(class_name, class_args) = actual_type else {
+            return Err(format!(
+                "cannot convert {} to {}",
+                crate::semantics::format::format_type(actual_type),
+                crate::semantics::format::format_type(expected_type)
+            ));
+        };
+        if !interface_args.is_empty() || !class_args.is_empty() {
+            return Err("generic dynamic interface values are not supported yet".to_string());
+        }
+        let vtable_key = format!("{class_name}_{interface_name}");
+        let vtable = self.vtable_map.get(&vtable_key).copied().ok_or_else(|| {
+            format!("class {class_name} has no generated vtable for interface {interface_name}")
+        })?;
+        let object = self.copy_object_or_error(value.into_pointer_value())?;
+        self.register_temp(object.into());
+        let type_id = self.register_trait_object_type(interface_name)?;
+        let wrapper = self
+            .generate_runtime_call("mux_alloc_object", &[type_id.into()])
+            .ok_or("mux_alloc_object returned no value")?
+            .into_pointer_value();
+        let get_ptr = self
+            .runtime_function("mux_get_object_ptr")
+            .ok_or("mux_get_object_ptr not found")?;
+        let data = self
+            .builder
+            .build_call(get_ptr, &[wrapper.into()], "trait_object_data")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_get_object_ptr returned no value")?
+            .into_pointer_value();
+        let layout = *self
+            .trait_object_layouts
+            .get(interface_name)
+            .ok_or_else(|| format!("dynamic interface {interface_name} has no layout"))?;
+        let typed_data = self
+            .builder
+            .build_pointer_cast(
+                data,
+                self.context.ptr_type(AddressSpace::default()),
+                "trait_object",
+            )
+            .map_err(|e| e.to_string())?;
+        let object_slot = self
+            .builder
+            .build_struct_gep(layout, typed_data, 0, "trait_object_object")
+            .map_err(|e| e.to_string())?;
+        let vtable_slot = self
+            .builder
+            .build_struct_gep(layout, typed_data, 1, "trait_object_vtable")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(object_slot, object)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(vtable_slot, vtable)
+            .map_err(|e| e.to_string())?;
+        self.untrack_temp(object.into());
+        self.register_temp(wrapper.into());
+        Ok(wrapper.into())
+    }
+
     /// Coerce arguments for FFI/calling convention compatibility.
     /// This is NOT type coercion (types are already verified by semantic analysis).
     /// Instead, this converts from Mux representation to C/FFI representation:
@@ -322,7 +407,82 @@ impl<'a> CodeGenerator<'a> {
         }
 
         if let Some(call) =
+            self.try_generate_process_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_regex_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_uuid_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_url_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_log_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_random_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_crypto_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_math_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_io_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_csv_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_cli_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_sync_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
             self.try_generate_net_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_tls_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_datetime_static_method_call(class_name, method_name, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_sql_static_method_call(class_name, method_name, args)?
         {
             return Ok(Some(call));
         }
@@ -367,6 +527,37 @@ impl<'a> CodeGenerator<'a> {
         let Some(func) = self.runtime_function(llvm_function_name) else {
             return Ok(None);
         };
+
+        // Embedded Mux modules are ordinary generated functions, not C ABI
+        // entry points. In particular, a `string` parameter is the boxed Mux
+        // value that the function body can use with string methods. The FFI
+        // coercion below intentionally turns strings into temporary C strings
+        // for runtime functions, which would pass a `char*` into an embedded
+        // function and crash as soon as it tried to inspect the value. Keep
+        // the two calling conventions separate by recognizing the generated
+        // module prefix.
+        if llvm_function_name.starts_with("mstd_") {
+            let llvm_param_types = func.get_type().get_param_types();
+            let mut call_args = Vec::with_capacity(args.len());
+            for (idx, arg) in args.iter().enumerate() {
+                let arg_type = self.resolve_expression_type_with_fallback(arg)?;
+                let value = self.generate_expression(arg)?;
+                let value = self.coerce_boxed_enum_to_inline(value, &arg_type)?;
+                let value = if let Some(expected) = llvm_param_types.get(idx) {
+                    self.coerce_to_llvm_param_type(value, *expected)?
+                } else {
+                    value
+                };
+                call_args.push(value.into());
+            }
+            let call = self
+                .builder
+                .build_call(func, &call_args, &format!("{display_name}_call"))
+                .map_err(|e| e.to_string())?;
+            let result = self.call_result_or_default_i32(call);
+            self.register_temp(result);
+            return Ok(Some(result));
+        }
 
         let (call_args, owned_cstrings) =
             self.build_import_call_args(args, func_type, Some(func))?;
@@ -584,6 +775,7 @@ impl<'a> CodeGenerator<'a> {
         self.variables.clear();
 
         let saved_rc_scope_stack = std::mem::take(&mut self.rc_scope_stack);
+        let saved_return_cleanup_blocks = std::mem::take(&mut self.return_cleanup_blocks);
         // Isolate statement temporaries to this lambda body (see generate_function).
         let saved_temp_values = std::mem::take(&mut self.temp_values);
         let saved_closure_scope_stack = std::mem::take(&mut self.closure_scope_stack);
@@ -606,10 +798,12 @@ impl<'a> CodeGenerator<'a> {
         }
 
         self.handle_lambda_void_return(return_type_opt)?;
+        self.finalize_return_scope_cleanup()?;
 
         self.rc_scope_stack.pop();
         self.closure_scope_stack.pop();
         self.rc_scope_stack = saved_rc_scope_stack;
+        self.return_cleanup_blocks = saved_return_cleanup_blocks;
         self.temp_values = saved_temp_values;
         self.closure_scope_stack = saved_closure_scope_stack;
         self.closure_temp_values = saved_closure_temp_values;
@@ -622,10 +816,134 @@ impl<'a> CodeGenerator<'a> {
             self.builder.position_at_end(bb);
         }
 
-        if has_captures {
-            self.create_closure_with_captures(function, &captures, ptr_type)
+        // Worker callbacks use boxed arguments and results at the runtime boundary.
+        let boxed_function = if !matches!(resolved_return, Type::Void) {
+            Some(self.generate_boxed_lambda_wrapper(
+                &function,
+                &resolved_return,
+                params,
+                has_captures,
+                ptr_type,
+            )?)
         } else {
-            self.create_closure_without_captures(function, ptr_type)
+            None
+        };
+
+        if has_captures {
+            self.create_closure_with_captures(function, &captures, ptr_type, boxed_function)
+        } else {
+            self.create_closure_without_captures(function, ptr_type, boxed_function)
+        }
+    }
+
+    fn generate_boxed_lambda_wrapper(
+        &mut self,
+        function: &inkwell::values::FunctionValue<'a>,
+        return_type: &Type,
+        user_params: &[Param],
+        has_captures: bool,
+        ptr_type: inkwell::types::PointerType<'a>,
+    ) -> Result<inkwell::values::FunctionValue<'a>, String> {
+        let name = function
+            .get_name()
+            .to_str()
+            .map_err(|_| "lambda name is not valid UTF-8".to_string())?;
+        let wrapper_name = format!("{name}_boxed");
+        let mut params: Vec<BasicMetadataTypeEnum<'a>> = if has_captures {
+            vec![ptr_type.into()]
+        } else {
+            Vec::new()
+        };
+        params.extend(
+            user_params
+                .iter()
+                .map(|_| BasicMetadataTypeEnum::PointerType(ptr_type)),
+        );
+        let wrapper =
+            self.module
+                .add_function(&wrapper_name, ptr_type.fn_type(&params, false), None);
+        let entry = self.context.append_basic_block(wrapper, "entry");
+        let saved_block = self.builder.get_insert_block();
+        self.builder.position_at_end(entry);
+        let mut call_args = if has_captures {
+            vec![
+                wrapper
+                    .get_nth_param(0)
+                    .expect("boxed lambda captures parameter")
+                    .into(),
+            ]
+        } else {
+            Vec::new()
+        };
+        for (index, param) in user_params.iter().enumerate() {
+            let boxed = wrapper
+                .get_nth_param((index + usize::from(has_captures)) as u32)
+                .ok_or("boxed lambda argument missing")?;
+            let ty = self
+                .analyzer
+                .resolve_type(&param.type_)
+                .map_err(|e| e.to_string())?;
+            call_args.push(self.unbox_value_for_type(boxed, &ty)?.into());
+        }
+        let call = self
+            .builder
+            .build_call(*function, &call_args, "boxed_lambda_call")
+            .map_err(|e| e.to_string())?;
+        let value = call
+            .try_as_basic_value()
+            .basic()
+            .ok_or("non-void lambda returned no value")?;
+        let boxed = self.box_lambda_result(value, return_type)?;
+        self.builder
+            .build_return(Some(&boxed))
+            .map_err(|e| e.to_string())?;
+        if let Some(saved_block) = saved_block {
+            self.builder.position_at_end(saved_block);
+        }
+        Ok(wrapper)
+    }
+
+    fn box_lambda_result(
+        &mut self,
+        value: BasicValueEnum<'a>,
+        return_type: &Type,
+    ) -> Result<inkwell::values::PointerValue<'a>, String> {
+        match return_type {
+            Type::Primitive(PrimitiveType::Bool) => {
+                let value = value.into_int_value();
+                let value = self
+                    .builder
+                    .build_int_z_extend(value, self.context.i32_type(), "thread_bool")
+                    .map_err(|e| e.to_string())?;
+                self.generate_runtime_call("mux_bool_value", &[value.into()])
+                    .ok_or_else(|| "mux_bool_value returned no value".to_string())
+                    .map(|value| value.into_pointer_value())
+            }
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char | PrimitiveType::Byte) => self
+                .generate_runtime_call("mux_int_value", &[value.into()])
+                .ok_or_else(|| "mux_int_value returned no value".to_string())
+                .map(|value| value.into_pointer_value()),
+            Type::Primitive(PrimitiveType::Float) => self
+                .generate_runtime_call("mux_float_value", &[value.into()])
+                .ok_or_else(|| "mux_float_value returned no value".to_string())
+                .map(|value| value.into_pointer_value()),
+            _ if value.is_pointer_value() => Ok(value.into_pointer_value()),
+            _ if value.is_struct_value() => {
+                let struct_value = value.into_struct_value();
+                let struct_type = struct_value.get_type();
+                let slot = self
+                    .builder
+                    .build_alloca(struct_type, "thread_enum_value")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(slot, struct_value)
+                    .map_err(|e| e.to_string())?;
+                let size = struct_type.size_of().ok_or("enum size unavailable")?;
+                self.generate_runtime_call("mux_box_enum", &[slot.into(), size.into()])
+                    .ok_or_else(|| "mux_box_enum returned no value".to_string())
+                    .map(|value| value.into_pointer_value())
+            }
+            _ => Err(format!("cannot box thread result type {return_type:?}")),
         }
     }
 
@@ -829,6 +1147,7 @@ impl<'a> CodeGenerator<'a> {
         function: inkwell::values::FunctionValue<'a>,
         captures: &[(String, Type)],
         ptr_type: inkwell::types::PointerType<'a>,
+        boxed_function: Option<inkwell::values::FunctionValue<'a>>,
     ) -> Result<BasicValueEnum<'a>, String> {
         let capture_struct_type = self
             .context
@@ -894,7 +1213,7 @@ impl<'a> CodeGenerator<'a> {
         }
 
         let (closure_mem, captures_field, count_field) =
-            self.allocate_closure(function, ptr_type)?;
+            self.allocate_closure(function, ptr_type, boxed_function)?;
         self.builder
             .build_store(captures_field, capture_mem)
             .map_err(|e| e.to_string())?;
@@ -917,9 +1236,10 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         function: inkwell::values::FunctionValue<'a>,
         ptr_type: inkwell::types::PointerType<'a>,
+        boxed_function: Option<inkwell::values::FunctionValue<'a>>,
     ) -> Result<BasicValueEnum<'a>, String> {
         let (closure_mem, captures_field, count_field) =
-            self.allocate_closure(function, ptr_type)?;
+            self.allocate_closure(function, ptr_type, boxed_function)?;
         let null_ptr = ptr_type.const_null();
         self.builder
             .build_store(captures_field, null_ptr)
@@ -932,9 +1252,10 @@ impl<'a> CodeGenerator<'a> {
         Ok(closure_mem)
     }
 
-    /// Allocate a closure struct (`fn_ptr` + captures + `capture_count`) with a
-    /// refcount header. The closure is allocated as
-    /// `[RefHeader (i64) | fn_ptr | captures | capture_count (i64)]`.
+    /// Allocate a closure struct (`fn_ptr` + captures + `capture_count` plus an
+    /// optional boxed-result entry) with a refcount header. The closure is
+    /// allocated as `[RefHeader (i64) | fn_ptr | captures | capture_count |
+    /// boxed_fn_ptr]`.
     /// The `capture_count` lets the runtime teardown (`mux_closure_release`)
     /// walk and free the capture array. Returns the pointer to the closure
     /// struct (after the header), the captures field pointer, and the
@@ -943,6 +1264,7 @@ impl<'a> CodeGenerator<'a> {
         &self,
         function: inkwell::values::FunctionValue<'a>,
         ptr_type: inkwell::types::PointerType<'a>,
+        boxed_function: Option<inkwell::values::FunctionValue<'a>>,
     ) -> Result<
         (
             BasicValueEnum<'a>,
@@ -956,6 +1278,7 @@ impl<'a> CodeGenerator<'a> {
                 ptr_type.into(),
                 ptr_type.into(),
                 self.context.i64_type().into(),
+                ptr_type.into(),
             ],
             false,
         );
@@ -1013,6 +1336,17 @@ impl<'a> CodeGenerator<'a> {
         let count_field = self
             .builder
             .build_struct_gep(closure_struct_type, closure_mem, 2, "closure_capture_count")
+            .map_err(|e| e.to_string())?;
+
+        let boxed_field = self
+            .builder
+            .build_struct_gep(closure_struct_type, closure_mem, 3, "closure_boxed_fn_ptr")
+            .map_err(|e| e.to_string())?;
+        let boxed_ptr = boxed_function.map_or(ptr_type.const_null(), |value| {
+            value.as_global_value().as_pointer_value()
+        });
+        self.builder
+            .build_store(boxed_field, boxed_ptr)
             .map_err(|e| e.to_string())?;
 
         Ok((closure_mem.into(), captures_field, count_field))
@@ -1211,12 +1545,60 @@ impl<'a> CodeGenerator<'a> {
         Ok(wrapped_value)
     }
 
+    fn generate_use_expression(
+        &mut self,
+        expr: &ExpressionNode,
+    ) -> Result<BasicValueEnum<'a>, String> {
+        let operand_type = self.resolve_expression_type_with_fallback(expr)?;
+        let (predicate, data_function, payload) = match operand_type {
+            Type::Result(payload, _) => ("mux_result_is_ok", "mux_result_data", payload),
+            Type::Optional(payload) => ("mux_optional_is_some", "mux_optional_data", payload),
+            other => return Err(format!("'use' requires Result or Optional, got {other:?}")),
+        };
+        let return_type = self
+            .current_function_return_type
+            .clone()
+            .ok_or("'use' requires an enclosing function")?;
+        let value = self.generate_expression(expr)?;
+        let success = self
+            .generate_runtime_call(predicate, &[value.into()])
+            .ok_or("Propagation predicate returned no value")?;
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or("Propagation requires an insertion block")?;
+        let success_block = self.context.append_basic_block(function, "use_value");
+        let failure_block = self.context.append_basic_block(function, "use_return");
+        self.builder
+            .build_conditional_branch(success.into_int_value(), success_block, failure_block)
+            .map_err(|error| error.to_string())?;
+
+        self.builder.position_at_end(failure_block);
+        // Both wrappers use the same ABI regardless of their success type.
+        // Returning the failed wrapper preserves its error and normal cleanup.
+        self.generate_typed_return(return_type, value, false)?;
+
+        self.builder.position_at_end(success_block);
+        if matches!(*payload, Type::Void | Type::Primitive(PrimitiveType::Void)) {
+            return Ok(self.context.i64_type().const_zero().into());
+        }
+        let data = self
+            .generate_runtime_call(data_function, &[value.into()])
+            .ok_or("Propagation payload returned no value")?;
+        let (extracted, _) =
+            self.extract_value_from_ptr(data.into_pointer_value(), &payload, "use")?;
+        self.register_temp(extracted);
+        Ok(extracted)
+    }
+
     fn generate_unary_expression(
         &mut self,
         op: &UnaryOp,
         expr: &ExpressionNode,
     ) -> Result<BasicValueEnum<'a>, String> {
         match op {
+            UnaryOp::Use => self.generate_use_expression(expr),
             UnaryOp::Ref => self.generate_ref_unary_expression(expr),
             UnaryOp::Deref => self.generate_deref_unary_expression(expr),
             UnaryOp::Incr => self.generate_update_unary_expression(expr, true, true),
@@ -1539,6 +1921,29 @@ impl<'a> CodeGenerator<'a> {
         &mut self,
         args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
+        if args.is_empty() {
+            if let Some(Type::Result(ok_type, _)) = &self.current_function_return_type
+                && matches!(
+                    ok_type.as_ref(),
+                    Type::Void | Type::Primitive(PrimitiveType::Void)
+                )
+            {
+                let func = self
+                    .runtime_function("mux_result_ok_unit")
+                    .ok_or("mux_result_ok_unit not found")?;
+                let call = self
+                    .builder
+                    .build_call(func, &[], "ok_unit_call")
+                    .map_err(|e| e.to_string())?;
+                let result = call
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("unit result constructor should return a basic value")?;
+                self.register_temp(result);
+                return Ok(result);
+            }
+            return Err("Ok() is only valid for a function returning result<void, E>".to_string());
+        }
         if args.len() != 1 {
             return Err("Ok takes 1 argument".to_string());
         }
@@ -1865,6 +2270,14 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(value);
             }
         }
+        if matches!(expr.kind, ExpressionKind::Match { .. })
+            && value.is_struct_value()
+            && let Ok(result_type) = self.resolve_expression_type_with_fallback(expr)
+            && let Some(enum_name) = self.user_enum_type_name(&result_type)
+            && self.enum_has_rc_payload(&enum_name)
+        {
+            self.register_enum_temp(value, &enum_name);
+        }
         Ok(value)
     }
 
@@ -1881,7 +2294,8 @@ impl<'a> CodeGenerator<'a> {
             | ExpressionKind::ListLiteral(_)
             | ExpressionKind::MapLiteral { .. }
             | ExpressionKind::SetLiteral(_)
-            | ExpressionKind::TupleLiteral(_) => true,
+            | ExpressionKind::TupleLiteral(_)
+            | ExpressionKind::Match { .. } => true,
             // A non-assignment binary op builds a new value (string/list concat)
             // or an unboxed scalar (arithmetic/comparison, ignored by
             // register_temp). An assignment op instead yields the assigned value,
@@ -1893,7 +2307,7 @@ impl<'a> CodeGenerator<'a> {
             // +1), collection literals, and indexed access (the runtime getters
             // clone the element out).
             // Everything else is either borrowed or not reference counted, and
-            // must never be tracked — freeing a borrowed value (a field load, a
+            // must never be tracked: freeing a borrowed value (a field load, a
             // dereference, an identifier, a ternary arm that yields one of its
             // borrowed operands) double-frees the owner. A missed owned value
             // only leaks, which is recoverable; a double free corrupts the heap.
@@ -1922,8 +2336,7 @@ impl<'a> CodeGenerator<'a> {
 
         if self
             .analyzer
-            .symbol_table()
-            .lookup(name)
+            .lookup_named_type_symbol(name)
             .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum)
         {
             return Err(format!("Enums cannot be used as values: {name}"));
@@ -1990,8 +2403,7 @@ impl<'a> CodeGenerator<'a> {
 
         let is_enum = self
             .analyzer
-            .symbol_table()
-            .lookup(type_name)
+            .lookup_named_type_symbol(type_name)
             .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum);
         if is_enum {
             if let BasicTypeEnum::StructType(st) = var_type {
@@ -2048,7 +2460,7 @@ impl<'a> CodeGenerator<'a> {
         }
         let boxed_ptr = self.load_boxed_ptr_from_alloca(ptr, name)?;
         match prim {
-            PrimitiveType::Int | PrimitiveType::Char => self
+            PrimitiveType::Int | PrimitiveType::Char | PrimitiveType::Byte => self
                 .get_raw_int_value(boxed_ptr.into())
                 .map(std::convert::Into::into),
             PrimitiveType::Float => self
@@ -2057,7 +2469,7 @@ impl<'a> CodeGenerator<'a> {
             PrimitiveType::Bool => self
                 .get_raw_bool_value(boxed_ptr.into())
                 .map(std::convert::Into::into),
-            PrimitiveType::Str => Ok(boxed_ptr.into()),
+            PrimitiveType::Str | PrimitiveType::Bytes => Ok(boxed_ptr.into()),
             PrimitiveType::Void | PrimitiveType::Auto => {
                 Err(format!("Unsupported primitive type {prim:?}"))
             }
@@ -2293,8 +2705,7 @@ impl<'a> CodeGenerator<'a> {
 
         let is_enum = if let Type::Named(type_name, _) = &type_node_copy {
             self.analyzer
-                .symbol_table()
-                .lookup(type_name)
+                .lookup_named_type_symbol(type_name)
                 .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum)
         } else {
             false
@@ -2505,6 +2916,155 @@ impl<'a> CodeGenerator<'a> {
         right_val: BasicValueEnum<'a>,
         rhs_owned: bool,
     ) -> Result<BasicValueEnum<'a>, String> {
+        let class_name_for_fields = self.resolve_expression_class_name(expr);
+        let runtime_name = if class_name_for_fields.as_deref() == Some("HttpRequest") {
+            match field {
+                "method" => Some("mux_net_http_request_set_method_field"),
+                "url" => Some("mux_net_http_request_set_url_field"),
+                "request_id" => Some("mux_net_http_request_set_id_field"),
+                "proxy" => Some("mux_net_http_request_set_proxy_field"),
+                "headers" => Some("mux_net_http_request_set_headers_field"),
+                "body" => Some("mux_net_http_request_set_body_field"),
+                "connect_timeout_ms" => Some("mux_net_http_request_set_connect_timeout_field"),
+                "timeout_ms" => Some("mux_net_http_request_set_timeout_field"),
+                "max_redirects" => Some("mux_net_http_request_set_max_redirects_field"),
+                "retries" => Some("mux_net_http_request_set_retries_field"),
+                "retry_backoff_ms" => Some("mux_net_http_request_set_retry_backoff_field"),
+                _ => None,
+            }
+        } else if class_name_for_fields.as_deref() == Some("HttpResponse") {
+            match field {
+                "status" => Some("mux_net_http_response_set_status_field"),
+                "headers" => Some("mux_net_http_response_set_headers_field"),
+                "body" => Some("mux_net_http_response_set_body_field"),
+                _ => None,
+            }
+        } else if class_name_for_fields.as_deref() == Some("HttpServerConfig") {
+            match field {
+                "max_header_bytes" => Some("mux_net_http_server_config_set_max_header_bytes"),
+                "max_body_bytes" => Some("mux_net_http_server_config_set_max_body_bytes"),
+                "max_headers" => Some("mux_net_http_server_config_set_max_headers"),
+                "read_timeout_ms" => Some("mux_net_http_server_config_set_read_timeout_ms"),
+                "access_log" => Some("mux_net_http_server_config_set_access_log"),
+                "cors_origins" => Some("mux_net_http_server_config_set_cors_origins"),
+                "cors_allow_credentials" => {
+                    Some("mux_net_http_server_config_set_cors_allow_credentials")
+                }
+                "static_root" => Some("mux_net_http_server_config_set_static_root"),
+                "worker_count" => Some("mux_net_http_server_config_set_worker_count"),
+                "heartbeat_interval_ms" => {
+                    Some("mux_net_http_server_config_set_heartbeat_interval_ms")
+                }
+                _ => None,
+            }
+        } else if class_name_for_fields.as_deref() == Some("SseEvent") {
+            match field {
+                "event" => Some("mux_net_sse_event_set_event"),
+                "id" => Some("mux_net_sse_event_set_id"),
+                "retry_ms" => Some("mux_net_sse_event_set_retry_ms"),
+                "data" => Some("mux_net_sse_event_set_data"),
+                _ => None,
+            }
+        } else if class_name_for_fields.as_deref() == Some("WebSocketFrame") {
+            match field {
+                "fin" => Some("mux_net_websocket_frame_set_fin"),
+                "opcode" => Some("mux_net_websocket_frame_set_opcode"),
+                "payload" => Some("mux_net_websocket_frame_set_payload"),
+                "masked" => Some("mux_net_websocket_frame_set_masked"),
+                _ => None,
+            }
+        } else if class_name_for_fields.as_deref() == Some("WebSocketHandshake") {
+            match field {
+                "key" => Some("mux_net_websocket_handshake_set_key"),
+                "protocol" => Some("mux_net_websocket_handshake_set_protocol"),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(runtime_name) = runtime_name {
+            let request = self.generate_expression(expr)?;
+            // HTTP field setters consume boxed runtime Values. Primitive
+            // literals (for example `response.status = 200`) are emitted as
+            // raw LLVM scalars, so box the RHS before crossing the ABI.
+            let boxed_rhs = self.box_value(right_val);
+            let result = self
+                .generate_runtime_call(runtime_name, &[request.into(), boxed_rhs.into()])
+                .ok_or_else(|| format!("{runtime_name} should return a result"))?;
+            self.emit_value_decref(result.into_pointer_value())?;
+            return Ok(right_val);
+        }
+        if class_name_for_fields.as_deref() == Some("HttpRequest")
+            || class_name_for_fields.as_deref() == Some("HttpResponse")
+            || class_name_for_fields.as_deref() == Some("HttpServerConfig")
+            || class_name_for_fields.as_deref() == Some("WebSocketFrame")
+            || class_name_for_fields.as_deref() == Some("WebSocketHandshake")
+        {
+            return Err(format!("unknown {class_name_for_fields:?} field '{field}'"));
+        }
+        if class_name_for_fields.as_deref() == Some("SqlError") {
+            return Err("SqlError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("HttpError") {
+            return Err("HttpError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("EnvError") {
+            return Err("EnvError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("FsError") {
+            return Err("FsError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("NetError") {
+            return Err("NetError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("UrlError") {
+            return Err("UrlError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("UuidError") {
+            return Err("UuidError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("LogError") {
+            return Err("LogError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("RandomError") {
+            return Err("RandomError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("CryptoError") {
+            return Err("CryptoError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("RegexError") {
+            return Err("RegexError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("MathError") {
+            return Err("MathError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("ProcessError") {
+            return Err("ProcessError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("CliError") {
+            return Err("CliError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("TlsError") {
+            return Err("TlsError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("DateTimeError") {
+            return Err("DateTimeError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("IoError") {
+            return Err("IoError fields are read-only".to_string());
+        }
+        if class_name_for_fields.as_deref() == Some("SyncError") {
+            return Err("SyncError fields are read-only".to_string());
+        }
+        if matches!(
+            class_name_for_fields.as_deref(),
+            Some("JsonError" | "CsvError" | "ByteError" | "BytesError")
+        ) {
+            return Err(format!(
+                "{} fields are read-only",
+                class_name_for_fields.as_deref().unwrap_or("data error")
+            ));
+        }
         let struct_ptr = self.resolve_struct_pointer_for_field_access(expr, "data_ptr_assign")?;
         let class_name = self
             .resolve_expression_class_name(expr)
@@ -2669,8 +3229,7 @@ impl<'a> CodeGenerator<'a> {
         {
             let is_enum = self
                 .analyzer
-                .symbol_table()
-                .lookup(field_type_name)
+                .lookup_named_type_symbol(field_type_name)
                 .is_some_and(|s| s.kind == crate::semantics::SymbolKind::Enum);
             if is_enum {
                 // The field slot is an inline struct. An enum read out of a
@@ -3153,17 +3712,45 @@ impl<'a> CodeGenerator<'a> {
                 .generate_constructor_call_with_types(class_name, &type_args, args)
                 .map(Some);
         }
-        // Synthesized deserializers are emitted on first use, not for every
-        // class: a class this cannot read yet is legal until something asks it
-        // to deserialize.
-        if matches!(field, "from_json" | "list_from_json" | "list_from_csv") {
-            self.ensure_deserializer(class_name, field)?;
-        }
-
         let Some(method) = class_symbol.methods.get(field) else {
             return Err(format!("Method {field} not found on class {class_name}"));
         };
+        if let Some(call) = self.try_generate_process_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
+        if let Some(call) = self.try_generate_regex_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
+        if let Some(call) = self.try_generate_uuid_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
+        if let Some(call) = self.try_generate_url_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
         if let Some(call) = self.try_generate_net_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
+        if let Some(call) = self.try_generate_tls_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
+        if let Some(call) = self.try_generate_io_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
+        if let Some(call) = self.try_generate_csv_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
+        if let Some(call) = self.try_generate_cli_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
+        if let Some(call) =
+            self.try_generate_datetime_static_method_call(class_name, field, args)?
+        {
+            return Ok(Some(call));
+        }
+        if let Some(call) = self.try_generate_sync_static_method_call(class_name, field, args)? {
+            return Ok(Some(call));
+        }
+        if let Some(call) = self.try_generate_sql_static_method_call(class_name, field, args)? {
             return Ok(Some(call));
         }
         if !method.is_static {
@@ -3195,18 +3782,13 @@ impl<'a> CodeGenerator<'a> {
         field: &str,
         args: &[ExpressionNode],
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
-        if !matches!(class_name, "Mutex" | "RwLock" | "CondVar") || field != "new" {
+        if class_name != "CondVar" || field != "new" {
             return Ok(None);
         }
         if !args.is_empty() {
             return Err(format!("{class_name}.new() takes no arguments"));
         }
-        let runtime_fn = match class_name {
-            "Mutex" => "mux_mutex_new",
-            "RwLock" => "mux_rwlock_new",
-            "CondVar" => "mux_condvar_new",
-            _ => unreachable!(),
-        };
+        let runtime_fn = "mux_condvar_new";
         let created = self
             .builder
             .build_call(
@@ -3288,6 +3870,18 @@ impl<'a> CodeGenerator<'a> {
             .iter()
             .map(|arg| self.type_node_to_type(arg))
             .collect::<Vec<_>>();
+        // Runtime-backed generic handles have no Mux object layout to
+        // materialize. Their typed constructor still carries the caller's
+        // type argument in semantic analysis, but allocation belongs to the
+        // runtime ABI rather than the ordinary class-constructor path.
+        if matches!(
+            resolved_class_name.as_str(),
+            "Channel" | "WorkerPool" | "Mutex" | "RwLock"
+        ) && let Some(call) =
+            self.try_generate_sync_static_method_call(&resolved_class_name, field, args)?
+        {
+            return Ok(Some(call));
+        }
         if field == "new" {
             let concrete_type_args = resolved_type_args
                 .iter()
@@ -3438,6 +4032,7 @@ impl<'a> CodeGenerator<'a> {
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
         let value = match name {
             "print" => self.generate_print_call(args)?,
+            "assert" => self.generate_assert_call(args)?,
             "read_line" => self.generate_read_line_call(args)?,
             "err" => self.generate_err_builtin_call(args)?,
             "ok" => self.generate_ok_builtin_call(args)?,
@@ -3447,6 +4042,47 @@ impl<'a> CodeGenerator<'a> {
             _ => return Ok(None),
         };
         Ok(Some(value))
+    }
+
+    /// Generate the global `assert(condition, message)` built-in.
+    ///
+    /// Semantic analysis enforces the exact `(bool, string)` signature. The
+    /// code generator converts those Mux values to the runtime ABI: an i32
+    /// condition and an owned C string. The runtime borrows the message for
+    /// the duration of the call, so the extracted string is released after a
+    /// successful assertion.
+    pub(super) fn generate_assert_call(
+        &mut self,
+        args: &[ExpressionNode],
+    ) -> Result<BasicValueEnum<'a>, String> {
+        if args.len() != 2 {
+            return Err(format!("assert expects 2 arguments, got {}", args.len()));
+        }
+
+        let condition = self.generate_expression(&args[0])?;
+        let condition = self.bool_to_i32(condition)?;
+
+        let message = self.generate_expression(&args[1])?;
+        if !message.is_pointer_value() {
+            return Err("assert message must be a string".to_string());
+        }
+        let message = self.string_value_to_cstr(message)?;
+
+        let assert_fn = self
+            .runtime_function("mux_assert")
+            .ok_or("mux_assert not found")?;
+        self.builder
+            .build_call(
+                assert_fn,
+                &[condition.into(), message.into()],
+                "assert_call",
+            )
+            .map_err(|e| e.to_string())?;
+        self.free_cstrings(&[message])?;
+
+        // Expression codegen uses a dummy value for void calls (as print does)
+        // while semantic analysis keeps the built-in's return type `void`.
+        Ok(self.context.i32_type().const_int(0, false).into())
     }
 
     /// `range(start, end)` as a value: the integers [start, end) as a `list<int>`.
@@ -3580,12 +4216,37 @@ impl<'a> CodeGenerator<'a> {
         lookup_name: &str,
         args: &[ExpressionNode],
     ) -> Result<BasicValueEnum<'a>, String> {
+        if lookup_name == "mux_sync_spawn" {
+            let Some(callback) = args.first() else {
+                return Err("sync.spawn expects one callback".to_string());
+            };
+            if let Some(captures) = self.analyzer.lambda_captures.get(&callback.span) {
+                if let Some((name, Type::Reference(_))) = captures
+                    .iter()
+                    .find(|(_, captured_type)| matches!(captured_type, Type::Reference(_)))
+                {
+                    return Err(format!(
+                        "sync.spawn callback cannot capture borrowed reference '{name}'; pass an owned value instead"
+                    ));
+                }
+            }
+        }
         let Some(func) = self.runtime_function(lookup_name) else {
             return Err(format!(
                 "Undefined function: {display_name} (looked for LLVM name: {lookup_name})"
             ));
         };
         let llvm_param_types = func.get_type().get_param_types();
+        let expected_param_types: Vec<Option<Type>> = self
+            .function_nodes
+            .get(display_name)
+            .map(|node| {
+                node.params
+                    .iter()
+                    .map(|param| self.analyzer.resolve_type(&param.type_).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut call_args = Vec::with_capacity(args.len());
         for (idx, arg) in args.iter().enumerate() {
             // Resolve every argument's type through the fallback resolver. This
@@ -3607,7 +4268,15 @@ impl<'a> CodeGenerator<'a> {
                 false
             };
 
-            let arg_val = if needs_copy {
+            let expected_trait_object = expected_param_types
+                .get(idx)
+                .and_then(Option::as_ref)
+                .filter(|type_| matches!(type_, Type::TraitObject(_)));
+
+            let arg_val = if let Some(expected_type) = expected_trait_object {
+                let value = self.generate_expression(arg)?;
+                self.coerce_to_trait_object_value(value, &arg_type, expected_type)?
+            } else if needs_copy {
                 let original_val = self.generate_expression(arg)?;
                 let ptr = original_val.into_pointer_value();
                 // Pass-by-value copy owned by this statement (see the sibling
@@ -3705,6 +4374,14 @@ impl<'a> CodeGenerator<'a> {
             crate::semantics::Type::List(_) => {
                 let out = self.call_runtime_function(
                     "mux_list_slice_value",
+                    &[target_val, start_val.into(), end_val.into()],
+                )?;
+                self.register_temp(out);
+                Ok(out)
+            }
+            crate::semantics::Type::Primitive(crate::ast::PrimitiveType::Bytes) => {
+                let out = self.call_runtime_function(
+                    "mux_bytes_slice",
                     &[target_val, start_val.into(), end_val.into()],
                 )?;
                 self.register_temp(out);
@@ -3826,6 +4503,32 @@ impl<'a> CodeGenerator<'a> {
                 self.register_temp(extracted_val);
                 Ok(extracted_val)
             }
+            crate::semantics::Type::Primitive(crate::ast::PrimitiveType::Bytes) => {
+                let raw_index = self.get_raw_int_value(index_val)?;
+                let optional =
+                    self.call_runtime_function("mux_bytes_get", &[target_val, raw_index.into()])?;
+                let payload = self
+                    .call_runtime_function("mux_optional_get_value", &[optional])?
+                    .into_pointer_value();
+                let length = self.call_runtime_function("mux_bytes_length", &[target_val])?;
+                self.check_list_bounds(
+                    payload,
+                    index_val,
+                    length,
+                    Some(index.span()),
+                    "bytes_index",
+                )?;
+                let raw = self.get_raw_int_value(payload.into())?;
+                let release = self
+                    .runtime_function("mux_rc_dec")
+                    .ok_or("mux_rc_dec not found")?;
+                for dead in [BasicValueEnum::from(payload), optional] {
+                    self.builder
+                        .build_call(release, &[dead.into()], "release_bytes_index_temp")
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(raw.into())
+            }
             crate::semantics::Type::Map(key_type, value_type) => {
                 // Look up the key directly in the map Value. This avoids the old
                 // `mux_value_get_map` path, which cloned the entire map on every
@@ -3878,6 +4581,66 @@ impl<'a> CodeGenerator<'a> {
         if self.is_csv_expression(expr)? {
             return self.generate_csv_field_access(expr, field);
         }
+        if let Some(value) = self.try_generate_http_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_sql_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_http_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_env_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_fs_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_net_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_url_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_uuid_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_log_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_random_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_crypto_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_regex_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_math_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_process_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_cli_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_tls_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_datetime_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_io_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_sync_error_field_access(expr, field)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.try_generate_data_error_field_access(expr, field)? {
+            return Ok(value);
+        }
         if let Some(value) = self.try_generate_class_field_access(expr, field)? {
             return Ok(value);
         }
@@ -3888,6 +4651,658 @@ impl<'a> CodeGenerator<'a> {
             "Field access not supported for expression type {:?}",
             expr.kind
         ))
+    }
+
+    fn try_generate_http_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let class_name = self.resolve_expression_class_name(expr);
+        let runtime_name = if class_name.as_deref() == Some("HttpRequest") {
+            let runtime_name = match field {
+                "method" => "mux_net_http_request_method",
+                "url" => "mux_net_http_request_url",
+                "request_id" => "mux_net_http_request_id",
+                "proxy" => "mux_net_http_request_proxy",
+                "headers" => "mux_net_http_request_headers_field",
+                "body" => "mux_net_http_request_body",
+                "connect_timeout_ms" => "mux_net_http_request_connect_timeout",
+                "timeout_ms" => "mux_net_http_request_timeout",
+                "max_redirects" => "mux_net_http_request_max_redirects",
+                "retries" => "mux_net_http_request_retries",
+                "retry_backoff_ms" => "mux_net_http_request_retry_backoff",
+                _ => return Ok(None),
+            };
+            runtime_name
+        } else if class_name.as_deref() == Some("HttpResponse") {
+            let runtime_name = match field {
+                "status" => "mux_net_http_response_status_field",
+                "headers" => "mux_net_http_response_headers_field",
+                "body" => "mux_net_http_response_body_field",
+                _ => return Ok(None),
+            };
+            runtime_name
+        } else if class_name.as_deref() == Some("HttpServerConfig") {
+            match field {
+                "max_header_bytes" => "mux_net_http_server_config_max_header_bytes",
+                "max_body_bytes" => "mux_net_http_server_config_max_body_bytes",
+                "max_headers" => "mux_net_http_server_config_max_headers",
+                "read_timeout_ms" => "mux_net_http_server_config_read_timeout_ms",
+                "access_log" => "mux_net_http_server_config_access_log",
+                "cors_origins" => "mux_net_http_server_config_cors_origins",
+                "cors_allow_credentials" => "mux_net_http_server_config_cors_allow_credentials",
+                "static_root" => "mux_net_http_server_config_static_root",
+                "worker_count" => "mux_net_http_server_config_worker_count",
+                "heartbeat_interval_ms" => "mux_net_http_server_config_heartbeat_interval_ms",
+                _ => return Ok(None),
+            }
+        } else if class_name.as_deref() == Some("SseEvent") {
+            match field {
+                "event" => "mux_net_sse_event_event",
+                "id" => "mux_net_sse_event_id",
+                "retry_ms" => "mux_net_sse_event_retry_ms",
+                "data" => "mux_net_sse_event_data",
+                _ => return Ok(None),
+            }
+        } else if class_name.as_deref() == Some("WebSocketFrame") {
+            match field {
+                "fin" => "mux_net_websocket_frame_fin",
+                "opcode" => "mux_net_websocket_frame_opcode",
+                "payload" => "mux_net_websocket_frame_payload",
+                "masked" => "mux_net_websocket_frame_masked",
+                _ => return Ok(None),
+            }
+        } else if class_name.as_deref() == Some("WebSocketHandshake") {
+            match field {
+                "key" => "mux_net_websocket_handshake_key",
+                "protocol" => "mux_net_websocket_handshake_protocol",
+                _ => return Ok(None),
+            }
+        } else {
+            return Ok(None);
+        };
+        let request = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[request.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        // Runtime handle accessors return boxed `Value*` pointers for a
+        // uniform ABI. Numeric HTTP fields are exposed as Mux `int`s, so
+        // unbox them before normal expression code (comparisons, formatting,
+        // arithmetic) consumes the field.
+        if (class_name.as_deref() == Some("HttpResponse") && field == "status")
+            || (class_name.as_deref() == Some("HttpRequest")
+                && matches!(
+                    field,
+                    "connect_timeout_ms"
+                        | "timeout_ms"
+                        | "max_redirects"
+                        | "retries"
+                        | "retry_backoff_ms"
+                ))
+            || (class_name.as_deref() == Some("HttpServerConfig")
+                && matches!(
+                    field,
+                    "max_header_bytes"
+                        | "max_body_bytes"
+                        | "max_headers"
+                        | "read_timeout_ms"
+                        | "worker_count"
+                        | "heartbeat_interval_ms"
+                ))
+        {
+            return self.get_raw_int_value(value).map(|int| Some(int.into()));
+        }
+        if (class_name.as_deref() == Some("HttpServerConfig")
+            && matches!(field, "access_log" | "cors_allow_credentials"))
+            || (class_name.as_deref() == Some("WebSocketFrame")
+                && matches!(field, "fin" | "masked"))
+        {
+            return self
+                .get_raw_bool_value(value)
+                .map(|bool_value| Some(bool_value.into()));
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_sql_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("SqlError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_sql_error_kind",
+            "detail" => "mux_sql_error_detail",
+            "provider" => "mux_sql_error_provider",
+            "code" => "mux_sql_error_code",
+            "constraint" => "mux_sql_error_constraint",
+            "operation" => "mux_sql_error_operation",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            // `SqlError.kind` is a payload-less `SqlErrorKind` enum. The
+            // runtime returns its owned opaque representation because native
+            // functions cross the `*mut Value` ABI; immediately load the
+            // inline enum so comparisons and match statements see the typed
+            // package-specific category.
+            return self
+                .unbox_enum_subject_value("SqlErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_http_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("HttpError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_http_error_kind",
+            "detail" => "mux_http_error_detail",
+            "status" => "mux_http_error_status",
+            "method" => "mux_http_error_method",
+            "url" => "mux_http_error_url",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            // `HttpError.kind` is a payload-less `HttpErrorKind` enum. The
+            // runtime returns its owned opaque representation because native
+            // functions cross the `*mut Value` ABI; immediately load the
+            // inline enum so comparisons and match statements see the real
+            // package-specific type rather than a diagnostic string.
+            return self
+                .unbox_enum_subject_value("HttpErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        if field == "status" {
+            return self.get_raw_int_value(value).map(|int| Some(int.into()));
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_env_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("EnvError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_env_error_kind",
+            "detail" => "mux_env_error_detail",
+            "key" => "mux_env_error_key",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            // `EnvError.kind` is a payload-less `EnvErrorKind` enum. Runtime
+            // accessors cross the `*mut Value` ABI, so unbox the opaque enum
+            // representation before exposing it to comparisons and matches.
+            return self
+                .unbox_enum_subject_value("EnvErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_fs_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("FsError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_fs_error_kind",
+            "detail" => "mux_fs_error_detail",
+            "path" => "mux_fs_error_path",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("FsErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_net_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("NetError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_net_error_kind",
+            "detail" => "mux_net_error_detail",
+            "address" => "mux_net_error_address",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("NetErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_url_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("UrlError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_url_error_kind",
+            "detail" => "mux_url_error_detail",
+            "url" => "mux_url_error_url",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("UrlErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_uuid_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("UuidError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_uuid_error_kind",
+            "detail" => "mux_uuid_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("UuidErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_log_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("LogError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_log_error_kind",
+            "detail" => "mux_log_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("LogErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_random_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("RandomError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_random_error_kind",
+            "detail" => "mux_random_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("RandomErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_crypto_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("CryptoError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_crypto_error_kind",
+            "detail" => "mux_crypto_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("CryptoErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_regex_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("RegexError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_regex_error_kind",
+            "detail" => "mux_regex_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("RegexErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_math_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("MathError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_math_error_kind",
+            "detail" => "mux_math_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("MathErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_process_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("ProcessError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_process_error_kind",
+            "detail" => "mux_process_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("ProcessErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_cli_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("CliError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_cli_error_kind",
+            "detail" => "mux_cli_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("CliErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_tls_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("TlsError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_tls_error_kind",
+            "detail" => "mux_tls_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("TlsErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_datetime_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("DateTimeError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_datetime_error_kind",
+            "detail" => "mux_datetime_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("DateTimeErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_io_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("IoError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_io_error_kind",
+            "detail" => "mux_io_error_detail",
+            "operation" => "mux_io_error_operation",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("IoErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_sync_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if self.resolve_expression_class_name(expr).as_deref() != Some("SyncError") {
+            return Ok(None);
+        }
+        let runtime_name = match field {
+            "kind" => "mux_sync_error_kind",
+            "detail" => "mux_sync_error_detail",
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value("SyncErrorKind", value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
+    }
+
+    fn try_generate_data_error_field_access(
+        &mut self,
+        expr: &ExpressionNode,
+        field: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let class_name = self.resolve_expression_class_name(expr);
+        let (kind_name, detail_name, enum_name) = match class_name.as_deref() {
+            Some("JsonError") => (
+                "mux_json_error_kind",
+                "mux_json_error_detail",
+                "JsonErrorKind",
+            ),
+            Some("CsvError") => ("mux_csv_error_kind", "mux_csv_error_detail", "CsvErrorKind"),
+            Some("ByteError") => (
+                "mux_byte_error_kind",
+                "mux_byte_error_detail",
+                "ByteErrorKind",
+            ),
+            Some("BytesError") => (
+                "mux_bytes_error_kind",
+                "mux_bytes_error_detail",
+                "BytesErrorKind",
+            ),
+            _ => return Ok(None),
+        };
+        let runtime_name = match field {
+            "kind" => kind_name,
+            "detail" => detail_name,
+            _ => return Ok(None),
+        };
+        let error = self.generate_expression(expr)?;
+        let value = self
+            .generate_runtime_call(runtime_name, &[error.into()])
+            .ok_or_else(|| format!("{runtime_name} should return a value"))?;
+        self.register_temp(value);
+        if field == "kind" {
+            return self
+                .unbox_enum_subject_value(enum_name, value.into_pointer_value())
+                .map(Some);
+        }
+        Ok(Some(value))
     }
 
     /// Construct a payload-less enum variant written without parentheses.
@@ -3931,14 +5346,12 @@ impl<'a> CodeGenerator<'a> {
             // type, not by the constructor's name.
             ExpressionKind::GenericType(name, _) => self
                 .analyzer
-                .symbol_table()
-                .lookup(name)
+                .lookup_named_type_symbol(name)
                 .filter(|s| s.kind == crate::semantics::SymbolKind::Enum)
                 .map(|_| name.clone()),
             ExpressionKind::Identifier(name) => self
                 .analyzer
-                .symbol_table()
-                .lookup(name)
+                .lookup_named_type_symbol(name)
                 .filter(|s| s.kind == crate::semantics::SymbolKind::Enum)
                 .map(|_| name.clone()),
             ExpressionKind::FieldAccess { expr: base, field } => {
@@ -4293,6 +5706,7 @@ impl<'a> CodeGenerator<'a> {
                 | PrimitiveType::Float
                 | PrimitiveType::Bool
                 | PrimitiveType::Char
+                | PrimitiveType::Byte
                 | PrimitiveType::Str,
             ) => self.unbox_value_for_type(loaded, ty),
             _ => Ok(loaded),
@@ -4305,7 +5719,7 @@ impl<'a> CodeGenerator<'a> {
         ty: &Type,
     ) -> Result<BasicValueEnum<'a>, String> {
         match ty {
-            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char | PrimitiveType::Byte) => {
                 self.get_raw_int_value(value).map(std::convert::Into::into)
             }
             Type::Primitive(PrimitiveType::Float) => self
@@ -4338,7 +5752,9 @@ impl<'a> CodeGenerator<'a> {
         };
         let type_node = type_node.clone();
         match type_node {
-            Type::Primitive(PrimitiveType::Int) => self.generate_int_field_method(expr, field),
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Byte) => {
+                self.generate_int_field_method(expr, field)
+            }
             Type::Primitive(PrimitiveType::Float) => self.generate_float_field_method(expr, field),
             Type::Primitive(PrimitiveType::Bool) => self.generate_bool_field_method(expr, field),
             Type::Primitive(PrimitiveType::Str) => self.generate_string_field_method(expr, field),
@@ -4367,6 +5783,20 @@ impl<'a> CodeGenerator<'a> {
                 Ok(Some(float_val.into()))
             }
             "to_int" | "to_char" => self.generate_expression(expr).map(Some),
+            "to_byte" => {
+                let value = self.generate_expression(expr)?;
+                let func = self
+                    .runtime_function("mux_int_to_byte")
+                    .ok_or("mux_int_to_byte not found")?;
+                let result = self
+                    .builder
+                    .build_call(func, &[value.into()], "int_to_byte")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("mux_int_to_byte should return a basic value")?;
+                Ok(Some(result))
+            }
             _ => Ok(None),
         }
     }
@@ -4462,6 +5892,11 @@ impl<'a> CodeGenerator<'a> {
                 "mux_string_to_char",
                 "str_to_char",
             ),
+            "to_byte" => self.generate_string_conversion_field_method(
+                expr,
+                "mux_string_to_byte",
+                "str_to_byte",
+            ),
             _ => Ok(None),
         }
     }
@@ -4497,6 +5932,20 @@ impl<'a> CodeGenerator<'a> {
         field: &str,
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
         match field {
+            "to_codepoint" => {
+                let char_val = self.generate_expression(expr)?;
+                let func = self
+                    .runtime_function("mux_char_to_codepoint")
+                    .ok_or("mux_char_to_codepoint not found")?;
+                let codepoint = self
+                    .builder
+                    .build_call(func, &[char_val.into()], "char_to_codepoint")
+                    .map_err(|e| e.to_string())?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("mux_char_to_codepoint should return a basic value")?;
+                Ok(Some(codepoint))
+            }
             "to_int" => {
                 let char_val = self.generate_expression(expr)?;
                 let func = self
@@ -4950,6 +6399,7 @@ impl<'a> CodeGenerator<'a> {
                 then_expr,
                 else_expr,
             } => Ok(self.generate_if_expression(cond, then_expr, else_expr)?),
+            ExpressionKind::Match { expr, arms } => self.generate_match_expression(expr, arms),
             ExpressionKind::Lambda {
                 params,
                 return_type,
@@ -5022,6 +6472,52 @@ impl<'a> CodeGenerator<'a> {
                 // Register it so uses that do not bind it (e.g. a string pattern
                 // compared in a match) release it at statement end; a binding
                 // transfers it out of the temp set instead of deep-cloning.
+                self.register_temp(call);
+                Ok(call)
+            }
+            LiteralNode::Bytes(bytes) => {
+                let name = format!("bytes_{}", self.string_counter);
+                self.string_counter += 1;
+                let values = bytes
+                    .iter()
+                    .map(|byte| self.context.i8_type().const_int(u64::from(*byte), false))
+                    .collect::<Vec<_>>();
+                let mut init_values = values.clone();
+                if init_values.is_empty() {
+                    init_values.push(self.context.i8_type().const_zero());
+                }
+                let array_type = self
+                    .context
+                    .i8_type()
+                    .array_type(llvm_index(init_values.len()));
+                let initializer = self.context.i8_type().const_array(&init_values);
+                let global =
+                    self.module
+                        .add_global(array_type, Some(AddressSpace::default()), &name);
+                global.set_linkage(inkwell::module::Linkage::Private);
+                global.set_initializer(&initializer);
+                let ptr = unsafe {
+                    self.builder.build_in_bounds_gep(
+                        array_type,
+                        global.as_pointer_value(),
+                        &[
+                            self.context.i32_type().const_zero(),
+                            self.context.i32_type().const_zero(),
+                        ],
+                        &name,
+                    )
+                }
+                .map_err(|e| e.to_string())?;
+                let call = self.call_runtime_function(
+                    "mux_bytes_from_data",
+                    &[
+                        ptr.into(),
+                        self.context
+                            .i64_type()
+                            .const_int(bytes.len() as u64, false)
+                            .into(),
+                    ],
+                )?;
                 self.register_temp(call);
                 Ok(call)
             }
@@ -5493,7 +6989,7 @@ fn boxed_value_constructor_name(arg_type: &Type, prefix: &str) -> Option<&'stati
         // same reason as a list or a class: nesting the built-in wrappers
         // (`optional<result<int, string>>`) is an ordinary shape, and leaving
         // them out rejected it as an unsupported type.
-        Type::Primitive(PrimitiveType::Str)
+        Type::Primitive(PrimitiveType::Str | PrimitiveType::Bytes)
         | Type::List(_)
         | Type::Map(_, _)
         | Type::Set(_)

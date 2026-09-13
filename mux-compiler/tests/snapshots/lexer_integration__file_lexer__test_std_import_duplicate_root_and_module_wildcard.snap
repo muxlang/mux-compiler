@@ -79,7 +79,7 @@ expression: tokens
     },
     Token {
         token_type: Id(
-            "assert",
+            "math",
         ),
         span: Span {
             row_start: 2,
@@ -88,7 +88,7 @@ expression: tokens
             ),
             col_start: 12,
             col_end: Some(
-                18,
+                16,
             ),
         },
     },
@@ -97,7 +97,7 @@ expression: tokens
         span: Span {
             row_start: 2,
             row_end: None,
-            col_start: 18,
+            col_start: 16,
             col_end: None,
         },
     },
@@ -108,9 +108,9 @@ expression: tokens
             row_end: Some(
                 2,
             ),
-            col_start: 19,
+            col_start: 17,
             col_end: Some(
-                20,
+                18,
             ),
         },
     },
@@ -119,7 +119,7 @@ expression: tokens
         span: Span {
             row_start: 2,
             row_end: None,
-            col_start: 20,
+            col_start: 18,
             col_end: None,
         },
     },
@@ -134,7 +134,7 @@ expression: tokens
     },
     Token {
         token_type: Id(
-            "assert_true",
+            "assert",
         ),
         span: Span {
             row_start: 4,
@@ -142,13 +142,37 @@ expression: tokens
                 4,
             ),
             col_start: 1,
+            col_end: Some(
+                7,
+            ),
+        },
+    },
+    Token {
+        token_type: OpenParen,
+        span: Span {
+            row_start: 4,
+            row_end: None,
+            col_start: 7,
+            col_end: None,
+        },
+    },
+    Token {
+        token_type: Bool(
+            true,
+        ),
+        span: Span {
+            row_start: 4,
+            row_end: Some(
+                4,
+            ),
+            col_start: 8,
             col_end: Some(
                 12,
             ),
         },
     },
     Token {
-        token_type: OpenParen,
+        token_type: Comma,
         span: Span {
             row_start: 4,
             row_end: None,
@@ -157,17 +181,17 @@ expression: tokens
         },
     },
     Token {
-        token_type: Bool(
-            true,
+        token_type: Str(
+            "std root + math wildcard",
         ),
         span: Span {
             row_start: 4,
             row_end: Some(
                 4,
             ),
-            col_start: 13,
+            col_start: 14,
             col_end: Some(
-                17,
+                40,
             ),
         },
     },
@@ -176,7 +200,7 @@ expression: tokens
         span: Span {
             row_start: 4,
             row_end: None,
-            col_start: 17,
+            col_start: 40,
             col_end: None,
         },
     },
@@ -185,112 +209,7 @@ expression: tokens
         span: Span {
             row_start: 4,
             row_end: None,
-            col_start: 18,
-            col_end: None,
-        },
-    },
-    Token {
-        token_type: Id(
-            "std",
-        ),
-        span: Span {
-            row_start: 5,
-            row_end: Some(
-                5,
-            ),
-            col_start: 1,
-            col_end: Some(
-                4,
-            ),
-        },
-    },
-    Token {
-        token_type: Dot,
-        span: Span {
-            row_start: 5,
-            row_end: None,
-            col_start: 4,
-            col_end: None,
-        },
-    },
-    Token {
-        token_type: Id(
-            "assert",
-        ),
-        span: Span {
-            row_start: 5,
-            row_end: Some(
-                5,
-            ),
-            col_start: 5,
-            col_end: Some(
-                11,
-            ),
-        },
-    },
-    Token {
-        token_type: Dot,
-        span: Span {
-            row_start: 5,
-            row_end: None,
-            col_start: 11,
-            col_end: None,
-        },
-    },
-    Token {
-        token_type: Id(
-            "assert_true",
-        ),
-        span: Span {
-            row_start: 5,
-            row_end: Some(
-                5,
-            ),
-            col_start: 12,
-            col_end: Some(
-                23,
-            ),
-        },
-    },
-    Token {
-        token_type: OpenParen,
-        span: Span {
-            row_start: 5,
-            row_end: None,
-            col_start: 23,
-            col_end: None,
-        },
-    },
-    Token {
-        token_type: Bool(
-            true,
-        ),
-        span: Span {
-            row_start: 5,
-            row_end: Some(
-                5,
-            ),
-            col_start: 24,
-            col_end: Some(
-                28,
-            ),
-        },
-    },
-    Token {
-        token_type: CloseParen,
-        span: Span {
-            row_start: 5,
-            row_end: None,
-            col_start: 28,
-            col_end: None,
-        },
-    },
-    Token {
-        token_type: NewLine,
-        span: Span {
-            row_start: 5,
-            row_end: None,
-            col_start: 29,
+            col_start: 41,
             col_end: None,
         },
     },
@@ -299,9 +218,9 @@ expression: tokens
             "print",
         ),
         span: Span {
-            row_start: 6,
+            row_start: 5,
             row_end: Some(
-                6,
+                5,
             ),
             col_start: 1,
             col_end: Some(
@@ -312,7 +231,7 @@ expression: tokens
     Token {
         token_type: OpenParen,
         span: Span {
-            row_start: 6,
+            row_start: 5,
             row_end: None,
             col_start: 6,
             col_end: None,
@@ -320,34 +239,34 @@ expression: tokens
     },
     Token {
         token_type: Str(
-            "PASS: std root + assert wildcard",
+            "PASS: std root + math wildcard",
         ),
         span: Span {
-            row_start: 6,
+            row_start: 5,
             row_end: Some(
-                6,
+                5,
             ),
             col_start: 7,
             col_end: Some(
-                41,
+                39,
             ),
         },
     },
     Token {
         token_type: CloseParen,
         span: Span {
-            row_start: 6,
+            row_start: 5,
             row_end: None,
-            col_start: 41,
+            col_start: 39,
             col_end: None,
         },
     },
     Token {
         token_type: NewLine,
         span: Span {
-            row_start: 6,
+            row_start: 5,
             row_end: None,
-            col_start: 42,
+            col_start: 40,
             col_end: None,
         },
     },

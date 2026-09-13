@@ -24,9 +24,10 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 
-# Keep in sync with mux-runtime's `full` feature plus rc-leak-check (matches the
-# CI RC Leak Check job's MUX_RUNTIME_LEAK_FEATURES).
-leak_features="core,json,csv,net,sql,sync,rc-leak-check"
+# Exercise the same complete runtime surface as normal compiler builds. Using
+# the aggregate feature avoids silently dropping newly added modules (the old
+# hand-maintained list omitted uuid and made the leak check fail to compile).
+leak_features="full,rc-leak-check"
 program_timeout=120
 
 runtime_src="${MUX_RUNTIME_SRC:-$repo_root/../mux-runtime}"
@@ -40,8 +41,11 @@ runtime_src="$(cd "$runtime_src" && pwd)"
 # Pin explicit target directories so the archive/binary paths are deterministic
 # and immune to an ambient CARGO_TARGET_DIR (which would otherwise redirect the
 # build and leave us forcing MUX_RUNTIME_LIB at a stale, feature-less archive).
+# Keep the leak-check runtime in its own target tree: building the optional
+# `rc-leak-check` feature into the normal target/debug archive would make later
+# ordinary compiler runs inherit the exit-time assertion.
 # A command-line --target-dir overrides the CARGO_TARGET_DIR env var.
-runtime_target="$runtime_src/target"
+runtime_target="$runtime_src/target/rc-leak-check"
 compiler_target="$repo_root/target"
 
 echo ">>> building rc-leak-check runtime ($leak_features)"

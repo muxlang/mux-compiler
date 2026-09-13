@@ -1,5 +1,6 @@
 use super::{
     SemanticAnalyzer, SemanticError, Symbol, SymbolKind, Type, collection_new_hint, format_type,
+    narrowing,
 };
 use crate::ast::{
     ExpressionKind, ExpressionNode, LiteralNode, Param, PrimitiveType, StatementKind,
@@ -39,7 +40,11 @@ impl SemanticAnalyzer {
                 }
                 self.analyze_expression(right)?;
                 let _ = self.get_expression_type(expr)?;
-                self.check_const_binary(left, op, op_span, right)
+                self.check_const_binary(left, op, op_span, right)?;
+                if op.is_assignment() {
+                    self.record_flow_assignment(left, right);
+                }
+                Ok(())
             }
             ExpressionKind::Unary {
                 expr,
@@ -78,6 +83,7 @@ impl SemanticAnalyzer {
                 then_expr,
                 else_expr,
             } => self.analyze_if_expr(cond, then_expr, else_expr),
+            ExpressionKind::Match { expr, arms } => self.analyze_match_expression(expr, arms),
             ExpressionKind::Lambda {
                 params,
                 return_type,
@@ -285,11 +291,16 @@ impl SemanticAnalyzer {
         self.analyze_expression(expr)?;
         let operand_type = self.get_expression_type(expr)?;
         match op {
+            UnaryOp::Use => self.validate_use_expression(&operand_type, op_span),
             UnaryOp::Not => self.check_not_operator_type(&operand_type, op_span),
             UnaryOp::Neg => self.check_neg_operator_type(&operand_type, op_span),
             UnaryOp::Incr | UnaryOp::Decr => {
                 self.check_incr_decr_operator_type(&operand_type, op_span)?;
                 self.check_incr_decr_const_modification(expr, op_span)
+            }
+            UnaryOp::Ref => {
+                self.escape_flow_target(expr);
+                Ok(())
             }
             _ => Ok(()),
         }
@@ -456,7 +467,10 @@ impl SemanticAnalyzer {
         }
 
         let _ = self.get_expression_type(expr)?;
-        self.check_call_preconditions(expr, func, args)
+        self.check_call_preconditions(expr, func, args)?;
+        self.finish_flow_call(expr)?;
+        self.record_expression_guard(expr);
+        Ok(())
     }
 
     fn check_some_call_args(
@@ -548,6 +562,27 @@ impl SemanticAnalyzer {
                     ));
                 }
             }
+            Type::Primitive(PrimitiveType::Bytes) => {
+                if !matches!(index_type, Type::Primitive(PrimitiveType::Int)) {
+                    return Err(SemanticError::with_help(
+                        DiagnosticCode::InvalidOperation,
+                        format!(
+                            "Bytes index must be an integer, found {}",
+                            format_type(&index_type)
+                        ),
+                        index.span,
+                        "Bytes are indexed by octet position, e.g. data[0]",
+                    ));
+                }
+                if is_assignment_target {
+                    return Err(SemanticError::with_help(
+                        DiagnosticCode::CannotAssign,
+                        "Cannot assign to a byte through indexing",
+                        expr.span,
+                        "Use push, pop, fill or another bytes method to mutate the value.",
+                    ));
+                }
+            }
             Type::EmptyMap => {
                 return Err(SemanticError::with_help(
                     DiagnosticCode::InvalidOperation,
@@ -561,7 +596,7 @@ impl SemanticAnalyzer {
                     DiagnosticCode::InvalidOperation,
                     "Cannot index non-list type",
                     expr.span,
-                    "Only lists, maps and strings can be indexed with '[]'. Examples: my_list[0], my_map['key'], text[0]",
+                    "Only lists, maps, strings and bytes can be indexed with '[]'. Examples: my_list[0], my_map['key'], text[0], data[0]",
                 ));
             }
         }
@@ -585,13 +620,13 @@ impl SemanticAnalyzer {
 
         if !matches!(
             target_type,
-            Type::List(_) | Type::Primitive(PrimitiveType::Str)
+            Type::List(_) | Type::Primitive(PrimitiveType::Str | PrimitiveType::Bytes)
         ) {
             return Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,
                 format!("Cannot slice type {}", format_type(&target_type)),
                 expr.span,
-                "Only lists and strings can be sliced. Examples: items[1:3], text[:4]",
+                "Only lists, strings and bytes can be sliced. Examples: items[1:3], text[:4], data[2:]",
             ));
         }
 
@@ -811,8 +846,6 @@ impl SemanticAnalyzer {
         else_expr: &ExpressionNode,
     ) -> Result<(), SemanticError> {
         self.analyze_expression(cond)?;
-        self.analyze_expression(then_expr)?;
-        self.analyze_expression(else_expr)?;
         let cond_type = self.get_expression_type(cond)?;
         if !matches!(cond_type, Type::Primitive(PrimitiveType::Bool)) {
             return Err(SemanticError::with_help(
@@ -825,6 +858,16 @@ impl SemanticAnalyzer {
                 "The condition in an if expression must evaluate to a bool value",
             ));
         }
+        self.record_expression_guard(cond);
+        let before = self.flow.clone();
+        self.flow = before.clone();
+        self.assume_flow_condition(cond, true);
+        self.analyze_expression(then_expr)?;
+        let then_flow = self.flow.clone();
+        self.flow = before;
+        self.assume_flow_condition(cond, false);
+        self.analyze_expression(else_expr)?;
+        self.flow = narrowing::FlowState::join(then_flow, self.flow.clone());
         Ok(())
     }
 
@@ -845,6 +888,10 @@ impl SemanticAnalyzer {
 
         let lambda_return_type = self.resolve_type(return_type)?;
         let prev_return_type = self.current_return_type.clone();
+        let prev_flow = std::mem::take(&mut self.flow);
+        let prev_flow_generation = self.flow_generation;
+        let prev_expression_guards = std::mem::take(&mut self.expression_guards);
+        self.flow_generation = 0;
         self.current_return_type = Some(lambda_return_type.clone());
 
         for param in params {
@@ -877,6 +924,9 @@ impl SemanticAnalyzer {
         self.check_lambda_return_paths(expr, body, &lambda_return_type)?;
 
         self.current_return_type = prev_return_type;
+        self.flow = prev_flow;
+        self.flow_generation = prev_flow_generation;
+        self.expression_guards = prev_expression_guards;
         let mut captures = self.find_free_variables_in_block(body, &local_vars)?;
         // Where predicates run inside the lambda, so outer variables they
         // reference must be captured too.
@@ -996,6 +1046,7 @@ impl SemanticAnalyzer {
                 LiteralNode::Integer(_) => Ok(Type::Primitive(PrimitiveType::Int)),
                 LiteralNode::Float(_) => Ok(Type::Primitive(PrimitiveType::Float)),
                 LiteralNode::String(_) => Ok(Type::Primitive(PrimitiveType::Str)),
+                LiteralNode::Bytes(_) => Ok(Type::Primitive(PrimitiveType::Bytes)),
                 LiteralNode::Boolean(_) => Ok(Type::Primitive(PrimitiveType::Bool)),
                 LiteralNode::Char(_) => Ok(Type::Primitive(PrimitiveType::Char)),
             },

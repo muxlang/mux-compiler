@@ -68,7 +68,10 @@ fn compile_and_execute_file(
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("test_executable");
-    let exec_path = abs_dir.join(exec_name);
+    let mut exec_path = abs_dir.join(exec_name);
+    if cfg!(windows) {
+        exec_path.set_extension("exe");
+    }
 
     if exec_path.exists() {
         fs::remove_file(&exec_path).unwrap_or_else(|e| {

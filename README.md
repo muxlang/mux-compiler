@@ -9,7 +9,6 @@
 [![Version](https://img.shields.io/badge/version-0.10.2-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-online-blue.svg?style=flat-square)](https://mux-lang.dev)
-[![Status](https://img.shields.io/badge/status-alpha-orange.svg?style=flat-square)]()
 [![Sonar Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=muxlang_mux-compiler&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=muxlang_mux-compiler)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=muxlang_mux-compiler&metric=coverage)](https://sonarcloud.io/summary/new_code?id=muxlang_mux-compiler)
 
@@ -26,7 +25,7 @@
 - **Fast & Native:** LLVM-powered compilation delivers native performance
 - **Memory Safe:** Reference-counted memory management provides safety without GC pauses or complex ownership
 - **Modern Features:** Full-featured with generics, interfaces, tagged unions, and pattern matching
-- **Developer Friendly:** Helpful error messages, built-in tooling, and comprehensive documentation
+- **Developer Friendly:** Helpful error messages, built-in tooling, and clear documentation
 
 ---
 
@@ -145,18 +144,17 @@ func divide(int a, int b) returns result<int, string> {
     return ok(a / b)
 }
 
-// Pattern matching with exhaustive checking
+// Inspect a Result when the error is handled locally
 func main() returns void {
     auto result = divide(10, 2)
 
-    match result {
-        ok(value) {
-            print("Result: " + value.to_string())
-        }
-        err(error) {
-            print("Error: " + error)
-        }
+    if result.is_ok() {
+        auto value = result.value()
+        print("Result: " + value.to_string())
+    } else {
+        print("Error: " + result.error())
     }
+    return
 }
 ```
 
@@ -197,7 +195,8 @@ Profiling is done with external tools so it stays decoupled from the compiler an
 
 ## Project Status
 
-⚠️ **Alpha Stage**: Mux is actively being developed. Expect breaking changes and incomplete features as we work toward a stable release.
+Mux is actively being developed. Expect occasional breaking changes while the
+language, compiler, and standard library continue to converge.
 
 - **Current Version:** 0.10.2
 

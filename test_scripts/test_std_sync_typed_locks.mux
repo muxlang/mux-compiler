@@ -1,0 +1,44 @@
+import std.sync
+
+func main() returns void {
+    Mutex<int> mutex = Mutex<int>.with_value(41)
+    auto mutex_result = mutex.with_lock(func(&int value) returns void {
+        *value = *value + 1
+        return
+    })
+    if mutex_result.is_err() {
+        print("mutex callback error: " + mutex_result.error().message())
+    } else {
+        print("mutex callback ok")
+    }
+
+    RwLock<string> lock = RwLock<string>.with_value("hello")
+    auto read_result = lock.with_read(func(&string value) returns void {
+        print("read: " + *value)
+        return
+    })
+    if read_result.is_err() {
+        print("read callback error: " + read_result.error().message())
+    } else {
+        print("read callback ok")
+    }
+    auto write_result = lock.with_write(func(&string value) returns void {
+        *value = *value + " world"
+        return
+    })
+    if write_result.is_err() {
+        print("write callback error: " + write_result.error().message())
+    } else {
+        print("write callback ok")
+    }
+    auto updated_read_result = lock.with_read(func(&string value) returns void {
+        print("updated: " + *value)
+        return
+    })
+    if updated_read_result.is_err() {
+        print("updated read callback error: " + updated_read_result.error().message())
+    } else {
+        print("updated read callback ok")
+    }
+    return
+}

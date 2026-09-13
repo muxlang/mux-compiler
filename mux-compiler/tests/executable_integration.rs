@@ -33,6 +33,58 @@ fn normalize_internal_error(output: &str) -> String {
         .into_owned()
 }
 
+/// Make filesystem paths printed by executable fixtures stable across hosts.
+///
+/// Some fixtures intentionally exercise `fs.cwd()` and `fs.absolute()`. Their
+/// values are necessarily different on every checkout, and Windows also uses
+/// a native backslash separator. Normalize only the executable output used by
+/// snapshots; compiler diagnostics retain their original text.
+fn normalize_executable_paths(output: &str, fixture_dir: &Path) -> String {
+    let fixture_dir = fixture_dir.to_string_lossy().replace('\\', "/");
+    let path_prefixes = ["dirname: ", "join: ", "cwd: ", "absolute: "];
+    let mut normalized = String::with_capacity(output.len());
+
+    for chunk in output.split_inclusive('\n') {
+        let (line, ending) = chunk
+            .strip_suffix('\n')
+            .map_or((chunk, ""), |line| (line, "\n"));
+        let (line, carriage_return) = line
+            .strip_suffix('\r')
+            .map_or((line, ""), |line| (line, "\r"));
+
+        if let Some(prefix) = path_prefixes
+            .iter()
+            .find(|prefix| line.starts_with(**prefix))
+        {
+            let path = line[prefix.len()..].replace('\\', "/");
+            let path = if fixture_dir.is_empty() {
+                path
+            } else {
+                path.replace(&fixture_dir, "<fixture-dir>")
+            };
+            normalized.push_str(prefix);
+            normalized.push_str(&path);
+        } else {
+            normalized.push_str(line);
+        }
+        normalized.push_str(carriage_return);
+        normalized.push_str(ending);
+    }
+
+    normalized
+}
+
+#[test]
+fn executable_snapshot_normalizes_native_paths() {
+    let output = "cwd: C:\\build\\mux\\test_scripts\nabsolute: C:\\build\\mux\\test_scripts\\functions.mux\n";
+    let fixture_dir = Path::new(r"C:\build\mux\test_scripts");
+
+    assert_eq!(
+        normalize_executable_paths(output, fixture_dir),
+        "cwd: <fixture-dir>\nabsolute: <fixture-dir>/functions.mux\n"
+    );
+}
+
 fn compile_and_execute_file(test_file: &Path) -> (String, String) {
     let abs_path = fs::canonicalize(test_file).unwrap_or_else(|e| {
         panic!(
@@ -51,7 +103,10 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("test_executable");
 
-    let exec_path = abs_dir.join(exec_name);
+    let mut exec_path = abs_dir.join(exec_name);
+    if cfg!(windows) {
+        exec_path.set_extension("exe");
+    }
 
     // Clean up any existing binary before compiling
     if exec_path.exists() {
@@ -94,23 +149,28 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
     // Execute the compiled binary
     println!("Executing: {}", exec_path.display());
 
-    // Debug: print ldd output and check rpath
-    let ldd_out = Command::new("ldd")
-        .arg(&exec_path)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-    println!("LDD for {}:\n{}", exec_path.display(), ldd_out);
-    let readelf_out = Command::new("readelf")
-        .args(["-d", &exec_path.to_string_lossy()])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-    for line in readelf_out
-        .lines()
-        .filter(|l| l.contains("PATH") || l.contains("NEEDED"))
+    // Debug: print ELF dependency/rpath details where the tools are defined.
+    // macOS and Windows use different binary formats and should not probe
+    // unavailable Unix commands during their acceptance runs.
+    #[cfg(target_os = "linux")]
     {
-        println!("READELF: {line}");
+        let ldd_out = Command::new("ldd")
+            .arg(&exec_path)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        println!("LDD for {}:\n{}", exec_path.display(), ldd_out);
+        let readelf_out = Command::new("readelf")
+            .args(["-d", &exec_path.to_string_lossy()])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        for line in readelf_out
+            .lines()
+            .filter(|l| l.contains("PATH") || l.contains("NEEDED"))
+        {
+            println!("READELF: {line}");
+        }
     }
 
     let mut exec_cmd = Command::new(&exec_path);
@@ -183,12 +243,29 @@ fn run_snapshot_test(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
 
     println!("Creating executable snapshot for: {snapshot_name}");
 
-    let normalized = ipv4_re.replace_all(&output_to_snapshot, "$host:PORT");
+    let fixture_dir = fs::canonicalize(path)
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let normalized = normalize_executable_paths(&output_to_snapshot, &fixture_dir);
+    let normalized = ipv4_re.replace_all(&normalized, "$host:PORT");
     let normalized = ipv6_re.replace_all(&normalized, "[$host]:PORT");
     let normalized = normalize_internal_error(&normalized);
     assert_snapshot!(
         format!("executable_integration__{}", snapshot_name),
         normalized
+    );
+}
+
+fn run_network_test(path: &Path) {
+    let (stdout, stderr) = compile_and_execute_file(path);
+    assert!(
+        stderr.is_empty(),
+        "network fixture wrote to stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("Program exited with status:"),
+        "network fixture failed: {stdout}"
     );
 }
 
@@ -204,7 +281,11 @@ fn process_test_file(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
     println!("\n=== Testing executable for file: {file_name} ===");
 
     match std::panic::catch_unwind(|| {
-        run_snapshot_test(path, ipv4_re, ipv6_re);
+        if is_network_fixture(file_name) {
+            run_network_test(path);
+        } else {
+            run_snapshot_test(path, ipv4_re, ipv6_re);
+        }
         println!("✓ Successfully processed executable for: {file_name}");
     }) {
         Ok(()) => {}
@@ -218,8 +299,63 @@ fn process_test_file(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
 fn is_network_fixture(file_name: &str) -> bool {
     matches!(
         file_name,
-        "test_std_http.mux" | "test_std_http_server.mux" | "test_std_tcp.mux" | "test_std_udp.mux"
+        "test_std_http.mux"
+            | "test_std_http_server.mux"
+            | "test_std_local_net.mux"
+            | "test_std_tcp.mux"
+            | "test_std_udp.mux"
     )
+}
+
+#[test]
+fn base32_decoder_rejects_noncanonical_padding_and_trailing_bits() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the Unix epoch")
+        .as_nanos();
+    let source_path = std::env::temp_dir().join(format!(
+        "mux_base32_canonical_{}_{}.mux",
+        std::process::id(),
+        nonce
+    ));
+    fs::write(
+        &source_path,
+        r#"import std.encoding
+
+func main() returns void {
+    match encoding.base32_decode("MY======") {
+        ok(_) { print("canonical") }
+        err(_) { print("rejected canonical") }
+    }
+    match encoding.base32_decode("MZ======") {
+        ok(_) { print("accepted trailing bits") }
+        err(_) { print("rejected trailing bits") }
+    }
+    match encoding.base32_decode("A=======") {
+        ok(_) { print("accepted invalid padding") }
+        err(_) { print("rejected invalid padding") }
+    }
+    match encoding.base64url_decode("TQ==") {
+        ok(_) { print("accepted base64url padding") }
+        err(_) { print("rejected base64url padding") }
+    }
+    match encoding.base64url_decode("+w") {
+        ok(_) { print("accepted base64url standard alphabet") }
+        err(_) { print("rejected base64url standard alphabet") }
+    }
+    return
+}
+"#,
+    )
+    .expect("temporary Mux source should be writable");
+
+    let (stdout, stderr) = compile_and_execute_file(&source_path);
+    fs::remove_file(&source_path).expect("temporary Mux source should be removable");
+    assert!(stderr.is_empty(), "program wrote to stderr: {stderr}");
+    assert_eq!(
+        stdout,
+        "canonical\nrejected trailing bits\nrejected invalid padding\nrejected base64url padding\nrejected base64url standard alphabet\n"
+    );
 }
 
 #[test]

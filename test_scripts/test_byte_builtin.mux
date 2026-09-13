@@ -1,0 +1,53 @@
+byte value = 42
+byte other = 100
+set<byte> values = {}
+values.add(value)
+print("byte value: " + value.to_string())
+print("byte as int: " + value.to_int().to_string())
+print("byte comparison: " + (value < other).to_string())
+print("byte set contains: " + values.contains(value).to_string())
+match value.checked_add(other) {
+    ok(sum) { print("checked add: " + sum.to_string()) }
+    err(error) { print("checked add error: " + error.message()) }
+}
+print("wrapping add: " + value.wrapping_add(other).to_string())
+print("saturating add: " + value.saturating_add(other).to_string())
+print("bit and: " + value.bit_and(other).to_string())
+print("byte eq: " + value.eq(other).to_string())
+print("byte cmp: " + value.cmp(other).to_string())
+print("byte hash: " + value.hash().to_string())
+int number = -7
+print("int eq: " + number.eq(-7).to_string())
+print("int cmp: " + number.cmp(2).to_string())
+print("int hash: " + number.hash().to_string())
+float decimal = 1.5
+print("float eq: " + decimal.eq(1.5).to_string())
+print("float cmp: " + decimal.cmp(2.5).to_string())
+print("float hash: " + decimal.hash().to_string())
+string word = "mux"
+print("string eq: " + word.eq("mux").to_string())
+print("string cmp: " + word.cmp("rust").to_string())
+print("string hash: " + word.hash().to_string())
+bool enabled = true
+print("bool eq: " + enabled.eq(false).to_string())
+print("bool hash: " + enabled.hash().to_string())
+char letter = 'a'
+print("char eq: " + letter.eq('a').to_string())
+print("char cmp: " + letter.cmp('z').to_string())
+print("char hash: " + letter.hash().to_string())
+match value.shift_left(1) {
+    ok(shifted) { print("shift left: " + shifted.to_string()) }
+    err(error) { print("shift error: " + error.message()) }
+}
+match 255.to_byte() {
+    ok(converted) { print("int to byte: " + converted.to_string()) }
+    err(error) { print("int to byte error: " + error.message()) }
+}
+match "0x2a".to_byte() {
+    ok(converted) { print("string to byte: " + converted.to_string()) }
+    err(error) { print("string to byte error: " + error.message()) }
+}
+match 256.to_byte() {
+    ok(_) { print("overflow accepted") }
+    err(error) { print("overflow rejected: " + error.message()) }
+}

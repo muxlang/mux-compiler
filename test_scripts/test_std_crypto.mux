@@ -1,0 +1,35 @@
+import std.crypto
+
+func seal_file_example(bytes key) returns result<void, CryptoError> {
+    return crypto.seal_file(key, "input.bin", "sealed.bin", b"context")
+}
+
+func crypto_smoke() returns result<int, CryptoError> {
+    auto input = b"mux"
+    print("sha256: " + crypto.sha256(input).size().to_string())
+    print("sha512: " + crypto.sha512(input).size().to_string())
+    print("sha3: " + crypto.sha3_256(input).size().to_string())
+    print("blake3: " + crypto.blake3(input).size().to_string())
+
+    auto key = use crypto.generate_key()
+    auto mac = use crypto.hmac_sha256(key, input)
+    print("hmac: " + mac.size().to_string())
+    auto sealed = use crypto.seal_aes256_gcm(key, input, b"header")
+    auto plain = use crypto.open(key, sealed, b"header")
+    print("round trip: " + (plain == input).to_string())
+    auto failed = crypto.open(key, sealed, b"wrong")
+    if failed.is_err() {
+        assert(failed.error().kind == crypto.CryptoErrorKind.Authentication, "crypto error kind")
+        print("crypto error kind: authentication")
+    }
+    return ok(0)
+}
+
+func main() returns void {
+    auto result = crypto_smoke()
+    if result.is_err() {
+        print(result.error().message())
+        return
+    }
+    return
+}

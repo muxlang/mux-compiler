@@ -29,17 +29,13 @@ pub struct Parser<'a> {
 
 /// Why `name` cannot be declared as a class method, if it cannot.
 ///
-/// The compiler synthesizes these on every class - `new` builds an instance,
-/// the deserializers build one from a document - so a user-declared method of
-/// the same name would be silently replaced by the synthesized one. Rejecting
-/// it at the declaration says so, rather than letting a method that looks
-/// defined behave as something else entirely.
+/// The compiler synthesizes `new` on every class, so a user-declared method of
+/// the same name would be silently replaced by the synthesized constructor.
+/// Serialization and deserialization are ordinary user methods: their names
+/// and implementations belong to the program, not to the compiler.
 fn reserved_class_method_error(name: &str) -> Option<String> {
     let purpose = match name {
         "new" => "class constructors",
-        "from_json" => "building an instance from a JSON object",
-        "list_from_json" => "building a list of instances from a JSON array",
-        "list_from_csv" => "building a list of instances from CSV rows",
         _ => return None,
     };
     Some(format!(
@@ -101,6 +97,7 @@ impl<'a> Parser<'a> {
                 | TokenType::Match
                 | TokenType::Break
                 | TokenType::Continue
+                | TokenType::Test
                 | TokenType::Return
                 | TokenType::OpenBrace
                 | TokenType::CloseBrace
@@ -257,6 +254,8 @@ impl<'a> Parser<'a> {
             self.interface_declaration().map(Some)
         } else if self.check(TokenType::Enum) {
             self.enum_declaration().map(Some)
+        } else if self.check(TokenType::Test) {
+            self.test_declaration().map(Some)
         } else if self.check(TokenType::Import) {
             self.import_declaration().map(Some)
         } else {
@@ -425,6 +424,69 @@ impl<'a> Parser<'a> {
             methods,
             where_clause,
             span: full_span,
+        })
+    }
+
+    /// Parse a named top-level test block:
+    ///
+    /// ```text
+    /// test "addition" {
+    ///     // ordinary Mux statements
+    /// }
+    /// ```
+    ///
+    /// The body deliberately reuses the ordinary block parser. This keeps test
+    /// code subject to exactly the same syntax rules as application code while
+    /// allowing semantic/code-generation passes to omit it from normal builds.
+    fn test_declaration(&mut self) -> ParserResult<AstNode> {
+        if self.is_in_block() {
+            return Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
+                "Test blocks must be declared at the top level".to_string(),
+                self.peek().span,
+                "Move this test block outside of functions, classes, and other blocks.",
+            ));
+        }
+        let start_span = self.consume_token(TokenType::Test, "Expected 'test' keyword")?;
+        let (name, name_span) = {
+            let name_token = self.consume();
+            let name = match &name_token.token_type {
+                TokenType::Str(name) => name.clone(),
+                _ => {
+                    return Err(ParserError::with_help(
+                        DiagnosticCode::ParseExpectedToken,
+                        "Expected a quoted test name after 'test'".to_string(),
+                        name_token.span,
+                        "Name tests with a string, for example: test \"adds numbers\" { ... }",
+                    ));
+                }
+            };
+            (name, name_token.span)
+        };
+        if name.is_empty() {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                "Test name must not be empty".to_string(),
+                name_span,
+            ));
+        }
+        self.skip_newlines();
+        let block = self.block()?;
+        let AstNode::Statement(StatementNode {
+            kind: StatementKind::Block(body),
+            span: block_span,
+        }) = block
+        else {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                "Expected a block after test name".to_string(),
+                name_span,
+            ));
+        };
+        Ok(AstNode::Test {
+            name,
+            body,
+            span: start_span.combine(&block_span),
         })
     }
 
@@ -2552,6 +2614,61 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_match_expression(&mut self, token_span: Span) -> ParserResult<ExpressionNode> {
+        let expr = self.parse_expression()?;
+        self.check_no_postfix_increment_decrement(&expr)?;
+        self.consume_token(TokenType::OpenBrace, "Expected '{' after match expression")?;
+        self.skip_newlines();
+        let mut arms = Vec::new();
+        while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
+            let pattern = self.parse_pattern()?;
+            let guard = if self.matches(&[TokenType::If]) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            self.skip_newlines();
+            self.consume_token(TokenType::OpenBrace, "Expected '{' before match arm value")?;
+            self.skip_newlines();
+            let body = if self.matches(&[TokenType::Return]) {
+                let AstNode::Statement(statement) = self.return_statement()? else {
+                    return Err(ParserError::new(
+                        DiagnosticCode::ParseExpectedToken,
+                        "Expected return statement in match arm",
+                        token_span,
+                    ));
+                };
+                vec![statement]
+            } else {
+                let value = self.parse_expression()?;
+                vec![StatementNode {
+                    span: value.span,
+                    kind: StatementKind::Expression(value),
+                }]
+            };
+            self.skip_newlines();
+            self.consume_token(TokenType::CloseBrace, "Expected '}' after match arm value")?;
+            arms.push(MatchArm {
+                pattern,
+                guard,
+                body,
+            });
+            self.skip_newlines();
+            if self.matches(&[TokenType::Comma]) {
+                self.skip_newlines();
+            }
+        }
+        let end_span =
+            self.consume_token(TokenType::CloseBrace, "Expected '}' after match arms")?;
+        Ok(ExpressionNode {
+            kind: ExpressionKind::Match {
+                expr: Box::new(expr),
+                arms,
+            },
+            span: token_span.combine(&end_span),
+        })
+    }
+
     /// Parse one branch of an if-expression: `{ <expr> }`. Newlines are allowed
     /// around the value expression so a branch can span multiple lines; the branch
     /// is still a single value, not a statement block.
@@ -2584,15 +2701,6 @@ impl<'a> Parser<'a> {
 
     fn unexpected_primary_error(&self, token_type: TokenType, token_span: Span) -> ParserError {
         let token_desc = Self::describe_token(&token_type);
-
-        if matches!(token_type, TokenType::Match) {
-            return ParserError::with_help(
-                DiagnosticCode::ParseExpectedToken,
-                "match cannot be used as an expression; it can only be used as a statement",
-                token_span,
-                "Use 'match' as a standalone statement with 'return' in each arm, or use an if/else expression for inline conditionals.",
-            );
-        }
 
         if matches!(token_type, TokenType::Return) {
             return ParserError::with_help(
@@ -2659,6 +2767,11 @@ impl<'a> Parser<'a> {
                 token_span,
             ),
 
+            TokenType::Bytes(bytes) => self.parse_postfixed_primary(
+                ExpressionKind::Literal(LiteralNode::Bytes(bytes)),
+                token_span,
+            ),
+
             TokenType::Float(f) => self.parse_postfixed_primary(
                 ExpressionKind::Literal(LiteralNode::Float(f)),
                 token_span,
@@ -2671,6 +2784,8 @@ impl<'a> Parser<'a> {
             TokenType::Func => self.parse_lambda_expression(token_span),
 
             TokenType::If => self.parse_if_expression(token_span),
+
+            TokenType::Match => self.parse_match_expression(token_span),
 
             TokenType::Id(id) => {
                 // defer handling of '<' to binary operator parsing or parse_postfix_operators, which can disambiguate generics more safely.
@@ -3036,6 +3151,7 @@ impl<'a> Parser<'a> {
         let token = self.peek();
         match &token.token_type {
             TokenType::Minus
+            | TokenType::Use
             | TokenType::Bang
             | TokenType::Ref
             | TokenType::Incr
@@ -3259,6 +3375,33 @@ mod tests {
             };
             assert_eq!(module_path, expected_path, "source: {source}");
         }
+    }
+
+    #[test]
+    fn parses_named_top_level_test_block() {
+        let mut parser = create_parser(
+            "test \"adds numbers\" {\n  auto value = 1 + 2\n}\nfunc main() returns void {\n  return\n}\n",
+        );
+        let nodes = parser.parse().expect("test block should parse");
+        assert!(matches!(
+            nodes.first(),
+            Some(AstNode::Test { name, body, .. })
+                if name == "adds numbers" && body.len() == 1
+        ));
+        assert!(matches!(nodes.get(1), Some(AstNode::Function(_))));
+    }
+
+    #[test]
+    fn rejects_nested_test_block() {
+        let mut parser = create_parser("func main() returns void {\n  test \"nested\" {}\n}\n");
+        let Err((_, errors)) = parser.parse() else {
+            panic!("nested test block should be rejected");
+        };
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("top level"))
+        );
     }
 
     #[test]

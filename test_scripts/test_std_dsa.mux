@@ -105,18 +105,44 @@ g.add_edge("A", "C")
 g.add_edge("B", "D")
 g.add_edge("C", "D")
 g.add_edge("D", "E")
+g.add_edge("A", "B")
 print("graph len: " + g.len().to_string())
 print("graph is_empty: " + g.is_empty().to_string())
+print("graph degree A after duplicate: " + g.degree("A").to_string())
 print("graph neighbors of A: " + g.neighbors("A").to_string())
 print("graph neighbors of B: " + g.neighbors("B").to_string())
 print("graph neighbors of Z: " + g.neighbors("Z").to_string())
 print("graph bfs from A: " + g.bfs("A").to_string())
 print("graph bfs from D: " + g.bfs("D").to_string())
+print("graph dfs from A: " + g.dfs("A").to_string())
+auto topological = g.topological_sort()
+if topological.is_some() {
+    print("graph topological sort: " + topological.value().to_string())
+} else {
+    print("graph topological sort: none")
+}
+auto shortest = g.shortest_path("A", "E")
+if shortest.is_some() {
+    print("graph shortest path: " + shortest.value().to_string())
+} else {
+    print("graph shortest path: none")
+}
 print("graph to_list: " + g.to_list().to_string())
 print("graph to_list deterministic: " + (g.to_list().to_string() == "[X, A, B, C, D, E]").to_string())
 g.clear()
 print("graph len after clear: " + g.len().to_string())
 print("graph is_empty after clear: " + g.is_empty().to_string())
+
+auto undirected = graph.Graph<string>.new_undirected()
+undirected.add_edge("A", "B")
+undirected.add_edge("B", "C")
+print("undirected reverse edge: " + undirected.has_edge("B", "A").to_string())
+print("undirected connected: " + undirected.is_connected().to_string())
+print("undirected acyclic: " + (!undirected.has_cycle()).to_string())
+undirected.add_edge("C", "A")
+print("undirected cycle: " + undirected.has_cycle().to_string())
+auto missing_path = undirected.shortest_path("A", "missing")
+print("undirected missing path: " + missing_path.is_none().to_string())
 
 print("=== ALGORITHM TESTS ===")
 auto unsorted = [9, 3, 5, 1, 7, 2, 8, 4]
@@ -131,10 +157,22 @@ s2.push(5)
 s2.push(7)
 s2.push(9)
 print("search stack: " + s2.to_list().to_string())
-print("binary search for 5: " + algorithm.binary_search(s2, 5).to_string())
-print("binary search for 1: " + algorithm.binary_search(s2, 1).to_string())
-print("binary search for 9: " + algorithm.binary_search(s2, 9).to_string())
-print("binary search for 99: " + algorithm.binary_search(s2, 99).to_string())
+match algorithm.binary_search(s2, 5) {
+    some(index) { print("binary search for 5: " + index.to_string()) }
+    none { print("binary search for 5: none") }
+}
+match algorithm.binary_search(s2, 1) {
+    some(index) { print("binary search for 1: " + index.to_string()) }
+    none { print("binary search for 1: none") }
+}
+match algorithm.binary_search(s2, 9) {
+    some(index) { print("binary search for 9: " + index.to_string()) }
+    none { print("binary search for 9: none") }
+}
+match algorithm.binary_search(s2, 99) {
+    some(index) { print("binary search for 99: " + index.to_string()) }
+    none { print("binary search for 99: none") }
+}
 
 match algorithm.max(s2) {
     some(v) { print("max: " + v.to_string()) }

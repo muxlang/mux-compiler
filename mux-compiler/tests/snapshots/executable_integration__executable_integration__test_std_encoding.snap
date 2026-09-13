@@ -1,0 +1,60 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+00ff
+3
+42
+hex invalid_length: input must contain an even number of characters
+hex invalid_byte at offset 0: invalid hexadecimal byte
+hex / invalid_byte / 0
+TWFu
+stream hex: 4d616e
+stream hex decode: Mun
+stream line: one
+stream line final: two
+stream line EOF missing
+stream base64: TWFu
+stream base64 decode: Mun
+stream base64 padding error: base64 invalid_padding: padding must be at the end
+stream base64 boundary: true
+3
+97
+stream base32: JVQW4===
+stream base32 decode: Man
+stream percent: Man
+stream percent decode: Mun
+stream ASCII85: 9jqo
+stream ASCII85 decode: Man
+base64 non_canonical at offset 1: non-zero trailing base64 bits
+Man
+4
+0
+percent ASCII punctuation: Mux!$;:@
+JVQW4===
+3
+77
+SzVj
+3
+77
+stream Base58: SzVj
+stream Base58 decode: Man
+9jqo
+3
+77
+ascii85 invalid_length at offset 0: final group must contain at least two characters
+ascii85 non_canonical at offset 0: non-canonical ASCII85 group
+A😀
+1
+A😀
+A😀
+stream UTF-16 encode: true
+stream UTF-16 decode: A😀
+stream UTF-32 encode: true
+stream UTF-32 decode: A😀
+M%20/u%3fn
+M%20/u?n
+M+%2fu%3fn
+9
+32
+percent form ASCII punctuation: Mux!$;:@

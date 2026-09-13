@@ -1,0 +1,1321 @@
+// Deterministic text and byte encodings that do not depend on platform locale.
+
+import std.io
+
+enum EncodingErrorKind {
+    InvalidLength,
+    InvalidByte,
+    InvalidPadding,
+    NonCanonical,
+    InvalidCharacter,
+    Overflow,
+    InvalidEscape,
+    TruncatedEscape,
+    InvalidInput,
+    Internal,
+    Read,
+    Write,
+    Flush,
+    InvalidLeadingByte,
+    InvalidContinuation,
+    Overlong,
+    InvalidScalar,
+    Incomplete,
+    InvalidSurrogate,
+    Invalid
+}
+
+func encoding_error_kind_name(EncodingErrorKind kind) returns string {
+    match kind {
+        InvalidLength { return "invalid_length" }
+        InvalidByte { return "invalid_byte" }
+        InvalidPadding { return "invalid_padding" }
+        NonCanonical { return "non_canonical" }
+        InvalidCharacter { return "invalid_character" }
+        Overflow { return "overflow" }
+        InvalidEscape { return "invalid_escape" }
+        TruncatedEscape { return "truncated_escape" }
+        InvalidInput { return "invalid_input" }
+        Internal { return "internal" }
+        Read { return "read" }
+        Write { return "write" }
+        Flush { return "flush" }
+        InvalidLeadingByte { return "invalid_leading_byte" }
+        InvalidContinuation { return "invalid_continuation" }
+        Overlong { return "overlong" }
+        InvalidScalar { return "invalid_scalar" }
+        Incomplete { return "incomplete" }
+        InvalidSurrogate { return "invalid_surrogate" }
+        Invalid { return "invalid" }
+    }
+}
+
+// Errors returned by the encoding package retain the operation, a stable
+// category, and (when applicable) the byte/character offset at which parsing
+// failed.  The human-readable form is provided by the Error interface while
+// callers that need recovery can inspect the fields directly.
+class EncodingError is Error {
+    string codec
+    EncodingErrorKind kind
+    string detail
+    int offset
+
+    common func of(string codec_name, EncodingErrorKind kind_value, string detail_text) returns EncodingError {
+        auto error = EncodingError.new()
+        error.codec = codec_name
+        error.kind = kind_value
+        error.detail = detail_text
+        error.offset = -1
+        return error
+    }
+
+    common func at(string codec_name, EncodingErrorKind kind_value, string detail_text, int position) returns EncodingError {
+        auto error = EncodingError.of(codec_name, kind_value, detail_text)
+        error.offset = position
+        return error
+    }
+
+    func message() returns string {
+        string kind_name = encoding_error_kind_name(self.kind)
+        if self.offset >= 0 {
+            return self.codec + " " + kind_name + " at offset " + self.offset.to_string() + ": " + self.detail
+        }
+        return self.codec + " " + kind_name + ": " + self.detail
+    }
+
+    func kind_name() returns string {
+        return encoding_error_kind_name(self.kind)
+    }
+}
+
+// The I/O package has its own error boundary. Translate it at this package
+// boundary so every fallible encoding operation has one consistent error
+// type, including the streaming adapters.
+func read_encoding_chunk(io.Reader reader) returns result<bytes, EncodingError> {
+    auto chunk = reader.read(4096)
+    if chunk.is_err() {
+        return err(encoding_error("io", EncodingErrorKind.Read, chunk.error().message()))
+    }
+    return ok(chunk.value())
+}
+
+func write_encoding_bytes(io.Writer writer, bytes value) returns result<void, EncodingError> {
+    auto written = writer.write_all(value)
+    if written.is_err() {
+        return err(encoding_error("io", EncodingErrorKind.Write, written.error().message()))
+    }
+    return ok()
+}
+
+func flush_encoding_writer(io.Writer writer) returns result<void, EncodingError> {
+    auto flushed = writer.flush()
+    if flushed.is_err() {
+        return err(encoding_error("io", EncodingErrorKind.Flush, flushed.error().message()))
+    }
+    return ok()
+}
+
+func encoding_error(string codec, EncodingErrorKind kind, string detail) returns EncodingError {
+    return EncodingError.of(codec, kind, detail)
+}
+
+func encoding_error_at(string codec, EncodingErrorKind kind, string detail, int offset) returns EncodingError {
+    return EncodingError.at(codec, kind, detail, offset)
+}
+
+func hex_digit(int value) returns string {
+    if value < 10 { return value.to_string() }
+    if value == 10 { return "a" }
+    if value == 11 { return "b" }
+    if value == 12 { return "c" }
+    if value == 13 { return "d" }
+    if value == 14 { return "e" }
+    return "f"
+}
+
+func hex_encode(bytes input) returns string {
+    string output = ""
+    int i = 0
+    while i < input.size() {
+        int value = input[i].to_int()
+        output = output + hex_digit(value / 16) + hex_digit(value % 16)
+        i = i + 1
+    }
+    return output
+}
+
+func hex_decode(string input) returns result<bytes, EncodingError> {
+    if input.length() % 2 != 0 {
+        return err(encoding_error("hex", EncodingErrorKind.InvalidLength, "input must contain an even number of characters"))
+    }
+
+    bytes output = b""
+    int i = 0
+    while i < input.length() {
+        string pair = input.substring(i, i + 2)
+        auto parsed = ("0x" + pair).to_byte()
+        if parsed.is_err() {
+            return err(encoding_error_at("hex", EncodingErrorKind.InvalidByte, "invalid hexadecimal byte", i))
+        }
+        output.push_back(parsed.value())
+        i = i + 2
+    }
+    return ok(output)
+}
+
+// Stream hex data without buffering the complete input. The reader's own
+// limit, when configured, remains the memory/safety boundary for the source.
+func hex_encode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        string encoded = hex_encode(chunk)
+        use write_encoding_bytes(writer, utf8_encode(encoded))
+    }
+    return flush_encoding_writer(writer)
+}
+
+func hex_decode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    string pending = ""
+    int offset = 0
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        int i = 0
+        while i < chunk.size() {
+            pending = pending + chunk[i].to_int().to_char().to_string()
+            if pending.length() == 2 {
+                auto value = ("0x" + pending).to_byte()
+                if value.is_err() {
+                    return err(encoding_error_at("hex", EncodingErrorKind.InvalidByte, "invalid hexadecimal byte", offset - 1))
+                }
+                bytes decoded = b""
+                decoded.push_back(value.value())
+                use write_encoding_bytes(writer, decoded)
+                pending = ""
+            }
+            offset = offset + 1
+            i = i + 1
+        }
+    }
+    if pending.length() != 0 {
+        return err(encoding_error("hex", EncodingErrorKind.InvalidLength, "input must contain an even number of characters"))
+    }
+    return flush_encoding_writer(writer)
+}
+
+func base64_encode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    bytes pending = b""
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        int i = 0
+        while i < chunk.size() {
+            pending.push_back(chunk[i])
+            if pending.size() >= 3 {
+                auto group = pending[0:3]
+                use write_encoding_bytes(writer, utf8_encode(base64_encode(group)))
+                int removed = 0
+                while removed < 3 {
+                    auto removed_value = pending.remove(0)
+                    if removed_value.is_none() {
+                        return err(encoding_error("base64", EncodingErrorKind.Internal, "stream buffer underflow"))
+                    }
+                    removed = removed + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+    if pending.size() > 0 {
+        use write_encoding_bytes(writer, utf8_encode(base64_encode(pending)))
+    }
+    return flush_encoding_writer(writer)
+}
+
+func base64_decode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    string pending = ""
+    bool finished = false
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        if finished { return err(encoding_error("base64", EncodingErrorKind.InvalidPadding, "padding must be at the end")) }
+        int i = 0
+        while i < chunk.size() {
+            if finished { return err(encoding_error("base64", EncodingErrorKind.InvalidPadding, "padding must be at the end")) }
+            pending = pending + chunk[i].to_int().to_char().to_string()
+            if pending.length() == 4 {
+                auto values_result = base64_decode(pending)
+                if values_result.is_err() { return err(values_result.error()) }
+                auto values = values_result.value()
+                use write_encoding_bytes(writer, values)
+                if pending.index_of("=") >= 0 { finished = true }
+                pending = ""
+            }
+            i = i + 1
+        }
+    }
+    if pending.length() != 0 {
+        return err(encoding_error("base64", EncodingErrorKind.InvalidLength, "input length must be a multiple of 4"))
+    }
+    return flush_encoding_writer(writer)
+}
+
+func base32_encode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    bytes pending = b""
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        int i = 0
+        while i < chunk.size() {
+            pending.push_back(chunk[i])
+            if pending.size() >= 5 {
+                auto group = pending[0:5]
+                use write_encoding_bytes(writer, utf8_encode(base32_encode(group)))
+                int removed = 0
+                while removed < 5 {
+                    auto removed_value = pending.remove(0)
+                    if removed_value.is_none() {
+                        return err(encoding_error("base32", EncodingErrorKind.Internal, "stream buffer underflow"))
+                    }
+                    removed = removed + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+    if pending.size() > 0 {
+        use write_encoding_bytes(writer, utf8_encode(base32_encode(pending)))
+    }
+    return flush_encoding_writer(writer)
+}
+
+func base32_decode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    string pending = ""
+    bool finished = false
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        if finished { return err(encoding_error("base32", EncodingErrorKind.InvalidPadding, "padding must be at the end")) }
+        int i = 0
+        while i < chunk.size() {
+            if finished { return err(encoding_error("base32", EncodingErrorKind.InvalidPadding, "padding must be at the end")) }
+            pending = pending + chunk[i].to_int().to_char().to_string()
+            if pending.length() == 8 {
+                auto values_result = base32_decode(pending)
+                if values_result.is_err() { return err(values_result.error()) }
+                auto values = values_result.value()
+                use write_encoding_bytes(writer, values)
+                if pending.index_of("=") >= 0 { finished = true }
+                pending = ""
+            }
+            i = i + 1
+        }
+    }
+    if pending.length() != 0 {
+        return err(encoding_error("base32", EncodingErrorKind.InvalidLength, "input length must be a multiple of 8"))
+    }
+    return flush_encoding_writer(writer)
+}
+
+func percent_encode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        use write_encoding_bytes(writer, utf8_encode(percent_encode(chunk)))
+    }
+    return flush_encoding_writer(writer)
+}
+
+func percent_decode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    string pending = ""
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        bytes decoded = b""
+        int i = 0
+        while i < chunk.size() {
+            string current = chunk[i].to_int().to_char().to_string()
+            if pending.length() > 0 {
+                pending = pending + current
+                if pending.length() == 3 {
+                    auto value = ("0x" + pending.substring(1, 3)).to_byte()
+                    if value.is_err() { return err(encoding_error("percent", EncodingErrorKind.InvalidEscape, "invalid percent escape")) }
+                    decoded.push_back(value.value())
+                    pending = ""
+                }
+            } else if current == "%" {
+                pending = "%"
+            } else {
+                auto converted = ascii_code(chunk[i].to_int().to_char()).to_byte()
+                if converted.is_err() { return err(encoding_error("percent", EncodingErrorKind.InvalidInput, "input must be ASCII")) }
+                decoded.push_back(converted.value())
+            }
+            i = i + 1
+        }
+        if decoded.size() > 0 {
+            use write_encoding_bytes(writer, decoded)
+        }
+    }
+    if pending.length() > 0 {
+        return err(encoding_error("percent", EncodingErrorKind.TruncatedEscape, "truncated percent escape"))
+    }
+    return flush_encoding_writer(writer)
+}
+
+func ascii85_encode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    bytes pending = b""
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        int i = 0
+        while i < chunk.size() {
+            pending.push_back(chunk[i])
+            if pending.size() >= 4 {
+                auto group = pending[0:4]
+                use write_encoding_bytes(writer, utf8_encode(ascii85_encode(group)))
+                int removed = 0
+                while removed < 4 {
+                    auto removed_value = pending.remove(0)
+                    if removed_value.is_none() {
+                        return err(encoding_error("ascii85", EncodingErrorKind.Internal, "stream buffer underflow"))
+                    }
+                    removed = removed + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+    if pending.size() > 0 {
+        use write_encoding_bytes(writer, utf8_encode(ascii85_encode(pending)))
+    }
+    return flush_encoding_writer(writer)
+}
+
+func ascii85_decode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    string pending = ""
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        int i = 0
+        while i < chunk.size() {
+            string current = chunk[i].to_int().to_char().to_string()
+            if pending.length() == 0 && current == "z" {
+                auto values_result = ascii85_decode("z")
+                if values_result.is_err() { return err(values_result.error()) }
+                auto values = values_result.value()
+                use write_encoding_bytes(writer, values)
+            } else {
+                pending = pending + current
+                if pending.length() == 5 {
+                    auto values_result = ascii85_decode(pending)
+                    if values_result.is_err() { return err(values_result.error()) }
+                    auto values = values_result.value()
+                    use write_encoding_bytes(writer, values)
+                    pending = ""
+                }
+            }
+            i = i + 1
+        }
+    }
+    if pending.length() > 0 {
+        auto values_result = ascii85_decode(pending)
+        if values_result.is_err() { return err(values_result.error()) }
+        auto values = values_result.value()
+        use write_encoding_bytes(writer, values)
+    }
+    return flush_encoding_writer(writer)
+}
+
+func ascii_code(char value) returns int {
+    int code = value.to_codepoint()
+    if code >= 0 && code <= 127 { return code }
+    return -1
+}
+
+func base64_value(char value) returns int {
+    int code = ascii_code(value)
+    if code >= 65 && code <= 90 { return code - 65 }
+    if code >= 97 && code <= 122 { return code - 97 + 26 }
+    if code >= 48 && code <= 57 { return code - 48 + 52 }
+    if value == '+' { return 62 }
+    if value == '/' { return 63 }
+    return -1
+}
+
+func base64_encode(bytes input) returns string {
+    string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    string output = ""
+    int i = 0
+    while i < input.size() {
+        int first = input[i].to_int()
+        int remaining = input.size() - i
+        int second = 0
+        int third = 0
+        if remaining > 1 { second = input[i + 1].to_int() }
+        if remaining > 2 { third = input[i + 2].to_int() }
+        output = output + alphabet[(first / 4)].to_string()
+        output = output + alphabet[((first % 4) * 16 + second / 16)].to_string()
+        if remaining > 1 { output = output + alphabet[((second % 16) * 4 + third / 64)].to_string() }
+        else { output = output + "=" }
+        if remaining > 2 { output = output + alphabet[third % 64].to_string() }
+        else { output = output + "=" }
+        i = i + 3
+    }
+    return output
+}
+
+func append_decoded_byte(bytes output, int value) returns result<int, EncodingError> {
+    auto converted = value.to_byte()
+    if converted.is_err() { return err(encoding_error("base64", EncodingErrorKind.Overflow, "decoded value is outside byte range")) }
+    output.push_back(converted.value())
+    return ok(0)
+}
+
+func base64_decode(string input) returns result<bytes, EncodingError> {
+    if input.length() % 4 != 0 { return err(encoding_error("base64", EncodingErrorKind.InvalidLength, "input length must be a multiple of 4")) }
+    bytes output = b""
+    int i = 0
+    while i < input.length() {
+        int a = base64_value(input[i])
+        int b = base64_value(input[i + 1])
+        if a < 0 || b < 0 { return err(encoding_error_at("base64", EncodingErrorKind.InvalidCharacter, "invalid base64 character", i)) }
+        string third = input[i + 2].to_string()
+        string fourth = input[i + 3].to_string()
+        if third == "=" && fourth != "=" { return err(encoding_error_at("base64", EncodingErrorKind.InvalidPadding, "invalid base64 padding", i + 2)) }
+        if (third == "=" || fourth == "=") && i + 4 != input.length() { return err(encoding_error_at("base64", EncodingErrorKind.InvalidPadding, "padding must be at the end", i + 2)) }
+        int c = if third == "=" { 0 } else { base64_value(input[i + 2]) }
+        int d = if fourth == "=" { 0 } else { base64_value(input[i + 3]) }
+        if c < 0 || d < 0 { return err(encoding_error_at("base64", EncodingErrorKind.InvalidCharacter, "invalid base64 character", i + 2)) }
+        if third == "=" && b % 16 != 0 { return err(encoding_error_at("base64", EncodingErrorKind.NonCanonical, "non-zero trailing base64 bits", i + 1)) }
+        if fourth == "=" && third != "=" && c % 4 != 0 { return err(encoding_error_at("base64", EncodingErrorKind.NonCanonical, "non-zero trailing base64 bits", i + 2)) }
+        use append_decoded_byte(output, a * 4 + b / 16)
+        if third != "=" {
+            use append_decoded_byte(output, (b % 16) * 16 + c / 4)
+        }
+        if fourth != "=" {
+            use append_decoded_byte(output, (c % 4) * 64 + d)
+        }
+        i = i + 4
+    }
+    return ok(output)
+}
+
+func base64url_encode(bytes input) returns string {
+    return base64_encode(input).replace("+", "-").replace("/", "_").replace("=", "")
+}
+
+func base64url_decode(string input) returns result<bytes, EncodingError> {
+    int i = 0
+    while i < input.length() {
+        if input[i] == '=' {
+            return err(encoding_error_at("base64url", EncodingErrorKind.InvalidPadding, "input must omit padding", i))
+        }
+        if input[i] == '+' || input[i] == '/' {
+            return err(encoding_error_at("base64url", EncodingErrorKind.InvalidCharacter, "standard base64 characters are not valid in base64url", i))
+        }
+        i = i + 1
+    }
+    string padded = input.replace("-", "+").replace("_", "/")
+    int remainder = padded.length() % 4
+    if remainder == 2 { padded = padded + "==" }
+    if remainder == 3 { padded = padded + "=" }
+    if remainder == 1 { return err(encoding_error("base64url", EncodingErrorKind.InvalidLength, "input has an invalid length")) }
+    return base64_decode(padded)
+}
+
+func percent_unreserved(byte value) returns bool {
+    int code = value.to_int()
+    return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code == 45 || code == 46 || code == 95 || code == 126
+}
+
+func ascii_char(int code) returns string {
+    if code >= 65 && code <= 90 { return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[code - 65].to_string() }
+    if code >= 97 && code <= 122 { return "abcdefghijklmnopqrstuvwxyz"[code - 97].to_string() }
+    if code >= 48 && code <= 57 { return "0123456789"[code - 48].to_string() }
+    if code == 45 { return "-" }
+    if code == 46 { return "." }
+    if code == 38 { return "&" }
+    if code == 47 { return "/" }
+    if code == 61 { return "=" }
+    if code == 63 { return "?" }
+    if code == 43 { return "+" }
+    if code == 95 { return "_" }
+    if code == 126 { return "~" }
+    return ""
+}
+
+func percent_encode(bytes input) returns string {
+    string output = ""
+    int i = 0
+    while i < input.size() {
+        byte value = input[i]
+        if percent_unreserved(value) { output = output + ascii_char(value.to_int()) }
+        else {
+            output = output + "%" + hex_digit(value.to_int() / 16) + hex_digit(value.to_int() % 16)
+        }
+        i = i + 1
+    }
+    return output
+}
+
+func percent_decode(string input) returns result<bytes, EncodingError> {
+    bytes output = b""
+    int i = 0
+    while i < input.length() {
+        if input[i] != '%' {
+            int code = ascii_code(input[i])
+            auto converted = code.to_byte()
+            if converted.is_err() { return err(encoding_error_at("percent", EncodingErrorKind.InvalidInput, "input must be ASCII", i)) }
+            output.push_back(converted.value())
+            i = i + 1
+        } else {
+            if i + 2 >= input.length() { return err(encoding_error_at("percent", EncodingErrorKind.TruncatedEscape, "truncated percent escape", i)) }
+            auto converted = ("0x" + input.substring(i + 1, i + 3)).to_byte()
+            if converted.is_err() { return err(encoding_error_at("percent", EncodingErrorKind.InvalidEscape, "invalid percent escape", i)) }
+            output.push_back(converted.value())
+            i = i + 3
+        }
+    }
+    return ok(output)
+}
+
+// Component-specific percent encoders. They deliberately preserve only the
+// delimiters meaningful to that component; callers can still use the generic
+// encoder when every non-unreserved byte must be escaped.
+func percent_encode_path(bytes input) returns string {
+    string output = ""
+    int i = 0
+    while i < input.size() {
+        byte value = input[i]
+        int code = value.to_int()
+        if percent_unreserved(value) || code == 47 {
+            output = output + ascii_char(code)
+        } else {
+            output = output + "%" + hex_digit(code / 16) + hex_digit(code % 16)
+        }
+        i = i + 1
+    }
+    return output
+}
+
+func percent_encode_query(bytes input) returns string {
+    string output = ""
+    int i = 0
+    while i < input.size() {
+        byte value = input[i]
+        int code = value.to_int()
+        if percent_unreserved(value) || code == 38 || code == 61 || code == 47 || code == 63 {
+            output = output + ascii_char(code)
+        } else {
+            output = output + "%" + hex_digit(code / 16) + hex_digit(code % 16)
+        }
+        i = i + 1
+    }
+    return output
+}
+
+func percent_encode_form(bytes input) returns string {
+    string output = ""
+    int i = 0
+    while i < input.size() {
+        byte value = input[i]
+        int code = value.to_int()
+        if code == 32 {
+            output = output + "+"
+        } else if percent_unreserved(value) {
+            output = output + ascii_char(code)
+        } else {
+            output = output + "%" + hex_digit(code / 16) + hex_digit(code % 16)
+        }
+        i = i + 1
+    }
+    return output
+}
+
+func percent_decode_form(string input) returns result<bytes, EncodingError> {
+    bytes output = b""
+    byte space = 32
+    int i = 0
+    while i < input.length() {
+        if input[i] == '+' {
+            output.push_back(space)
+            i = i + 1
+        } else if input[i] == '%' {
+            if i + 2 >= input.length() { return err(encoding_error_at("percent", EncodingErrorKind.TruncatedEscape, "truncated percent escape", i)) }
+            auto converted = ("0x" + input.substring(i + 1, i + 3)).to_byte()
+            if converted.is_err() { return err(encoding_error_at("percent", EncodingErrorKind.InvalidEscape, "invalid percent escape", i)) }
+            output.push_back(converted.value())
+            i = i + 3
+        } else {
+            int code = ascii_code(input[i])
+            auto converted = code.to_byte()
+            if converted.is_err() { return err(encoding_error_at("percent", EncodingErrorKind.InvalidInput, "form input must be ASCII", i)) }
+            output.push_back(converted.value())
+            i = i + 1
+        }
+    }
+    return ok(output)
+}
+
+func encoding_pow2(int exponent) returns int {
+    int value = 1
+    int i = 0
+    while i < exponent { value = value * 2 i = i + 1 }
+    return value
+}
+
+func base32_value(char value) returns int {
+    string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+    string lower = "abcdefghijklmnopqrstuvwxyz234567"
+    int index = alphabet.index_of(value.to_string())
+    if index >= 0 { return index }
+    return lower.index_of(value.to_string())
+}
+
+func base32_encode(bytes input) returns string {
+    string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+    string output = ""
+    int accumulator = 0
+    int bits = 0
+    int produced = 0
+    int i = 0
+    while i < input.size() {
+        accumulator = accumulator * 256 + input[i].to_int()
+        bits = bits + 8
+        while bits >= 5 {
+            int shift = bits - 5
+            int value = (accumulator / encoding_pow2(shift)) % 32
+            output = output + alphabet[value].to_string()
+            produced = produced + 1
+            bits = bits - 5
+            accumulator = accumulator % encoding_pow2(bits)
+        }
+        i = i + 1
+    }
+    if bits > 0 {
+        int value = (accumulator * encoding_pow2(5 - bits)) % 32
+        output = output + alphabet[value].to_string()
+        produced = produced + 1
+    }
+    while produced % 8 != 0 { output = output + "=" produced = produced + 1 }
+    return output
+}
+
+func base32_decode(string input) returns result<bytes, EncodingError> {
+    if input.length() % 8 != 0 { return err(encoding_error("base32", EncodingErrorKind.InvalidLength, "input length must be a multiple of 8")) }
+    bytes output = b""
+    int accumulator = 0
+    int bits = 0
+    int i = 0
+    while i < input.length() {
+        int group_end = i + 8
+        int padding = 0
+        int first_padding = -1
+        int group_index = i
+        while group_index < group_end {
+            if input[group_index] == '=' {
+                if first_padding == -1 { first_padding = group_index }
+                padding = padding + 1
+            } else if first_padding != -1 {
+                return err(encoding_error_at("base32", EncodingErrorKind.InvalidPadding, "padding must be at the end of the input", i))
+            }
+            group_index = group_index + 1
+        }
+
+        if padding > 0 && group_end != input.length() {
+            return err(encoding_error_at("base32", EncodingErrorKind.InvalidPadding, "padding must be in the final group", i))
+        }
+
+        int symbols = 8 - padding
+        if padding != 0 && symbols != 2 && symbols != 4 && symbols != 5 && symbols != 7 {
+            return err(encoding_error_at("base32", EncodingErrorKind.InvalidPadding, "invalid base32 padding", i))
+        }
+
+        if symbols > 0 {
+            int last = base32_value(input[i + symbols - 1])
+            if last < 0 { return err(encoding_error_at("base32", EncodingErrorKind.InvalidCharacter, "invalid base32 character", i + 7)) }
+            if symbols == 2 && last % 4 != 0 {
+                return err(encoding_error_at("base32", EncodingErrorKind.NonCanonical, "non-zero trailing base32 bits", i + 1))
+            }
+            if symbols == 4 && last % 16 != 0 {
+                return err(encoding_error_at("base32", EncodingErrorKind.NonCanonical, "non-zero trailing base32 bits", i + 3))
+            }
+            if symbols == 5 && last % 2 != 0 {
+                return err(encoding_error_at("base32", EncodingErrorKind.NonCanonical, "non-zero trailing base32 bits", i + 4))
+            }
+            if symbols == 7 && last % 8 != 0 {
+                return err(encoding_error_at("base32", EncodingErrorKind.NonCanonical, "non-zero trailing base32 bits", i + 6))
+            }
+        }
+
+        int symbol_index = 0
+        while symbol_index < symbols {
+            int value = base32_value(input[i + symbol_index])
+            if value < 0 { return err(encoding_error_at("base32", EncodingErrorKind.InvalidCharacter, "invalid base32 character", i + 0)) }
+            accumulator = accumulator * 32 + value
+            bits = bits + 5
+            while bits >= 8 {
+                int shift = bits - 8
+                use append_decoded_byte(output, (accumulator / encoding_pow2(shift)) % 256)
+                bits = bits - 8
+                accumulator = accumulator % encoding_pow2(bits)
+            }
+            symbol_index = symbol_index + 1
+        }
+
+        // Padding is structural; all data symbols were consumed above.
+        i = group_end
+    }
+    return ok(output)
+}
+
+func base58_encode(bytes input) returns string {
+    string alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    list<int> digits = [0]
+    int leading_zeroes = 0
+    int i = 0
+    while i < input.size() && input[i].to_int() == 0 {
+        leading_zeroes = leading_zeroes + 1
+        i = i + 1
+    }
+    i = 0
+    while i < input.size() {
+        int carry = input[i].to_int()
+        int j = 0
+        while j < digits.size() {
+            int value = digits[j] * 256 + carry
+            digits[j] = value % 58
+            carry = value / 58
+            j = j + 1
+        }
+        while carry > 0 {
+            digits.push_back(carry % 58)
+            carry = carry / 58
+        }
+        i = i + 1
+    }
+    string output = ""
+    i = 0
+    while i < leading_zeroes { output = output + "1" i = i + 1 }
+    i = digits.size() - 1
+    while i >= 0 {
+        if digits[i] != 0 { output = output + alphabet[digits[i]].to_string() }
+        if i == 0 { break }
+        i = i - 1
+    }
+    return output
+}
+
+func base58_decode(string input) returns result<bytes, EncodingError> {
+    string alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    list<int> decoded = [0]
+    int leading_zeroes = 0
+    int i = 0
+    while i < input.length() && input[i] == '1' {
+        leading_zeroes = leading_zeroes + 1
+        i = i + 1
+    }
+    i = 0
+    while i < input.length() {
+        int carry = alphabet.index_of(input[i].to_string())
+        if carry < 0 { return err(encoding_error_at("base58", EncodingErrorKind.InvalidCharacter, "invalid base58 character", i)) }
+        int j = 0
+        while j < decoded.size() {
+            int value = decoded[j] * 58 + carry
+            decoded[j] = value % 256
+            carry = value / 256
+            j = j + 1
+        }
+        while carry > 0 {
+            decoded.push_back(carry % 256)
+            carry = carry / 256
+        }
+        i = i + 1
+    }
+    bytes output = b""
+    byte zero = 0
+    i = 0
+    while i < leading_zeroes { output.push_back(zero) i = i + 1 }
+    i = decoded.size() - 1
+    while i >= 0 {
+        if decoded[i] != 0 {
+            auto converted = decoded[i].to_byte()
+            if converted.is_err() {
+                return err(encoding_error_at("base58", EncodingErrorKind.Overflow, "decoded base58 value is outside byte range", i))
+            }
+            output.push_back(converted.value())
+        }
+        if i == 0 { break }
+        i = i - 1
+    }
+    return ok(output)
+}
+
+// Base58 has no fixed-size framing: a digit can carry across the entire
+// input, so canonical output cannot be emitted incrementally. These adapters
+// still provide the common Reader/Writer boundary and enforce the reader's
+// bounded read-to-end limit before doing the conversion.
+func base58_encode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    auto values_result = reader.read_to_end(16777216)
+    if values_result.is_err() {
+        return err(encoding_error("io", EncodingErrorKind.Read, values_result.error().message()))
+    }
+    auto values = values_result.value()
+    use write_encoding_bytes(writer, utf8_encode(base58_encode(values)))
+    return flush_encoding_writer(writer)
+}
+
+func base58_decode_stream(io.Reader reader, io.Writer writer) returns result<void, EncodingError> {
+    auto encoded_result = reader.read_to_end(16777216)
+    if encoded_result.is_err() {
+        return err(encoding_error("io", EncodingErrorKind.Read, encoded_result.error().message()))
+    }
+    auto encoded = encoded_result.value()
+    auto value_result = encoded.to_utf8()
+    if value_result.is_err() {
+        return err(encoding_error("utf8", EncodingErrorKind.Invalid, value_result.error().message()))
+    }
+    auto value = value_result.value()
+    auto decoded_result = base58_decode(value)
+    if decoded_result.is_err() { return err(decoded_result.error()) }
+    auto decoded = decoded_result.value()
+    use write_encoding_bytes(writer, decoded)
+    return flush_encoding_writer(writer)
+}
+
+func ascii85_digit(int value) returns string {
+    return (value + 33).to_char().to_string()
+}
+
+func ascii85_encode(bytes input) returns string {
+    string output = ""
+    int i = 0
+    while i < input.size() {
+        int remaining = input.size() - i
+        if remaining > 4 { remaining = 4 }
+        int value = input[i].to_int() * 16777216
+        if remaining > 1 { value = value + input[i + 1].to_int() * 65536 }
+        if remaining > 2 { value = value + input[i + 2].to_int() * 256 }
+        if remaining > 3 { value = value + input[i + 3].to_int() }
+        if remaining == 4 && value == 0 {
+            output = output + "z"
+        } else {
+            string encoded = ""
+            int digit = 0
+            while digit < 5 {
+                encoded = ascii85_digit(value % 85) + encoded
+                value = value / 85
+                digit = digit + 1
+            }
+            output = output + encoded.substring(0, remaining + 1)
+        }
+        i = i + remaining
+    }
+    return output
+}
+
+func ascii85_value(char value) returns int {
+    int code = value.to_codepoint()
+    if code < 33 || code > 117 { return -1 }
+    return code - 33
+}
+
+func ascii85_decode(string input) returns result<bytes, EncodingError> {
+    bytes output = b""
+    int i = 0
+    while i < input.length() {
+        if input[i] == 'z' {
+            byte zero = 0
+            output.push_back(zero)
+            output.push_back(zero)
+            output.push_back(zero)
+            output.push_back(zero)
+            i = i + 1
+        } else {
+            int remaining = input.length() - i
+            if remaining > 5 { remaining = 5 }
+            if remaining == 1 { return err(encoding_error_at("ascii85", EncodingErrorKind.InvalidLength, "final group must contain at least two characters", i)) }
+            int value = 0
+            int digit = 0
+            while digit < 5 {
+                int current = 84
+                if digit < remaining { current = ascii85_value(input[i + digit]) }
+                if current < 0 { return err(encoding_error_at("ascii85", EncodingErrorKind.InvalidCharacter, "invalid ASCII85 character", i + digit)) }
+                value = value * 85 + current
+                digit = digit + 1
+            }
+            if value > 4294967295 { return err(encoding_error_at("ascii85", EncodingErrorKind.Overflow, "ASCII85 group overflows a 32-bit value", i)) }
+            bytes decoded = b""
+            use append_decoded_byte(decoded, value / 16777216)
+            if remaining > 2 {
+                use append_decoded_byte(decoded, (value / 65536) % 256)
+            }
+            if remaining > 3 {
+                use append_decoded_byte(decoded, (value / 256) % 256)
+            }
+            if remaining > 4 {
+                use append_decoded_byte(decoded, value % 256)
+            }
+            if ascii85_encode(decoded) != input.substring(i, i + remaining) {
+            return err(encoding_error_at("ascii85", EncodingErrorKind.NonCanonical, "non-canonical ASCII85 group", i))
+            }
+            int decoded_index = 0
+            while decoded_index < decoded.size() {
+                output.push_back(decoded[decoded_index])
+                decoded_index = decoded_index + 1
+            }
+            i = i + remaining
+        }
+    }
+    return ok(output)
+}
+
+func utf8_encode(string input) returns bytes {
+    bytes output = b""
+    for char value in input {
+        int code = value.to_codepoint()
+        if code <= 127 {
+            encoding_append_byte(output, code)
+        } else if code <= 2047 {
+            encoding_append_byte(output, 192 + code / 64)
+            encoding_append_byte(output, 128 + code % 64)
+        } else if code <= 65535 {
+            encoding_append_byte(output, 224 + code / 4096)
+            encoding_append_byte(output, 128 + (code / 64) % 64)
+            encoding_append_byte(output, 128 + code % 64)
+        } else {
+            encoding_append_byte(output, 240 + code / 262144)
+            encoding_append_byte(output, 128 + (code / 4096) % 64)
+            encoding_append_byte(output, 128 + (code / 64) % 64)
+            encoding_append_byte(output, 128 + code % 64)
+        }
+    }
+    return output
+}
+
+func utf8_decode(bytes input) returns result<string, EncodingError> {
+    auto decoded = input.to_utf8()
+    if decoded.is_err() {
+        return err(encoding_error("utf8", EncodingErrorKind.Invalid, decoded.error().message()))
+    }
+    return ok(decoded.value())
+}
+
+func utf8_decode_lossy(bytes input) returns string {
+    return input.to_utf8_lossy()
+}
+
+func encoding_append_byte(bytes output, int value) returns void {
+    auto converted = value.to_byte()
+    if converted.is_err() { return }
+    output.push_back(converted.value())
+    return
+}
+
+func encoding_append_u16(bytes output, int value, bool little_endian) returns void {
+    int low = value % 256
+    int high = value / 256
+    if little_endian { encoding_append_byte(output, low) encoding_append_byte(output, high) }
+    else { encoding_append_byte(output, high) encoding_append_byte(output, low) }
+    return
+}
+
+func utf16_encode(string input, bool little_endian, bool bom) returns bytes {
+    bytes output = b""
+    if bom {
+        if little_endian { encoding_append_u16(output, 65279, true) }
+        else { encoding_append_u16(output, 65279, false) }
+    }
+    for char value in input {
+        int code = value.to_codepoint()
+        if code <= 65535 {
+            encoding_append_u16(output, code, little_endian)
+        } else {
+            int adjusted = code - 65536
+            encoding_append_u16(output, 55296 + adjusted / 1024, little_endian)
+            encoding_append_u16(output, 56320 + adjusted % 1024, little_endian)
+        }
+    }
+    return output
+}
+
+func utf16_decode(bytes input, bool little_endian, bool consume_bom) returns result<string, EncodingError> {
+    if input.size() % 2 != 0 { return err(encoding_error("utf16", EncodingErrorKind.InvalidLength, "input must contain complete code units")) }
+    int i = 0
+    string output = ""
+    while i < input.size() {
+        int first = if little_endian { input[i].to_int() + input[i + 1].to_int() * 256 } else { input[i].to_int() * 256 + input[i + 1].to_int() }
+        i = i + 2
+        if i == 2 && first == 65279 && consume_bom { continue }
+        if first >= 55296 && first <= 56319 {
+            if i >= input.size() { return err(encoding_error_at("utf16", EncodingErrorKind.InvalidSurrogate, "input ends after a high surrogate", i)) }
+            int second = if little_endian { input[i].to_int() + input[i + 1].to_int() * 256 } else { input[i].to_int() * 256 + input[i + 1].to_int() }
+            if second < 56320 || second > 57343 { return err(encoding_error_at("utf16", EncodingErrorKind.InvalidSurrogate, "high surrogate is not followed by a low surrogate", i)) }
+            i = i + 2
+            int code = 65536 + (first - 55296) * 1024 + second - 56320
+            output = output + code.to_char().to_string()
+        } else if first >= 56320 && first <= 57343 {
+            return err(encoding_error_at("utf16", EncodingErrorKind.InvalidSurrogate, "input contains an unpaired low surrogate", i - 2))
+        } else {
+            output = output + first.to_char().to_string()
+        }
+    }
+    return ok(output)
+}
+
+func encoding_append_u32(bytes output, int value, bool little_endian) returns void {
+    int b0 = value % 256
+    int b1 = (value / 256) % 256
+    int b2 = (value / 65536) % 256
+    int b3 = value / 16777216
+    if little_endian {
+        encoding_append_byte(output, b0)
+        encoding_append_byte(output, b1)
+        encoding_append_byte(output, b2)
+        encoding_append_byte(output, b3)
+    } else {
+        encoding_append_byte(output, b3)
+        encoding_append_byte(output, b2)
+        encoding_append_byte(output, b1)
+        encoding_append_byte(output, b0)
+    }
+    return
+}
+
+func utf32_encode(string input, bool little_endian, bool bom) returns bytes {
+    bytes output = b""
+    if bom { encoding_append_u32(output, 65279, little_endian) }
+    for char value in input {
+        encoding_append_u32(output, value.to_codepoint(), little_endian)
+    }
+    return output
+}
+
+func utf32_decode(bytes input, bool little_endian, bool consume_bom) returns result<string, EncodingError> {
+    if input.size() % 4 != 0 { return err(encoding_error("utf32", EncodingErrorKind.InvalidLength, "input must contain complete code units")) }
+    int i = 0
+    string output = ""
+    while i < input.size() {
+        int code = if little_endian {
+            input[i].to_int() + input[i + 1].to_int() * 256 + input[i + 2].to_int() * 65536 + input[i + 3].to_int() * 16777216
+        } else {
+            input[i].to_int() * 16777216 + input[i + 1].to_int() * 65536 + input[i + 2].to_int() * 256 + input[i + 3].to_int()
+        }
+        i = i + 4
+        if i == 4 && code == 65279 && consume_bom { continue }
+        if code > 1114111 || (code >= 55296 && code <= 57343) { return err(encoding_error_at("utf32", EncodingErrorKind.InvalidScalar, "input contains an invalid Unicode scalar", i - 4)) }
+        output = output + code.to_char().to_string()
+    }
+    return ok(output)
+}
+
+// UTF-8 is the input representation for the encoding stream adapters. These
+// helpers retain incomplete UTF-8 sequences between reads and validate lead,
+// continuation, overlong, and scalar-range rules before emitting code units.
+func utf8_codepoint_size(byte first) returns int {
+    int value = first.to_int()
+    if value <= 127 { return 1 }
+    if value >= 194 && value <= 223 { return 2 }
+    if value >= 224 && value <= 239 { return 3 }
+    if value >= 240 && value <= 244 { return 4 }
+    return 0
+}
+
+func utf8_stream_remove(bytes input, int count) returns void {
+    int i = 0
+    while i < count {
+        auto removed = input.remove(0)
+        if removed.is_none() { return }
+        i = i + 1
+    }
+    return
+}
+
+func utf16_encode_stream(io.Reader reader, io.Writer writer, bool little_endian, bool bom) returns result<void, EncodingError> {
+    bytes pending = b""
+    if bom {
+        bytes marker = b""
+        encoding_append_u16(marker, 65279, little_endian)
+        use write_encoding_bytes(writer, marker)
+    }
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        int chunk_index = 0
+        while chunk_index < chunk.size() {
+            pending.push_back(chunk[chunk_index])
+            chunk_index = chunk_index + 1
+        }
+        bytes output = b""
+        while pending.size() > 0 {
+            int first = pending[0].to_int()
+            int size = utf8_codepoint_size(pending[0])
+            if size == 0 { return err(encoding_error("utf8", EncodingErrorKind.InvalidLeadingByte, "input contains an invalid leading byte")) }
+            if pending.size() < size { break }
+            int code = if size == 2 { first - 192 } else if size == 3 { first - 224 } else if size == 4 { first - 240 } else { first }
+            if size > 1 {
+                int continuation = 1
+                while continuation < size {
+                    int value = pending[continuation].to_int()
+                    if value < 128 || value > 191 {
+                        return err(encoding_error("utf8", EncodingErrorKind.InvalidContinuation, "input contains an invalid continuation byte"))
+                    }
+                    code = code * 64 + value - 128
+                    continuation = continuation + 1
+                }
+                if (size == 2 && code < 128) || (size == 3 && code < 2048) || (size == 4 && code < 65536) {
+                    return err(encoding_error("utf8", EncodingErrorKind.Overlong, "input contains an overlong sequence"))
+                }
+            }
+            if code > 1114111 || (code >= 55296 && code <= 57343) {
+                return err(encoding_error("utf8", EncodingErrorKind.InvalidScalar, "input contains an invalid Unicode scalar"))
+            }
+            if code <= 65535 {
+                encoding_append_u16(output, code, little_endian)
+            } else {
+                int adjusted = code - 65536
+                encoding_append_u16(output, 55296 + adjusted / 1024, little_endian)
+                encoding_append_u16(output, 56320 + adjusted % 1024, little_endian)
+            }
+            utf8_stream_remove(pending, size)
+        }
+        if output.size() > 0 {
+            use write_encoding_bytes(writer, output)
+        }
+    }
+    if pending.size() > 0 { return err(encoding_error("utf8", EncodingErrorKind.Incomplete, "input ends with an incomplete sequence")) }
+    return flush_encoding_writer(writer)
+}
+
+func utf32_encode_stream(io.Reader reader, io.Writer writer, bool little_endian, bool bom) returns result<void, EncodingError> {
+    bytes pending = b""
+    if bom {
+        bytes marker = b""
+        encoding_append_u32(marker, 65279, little_endian)
+        use write_encoding_bytes(writer, marker)
+    }
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        int chunk_index = 0
+        while chunk_index < chunk.size() {
+            pending.push_back(chunk[chunk_index])
+            chunk_index = chunk_index + 1
+        }
+        bytes output = b""
+        while pending.size() > 0 {
+            int first = pending[0].to_int()
+            int size = utf8_codepoint_size(pending[0])
+            if size == 0 { return err(encoding_error("utf8", EncodingErrorKind.InvalidLeadingByte, "input contains an invalid leading byte")) }
+            if pending.size() < size { break }
+            int code = if size == 2 { first - 192 } else if size == 3 { first - 224 } else if size == 4 { first - 240 } else { first }
+            if size > 1 {
+                int continuation = 1
+                while continuation < size {
+                    int value = pending[continuation].to_int()
+                    if value < 128 || value > 191 {
+                        return err(encoding_error("utf8", EncodingErrorKind.InvalidContinuation, "input contains an invalid continuation byte"))
+                    }
+                    code = code * 64 + value - 128
+                    continuation = continuation + 1
+                }
+                if (size == 2 && code < 128) || (size == 3 && code < 2048) || (size == 4 && code < 65536) {
+                    return err(encoding_error("utf8", EncodingErrorKind.Overlong, "input contains an overlong sequence"))
+                }
+            }
+            if code > 1114111 || (code >= 55296 && code <= 57343) {
+                return err(encoding_error("utf8", EncodingErrorKind.InvalidScalar, "input contains an invalid Unicode scalar"))
+            }
+            encoding_append_u32(output, code, little_endian)
+            utf8_stream_remove(pending, size)
+        }
+        if output.size() > 0 {
+            use write_encoding_bytes(writer, output)
+        }
+    }
+    if pending.size() > 0 { return err(encoding_error("utf8", EncodingErrorKind.Incomplete, "input ends with an incomplete sequence")) }
+    return flush_encoding_writer(writer)
+}
+
+func utf16_decode_stream(io.Reader reader, io.Writer writer, bool little_endian, bool consume_bom) returns result<void, EncodingError> {
+    bytes pending = b""
+    bool first_unit = true
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        int chunk_index = 0
+        while chunk_index < chunk.size() {
+            pending.push_back(chunk[chunk_index])
+            chunk_index = chunk_index + 1
+        }
+        string output = ""
+        while pending.size() >= 2 {
+            int first = if little_endian { pending[0].to_int() + pending[1].to_int() * 256 } else { pending[0].to_int() * 256 + pending[1].to_int() }
+            if first_unit && consume_bom && first == 65279 {
+                utf8_stream_remove(pending, 2)
+                first_unit = false
+                continue
+            }
+            first_unit = false
+            if first >= 55296 && first <= 56319 {
+                if pending.size() < 4 { break }
+                int second = if little_endian { pending[2].to_int() + pending[3].to_int() * 256 } else { pending[2].to_int() * 256 + pending[3].to_int() }
+                if second < 56320 || second > 57343 {
+                    return err(encoding_error("utf16", EncodingErrorKind.InvalidSurrogate, "high surrogate is not followed by a low surrogate"))
+                }
+                int code = 65536 + (first - 55296) * 1024 + second - 56320
+                output = output + code.to_char().to_string()
+                utf8_stream_remove(pending, 4)
+            } else if first >= 56320 && first <= 57343 {
+                return err(encoding_error("utf16", EncodingErrorKind.InvalidSurrogate, "input contains an unpaired low surrogate"))
+            } else {
+                output = output + first.to_char().to_string()
+                utf8_stream_remove(pending, 2)
+            }
+        }
+        if output.length() > 0 {
+            use write_encoding_bytes(writer, utf8_encode(output))
+        }
+    }
+    if pending.size() > 0 { return err(encoding_error("utf16", EncodingErrorKind.Incomplete, "input ends with an incomplete code unit")) }
+    return flush_encoding_writer(writer)
+}
+
+func utf32_decode_stream(io.Reader reader, io.Writer writer, bool little_endian, bool consume_bom) returns result<void, EncodingError> {
+    bytes pending = b""
+    bool first_unit = true
+    while true {
+        auto chunk = use read_encoding_chunk(reader)
+        if chunk.size() == 0 { break }
+        int chunk_index = 0
+        while chunk_index < chunk.size() {
+            pending.push_back(chunk[chunk_index])
+            chunk_index = chunk_index + 1
+        }
+        string output = ""
+        while pending.size() >= 4 {
+            int code = if little_endian {
+                pending[0].to_int() + pending[1].to_int() * 256 + pending[2].to_int() * 65536 + pending[3].to_int() * 16777216
+            } else {
+                pending[0].to_int() * 16777216 + pending[1].to_int() * 65536 + pending[2].to_int() * 256 + pending[3].to_int()
+            }
+            if first_unit && consume_bom && code == 65279 {
+                utf8_stream_remove(pending, 4)
+                first_unit = false
+                continue
+            }
+            first_unit = false
+            if code > 1114111 || (code >= 55296 && code <= 57343) {
+                return err(encoding_error("utf32", EncodingErrorKind.InvalidScalar, "input contains an invalid Unicode scalar"))
+            }
+            output = output + code.to_char().to_string()
+            utf8_stream_remove(pending, 4)
+        }
+        if output.length() > 0 {
+            use write_encoding_bytes(writer, utf8_encode(output))
+        }
+    }
+    if pending.size() > 0 { return err(encoding_error("utf32", EncodingErrorKind.Incomplete, "input ends with an incomplete code unit")) }
+    return flush_encoding_writer(writer)
+}

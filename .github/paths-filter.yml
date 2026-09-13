@@ -10,5 +10,9 @@ rust:
   - 'scripts/**'
   - 'test_scripts/**'
   - 'infra/**'
+  # Local composite actions are part of the build/install contract. A change
+  # here must run the jobs that consume the action, even when no Rust source
+  # changed alongside it.
+  - '.github/actions/**'
   - '.github/workflows/**'
   - '.github/paths-filter.yml'

@@ -1,0 +1,25 @@
+// Result sets are owned handles. They can be drained or explicitly closed;
+// class row mapping is not compiler-generated.
+
+import std.sql
+
+func run() returns result<int, SqlError> {
+    auto conn = use sql.sqlite_memory()
+    use conn.execute("CREATE TABLE users (id INTEGER, name TEXT)")
+    use conn.execute("INSERT INTO users (id, name) VALUES (1, 'Ada')")
+
+    auto result = use conn.query("SELECT id, name FROM users")
+    auto rows = use result.rows()
+    print(rows.len().to_string())
+    use result.close()
+    conn.close()
+    return ok(0)
+}
+
+func main() returns void {
+    auto result = run()
+    if result.is_err() {
+        print(result.error().message())
+    }
+    return
+}

@@ -144,7 +144,7 @@ fn locked_git_commit(source: &str) -> Option<String> {
 /// `llvm-config-22` on PATH and write the prefix to `.cargo/config.toml`.
 /// Exits with an error on first-time setup so the next build picks it up.
 fn ensure_llvm_prefix(workspace_root: &Path) {
-    // Already set via environment — nothing to do.
+    // Already set via environment; nothing to do.
     if env::var("LLVM_SYS_221_PREFIX").is_ok() {
         return;
     }
@@ -197,7 +197,7 @@ fn write_llvm_prefix_to_config(workspace_root: &Path, prefix: &str) -> std::io::
     })?;
 
     if let Ok(existing) = fs::read_to_string(&config_path) {
-        // File exists — append to [env] section or create it.
+        // File exists; append to [env] section or create it.
         if existing.contains("[env]") {
             let updated = existing.replacen(
                 "[env]",
@@ -223,7 +223,7 @@ fn write_llvm_prefix_to_config(workspace_root: &Path, prefix: &str) -> std::io::
             })?;
         }
     } else {
-        // File does not exist — create it.
+        // File does not exist; create it.
         let contents = format!("[env]\nLLVM_SYS_221_PREFIX = \"{prefix}\"\n");
         fs::write(&config_path, contents).map_err(|e| {
             std::io::Error::new(

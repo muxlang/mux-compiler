@@ -1,0 +1,58 @@
+import std.regex
+
+func run_regex() returns result<int, RegexError> {
+    print("regex escape: " + regex.Regex.escape("a+b"))
+
+    auto pattern = use regex.Regex.from_pattern_with_flags("(?P<word>hello)", "i")
+    auto matched = use pattern.is_match("Hello")
+    print("regex match: " + matched.to_string())
+    auto fully_matched = use pattern.full_match("Hello")
+    print("regex full: " + fully_matched.to_string())
+    auto groups = use pattern.group_count()
+    print("regex groups: " + groups.to_string())
+    auto names = use pattern.named_groups()
+    print("regex names: " + names.to_string())
+    auto replaced = use pattern.replace("Hello hello", "<$word>")
+    print("regex replace: " + replaced)
+
+    string prefix = "["
+    auto callback_replaced = use pattern.replace_with("Hello hello", func(string value) returns string {
+        return prefix + value.to_upper() + "]"
+    })
+    print("regex replace callback: " + callback_replaced)
+    auto split = use pattern.split("Hello hello")
+    print("regex split: " + split.to_string())
+
+    auto invalid = regex.Regex.from_pattern("(")
+    if invalid.is_err() {
+        assert(invalid.error().kind == regex.RegexErrorKind.Invalid, "regex error kind")
+        print("regex error kind: invalid")
+    }
+
+    auto maybe_found = use pattern.find("Say hello")
+    if maybe_found.is_some() {
+        auto found = maybe_found.value()
+        auto found_text = use found.text()
+        print("regex found text: " + found_text)
+        auto start = use found.start()
+        auto end = use found.end()
+        print("regex found range: " + start.to_string() + ".." + end.to_string())
+        auto maybe_capture = use found.capture_named("word")
+        if maybe_capture.is_some() {
+            print("regex capture: " + maybe_capture.value())
+        } else {
+            print("regex capture missing")
+        }
+    } else {
+        print("regex find missing")
+    }
+    return ok(1)
+}
+
+func main() returns void {
+    auto result = run_regex()
+    if result.is_err() {
+        print(result.error().message())
+    }
+    return
+}

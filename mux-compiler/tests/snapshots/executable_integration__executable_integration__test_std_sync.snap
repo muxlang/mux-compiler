@@ -5,13 +5,25 @@ expression: normalized
 === std.sync smoke test ===
 worker: finished
 join ok
-mutex lock ok
-mutex unlock ok
-rwlock read_lock ok
-rwlock unlock ok
+value join: 42
+text join: hello from worker
+bool join: true
+mutex callback ran
+mutex with_lock ok
+rwlock read callback ran: rwlock
+rwlock with_read ok
+rwlock write callback ran
+rwlock with_write ok
 condvar signal ok
-notifier mutex unlock ok
-condvar wait ok
-post-wait mutex unlock ok
+notifier mutex callback ok
+post-wait mutex callback ok
 notifier join ok
+condvar wait ok
+condvar timed wait expired
+channel send ok
+channel recv some
+channel close ok
+once callback ran
+once first ok
+once second ok
 === std.sync done ===

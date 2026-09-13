@@ -1,0 +1,22 @@
+import std.net.url
+
+func run_url() returns result<int, UrlError> {
+    auto parsed = use url.Url.parse("https://alice:secret@example.com:8443/a%20b?x=1&x=two#frag")
+    print(parsed.scheme())
+    print(parsed.username())
+    print(parsed.origin())
+    print(parsed.redacted())
+    print(parsed.query_pairs().size().to_string())
+
+    auto joined = use parsed.join("../next?q=ok")
+    print(joined.to_string())
+    return ok(1)
+}
+
+func main() returns void {
+    auto result = run_url()
+    if result.is_err() {
+        print(result.error().message())
+    }
+    return
+}

@@ -6,7 +6,7 @@ use super::{CodeGenerator, RcSlot, llvm_index};
 use crate::semantics::Type;
 use inkwell::AddressSpace;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{BasicValueEnum, PointerValue};
+use inkwell::values::{BasicValueEnum, Operand, PointerValue};
 
 /// Which per-payload operation `emit_enum_payload_op` performs on each active
 /// variant pointer field of an inline enum value.
@@ -100,30 +100,114 @@ impl<'a> CodeGenerator<'a> {
     ///
     /// Every caller is a return/terminator path, and on value-returning paths
     /// the returned value has already been retained with `mux_rc_inc`. So we
-    /// also decrement any pending statement temporaries here: an unbound
-    /// temporary is freed, and a temporary that happens to be the return value
-    /// is brought back down to the caller-owned +1 by the earlier retain.
+    /// decrement pending statement temporaries here: an unbound temporary is
+    /// freed, and a temporary that happens to be the return value is brought
+    /// back down to the caller-owned +1 by the earlier retain.
+    ///
+    /// Scope variables are deliberately deferred. A loop can execute a return
+    /// written before a local declaration on a later iteration; only after the
+    /// entire function is generated do we know every slot that return must
+    /// release. `finalize_return_scope_cleanup` inserts those releases before
+    /// each recorded `ret` instruction.
     pub(super) fn generate_all_scopes_cleanup(&mut self) -> Result<(), String> {
         self.cleanup_all_temps()?;
         self.cleanup_all_closure_temps()?;
+        if let Some(block) = self.builder.get_insert_block()
+            && !self.return_cleanup_blocks.contains(&block)
+        {
+            self.return_cleanup_blocks.push(block);
+        }
+        Ok(())
+    }
 
-        // Collect all variables from all scopes to avoid borrow issues
+    /// Insert scope-variable cleanup before every return recorded while the
+    /// current function was generated. This late pass is what makes return
+    /// cleanup complete for locals discovered after an earlier return branch
+    /// was emitted (notably loop locals).
+    pub(super) fn finalize_return_scope_cleanup(&mut self) -> Result<(), String> {
+        if self.return_cleanup_blocks.is_empty() {
+            return Ok(());
+        }
+
         let all_vars: Vec<(String, RcSlot<'a>)> = self
             .rc_scope_stack
             .iter()
             .rev()
             .flat_map(|scope| scope.iter().cloned())
             .collect();
-
-        self.generate_cleanup_for_vars(&all_vars)?;
-
         let all_closures: Vec<(String, PointerValue<'a>)> = self
             .closure_scope_stack
             .iter()
             .rev()
             .flat_map(|scope| scope.iter().cloned())
             .collect();
-        self.generate_closure_cleanup_for_vars(&all_closures)
+        let blocks = std::mem::take(&mut self.return_cleanup_blocks);
+        let saved_block = self.builder.get_insert_block();
+
+        for block in blocks {
+            let terminator = block
+                .get_terminator()
+                .ok_or("Recorded return cleanup block has no terminator")?;
+            // Enum drop glue can introduce a switch and leave the builder in
+            // a fresh merge block. Split the return before emitting cleanup so
+            // the return is rebuilt after that merge; inserting instructions
+            // before an existing `ret` would strand the merge block without a
+            // terminator (and leave the old return in the pre-cleanup block).
+            let return_value = terminator.get_operand(0).and_then(|operand| match operand {
+                Operand::Value(value) => Some(value),
+                Operand::Block(_) => None,
+            });
+            terminator.erase_from_basic_block();
+            self.builder.position_at_end(block);
+            self.generate_cleanup_for_vars(&all_vars)?;
+            self.generate_closure_cleanup_for_vars(&all_closures)?;
+            if let Some(value) = return_value {
+                match value {
+                    BasicValueEnum::ArrayValue(value) => {
+                        self.builder
+                            .build_return(Some(&value))
+                            .map_err(|e| e.to_string())?;
+                    }
+                    BasicValueEnum::IntValue(value) => {
+                        self.builder
+                            .build_return(Some(&value))
+                            .map_err(|e| e.to_string())?;
+                    }
+                    BasicValueEnum::FloatValue(value) => {
+                        self.builder
+                            .build_return(Some(&value))
+                            .map_err(|e| e.to_string())?;
+                    }
+                    BasicValueEnum::PointerValue(value) => {
+                        self.builder
+                            .build_return(Some(&value))
+                            .map_err(|e| e.to_string())?;
+                    }
+                    BasicValueEnum::StructValue(value) => {
+                        self.builder
+                            .build_return(Some(&value))
+                            .map_err(|e| e.to_string())?;
+                    }
+                    BasicValueEnum::VectorValue(value) => {
+                        self.builder
+                            .build_return(Some(&value))
+                            .map_err(|e| e.to_string())?;
+                    }
+                    BasicValueEnum::ScalableVectorValue(value) => {
+                        self.builder
+                            .build_return(Some(&value))
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            } else {
+                self.builder.build_return(None).map_err(|e| e.to_string())?;
+            }
+        }
+
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+        Ok(())
     }
 
     /// Release a list of tracked scope slots. Boxed `*mut Value` slots are
@@ -231,7 +315,13 @@ impl<'a> CodeGenerator<'a> {
     pub(super) fn rhs_produces_owned_enum(kind: &crate::ast::ExpressionKind) -> bool {
         matches!(
             kind,
-            crate::ast::ExpressionKind::Call { .. } | crate::ast::ExpressionKind::If { .. }
+            crate::ast::ExpressionKind::Call { .. }
+                | crate::ast::ExpressionKind::If { .. }
+                | crate::ast::ExpressionKind::Match { .. }
+                | crate::ast::ExpressionKind::Unary {
+                    op: crate::ast::UnaryOp::Use,
+                    ..
+                }
         )
     }
 
@@ -2198,6 +2288,7 @@ impl<'a> CodeGenerator<'a> {
             Type::Named(_, _)
             | Type::Generic(_)
             | Type::Variable(_)
+            | Type::TraitObject(_)
             | Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)

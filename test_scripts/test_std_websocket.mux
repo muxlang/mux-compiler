@@ -1,0 +1,50 @@
+import std.net.websocket
+
+func check_websocket() returns result<int, HttpError> {
+    auto handshake = use websocket.WebSocketHandshake.from_config(
+        "dGhlIHNhbXBsZSBub25jZQ==",
+        "chat"
+    )
+    auto accept = use handshake.accept_key()
+    assert(accept == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC 6455 accept key")
+    auto response_headers = use handshake.response_headers()
+    auto upgrade = use response_headers.get("Upgrade")
+    if upgrade.is_none() {
+        return err(HttpError.from_message("missing upgrade response header"))
+    }
+    assert(upgrade.value() == "websocket", "upgrade response header")
+
+    auto frame = websocket.WebSocketFrame.new()
+    frame.opcode = 2
+    frame.payload = b"hello"
+    frame.masked = true
+    auto wire = use frame.encode()
+    auto decoded = use websocket.WebSocketFrame.decode(wire)
+    assert(decoded.opcode == 2, "binary frame opcode")
+    assert(decoded.payload == b"hello", "binary frame payload")
+
+    auto fragment = websocket.WebSocketFrame.new()
+    fragment.fin = false
+    fragment.opcode = 1
+    fragment.payload = b"hel"
+    auto continuation = websocket.WebSocketFrame.new()
+    continuation.fin = true
+    continuation.opcode = 0
+    continuation.payload = b"lo"
+    list<WebSocketFrame> fragments = [fragment, continuation]
+    auto message = use websocket.WebSocketFrame.reassemble(fragments)
+    assert(message.fin, "reassembled message is final")
+    assert(message.opcode == 1, "reassembled message opcode")
+    assert(message.payload == b"hello", "reassembled message payload")
+    return ok(1)
+}
+
+func main() returns void {
+    auto result = check_websocket()
+    if result.is_err() {
+        assert(false, result.error().message())
+        return
+    }
+    print("websocket codec passed")
+    return
+}

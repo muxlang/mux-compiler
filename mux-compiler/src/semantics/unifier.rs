@@ -90,6 +90,7 @@ impl Unifier {
                 self.unify(o1, o2, span)?;
                 self.unify(e1, e2, span)?;
             }
+            (Type::TraitObject(a), Type::TraitObject(b)) => self.unify(a, b, span)?,
             (Type::Void, Type::Void)
             | (Type::EmptyList | Type::List(_), Type::EmptyList)
             | (Type::EmptyList, Type::List(_))
@@ -125,7 +126,8 @@ impl Unifier {
             Type::Reference(inner)
             | Type::List(inner)
             | Type::Set(inner)
-            | Type::Optional(inner) => self.occurs(var, inner),
+            | Type::Optional(inner)
+            | Type::TraitObject(inner) => self.occurs(var, inner),
             Type::Result(ok, err) => self.occurs(var, ok) || self.occurs(var, err),
             Type::Map(k, v) => self.occurs(var, k) || self.occurs(var, v),
             Type::Tuple(l, r) => self.occurs(var, l) || self.occurs(var, r),
@@ -164,6 +166,7 @@ impl Unifier {
             Type::Result(ok, err) => {
                 Type::Result(Box::new(self.apply(ok)), Box::new(self.apply(err)))
             }
+            Type::TraitObject(inner) => Type::TraitObject(Box::new(self.apply(inner))),
             _ => t.clone(),
         }
     }

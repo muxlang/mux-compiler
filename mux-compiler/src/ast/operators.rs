@@ -93,6 +93,7 @@ impl BinaryOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
+    Use,
     Neg,
     Not,
     Ref,
@@ -109,6 +110,7 @@ impl UnaryOp {
     /// Returns an error when `token` is not a unary operator.
     pub fn parse(token: &Token) -> Result<UnaryOp, ParseError> {
         match &token.token_type {
+            TokenType::Use => Ok(UnaryOp::Use),
             TokenType::Minus => Ok(UnaryOp::Neg),
             TokenType::Bang => Ok(UnaryOp::Not),
             TokenType::Ref => Ok(UnaryOp::Ref),

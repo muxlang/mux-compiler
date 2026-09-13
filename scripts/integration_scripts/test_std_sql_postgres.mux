@@ -1,122 +1,103 @@
-import std.assert
 import std.env
 import std.sql
 
 func require_env(string key) returns string {
-    match env.get(key) {
-        some(value) { return value }
-        none {
-            assert.assert(false, "missing environment variable: " + key)
-            return ""
-        }
+    auto result = env.get(key)
+    if result.is_err() {
+        assert(false, "failed to read environment variable: " + result.error().message())
+        return ""
     }
+    auto optional = result.value()
+    if optional.is_none() {
+        assert(false, "missing environment variable: " + key)
+        return ""
+    }
+    return optional.value()
+}
+
+func run_postgres(string db_url) returns result<int, SqlError> {
+    auto conn = use sql.connect(db_url)
+    use conn.execute("CREATE TEMP TABLE mux_users (id BIGINT PRIMARY KEY, name TEXT NOT NULL, active BOOLEAN NOT NULL)")
+    print("created temp table")
+
+    auto inserted = use conn.execute_params(
+        "INSERT INTO mux_users (id, name, active) VALUES ($1, $2, $3)",
+        [sql.int(1), sql.string("Ada"), sql.bool(true)]
+    )
+    assert(inserted == 1, "expected one inserted row")
+
+    auto tx = use conn.begin_transaction()
+    auto transaction_inserted = use tx.execute_params(
+        "INSERT INTO mux_users (id, name, active) VALUES ($1, $2, $3)",
+        [sql.int(2), sql.string("Grace"), sql.bool(false)]
+    )
+    assert(transaction_inserted == 1, "expected transaction insert")
+    use tx.commit()
+    print("transaction committed")
+
+    auto rollback_tx = use conn.begin_transaction()
+    auto rollback_inserted = use rollback_tx.execute_params(
+        "INSERT INTO mux_users (id, name, active) VALUES ($1, $2, $3)",
+        [sql.int(3), sql.string("Rollback"), sql.bool(true)]
+    )
+    assert(rollback_inserted == 1, "expected rollback transaction insert")
+    use rollback_tx.rollback()
+    print("transaction rolled back")
+
+    auto result_set = use conn.query_params(
+        "SELECT id, name, active FROM mux_users WHERE id = $1",
+        [sql.int(2)]
+    )
+    auto maybe_row = use result_set.next()
+    if maybe_row.is_none() {
+        conn.close()
+        assert(false, "expected one postgres row")
+        return ok(0)
+    }
+    auto row = maybe_row.value()
+    auto id_value = use row.get("id")
+    auto id = use id_value.as_int()
+    assert(id == 2, "expected id 2")
+    auto name_value = use row.get("name")
+    auto name = use name_value.as_string()
+    assert(name == "Grace", "expected Grace row")
+    print("postgres row name: " + name)
+    auto active_value = use row.get("active")
+    auto active = use active_value.as_bool()
+    assert(!active, "expected inactive row")
+    use result_set.close()
+
+    auto rollback_result_set = use conn.query_params(
+        "SELECT id FROM mux_users WHERE id = $1",
+        [sql.int(3)]
+    )
+    auto rollback_row = use rollback_result_set.next()
+    if rollback_row.is_some() {
+        conn.close()
+        assert(false, "rollback row should not exist")
+        return ok(0)
+    }
+    use rollback_result_set.close()
+    print("rollback verification passed")
+
+    auto invalid = conn.query("SELECT does_not_exist FROM mux_users")
+    if invalid.is_ok() {
+        conn.close()
+        return err(SqlError.from_message("expected invalid postgres query to fail"))
+    }
+    print("postgres error path validated: " + invalid.error().message())
+
+    conn.close()
+    return ok(0)
 }
 
 func main() returns void {
     auto db_url = require_env("MUX_TEST_POSTGRES_URL")
     print("Starting postgres integration test")
 
-    match sql.connect(db_url) {
-        ok(conn) {
-            match conn.execute("CREATE TEMP TABLE mux_users (id BIGINT PRIMARY KEY, name TEXT NOT NULL, active BOOLEAN NOT NULL)") {
-                ok(_) { print("created temp table") }
-                err(e) { assert.assert(false, "failed to create temp table: " + e) }
-            }
-
-            match conn.execute_params(
-                "INSERT INTO mux_users (id, name, active) VALUES ($1, $2, $3)",
-                [sql.int(1), sql.string("Ada"), sql.bool(true)]
-            ) {
-                ok(count) { assert.assert(count == 1, "expected one inserted row") }
-                err(e) { assert.assert(false, "failed to insert first row: " + e) }
-            }
-
-            match conn.begin_transaction() {
-                ok(tx) {
-                    match tx.execute_params(
-                        "INSERT INTO mux_users (id, name, active) VALUES ($1, $2, $3)",
-                        [sql.int(2), sql.string("Grace"), sql.bool(false)]
-                    ) {
-                        ok(count) { assert.assert(count == 1, "expected transaction insert") }
-                        err(e) { assert.assert(false, "transaction insert failed: " + e) }
-                    }
-
-                    match tx.commit() {
-                        ok(_) { print("transaction committed") }
-                        err(e) { assert.assert(false, "transaction commit failed: " + e) }
-                    }
-                }
-                err(e) { assert.assert(false, "begin transaction failed: " + e) }
-            }
-
-            match conn.begin_transaction() {
-                ok(tx) {
-                    match tx.execute_params(
-                        "INSERT INTO mux_users (id, name, active) VALUES ($1, $2, $3)",
-                        [sql.int(3), sql.string("Rollback"), sql.bool(true)]
-                    ) {
-                        ok(count) { assert.assert(count == 1, "expected rollback transaction insert") }
-                        err(e) { assert.assert(false, "rollback transaction insert failed: " + e) }
-                    }
-
-                    match tx.rollback() {
-                        ok(_) { print("transaction rolled back") }
-                        err(e) { assert.assert(false, "transaction rollback failed: " + e) }
-                    }
-                }
-                err(e) { assert.assert(false, "begin rollback transaction failed: " + e) }
-            }
-
-            match conn.query_params(
-                "SELECT id, name, active FROM mux_users WHERE id = $1",
-                [sql.int(2)]
-            ) {
-                ok(rs) {
-                    match rs.next() {
-                        some(row) {
-                            match row["id"].as_int() {
-                                ok(id) { assert.assert(id == 2, "expected id 2") }
-                                err(e) { assert.assert(false, "failed to read id: " + e) }
-                            }
-                            match row["name"].as_string() {
-                                ok(name) {
-                                    assert.assert(name == "Grace", "expected Grace row")
-                                    print("postgres row name: " + name)
-                                }
-                                err(e) { assert.assert(false, "failed to read name: " + e) }
-                            }
-                            match row["active"].as_bool() {
-                                ok(active) { assert.assert(!active, "expected inactive row") }
-                                err(e) { assert.assert(false, "failed to read active flag: " + e) }
-                            }
-                        }
-                        none { assert.assert(false, "expected one postgres row") }
-                    }
-                }
-                err(e) { assert.assert(false, "postgres query failed: " + e) }
-            }
-
-            match conn.query_params(
-                "SELECT id FROM mux_users WHERE id = $1",
-                [sql.int(3)]
-            ) {
-                ok(rs) {
-                    match rs.next() {
-                        none { print("rollback verification passed") }
-                        some(_) { assert.assert(false, "rollback row should not exist") }
-                    }
-                }
-                err(e) { assert.assert(false, "rollback verification query failed: " + e) }
-            }
-
-            match conn.query("SELECT does_not_exist FROM mux_users") {
-                ok(_) { assert.assert(false, "expected invalid postgres query to fail") }
-                err(e) { print("postgres error path validated: " + e) }
-            }
-
-            conn.close()
-        }
-        err(e) { assert.assert(false, "postgres connect failed: " + e) }
+    auto result = run_postgres(db_url)
+    if result.is_err() {
+        assert(false, "postgres integration failed: " + result.error().message())
     }
 
     print("postgres integration test passed")

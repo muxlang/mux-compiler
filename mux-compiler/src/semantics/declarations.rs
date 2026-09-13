@@ -79,6 +79,7 @@ impl SemanticAnalyzer {
                         self.hoisted_import_spans.insert(stmt.span);
                     }
                 }
+                AstNode::Test { .. } => {}
             }
         }
         Ok(())
@@ -476,41 +477,6 @@ impl SemanticAnalyzer {
             is_static: true,
         };
         methods_map.insert("new".to_string(), new_sig);
-
-        // Deserializers, synthesized for every class the way `new` is.
-        //
-        // The name states the shape it returns: `from_json` gives one object,
-        // `list_from_json` gives a JSON array, `list_from_csv` gives the rows of
-        // a table. There is deliberately no singular `from_csv` - a CSV document
-        // IS a table, so a singular form would only work for a file with exactly
-        // one row and would read as a promise the format cannot keep.
-        //
-        // Whether a class can actually be deserialized (every field a type with
-        // a JSON representation) is reported by codegen against the specific
-        // field, not by withholding the method - a missing method says nothing
-        // about which field is the problem.
-        let self_type = Type::Named(
-            class_name.to_string(),
-            type_params
-                .iter()
-                .map(|(p, _)| Type::Variable(p.clone()))
-                .collect(),
-        );
-        let str_type = Type::Primitive(crate::ast::PrimitiveType::Str);
-        for (name, ok_type) in [
-            ("from_json", self_type.clone()),
-            ("list_from_json", Type::List(Box::new(self_type.clone()))),
-            ("list_from_csv", Type::List(Box::new(self_type.clone()))),
-        ] {
-            methods_map.insert(
-                name.to_string(),
-                MethodSig {
-                    params: vec![str_type.clone()],
-                    return_type: Type::Result(Box::new(ok_type), Box::new(str_type.clone())),
-                    is_static: true,
-                },
-            );
-        }
 
         Ok(methods_map)
     }
@@ -976,10 +942,11 @@ impl SemanticAnalyzer {
                 ..
             } => self.analyze_interface_where_clauses(type_params, methods),
             AstNode::Statement(stmt) => self.analyze_statement(stmt, files),
+            AstNode::Test { .. } => Ok(()),
         }
     }
 
-    /// Single comprehensive generic-arity pass (issue #303). Runs after
+    /// Single generic-arity pass (issue #303). Runs after
     /// declaration collection - so every class/enum/interface symbol and its
     /// `type_params` are registered - and walks EVERY `TypeNode` in the program:
     /// class fields, enum variant payloads, interface fields and method
@@ -1023,6 +990,7 @@ impl SemanticAnalyzer {
                 } => self.arity_check_interface(type_params, fields, methods),
                 AstNode::Function(func) => self.arity_check_function(func, &[]),
                 AstNode::Statement(stmt) => self.arity_check_statement(stmt, &[]),
+                AstNode::Test { .. } => {}
             }
         }
     }
@@ -1348,6 +1316,15 @@ impl SemanticAnalyzer {
                 self.arity_check_expr(then_expr, params);
                 self.arity_check_expr(else_expr, params);
             }
+            ExpressionKind::Match { expr, arms } => {
+                self.arity_check_expr(expr, params);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        self.arity_check_expr(guard, params);
+                    }
+                    self.arity_check_statements(&arm.body, params);
+                }
+            }
             ExpressionKind::Literal(_) | ExpressionKind::None | ExpressionKind::Identifier(_) => {}
         }
     }
@@ -1360,6 +1337,9 @@ impl SemanticAnalyzer {
         let was_static = self.is_in_static_method;
         let old_self_type = self.current_self_type.clone();
         let old_return_type = self.current_return_type.clone();
+        let old_flow = std::mem::take(&mut self.flow);
+        let old_flow_generation = self.flow_generation;
+        let old_expression_guards = std::mem::take(&mut self.expression_guards);
         self.is_in_static_method = func.is_common;
         self.current_self_type = self_type.clone();
 
@@ -1436,6 +1416,9 @@ impl SemanticAnalyzer {
         self.is_in_static_method = was_static;
         self.current_self_type = old_self_type;
         self.current_return_type = old_return_type;
+        self.flow = old_flow;
+        self.flow_generation = old_flow_generation;
+        self.expression_guards = old_expression_guards;
 
         self.ensure_all_paths_return(func, &return_type)
     }

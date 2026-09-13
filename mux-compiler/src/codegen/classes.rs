@@ -13,6 +13,188 @@ use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use std::collections::HashMap;
 
 impl<'a> CodeGenerator<'a> {
+    /// Materialize enum types declared by runtime-backed stdlib modules rather
+    /// than by an embedded Mux source file. Keeping this as an ordinary enum
+    /// layout means matching, comparison, and collection boxing use the same
+    /// code paths as user-defined enums.
+    pub(super) fn generate_builtin_enum_types(&mut self) {
+        let materialize = |name: &str, variant_names: &[&str], this: &mut Self| {
+            let variants = variant_names
+                .iter()
+                .map(|name| crate::ast::EnumVariant {
+                    name: (*name).to_string(),
+                    data: None,
+                    where_clause: None,
+                })
+                .collect::<Vec<_>>();
+            this.enum_asts.insert(name.to_string(), variants.clone());
+            this.generate_enum_type(name, &variants);
+        };
+        materialize(
+            "HttpErrorKind",
+            &[
+                "Invalid",
+                "Transport",
+                "Timeout",
+                "Resolve",
+                "Protocol",
+                "Status",
+            ],
+            self,
+        );
+        materialize(
+            "SqlErrorKind",
+            &[
+                "Constraint",
+                "Timeout",
+                "Unsupported",
+                "Invalid",
+                "Database",
+            ],
+            self,
+        );
+        materialize("EnvErrorKind", &["Invalid", "NotUnicode", "Os"], self);
+        materialize(
+            "FsErrorKind",
+            &[
+                "Invalid",
+                "Io",
+                "NotFound",
+                "Permission",
+                "NotUnicode",
+                "Os",
+            ],
+            self,
+        );
+        materialize(
+            "IoErrorKind",
+            &[
+                "Invalid",
+                "Io",
+                "NotFound",
+                "Permission",
+                "NotUnicode",
+                "Closed",
+                "Os",
+            ],
+            self,
+        );
+        materialize(
+            "DateTimeErrorKind",
+            &["Invalid", "Parse", "Range", "Format", "System"],
+            self,
+        );
+        materialize(
+            "NetErrorKind",
+            &["Invalid", "Timeout", "Resolve", "Unsupported", "Io"],
+            self,
+        );
+        materialize("UrlErrorKind", &["Invalid", "Unsupported", "Parse"], self);
+        materialize("UuidErrorKind", &["Invalid", "Parse", "NotUnicode"], self);
+        materialize(
+            "JsonErrorKind",
+            &[
+                "Invalid",
+                "Parse",
+                "Type",
+                "Missing",
+                "Duplicate",
+                "Limit",
+                "Io",
+            ],
+            self,
+        );
+        materialize("JsonDuplicatePolicy", &["Reject", "First", "Last"], self);
+        materialize(
+            "JsonTokenKind",
+            &[
+                "StartObject",
+                "EndObject",
+                "StartArray",
+                "EndArray",
+                "Colon",
+                "Comma",
+                "String",
+                "Number",
+                "Bool",
+                "Null",
+            ],
+            self,
+        );
+        materialize(
+            "CsvErrorKind",
+            &["Invalid", "Parse", "Type", "Limit", "Io"],
+            self,
+        );
+        materialize(
+            "ByteErrorKind",
+            &[
+                "Invalid",
+                "Parse",
+                "Range",
+                "Overflow",
+                "DivideByZero",
+                "Shift",
+                "Io",
+            ],
+            self,
+        );
+        materialize(
+            "BytesErrorKind",
+            &[
+                "Invalid", "Parse", "Range", "Overflow", "Bounds", "Utf8", "Io",
+            ],
+            self,
+        );
+        materialize(
+            "SyncErrorKind",
+            &[
+                "Invalid", "State", "Timeout", "Closed", "Callback", "Spawn", "Io",
+            ],
+            self,
+        );
+        materialize(
+            "ProcessErrorKind",
+            &["Invalid", "Io", "Spawn", "Timeout", "State", "NotFound"],
+            self,
+        );
+        materialize(
+            "TlsErrorKind",
+            &[
+                "Invalid",
+                "Io",
+                "Timeout",
+                "Handshake",
+                "Certificate",
+                "Unsupported",
+                "Protocol",
+            ],
+            self,
+        );
+        materialize(
+            "MathErrorKind",
+            &["Invalid", "Range", "Overflow", "Domain"],
+            self,
+        );
+        materialize(
+            "RandomErrorKind",
+            &["Invalid", "Range", "Unsupported", "Io"],
+            self,
+        );
+        materialize("CliErrorKind", &["Invalid", "Parse", "Io"], self);
+        materialize(
+            "CryptoErrorKind",
+            &["Invalid", "Unsupported", "Authentication", "Io"],
+            self,
+        );
+        materialize(
+            "RegexErrorKind",
+            &["Invalid", "Parse", "Match", "Capture"],
+            self,
+        );
+        materialize("LogErrorKind", &["Invalid", "Io", "Config", "State"], self);
+    }
+
     /// The LLVM type of a field the class stores inline as a scalar, or `None`
     /// when the slot holds a `*mut Value`.
     ///
@@ -54,6 +236,36 @@ impl<'a> CodeGenerator<'a> {
     }
 
     pub(super) fn generate_user_defined_types(&mut self, nodes: &[AstNode]) -> Result<(), String> {
+        // `HttpErrorKind` is a runtime-backed stdlib enum. It has no embedded
+        // source AST, but it must still have a normal inline enum layout before
+        // error fields or constructors are generated.
+        if !self.type_map.contains_key("HttpErrorKind")
+            || !self.type_map.contains_key("SqlErrorKind")
+            || !self.type_map.contains_key("EnvErrorKind")
+            || !self.type_map.contains_key("FsErrorKind")
+            || !self.type_map.contains_key("IoErrorKind")
+            || !self.type_map.contains_key("DateTimeErrorKind")
+            || !self.type_map.contains_key("NetErrorKind")
+            || !self.type_map.contains_key("UrlErrorKind")
+            || !self.type_map.contains_key("UuidErrorKind")
+            || !self.type_map.contains_key("JsonErrorKind")
+            || !self.type_map.contains_key("JsonDuplicatePolicy")
+            || !self.type_map.contains_key("CsvErrorKind")
+            || !self.type_map.contains_key("ByteErrorKind")
+            || !self.type_map.contains_key("BytesErrorKind")
+            || !self.type_map.contains_key("SyncErrorKind")
+            || !self.type_map.contains_key("ProcessErrorKind")
+            || !self.type_map.contains_key("TlsErrorKind")
+            || !self.type_map.contains_key("MathErrorKind")
+            || !self.type_map.contains_key("RandomErrorKind")
+            || !self.type_map.contains_key("CliErrorKind")
+            || !self.type_map.contains_key("CryptoErrorKind")
+            || !self.type_map.contains_key("RegexErrorKind")
+            || !self.type_map.contains_key("LogErrorKind")
+        {
+            self.generate_builtin_enum_types();
+        }
+
         // A nested user-enum payload is laid out inline (issue #306), so an enum
         // must be generated after any enum it embeds. Generate enum types in that
         // dependency order first, independent of source order, so a nested enum
@@ -621,7 +833,9 @@ impl<'a> CodeGenerator<'a> {
                 continue;
             }
             let mut vtable_values = Vec::new();
-            for method_name in interface_methods.keys() {
+            let mut method_names: Vec<&String> = interface_methods.keys().collect();
+            method_names.sort();
+            for method_name in method_names {
                 let class_method_name = format!("{class_name}.{method_name}");
                 let func = self.functions.get(&class_method_name).ok_or_else(|| {
                     format!(
@@ -701,6 +915,135 @@ impl<'a> CodeGenerator<'a> {
         self.type_map
             .insert(name.to_string(), interface_struct_type.into());
 
+        let object_layout = self
+            .context
+            .struct_type(&[vtable_ptr_type.into(), vtable_ptr_type.into()], false);
+        self.trait_object_layouts
+            .insert(name.to_string(), object_layout);
+        self.generate_trait_object_copy(name, object_layout)?;
+        self.generate_trait_object_destructor(name, object_layout)?;
+
+        Ok(())
+    }
+
+    fn generate_trait_object_copy(
+        &mut self,
+        interface_name: &str,
+        layout: inkwell::types::StructType<'a>,
+    ) -> Result<(), String> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let function = self.module.add_function(
+            &format!("dyn${interface_name}.copy"),
+            self.context
+                .void_type()
+                .fn_type(&[ptr_type.into(), ptr_type.into()], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        self.trait_object_copies.insert(
+            interface_name.to_string(),
+            function.as_global_value().as_pointer_value(),
+        );
+
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let source = function
+            .get_nth_param(0)
+            .ok_or("trait object copy is missing its source parameter")?
+            .into_pointer_value();
+        let destination = function
+            .get_nth_param(1)
+            .ok_or("trait object copy is missing its destination parameter")?
+            .into_pointer_value();
+        let source_object_slot = self
+            .builder
+            .build_struct_gep(layout, source, 0, "trait_object_source_object")
+            .map_err(|e| e.to_string())?;
+        let source_object = self
+            .builder
+            .build_load(
+                ptr_type,
+                source_object_slot,
+                "trait_object_source_object_load",
+            )
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+        let copy_object = self
+            .runtime_function("mux_copy_object")
+            .ok_or("mux_copy_object not found")?;
+        let copied_object = self
+            .builder
+            .build_call(
+                copy_object,
+                &[source_object.into()],
+                "trait_object_copy_object",
+            )
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_copy_object returned no value")?;
+        let destination_object_slot = self
+            .builder
+            .build_struct_gep(layout, destination, 0, "trait_object_destination_object")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(destination_object_slot, copied_object)
+            .map_err(|e| e.to_string())?;
+
+        let source_vtable_slot = self
+            .builder
+            .build_struct_gep(layout, source, 1, "trait_object_source_vtable")
+            .map_err(|e| e.to_string())?;
+        let source_vtable = self
+            .builder
+            .build_load(
+                ptr_type,
+                source_vtable_slot,
+                "trait_object_source_vtable_load",
+            )
+            .map_err(|e| e.to_string())?;
+        let destination_vtable_slot = self
+            .builder
+            .build_struct_gep(layout, destination, 1, "trait_object_destination_vtable")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(destination_vtable_slot, source_vtable)
+            .map_err(|e| e.to_string())?;
+        self.builder.build_return(None).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn generate_trait_object_destructor(
+        &mut self,
+        interface_name: &str,
+        layout: inkwell::types::StructType<'a>,
+    ) -> Result<(), String> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let function = self.module.add_function(
+            &format!("dyn${interface_name}.destructor"),
+            self.context.void_type().fn_type(&[ptr_type.into()], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        self.trait_object_destructors.insert(
+            interface_name.to_string(),
+            function.as_global_value().as_pointer_value(),
+        );
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let data = function
+            .get_nth_param(0)
+            .ok_or("trait object destructor is missing its data parameter")?
+            .into_pointer_value();
+        let object_slot = self
+            .builder
+            .build_struct_gep(layout, data, 0, "trait_object_value")
+            .map_err(|e| e.to_string())?;
+        let object = self
+            .builder
+            .build_load(ptr_type, object_slot, "trait_object_value_load")
+            .map_err(|e| e.to_string())?
+            .into_pointer_value();
+        self.emit_value_decref(object)?;
+        self.builder.build_return(None).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -727,6 +1070,12 @@ impl<'a> CodeGenerator<'a> {
         struct_fields.extend(union_field_types);
         let struct_type = self.context.struct_type(&struct_fields, false);
         self.type_map.insert(name.to_string(), struct_type.into());
+    }
+
+    pub(super) fn is_payloadless_enum(&self, name: &str) -> bool {
+        self.enum_variant_fields
+            .get(name)
+            .is_some_and(|variants| variants.values().all(std::vec::Vec::is_empty))
     }
 
     pub(super) fn get_variant_index(

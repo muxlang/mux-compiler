@@ -1,16 +1,15 @@
 // Simple TCP smoke test that documents the failure path we can exercise without a listener.
 import std.net
-import std.assert
 
 func main() returns void {
     print("Starting tcp connect failure smoke test")
     match net.TcpStream.connect("127.0.0.1:10000") {
         ok(_) {
-            //assert.assert(false, "expected tcp connect to fail because nothing is listening")
+            //assert(false, "expected tcp connect to fail because nothing is listening")
             print("tcp listener connected!")
         }
         err(e) {
-            print("tcp connect failed as expected: " + e)
+            print("tcp connect failed as expected: " + e.message())
         }
     }
 

@@ -21,7 +21,9 @@ impl SemanticAnalyzer {
 
     fn resolve_in_binary_operator(&self, left_type: &Type, right_type: &Type) -> Option<Type> {
         match right_type {
-            Type::List(_) | Type::Set(_) => Some(Type::Primitive(PrimitiveType::Bool)),
+            Type::List(_) | Type::Set(_) | Type::Primitive(PrimitiveType::Bytes) => {
+                Some(Type::Primitive(PrimitiveType::Bool))
+            }
             Type::Map(key_type, _) => {
                 if left_type == key_type.as_ref() {
                     Some(Type::Primitive(PrimitiveType::Bool))
@@ -112,6 +114,8 @@ impl SemanticAnalyzer {
                 | PrimitiveType::Float
                 | PrimitiveType::Bool
                 | PrimitiveType::Char
+                | PrimitiveType::Byte
+                | PrimitiveType::Bytes
                 | PrimitiveType::Str,
             ) => true,
             // Compared structurally by the runtime, which is the same
@@ -162,15 +166,20 @@ impl SemanticAnalyzer {
         if matches!(name, "optional" | "result") {
             return false;
         }
-        self.symbol_table
-            .lookup(name)
+        self.lookup_named_type_symbol(name)
             .is_some_and(|symbol| symbol.kind == SymbolKind::Enum)
     }
 
     fn resolve_comparison_binary_operator(&self, left_type: &Type) -> Option<Type> {
         if matches!(
             left_type,
-            Type::Primitive(PrimitiveType::Int | PrimitiveType::Float | PrimitiveType::Str)
+            Type::Primitive(
+                PrimitiveType::Int
+                    | PrimitiveType::Float
+                    | PrimitiveType::Byte
+                    | PrimitiveType::Bytes
+                    | PrimitiveType::Str,
+            )
         ) || self.type_implements_interface(left_type, "Comparable")
         {
             Some(Type::Primitive(PrimitiveType::Bool))

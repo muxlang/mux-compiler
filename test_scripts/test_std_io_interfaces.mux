@@ -1,0 +1,43 @@
+// Capability interfaces for the concrete std.io stream handles use the same
+// static, monomorphized dispatch as every other Mux interface bound.
+import std.io.*
+
+func read_prefix<T is Readable>(T source) returns result<bytes, IoError> {
+    return source.read(2)
+}
+
+func write_text<T is Writable>(T target) returns result<int, IoError> {
+    return target.write(b"ok")
+}
+
+func rewind<T is Seek>(T stream) returns result<int, IoError> {
+    return stream.seek(0)
+}
+
+func exercise_interfaces() returns result<int, IoError> {
+    Reader reader = Reader.from_bytes(b"hello")
+    auto prefix = use read_prefix(reader)
+    print("readable: " + prefix.to_utf8_lossy())
+
+    Writer writer = Writer.new()
+    auto written = use write_text(writer)
+    auto position = use rewind(writer)
+    auto output = use writer.bytes()
+    print("writable: " + written.to_string())
+    print("seek: " + position.to_string())
+    print("output: " + output.to_utf8_lossy())
+
+    reader.close()
+    writer.close()
+    return ok(written + position)
+}
+
+func main() returns void {
+    auto result = exercise_interfaces()
+    if result.is_ok() {
+        print("io interfaces ok: " + result.value().to_string())
+    } else {
+        print("io interfaces error: " + result.error().message())
+    }
+    return
+}

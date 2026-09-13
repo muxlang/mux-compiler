@@ -5,6 +5,175 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- `WebSocketFrame.reassemble(fragments)` now combines a bounded sequence of
+  decoded RFC 6455 data fragments into one final frame, including interleaved
+  control-frame validation and message-level UTF-8 validation.
+- **Stdlib registry parity checks**: compiler tests now reject duplicate or
+  stale module entries, require registered parents for nested modules, and
+  verify that embedded source files are represented by the registry. Virtual
+  parent namespaces such as `std.dsa` are allowed only when they own a child
+  source module.
+- `ProcessPool.new()` now has the same typed `result<ProcessPool, ProcessError>`
+  signature as `ProcessPool.with_config`, so default pool construction uses
+  the language's normal `use` error-propagation flow.
+- **Percent decoding accepts ASCII punctuation**: generic and form percent
+  decoders now preserve every unescaped ASCII byte instead of rejecting
+  punctuation outside the previously recognized delimiter subset.
+- Removed three stale runtime declarations (`mux_free_value`,
+  `mux_optional_discriminant`, and `mux_result_discriminant`) that had no
+  corresponding runtime exports. Optional and result discriminants use the
+  value-based ABI names exclusively.
+- Compiler-generated JSON and CSV class mapping was removed. Classes that need
+  document mapping now implement the explicit `JsonRepresentable` and
+  `CsvRepresentable` interfaces.
+- Removed the obsolete JSON-shaped HTTP bridge symbols; generated code now
+  uses the typed `HttpRequest`/`HttpResponse` surface exclusively.
+- Implemented the declared primitive `eq`, `cmp`, and `hash` methods for
+  integer, byte, float, string, boolean, and character values; direct method
+  calls now share the same comparison and hashing semantics as operators and
+  collections.
+
+- Synthesized `Class.from_row(row)` and `Class.list_from_rows(result_set)`
+  decode SQL rows into checked primitive, bytes, JSON, datetime, UUID, and
+  optional fields while preserving the original `SqlError` on lookup or
+  conversion failure.
+- `std.io` Reader/Writer and stream capability operations now use typed
+  `IoError` values with stable `kind`, `detail`, and `operation` fields.
+- `std.net` socket and poller operations now use typed `NetError` values,
+  matching the runtime boundary and preserving address context when known.
+- `std.sync` threads, locks, atomics, channels, worker pools, and coordination
+  primitives now use typed `SyncError` values with stable `kind` and `detail`.
+- `std.data.json` and `std.data.csv` operations now use typed `JsonError` and
+  `CsvError` values with stable `kind` and `detail`; callers use
+  `error.message()` for human-readable output and inspect the structured
+  fields for programmatic handling.
+- `CsvReader.from_reader` and `CsvWriter.from_writer` now expose the shared
+  `std.io` Reader/Writer streaming boundary for incremental CSV pipelines.
+- SQL executable fixtures now assert provider constraint failures through the
+  typed `SqlErrorKind.Constraint` enum rather than treating them as generic
+  database errors.
+
+- **Assertions**: assertion checking is now the global built-in
+  `assert(condition, message)`, with both a boolean condition and diagnostic
+  message required. The separate assertion package has been removed.
+- **Condition variables**: `CondVar.wait_timeout(mutex, milliseconds)` is now
+  exposed with a typed boolean result indicating notification versus timeout.
+- **Test runner controls**: `mux test` now accepts positive per-test timeout
+  annotations (`// mux:test timeout=N`), tag annotations, and validated
+  `--tag`/`--timeout` filters. Malformed metadata is rejected before tests are
+  scheduled.
+- **Strict documentation CI**: the compiler Build workflow now runs
+  `cargo doc --locked --all-features --workspace --no-deps` with warnings
+  denied, using the same path gate and pinned CI image as the other Rust
+  checks.
+- **Platform smoke output is portable.** The compiler's default executable
+  name includes `.exe` on Windows, executable integration fixtures discover
+  that native suffix, and packaged smoke runs keep generated programs in a
+  temporary directory that is always cleaned up.
+- **Executable snapshots normalize only filesystem output.** Native separators
+  and checkout paths are canonicalized on known filesystem-output lines while
+  backslashes in diagnostics and ordinary program output remain unchanged;
+  CRLF output is handled consistently.
+- **Examples clean up Windows output.** The shared examples runner now removes
+  both its Unix default executable name and the Windows `.exe` spelling, and
+  the CI debris check rejects either one.
+- **Generated-program campaigns resolve Windows compiler binaries.** The
+  runner now discovers `target/debug/mux.exe` when its extensionless default
+  path is used, while preserving explicitly supplied executable paths.
+- **Code generation uses only typed panic entry points.** The unused untyped
+  panic declaration is no longer registered as a compatibility surface.
+- **Typed HTTP server configuration**: `HttpServerConfig.new()` exposes bounded
+  request limits and read timeouts, and `HttpServer.serve_once` accepts that
+  configuration alongside the listener and typed handler.
+- **HTTP request correlation**: `HttpRequest.request_id` is available on typed
+  requests, and `HttpServerConfig.access_log` enables bounded request logging
+  with automatic `X-Request-ID` response propagation.
+- **Typed filesystem failures**: `std.fs` operations, `Path`, and directory
+  handles now return `FsError` with `kind`, `detail`, and `path` fields plus
+  `message()`/`to_string()` display helpers.
+- **Typed address failures**: `IpAddr`, `SocketAddr`, `Cidr`, and `Endpoint`
+  parsing/resolution now return `NetError` with `kind`, `detail`, and
+  `address` context.
+- **Typed URL failures**: `std.net.url` parsing, conversion, and component
+  mutation now return `UrlError` with `kind`, `detail`, and URL context.
+- **Typed UUID failures**: UUID parsing, namespace generation, and byte
+  conversion now return `UuidError` with `kind` and `detail` context.
+- **Typed random failures**: bounded byte generation, sampling, weighted
+  choice, and distribution validation now return `RandomError` with `kind`
+  and `detail` context.
+- **Typed crypto failures**: HMAC, secure-random, AEAD, and encrypted-file
+  operations now return `CryptoError` with portable `kind` and `detail`
+  context.
+- **Typed regex failures**: pattern compilation, matching, captures, and
+  replacements now return `RegexError` with portable `kind` and `detail`
+  context.
+- **Typed math failures**: checked interpolation, reductions, and
+  combinatorics now return `MathError` with portable `kind` and `detail`
+  context.
+- **Typed process failures**: process metadata, command, child, output, and
+  process-pool operations now return `ProcessError` with portable `kind` and
+  `detail` context.
+- **Typed encoding failures**: codec operations now expose
+  `EncodingErrorKind` categories while retaining codec, detail, and offset
+  context.
+- **Strict Base64 URL decoding**: `base64url_decode` now rejects standard
+  Base64 `+` and `/` characters instead of accepting them through the shared
+  padded decoder.
+- **Typed JSON token categories**: `JsonToken.kind()` now returns
+  `JsonTokenKind`; `text()` remains the exact lexical spelling.
+- **Typed CLI failures**: parser configuration, parsing, response-file, and
+  typed accessor failures now return `CliError` with portable `kind` and
+  `detail` context.
+- **Typed TLS failures**: TLS configuration, handshakes, stream I/O, and
+  negotiated-parameter inspection now return `TlsError` with portable `kind`
+  and `detail` context.
+- **Typed datetime failures**: timestamp, calendar, timezone, formatting, and
+  sleep operations now return `DateTimeError` with portable `kind` and
+  `detail` context.
+- **Structured error categories are operation-selected**: runtime error kinds
+  are supplied by typed native results or the failing operation boundary;
+  rendered diagnostic text is never searched to guess a category.
+- Loop-condition temporaries are released before each conditional branch,
+  preventing owned values created by repeated comparisons from leaking or being
+  overwritten during iteration.
+- `HttpError.kind` is now a typed `net.HttpErrorKind` enum; callers compare
+  variants instead of matching diagnostic strings. Human-facing detail and
+  message text remain strings.
+- `SqlError.kind` is now a typed `sql.SqlErrorKind` enum; provider and detail
+  context remain textual fields.
+- `EnvError.kind` is now a typed `env.EnvErrorKind` enum; affected keys and
+  human-readable details remain strings.
+- `FsError.kind` is now a typed `fs.FsErrorKind` enum; paths and human-readable
+  details remain strings.
+- `NetError.kind`, `UrlError.kind`, and `UuidError.kind` are now typed
+  package-specific enums; address, URL, and detail context remain strings.
+- `JsonError.kind`, `CsvError.kind`, `ByteError.kind`, and `BytesError.kind`
+  are now typed package-specific enums; diagnostic detail remains a string.
+- `SyncError.kind` and `ProcessError.kind` are now typed package-specific
+  enums; diagnostic detail remains a string.
+- `TlsError.kind` is now a typed `tls.TlsErrorKind` enum; diagnostic detail
+  remains a string.
+- `CliError.kind`, `CryptoError.kind`, `RegexError.kind`, and `LogError.kind`
+  are now typed package-specific enums; callers compare variants rather than
+  matching rendered strings.
+
+### Added
+
+- `use` extracts Result and Optional payloads in expressions, propagating
+  `err` or `none` from the enclosing function with normal resource cleanup.
+- HTTP request, response, and header operations now return typed `HttpError`
+  values with portable category and request/status context.
+- Environment access now returns typed `EnvError` values with category, detail,
+  and affected-key context.
+- Explicit `JsonRepresentable` and `CsvRepresentable` implementations now own
+  JSON and CSV validation and return typed `JsonError`/`CsvError` values.
+- Built-in byte conversions, checked arithmetic, and shifts now return typed
+  `ByteError` values with `kind`/`detail` and `message()` access.
+- Built-in `bytes` and `BytesCursor` fallible operations now return typed
+  `BytesError` values with the same structured access.
+
 ## [0.10.2] - 2026-08-31
 
 ### Fixed
@@ -32,7 +201,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.10.0] - 2026-08-20
 
 ### Changed
-
 - **BREAKING: typed accessors return `result`, not `optional`.** `Json.as_int`,
   `as_string`, `as_float`, `as_bool`, `as_list`, `as_map` and every
   `SqlValue.as_*` now answer `result<T, string>`, and the error names what was

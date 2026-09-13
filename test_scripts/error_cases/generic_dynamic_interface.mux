@@ -1,0 +1,15 @@
+// Generic dynamic interfaces have no runtime layout or vtable identity yet.
+// Reject them during semantic analysis instead of reaching code generation.
+interface Box<T> {
+    func get() returns T
+}
+
+func take_int(dyn<Box<int>> value) returns int {
+    return value.get()
+}
+
+func take_string(dyn<Box<string>> value) returns string {
+    return value.get()
+}
+
+print("unreachable")

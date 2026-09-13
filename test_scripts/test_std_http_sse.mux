@@ -1,0 +1,18 @@
+import std.net
+
+func main() returns void {
+    auto event = net.SseEvent.new()
+    event.event = "message"
+    event.id = "42"
+    event.retry_ms = 1500
+    event.data = "first\nsecond"
+    auto encoded_result = event.encode()
+    if encoded_result.is_err() {
+        assert(false, "SSE event encoding failed")
+        return
+    }
+    auto encoded = encoded_result.value()
+    assert(encoded.to_utf8_lossy() == "event: message\nid: 42\nretry: 1500\ndata: first\ndata: second\n\n", "SSE event encoding")
+    print("SSE event encoding passed")
+    return
+}

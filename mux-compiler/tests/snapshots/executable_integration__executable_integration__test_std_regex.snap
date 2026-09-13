@@ -1,0 +1,16 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+regex escape: a\+b
+regex match: true
+regex full: true
+regex groups: 1
+regex names: [word]
+regex replace: <Hello> <hello>
+regex replace callback: [HELLO] [HELLO]
+regex split: [,  , ]
+regex error kind: invalid
+regex found text: hello
+regex found range: 4..9
+regex capture: hello

@@ -1,0 +1,243 @@
+import std.dsa.collection.Collection
+
+// A graph whose directed edges carry float weights. Edge membership is still
+// set-valued: adding an existing edge replaces its weight, rather than adding
+// a parallel edge.
+class WeightedGraph<T is Hashable> is Collection<T> {
+    map<T, set<T> > adjacency
+    map<T, map<T, float> > weights
+    list<T> vertices
+    bool directed = true
+
+    func len() returns int {
+        return self.vertices.size()
+    }
+
+    func is_empty() returns bool {
+        return self.vertices.is_empty()
+    }
+
+    func to_list() returns list<T> {
+        return self.vertices
+    }
+
+    func contains(T value) returns bool {
+        return self.adjacency.contains(value)
+    }
+
+    func clear() returns void {
+        int i = 0
+        while i < self.vertices.size() {
+            auto vertex = self.vertices[i]
+            self.adjacency.remove(vertex)
+            self.weights.remove(vertex)
+            i = i + 1
+        }
+        while !self.vertices.is_empty() {
+            self.vertices.pop_back()
+        }
+        return
+    }
+
+    func add_vertex(T value) returns void {
+        if self.adjacency.contains(value) {
+            return
+        }
+        set<T> empty_neighbors = {}
+        map<T, float> empty_weights = {:}
+        self.adjacency.put(value, empty_neighbors)
+        self.weights.put(value, empty_weights)
+        self.vertices.push_back(value)
+        return
+    }
+
+    func add_edge(T from, T to, float weight) returns void {
+        self.add_vertex(from)
+        self.add_vertex(to)
+
+        set<T> neighbors = self.adjacency[from]
+        neighbors.add(to)
+        self.adjacency.put(from, neighbors)
+        map<T, float> outgoing = self.weights[from]
+        outgoing.put(to, weight)
+        self.weights.put(from, outgoing)
+
+        if !self.directed {
+            set<T> reverse_neighbors = self.adjacency[to]
+            reverse_neighbors.add(from)
+            self.adjacency.put(to, reverse_neighbors)
+            map<T, float> reverse_outgoing = self.weights[to]
+            reverse_outgoing.put(from, weight)
+            self.weights.put(to, reverse_outgoing)
+        }
+        return
+    }
+
+    func has_edge(T from, T to) returns bool {
+        if !self.adjacency.contains(from) {
+            return false
+        }
+        return self.adjacency[from].contains(to)
+    }
+
+    func edge_weight(T from, T to) returns optional<float> {
+        if !self.has_edge(from, to) {
+            return none
+        }
+        return some(self.weights[from][to])
+    }
+
+    func neighbors(T value) returns list<T> {
+        if self.adjacency.contains(value) {
+            return self.adjacency[value].to_list()
+        }
+        list<T> empty = []
+        return empty
+    }
+
+    func remove_edge(T from, T to) returns void {
+        if !self.adjacency.contains(from) {
+            return
+        }
+        set<T> neighbors = self.adjacency[from]
+        neighbors.remove(to)
+        self.adjacency.put(from, neighbors)
+        map<T, float> outgoing = self.weights[from]
+        outgoing.remove(to)
+        self.weights.put(from, outgoing)
+
+        if !self.directed && self.adjacency.contains(to) {
+            set<T> reverse_neighbors = self.adjacency[to]
+            reverse_neighbors.remove(from)
+            self.adjacency.put(to, reverse_neighbors)
+            map<T, float> reverse_outgoing = self.weights[to]
+            reverse_outgoing.remove(from)
+            self.weights.put(to, reverse_outgoing)
+        }
+        return
+    }
+
+    func remove_vertex(T value) returns void {
+        if !self.adjacency.contains(value) {
+            return
+        }
+        int i = 0
+        while i < self.vertices.size() {
+            self.remove_edge(self.vertices[i], value)
+            i = i + 1
+        }
+        self.adjacency.remove(value)
+        self.weights.remove(value)
+        list<T> remaining = []
+        i = 0
+        while i < self.vertices.size() {
+            if self.vertices[i] != value {
+                remaining.push_back(self.vertices[i])
+            }
+            i = i + 1
+        }
+        self.vertices = remaining
+        return
+    }
+
+    // Dijkstra's algorithm with a deterministic first-seen tie break. Negative
+    // weights are rejected by returning no path; callers should use a
+    // different algorithm for graphs with negative edges.
+    func shortest_path(T start, T target) returns optional<list<T>> {
+        if !self.contains(start) || !self.contains(target) {
+            return none
+        }
+
+        map<T, float> distance = {:}
+        map<T, T> previous = {:}
+        list<T> frontier = []
+        set<T> visited = {}
+        distance.put(start, 0.0)
+        frontier.push_back(start)
+
+        while !frontier.is_empty() {
+            optional<T> best = none
+            int i = 0
+            while i < frontier.size() {
+                auto candidate = frontier[i]
+                if !visited.contains(candidate) {
+                    if best.is_none() {
+                        best = some(candidate)
+                    } else if best.is_some() {
+                        auto current_best = best.value()
+                        if distance[candidate] < distance[current_best] {
+                            best = some(candidate)
+                        }
+                    }
+                }
+                i = i + 1
+            }
+
+            if best.is_none() {
+                break
+            }
+            auto current = use best
+            visited.add(current)
+            if current == target {
+                break
+            }
+            auto next_nodes = self.neighbors(current)
+            int j = 0
+            while j < next_nodes.size() {
+                auto next = next_nodes[j]
+                auto weight = self.weights[current][next]
+                if weight < 0.0 {
+                    return none
+                }
+                auto candidate_distance = distance[current] + weight
+                if !distance.contains(next) || candidate_distance < distance[next] {
+                    distance.put(next, candidate_distance)
+                    previous.put(next, current)
+                    frontier.push_back(next)
+                }
+                j = j + 1
+            }
+        }
+
+        if !distance.contains(target) {
+            return none
+        }
+        list<T> reversed = []
+        optional<T> step = some(target)
+        bool reached_start = false
+        while !reached_start {
+            if step.is_none() {
+                return none
+            }
+            auto value = step.value()
+            reversed.push_back(value)
+            if value == start {
+                reached_start = true
+            } else if previous.contains(value) {
+                step = some(previous[value])
+            } else {
+                return none
+            }
+        }
+
+        list<T> path = []
+        int k = reversed.size() - 1
+        while k >= 0 {
+            path.push_back(reversed[k])
+            k = k - 1
+        }
+        return some(path)
+    }
+
+    common func new_directed() returns WeightedGraph<T> {
+        auto out = WeightedGraph<T>.new()
+        out.directed = true
+        return out
+    }
+
+    common func new_undirected() returns WeightedGraph<T> {
+        auto out = WeightedGraph<T>.new()
+        out.directed = false
+        return out
+    }
+}

@@ -1,22 +1,25 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
-expression: output_to_snapshot
+expression: normalized
 ---
-=== Assert Module Tests ===
+=== Assert Builtin Tests ===
 
-Testing assert_true and assert_false...
-  PASS: assert_true(true) and assert_false(false)
+Testing the required condition and message arguments...
+  PASS: assert(bool, string)
 
-Testing assert_eq and assert_ne...
-  PASS: assert_eq and assert_ne for int and string
+Testing equality and inequality expressions...
+  PASS: equality and inequality
 
-Testing assert with custom message...
-  PASS: assert(true, message)
+Testing ordering, range, and approximate expressions...
+  PASS: ordering, range, and approximate comparisons
 
-Testing assert_some and assert_none...
-  PASS: assert_some and assert_none
+Testing a custom message...
+  PASS: custom message
 
-Testing assert_ok and assert_err...
-  PASS: assert_ok and assert_err
+Testing optional inspection...
+  PASS: optional inspection
+
+Testing result inspection...
+  PASS: result inspection
 
 === All Assert Tests Passed ===

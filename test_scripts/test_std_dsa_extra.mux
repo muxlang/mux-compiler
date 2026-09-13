@@ -1,0 +1,27 @@
+import std.dsa.deque
+import std.dsa.priority_queue
+import std.dsa.union_find
+
+auto d = deque.Deque<int>.new()
+d.push_back(2)
+d.push_front(1)
+d.push_back(3)
+print("deque: " + d.to_list().to_string())
+print("deque front: " + d.front().to_string())
+print("deque back: " + d.back().to_string())
+print("deque pop front: " + d.pop_front().to_string())
+print("deque pop back: " + d.pop_back().to_string())
+
+auto pq = priority_queue.PriorityQueue<int>.new()
+pq.push(5)
+pq.push(1)
+pq.push(3)
+print("priority queue peek: " + pq.peek().to_string())
+print("priority queue pop: " + pq.pop().to_string())
+
+auto uf = union_find.UnionFind.with_size(5)
+uf.union(0, 1)
+uf.union(1, 2)
+print("union find connected: " + uf.connected(0, 2).to_string())
+print("union find component size: " + uf.component_size(1).to_string())
+print("union find disconnected: " + uf.connected(0, 4).to_string())

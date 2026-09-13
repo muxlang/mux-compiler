@@ -2,83 +2,209 @@ import std.sync
 
 print("=== std.sync smoke test ===")
 
-result<Thread, string> spawned = sync.spawn(func() returns void {
+auto spawned = sync.spawn(func() returns void {
     sync.sleep(5)
     print("worker: finished")
     return
 })
 
-match spawned {
-    ok(t) {
-        match t.join() {
-            ok(_) { print("join ok") }
-            err(e) { print("join err: " + e) }
-        }
+if spawned.is_err() {
+    print("spawn err: " + spawned.error().message())
+} else {
+    auto thread = spawned.value()
+    auto joined = thread.join()
+    if joined.is_err() {
+        print("join err: " + joined.error().message())
+    } else {
+        print("join ok")
     }
-    err(e) { print("spawn err: " + e) }
 }
 
-Mutex m = Mutex.new()
-match m.lock() {
-    ok(_) { print("mutex lock ok") }
-    err(e) { print("mutex lock err: " + e) }
-}
-match m.unlock() {
-    ok(_) { print("mutex unlock ok") }
-    err(e) { print("mutex unlock err: " + e) }
+auto valued = sync.spawn(func() returns int {
+    return 42
+})
+if valued.is_err() {
+    print("value spawn err: " + valued.error().message())
+} else {
+    auto thread = valued.value()
+    auto joined = thread.join()
+    if joined.is_err() {
+        print("value join err: " + joined.error().message())
+    } else {
+        print("value join: " + joined.value().to_string())
+    }
 }
 
-RwLock rw = RwLock.new()
-match rw.read_lock() {
-    ok(_) { print("rwlock read_lock ok") }
-    err(e) { print("rwlock read_lock err: " + e) }
+auto text_thread = sync.spawn(func() returns string {
+    return "hello from worker"
+})
+if text_thread.is_err() {
+    print("text spawn err: " + text_thread.error().message())
+} else {
+    auto thread = text_thread.value()
+    auto joined = thread.join()
+    if joined.is_err() {
+        print("text join err: " + joined.error().message())
+    } else {
+        print("text join: " + joined.value())
+    }
 }
-match rw.unlock() {
-    ok(_) { print("rwlock unlock ok") }
-    err(e) { print("rwlock unlock err: " + e) }
+
+auto flag_thread = sync.spawn(func() returns bool {
+    return true
+})
+if flag_thread.is_err() {
+    print("bool spawn err: " + flag_thread.error().message())
+} else {
+    auto thread = flag_thread.value()
+    auto joined = thread.join()
+    if joined.is_err() {
+        print("bool join err: " + joined.error().message())
+    } else {
+        print("bool join: " + joined.value().to_string())
+    }
+}
+
+Mutex<int> m = Mutex<int>.with_value(0)
+auto mutex_result = m.with_lock(func(&int count) returns void {
+    *count = *count + 1
+    print("mutex callback ran")
+    return
+})
+if mutex_result.is_err() {
+    print("mutex with_lock err: " + mutex_result.error().message())
+} else {
+    print("mutex with_lock ok")
+}
+
+RwLock<string> rw = RwLock<string>.with_value("rwlock")
+auto read_result = rw.with_read(func(&string value) returns void {
+    print("rwlock read callback ran: " + *value)
+    return
+})
+if read_result.is_err() {
+    print("rwlock with_read err: " + read_result.error().message())
+} else {
+    print("rwlock with_read ok")
+}
+auto write_result = rw.with_write(func(&string value) returns void {
+    *value = *value + " updated"
+    print("rwlock write callback ran")
+    return
+})
+if write_result.is_err() {
+    print("rwlock with_write err: " + write_result.error().message())
+} else {
+    print("rwlock with_write ok")
 }
 
 CondVar cv = CondVar.new()
-result<Thread, string> notifier = sync.spawn(func() returns void {
+bool condvar_waited = false
+auto notifier = sync.spawn(func() returns void {
     sync.sleep(20)
-    match m.lock() {
-        ok(_) {
-            match cv.signal() {
-                ok(_) { print("condvar signal ok") }
-                err(e) { print("condvar signal err: " + e) }
-            }
-            match m.unlock() {
-                ok(_) { print("notifier mutex unlock ok") }
-                err(e) { print("notifier mutex unlock err: " + e) }
-            }
+    auto locked = m.with_lock(func(&int _count) returns void {
+        auto signalled = cv.signal()
+        if signalled.is_err() {
+            print("condvar signal err: " + signalled.error().message())
+        } else {
+            print("condvar signal ok")
         }
-        err(e) { print("notifier mutex lock err: " + e) }
+        return
+    })
+    if locked.is_err() {
+        print("notifier mutex callback err: " + locked.error().message())
+    } else {
+        print("notifier mutex callback ok")
     }
     return
 })
 
-match m.lock() {
-    ok(_) {
-        match cv.wait(m) {
-            ok(_) { print("condvar wait ok") }
-            err(e) { print("condvar wait err: " + e) }
-        }
-        match m.unlock() {
-            ok(_) { print("post-wait mutex unlock ok") }
-            err(e) { print("post-wait mutex unlock err: " + e) }
-        }
-    }
-    err(e) { print("pre-wait mutex lock err: " + e) }
+auto waited = m.with_lock(func(&int _count) returns void {
+    auto wait_result = cv.wait(m)
+    condvar_waited = !wait_result.is_err()
+    return
+})
+if waited.is_err() {
+    print("pre-wait mutex callback err: " + waited.error().message())
+} else {
+    print("post-wait mutex callback ok")
 }
 
-match notifier {
-    ok(t) {
-        match t.join() {
-            ok(_) { print("notifier join ok") }
-            err(e) { print("notifier join err: " + e) }
-        }
+if notifier.is_err() {
+    print("notifier spawn err: " + notifier.error().message())
+} else {
+    auto thread = notifier.value()
+    auto joined = thread.join()
+    if joined.is_err() {
+        print("notifier join err: " + joined.error().message())
+    } else {
+        print("notifier join ok")
     }
-    err(e) { print("notifier spawn err: " + e) }
+}
+if condvar_waited {
+    print("condvar wait ok")
+} else {
+    print("condvar wait err")
+}
+
+auto timed_wait = m.with_lock(func(&int _count) returns void {
+    auto wait_result = cv.wait_timeout(m, 0)
+    if wait_result.is_err() {
+        print("condvar timed wait err: " + wait_result.error().message())
+    } else if wait_result.value() {
+        print("condvar timed wait unexpectedly notified")
+    } else {
+        print("condvar timed wait expired")
+    }
+    return
+})
+if timed_wait.is_err() {
+    print("timed wait callback err: " + timed_wait.error().message())
+}
+
+Channel<int> channel = Channel<int>.new()
+auto sent = channel.send(42)
+if sent.is_err() {
+    print("channel send err: " + sent.error().message())
+} else {
+    print("channel send ok")
+}
+auto received = channel.recv()
+if received.is_err() {
+    print("channel recv err: " + received.error().message())
+} else {
+    auto received_value = received.value()
+    if received_value.is_some() {
+        print("channel recv some")
+    } else {
+        print("channel recv none")
+    }
+}
+auto closed = channel.close()
+if closed.is_err() {
+    print("channel close err: " + closed.error().message())
+} else {
+    print("channel close ok")
+}
+
+Once once = Once.new()
+auto first_once = once.call(func() returns void {
+    print("once callback ran")
+    return
+})
+if first_once.is_err() {
+    print("once first err: " + first_once.error().message())
+} else {
+    print("once first ok")
+}
+auto second_once = once.call(func() returns void {
+    print("once callback should be skipped")
+    return
+})
+if second_once.is_err() {
+    print("once second err: " + second_once.error().message())
+} else {
+    print("once second ok")
 }
 
 print("=== std.sync done ===")

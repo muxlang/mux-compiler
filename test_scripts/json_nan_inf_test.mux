@@ -1,51 +1,40 @@
 import std.data.json
 
-// Test that stringify rejects NaN with an error
-auto nan_map = {"x": 0.0 / 0.0}
-match json.from_map(nan_map) {
-  ok(nan_json) {
-    match nan_json.stringify(none) {
-      ok(_) { print("unexpected ok for NaN") }
-      err(e) { print("NaN error (expected): " + e) }
+func check_nonfinite(map<string, float> values, string label) returns void {
+    auto json_result = json.from_map(values)
+    if json_result.is_err() {
+        print("failed to create Json from map with " + label + ": " + json_result.error().message())
+    } else {
+        auto text_result = json_result.value().stringify(none)
+        if text_result.is_ok() {
+            print("unexpected ok for " + label)
+        } else {
+            print(label + " error (expected): " + text_result.error().message())
+        }
     }
-  }
-  err(e) { print("failed to create Json from map with NaN: " + e) }
+    return
 }
 
-// Test that stringify rejects positive infinity with an error
-auto pos_inf_map = {"x": 1.0 / 0.0}
-match json.from_map(pos_inf_map) {
-  ok(pos_inf_json) {
-    match pos_inf_json.stringify(none) {
-      ok(_) { print("unexpected ok for +Inf") }
-      err(e) { print("+Inf error (expected): " + e) }
+func check_finite(map<string, float> values) returns void {
+    auto json_result = json.from_map(values)
+    if json_result.is_err() {
+        print("failed to create Json from map with finite: " + json_result.error().message())
+    } else {
+        auto text_result = json_result.value().stringify(some(2))
+        if text_result.is_ok() {
+            print("finite floats ok: " + text_result.value())
+        } else {
+            print("unexpected error for finite: " + text_result.error().message())
+        }
     }
-  }
-  err(e) { print("failed to create Json from map with +Inf: " + e) }
+    return
 }
 
-// Test that stringify rejects negative infinity with an error
-auto neg_inf_map = {"x": -1.0 / 0.0}
-match json.from_map(neg_inf_map) {
-  ok(neg_inf_json) {
-    match neg_inf_json.stringify(none) {
-      ok(_) { print("unexpected ok for -Inf") }
-      err(e) { print("-Inf error (expected): " + e) }
-    }
-  }
-  err(e) { print("failed to create Json from map with -Inf: " + e) }
-}
+// Test that stringify rejects NaN and infinities.
+check_nonfinite({"x": 0.0 / 0.0}, "NaN")
+check_nonfinite({"x": 1.0 / 0.0}, "+Inf")
+check_nonfinite({"x": -1.0 / 0.0}, "-Inf")
 
-// Test that valid finite floats still work
-auto finite_map = {"x": 3.14, "y": -42.0, "z": 0.0}
-match json.from_map(finite_map) {
-  ok(finite_json) {
-    match finite_json.stringify(some(2)) {
-      ok(s) { print("finite floats ok: " + s) }
-      err(e) { print("unexpected error for finite: " + e) }
-    }
-  }
-  err(e) { print("failed to create Json from map with finite: " + e) }
-}
-
+// Valid finite floats still work.
+check_finite({"x": 3.14, "y": -42.0, "z": 0.0})
 print("all NaN/Inf tests completed!")

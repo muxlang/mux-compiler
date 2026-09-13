@@ -233,6 +233,14 @@ fn read_in_expression<'a>(expr: &'a ExpressionNode, name: &str) -> Option<&'a Ex
         } => read_in_expression(cond, name)
             .or_else(|| read_in_expression(then_expr, name))
             .or_else(|| read_in_expression(else_expr, name)),
+        ExpressionKind::Match { expr, arms } => read_in_expression(expr, name).or_else(|| {
+            arms.iter().find_map(|arm| {
+                arm.guard
+                    .as_ref()
+                    .and_then(|guard| read_in_expression(guard, name))
+                    .or_else(|| first_read_in_block(&arm.body, name))
+            })
+        }),
         _ => None,
     }
 }

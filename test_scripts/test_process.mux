@@ -1,0 +1,89 @@
+import std.process
+import std.sync
+
+func exercise_child(Child child) returns result<int, ProcessError> {
+    auto written = use child.write_stdin(b"input")
+    print("child stdin wrote: " + written.to_string())
+    use child.close_stdin()
+    print("child stdin closed")
+    auto stdout_data = use child.read_stdout(64)
+    print("child stdout read: " + stdout_data.size().to_string())
+    auto stderr_data = use child.read_stderr(64)
+    print("child stderr read: " + stderr_data.size().to_string())
+    auto status = use child.wait_timeout(100)
+    print("child timeout status: " + status.to_string())
+    return ok(1)
+}
+
+func configure_command() returns result<int, ProcessError> {
+    auto command = use process.Command.new()
+    use command.set_program("mux-program-that-does-not-exist")
+    use command.arg("--example")
+    use command.env("MUX_PROCESS_EXAMPLE", "yes")
+    use command.stdin_piped()
+    use command.stdout_piped()
+    use command.stderr_piped()
+    use command.stdin_null()
+    use command.stdout_null()
+    use command.stderr_null()
+    auto status = command.status()
+    if status.is_ok() {
+        print("unexpected status: " + status.value().to_string())
+    } else {
+        print("command status error: " + status.error().message())
+    }
+    return ok(1)
+}
+
+func process_pool_example() returns result<int, ProcessError> {
+    auto command = use process.Command.shell("printf process-pool")
+    auto pool = use process.ProcessPool.new()
+    auto channel = use pool.submit(command)
+    auto received_result = channel.recv()
+    if received_result.is_err() {
+        return err(ProcessError.from_message(received_result.error().message()))
+    }
+    auto received = received_result.value()
+    if received.is_none() {
+        use pool.close()
+        return err(ProcessError.from_message("process pool returned no output"))
+    }
+    auto output_result = received.value()
+    auto output = use output_result
+    auto stdout_data = use output.stdout()
+    assert(stdout_data.to_utf8_lossy() == "process-pool", "process pool output mismatch")
+    use pool.close()
+    return ok(1)
+}
+
+func main() returns void {
+    print("process id positive: " + (process.id() > 0).to_string())
+    print("argument count positive: " + (process.args().size() > 0).to_string())
+
+    auto executable = process.executable()
+    if executable.is_ok() {
+        print("executable path present: " + (executable.value().length() > 0).to_string())
+    } else {
+        print("executable error: " + executable.error().message())
+    }
+
+    auto shell = process.Command.shell("echo mux-shell")
+    if shell.is_ok() {
+        print("explicit shell command constructed")
+    } else {
+        print("shell command construction error: " + shell.error().message())
+    }
+
+    auto configured = configure_command()
+    if configured.is_err() {
+        print("command configuration error: " + configured.error().message())
+    }
+
+    auto pooled = process_pool_example()
+    if pooled.is_err() {
+        print("process pool error: " + pooled.error().message())
+    } else {
+        print("process pool completed")
+    }
+    return
+}

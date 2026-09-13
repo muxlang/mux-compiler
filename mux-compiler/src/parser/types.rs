@@ -262,4 +262,16 @@ mod tests {
         ));
         Ok(())
     }
+
+    #[test]
+    fn parses_dynamic_interface_types() -> Result<(), String> {
+        let kind = parse_type("dyn<Greeter>")?;
+        let TypeKind::TraitObject(inner) = kind else {
+            return Err("expected dynamic interface type".to_owned());
+        };
+        assert!(
+            matches!(inner.kind, TypeKind::Named(ref name, args) if name == "Greeter" && args.is_empty())
+        );
+        Ok(())
+    }
 }

@@ -1,0 +1,16 @@
+func load_value() returns result<int, string> {
+    result<int, string> loaded = ok(41)
+    auto value = match loaded {
+        ok(number) { number + 1 }
+        err(error) { return err(error) }
+    }
+    return ok(value)
+}
+
+func main() returns void {
+    match load_value() {
+        ok(value) { print(value.to_string()) }
+        err(error) { print(error) }
+    }
+    return
+}

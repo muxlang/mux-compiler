@@ -174,6 +174,7 @@ impl SemanticAnalyzer {
             LiteralNode::String(_) => Type::Primitive(PrimitiveType::Str),
             LiteralNode::Boolean(_) => Type::Primitive(PrimitiveType::Bool),
             LiteralNode::Char(_) => Type::Primitive(PrimitiveType::Char),
+            LiteralNode::Bytes(_) => Type::Primitive(PrimitiveType::Bytes),
         };
         self.check_type_compatibility(&literal_type, expected_type, span)
     }

@@ -1,0 +1,44 @@
+import std.sync
+
+func run_worker_pool() returns result<int, SyncError> {
+    WorkerPool<int> pool = WorkerPool<int>.new()
+    auto first_channel = use pool.submit(func() returns int {
+        return 42
+    })
+    auto first = use first_channel.recv()
+    if first.is_some() {
+        print(first.value().to_string())
+    } else {
+        print("missing result")
+    }
+
+    auto maybe_second = use pool.try_submit(func() returns int { return 7 })
+    if maybe_second.is_some() {
+        auto second_channel = maybe_second.value()
+        auto second = use second_channel.recv()
+        if second.is_some() {
+            print(second.value().to_string())
+        } else {
+            print("missing try result")
+        }
+    } else {
+        print("pool full")
+    }
+
+    auto cancelled = use pool.cancel_pending()
+    print("cancelled: " + cancelled.to_string())
+    use pool.close()
+    print("closed")
+    return ok(1)
+}
+
+func main() returns void {
+    print("=== std.worker_pool smoke test ===")
+    auto result = run_worker_pool()
+    if result.is_err() {
+        print(result.error().message())
+        return
+    }
+    print("=== std.worker_pool done ===")
+    return
+}

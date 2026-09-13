@@ -1,0 +1,64 @@
+
+func number(string text) returns result<int, string> {
+    auto n = use text.to_int()
+    return ok(n + 1)
+}
+
+func describe(string text) returns result<string, string> {
+    return ok((use number(text)).to_string())
+}
+
+func optional_text(optional<int> input) returns optional<string> {
+    auto n = use input
+    return some(n.to_string())
+}
+
+func should_skip() returns result<int, string> {
+    return ok(1)
+}
+
+func short_circuit() returns result<int, string> {
+    auto first = use should_skip()
+    if first != 0 {
+        return ok(1)
+    }
+    return ok(0)
+}
+
+func sum(int a, int b) returns int {
+    return a + b
+}
+
+func sequence() returns result<int, string> {
+    auto numbers = [use number("1"), use number("2")]
+    int total = sum(use number("3"), use number("4"))
+    total = total + use number("5")
+    return ok(total + numbers[0] + numbers[1])
+}
+
+func run_checks() returns result<int, string> {
+    assert(use describe("41") == "42", "describe should parse")
+    assert(use sequence() == 20, "sequence should parse")
+    assert(use short_circuit() == 1, "short circuit should parse")
+    assert(optional_text(some(7)) == some("7"), "Some should map")
+    auto missing = optional_text(none)
+    assert(missing.is_none(), "None should remain None")
+    auto bad = describe("bad")
+    if bad.is_ok() {
+        assert(false, "unexpected success")
+    } else {
+        print("error propagated")
+    }
+    return ok(0)
+}
+
+func main() returns void {
+    auto result = run_checks()
+    if result.is_ok() {
+        print("use propagation passed")
+    } else {
+        print(result.error())
+        assert(false, "unexpected success")
+    }
+    return
+}

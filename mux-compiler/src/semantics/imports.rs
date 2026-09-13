@@ -133,6 +133,7 @@ impl SemanticAnalyzer {
             | AstNode::Interface { name, .. }
             | AstNode::Enum { name, .. } => Some(name.as_str()),
             AstNode::Statement(stmt) => Self::declared_statement_symbol_name(stmt),
+            AstNode::Test { .. } => None,
         }
     }
 
@@ -164,6 +165,20 @@ impl SemanticAnalyzer {
     fn absorb_module_analyzer(&mut self, module_analyzer: &mut SemanticAnalyzer) {
         for (path, nodes) in std::mem::take(&mut module_analyzer.all_module_asts) {
             self.all_module_asts.entry(path).or_insert(nodes);
+        }
+        for (path, source_path) in std::mem::take(&mut module_analyzer.module_source_paths) {
+            self.module_source_paths.entry(path).or_insert(source_path);
+        }
+
+        // A source-backed module can depend on runtime-backed stdlib modules
+        // (for example `std.encoding` uses the `io.Reader` and `io.Writer`
+        // classes). Those modules have no AST to absorb, but their namespace
+        // symbols are still required when the parent analyzer later resolves
+        // the imported module's signatures during code generation. Preserve
+        // the transitive namespace table without overwriting an explicit
+        // import in the parent module.
+        for (namespace, symbols) in std::mem::take(&mut module_analyzer.imported_symbols) {
+            self.imported_symbols.entry(namespace).or_insert(symbols);
         }
 
         for dependency in std::mem::take(&mut module_analyzer.module_dependencies) {
@@ -227,12 +242,14 @@ impl SemanticAnalyzer {
         let module_name_for_mangling = crate::semantics::mangle_module_path(module_path);
         for (name, symbol) in module_symbols {
             let name_str = name.as_str();
-            // Builtin *functions* (print, read_line, range, some, none, ok, err)
+            // Builtin *functions* (print, assert, read_line, range, some, none,
+            // ok, err)
             // keep unmangled names. Constants are never builtins here, so a
             // module constant that merely starts with one of these prefixes
             // (e.g. `err_code`, `print_width`) must not be skipped.
             let is_unmangled_builtin_function = matches!(symbol.kind, SymbolKind::Function)
                 && (name_str.starts_with("print")
+                    || name_str.starts_with("assert")
                     || name_str.starts_with("read_line")
                     || name_str.starts_with("range")
                     || name_str.starts_with("some")
@@ -359,6 +376,12 @@ impl SemanticAnalyzer {
         resolver.borrow_mut().finish_import(module_path);
         self.all_module_asts
             .insert(module_path.to_string(), module_nodes);
+        if let Some(file_id) = resolver.borrow().file_id_for_module(module_path)
+            && let Some(path) = files.path(file_id)
+        {
+            self.module_source_paths
+                .insert(module_path.to_string(), path.to_path_buf());
+        }
 
         if !self.module_dependencies.contains(&module_path.to_string()) {
             self.module_dependencies.push(module_path.to_string());
@@ -437,6 +460,12 @@ impl SemanticAnalyzer {
 
         self.all_module_asts
             .insert(submodule_path.to_string(), submodule_nodes);
+        if let Some(file_id) = resolver.borrow().file_id_for_module(submodule_path)
+            && let Some(path) = files.path(file_id)
+        {
+            self.module_source_paths
+                .insert(submodule_path.to_string(), path.to_path_buf());
+        }
 
         if !self
             .module_dependencies
@@ -932,6 +961,23 @@ impl SemanticAnalyzer {
         files: Option<&mut Files>,
         def: &crate::semantics::std_registry::StdModuleDef,
     ) -> Result<(), SemanticError> {
+        // `import std.data.json` is parsed as the parent module (`std.data`)
+        // plus an item (`json`). Resolve that item to the registered child
+        // module directly so the child namespace is explicit and canonical.
+        if let ImportSpec::Item { item, alias } = spec {
+            let nested_path = format!("{module_path}.{item}");
+            if let Some(nested_def) = std_module_registry().get(nested_path.as_str()) {
+                return self.import_registry_std_module(
+                    &nested_path,
+                    &ImportSpec::Module {
+                        alias: alias.clone().or_else(|| Some(item.clone())),
+                    },
+                    span,
+                    files,
+                    nested_def,
+                );
+            }
+        }
         match def.kind {
             StdModuleKind::RuntimeBacked => {
                 let module_name = module_path.strip_prefix("std.").unwrap_or(module_path);
@@ -1228,8 +1274,36 @@ impl SemanticAnalyzer {
         module_symbols: &mut std::collections::HashMap<String, Symbol>,
     ) {
         match module_name {
+            "io" => {
+                module_symbols.extend(crate::semantics::stdlib::io_module_class_symbols(span));
+            }
+            "fs" => {
+                module_symbols.extend(crate::semantics::stdlib::fs_module_class_symbols(span));
+            }
+            "datetime" => {
+                module_symbols.extend(crate::semantics::stdlib::datetime_module_class_symbols(
+                    span,
+                ));
+            }
             "net" => {
                 module_symbols.extend(crate::semantics::stdlib::net_module_class_symbols(span));
+            }
+            "env" => {
+                module_symbols.extend(crate::semantics::stdlib::env_module_class_symbols(span));
+            }
+            "net.http" => {
+                module_symbols.extend(crate::semantics::stdlib::http_module_class_symbols(span));
+            }
+            "net.websocket" => {
+                module_symbols.extend(crate::semantics::stdlib::websocket_module_class_symbols(
+                    span,
+                ));
+            }
+            "net.url" => {
+                module_symbols.extend(crate::semantics::stdlib::url_module_class_symbols(span));
+            }
+            "net.tls" => {
+                module_symbols.extend(crate::semantics::stdlib::tls_module_class_symbols(span));
             }
             "sync" => {
                 module_symbols.extend(crate::semantics::stdlib::sync_module_class_symbols(span));
@@ -1237,11 +1311,123 @@ impl SemanticAnalyzer {
             "sql" => {
                 module_symbols.extend(crate::semantics::stdlib::sql_module_class_symbols(span));
             }
+            "process" => {
+                module_symbols.extend(crate::semantics::stdlib::process_module_class_symbols(span));
+            }
+            "log" => {
+                module_symbols.extend(crate::semantics::stdlib::log_module_class_symbols(span));
+            }
+            "cli" => {
+                module_symbols.extend(crate::semantics::stdlib::cli_module_class_symbols(span));
+            }
+            "random" => {
+                module_symbols.extend(crate::semantics::stdlib::random_module_class_symbols(span));
+            }
+            "crypto" => {
+                module_symbols.extend(crate::semantics::stdlib::crypto_module_class_symbols(span));
+            }
+            "math" => {
+                module_symbols.extend(crate::semantics::stdlib::math_module_class_symbols(span));
+            }
+            "regex" => {
+                module_symbols.extend(crate::semantics::stdlib::regex_module_class_symbols(span));
+            }
+            "uuid" => {
+                module_symbols.extend(crate::semantics::stdlib::uuid_module_class_symbols(span));
+            }
             _ if module_name.ends_with(".json") => {
+                module_symbols.insert(
+                    "JsonRepresentable".to_string(),
+                    crate::semantics::stdlib::json_representable_interface_symbol(span),
+                );
                 module_symbols.insert("Json".to_string(), Self::make_json_symbol(span));
+                module_symbols.insert(
+                    "JsonErrorKind".to_string(),
+                    crate::semantics::stdlib::make_enum_symbol(
+                        "JsonErrorKind",
+                        &[
+                            "Invalid",
+                            "Parse",
+                            "Type",
+                            "Missing",
+                            "Duplicate",
+                            "Limit",
+                            "Io",
+                        ],
+                        span,
+                    ),
+                );
+                module_symbols.insert(
+                    "JsonDuplicatePolicy".to_string(),
+                    crate::semantics::stdlib::make_enum_symbol(
+                        "JsonDuplicatePolicy",
+                        &["Reject", "First", "Last"],
+                        span,
+                    ),
+                );
+                module_symbols.insert(
+                    "JsonTokenKind".to_string(),
+                    crate::semantics::stdlib::make_enum_symbol(
+                        "JsonTokenKind",
+                        &[
+                            "StartObject",
+                            "EndObject",
+                            "StartArray",
+                            "EndArray",
+                            "Colon",
+                            "Comma",
+                            "String",
+                            "Number",
+                            "Bool",
+                            "Null",
+                        ],
+                        span,
+                    ),
+                );
+                module_symbols.insert(
+                    "JsonError".to_string(),
+                    crate::semantics::stdlib::make_error_class_symbol_with_fields(
+                        "JsonError",
+                        crate::semantics::stdlib::json_error_methods(),
+                        crate::semantics::stdlib::json_error_fields(),
+                        span,
+                    ),
+                );
+                module_symbols.insert(
+                    "JsonNumber".to_string(),
+                    Self::make_json_number_symbol(span),
+                );
+                module_symbols.insert(
+                    "JsonTokenReader".to_string(),
+                    Self::make_json_token_reader_symbol(span),
+                );
+                module_symbols.insert("JsonToken".to_string(), Self::make_json_token_symbol(span));
             }
             _ if module_name.ends_with(".csv") => {
+                module_symbols.insert(
+                    "CsvRepresentable".to_string(),
+                    crate::semantics::stdlib::csv_representable_interface_symbol(span),
+                );
                 module_symbols.insert("Csv".to_string(), Self::make_csv_symbol(span));
+                module_symbols.insert(
+                    "CsvErrorKind".to_string(),
+                    crate::semantics::stdlib::make_enum_symbol(
+                        "CsvErrorKind",
+                        &["Invalid", "Parse", "Type", "Limit", "Io"],
+                        span,
+                    ),
+                );
+                module_symbols.insert(
+                    "CsvError".to_string(),
+                    crate::semantics::stdlib::make_error_class_symbol_with_fields(
+                        "CsvError",
+                        crate::semantics::stdlib::csv_error_methods(),
+                        crate::semantics::stdlib::csv_error_fields(),
+                        span,
+                    ),
+                );
+                module_symbols.insert("CsvReader".to_string(), Self::make_csv_reader_symbol(span));
+                module_symbols.insert("CsvWriter".to_string(), Self::make_csv_writer_symbol(span));
             }
             _ => {}
         }
@@ -1249,6 +1435,20 @@ impl SemanticAnalyzer {
 
     fn csv_headers_type() -> Type {
         Type::List(Box::new(Type::Primitive(PrimitiveType::Str)))
+    }
+
+    fn json_result(ok: Type) -> Type {
+        Type::Result(
+            Box::new(ok),
+            Box::new(Type::Named("JsonError".to_string(), Vec::new())),
+        )
+    }
+
+    fn csv_result(ok: Type) -> Type {
+        Type::Result(
+            Box::new(ok),
+            Box::new(Type::Named("CsvError".to_string(), Vec::new())),
+        )
     }
 
     fn csv_rows_type() -> Type {
@@ -1277,10 +1477,18 @@ impl SemanticAnalyzer {
             "stringify".to_string(),
             MethodSig {
                 params: vec![],
-                return_type: Type::Result(
-                    Box::new(Type::Primitive(PrimitiveType::Str)),
-                    Box::new(Type::Primitive(PrimitiveType::Str)),
-                ),
+                return_type: Self::csv_result(Type::Primitive(PrimitiveType::Str)),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "stringify_with".to_string(),
+            MethodSig {
+                params: vec![
+                    Type::Primitive(PrimitiveType::Int),
+                    Type::Primitive(PrimitiveType::Int),
+                ],
+                return_type: Self::csv_result(Type::Primitive(PrimitiveType::Str)),
                 is_static: false,
             },
         );
@@ -1299,6 +1507,143 @@ impl SemanticAnalyzer {
         }
     }
 
+    fn make_csv_reader_symbol(span: Span) -> Symbol {
+        let list_string = Type::List(Box::new(Type::Primitive(PrimitiveType::Str)));
+        let mut methods = std::collections::HashMap::new();
+        methods.insert(
+            "new".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Type::Named("CsvReader".to_string(), vec![]),
+                is_static: true,
+            },
+        );
+        methods.insert(
+            "from_bytes".to_string(),
+            MethodSig {
+                params: vec![
+                    Type::Primitive(PrimitiveType::Bytes),
+                    Type::Primitive(PrimitiveType::Bool),
+                ],
+                return_type: Self::csv_result(Type::Named("CsvReader".to_string(), vec![])),
+                is_static: true,
+            },
+        );
+        methods.insert(
+            "from_reader".to_string(),
+            MethodSig {
+                params: vec![
+                    Type::Named("Reader".to_string(), vec![]),
+                    Type::Primitive(PrimitiveType::Bool),
+                ],
+                return_type: Self::csv_result(Type::Named("CsvReader".to_string(), vec![])),
+                is_static: true,
+            },
+        );
+        methods.insert(
+            "headers".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Self::csv_result(list_string.clone()),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "read".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Self::csv_result(Type::Optional(Box::new(list_string))),
+                is_static: false,
+            },
+        );
+        Symbol {
+            kind: SymbolKind::Class,
+            span,
+            type_: Some(Type::Named("CsvReader".to_string(), vec![])),
+            interfaces: std::collections::HashMap::new(),
+            methods,
+            fields: std::collections::HashMap::new(),
+            type_params: Vec::new(),
+            original_name: None,
+            llvm_name: None,
+            default_param_count: 0,
+            variants: None,
+        }
+    }
+
+    fn make_csv_writer_symbol(span: Span) -> Symbol {
+        let list_string = Type::List(Box::new(Type::Primitive(PrimitiveType::Str)));
+        let mut methods = std::collections::HashMap::new();
+        methods.insert(
+            "new".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Type::Named("CsvWriter".to_string(), vec![]),
+                is_static: true,
+            },
+        );
+        methods.insert(
+            "from_config".to_string(),
+            MethodSig {
+                params: vec![
+                    Type::Primitive(PrimitiveType::Int),
+                    Type::Primitive(PrimitiveType::Int),
+                ],
+                return_type: Self::csv_result(Type::Named("CsvWriter".to_string(), vec![])),
+                is_static: true,
+            },
+        );
+        methods.insert(
+            "from_writer".to_string(),
+            MethodSig {
+                params: vec![
+                    Type::Named("Writer".to_string(), vec![]),
+                    Type::Primitive(PrimitiveType::Int),
+                    Type::Primitive(PrimitiveType::Int),
+                ],
+                return_type: Self::csv_result(Type::Named("CsvWriter".to_string(), vec![])),
+                is_static: true,
+            },
+        );
+        methods.insert(
+            "write".to_string(),
+            MethodSig {
+                params: vec![list_string],
+                return_type: Self::csv_result(Type::Void),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "flush".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Self::csv_result(Type::Void),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "bytes".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Self::csv_result(Type::Primitive(PrimitiveType::Bytes)),
+                is_static: false,
+            },
+        );
+        Symbol {
+            kind: SymbolKind::Class,
+            span,
+            type_: Some(Type::Named("CsvWriter".to_string(), vec![])),
+            interfaces: std::collections::HashMap::new(),
+            methods,
+            fields: std::collections::HashMap::new(),
+            type_params: Vec::new(),
+            original_name: None,
+            llvm_name: None,
+            default_param_count: 0,
+            variants: None,
+        }
+    }
+
     fn make_json_symbol(span: Span) -> Symbol {
         let mut methods = std::collections::HashMap::new();
         methods.insert(
@@ -1307,15 +1652,12 @@ impl SemanticAnalyzer {
                 params: vec![Type::Optional(Box::new(Type::Primitive(
                     PrimitiveType::Int,
                 )))],
-                return_type: Type::Result(
-                    Box::new(Type::Primitive(PrimitiveType::Str)),
-                    Box::new(Type::Primitive(PrimitiveType::Str)),
-                ),
+                return_type: Self::json_result(Type::Primitive(PrimitiveType::Str)),
                 is_static: false,
             },
         );
 
-        // Typed accessors, each returning `result<T, string>` - the error names
+        // Typed accessors, each returning `result<T, JsonError>` - the error names
         // what was actually there, so "not an int" says whether it was a string,
         // a null, or something else. Without these `stringify` was the only way
         // to inspect a value, so a string field came back JSON-encoded with its
@@ -1331,8 +1673,17 @@ impl SemanticAnalyzer {
                 is_static: false,
             },
         );
+        methods.insert(
+            "canonical".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Type::Primitive(PrimitiveType::Str),
+                is_static: false,
+            },
+        );
 
         let json = Type::Named("Json".to_string(), Vec::new());
+        let json_number = Type::Named("JsonNumber".to_string(), Vec::new());
         for (name, inner) in [
             ("as_string", Type::Primitive(PrimitiveType::Str)),
             ("as_int", Type::Primitive(PrimitiveType::Int)),
@@ -1351,14 +1702,19 @@ impl SemanticAnalyzer {
                 name.to_string(),
                 MethodSig {
                     params: vec![],
-                    return_type: Type::Result(
-                        Box::new(inner),
-                        Box::new(Type::Primitive(PrimitiveType::Str)),
-                    ),
+                    return_type: Self::json_result(inner),
                     is_static: false,
                 },
             );
         }
+        methods.insert(
+            "as_number".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Self::json_result(json_number),
+                is_static: false,
+            },
+        );
 
         // Not an accessor: a JSON null is a kind, not an absent value, so this
         // answers a question rather than yielding one.
@@ -1370,11 +1726,185 @@ impl SemanticAnalyzer {
                 is_static: false,
             },
         );
+        methods.insert(
+            "set_field".to_string(),
+            MethodSig {
+                params: vec![Type::Primitive(PrimitiveType::Str), json.clone()],
+                return_type: Self::json_result(Type::Primitive(PrimitiveType::Void)),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "push".to_string(),
+            MethodSig {
+                params: vec![json.clone()],
+                return_type: Self::json_result(Type::Primitive(PrimitiveType::Void)),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "at_pointer".to_string(),
+            MethodSig {
+                params: vec![Type::Primitive(PrimitiveType::Str)],
+                return_type: Self::json_result(json.clone()),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "set_pointer".to_string(),
+            MethodSig {
+                params: vec![Type::Primitive(PrimitiveType::Str), json.clone()],
+                return_type: Self::json_result(Type::Primitive(PrimitiveType::Void)),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "remove_pointer".to_string(),
+            MethodSig {
+                params: vec![Type::Primitive(PrimitiveType::Str)],
+                return_type: Self::json_result(json),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "merge_patch".to_string(),
+            MethodSig {
+                params: vec![Type::Named("Json".to_string(), Vec::new())],
+                return_type: Self::json_result(Type::Primitive(PrimitiveType::Void)),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "apply_patch".to_string(),
+            MethodSig {
+                params: vec![Type::List(Box::new(Type::Named(
+                    "Json".to_string(),
+                    Vec::new(),
+                )))],
+                return_type: Self::json_result(Type::Primitive(PrimitiveType::Void)),
+                is_static: false,
+            },
+        );
 
         Symbol {
             kind: SymbolKind::Class,
             span,
             type_: Some(Type::Named("Json".to_string(), Vec::new())),
+            interfaces: std::collections::HashMap::new(),
+            methods,
+            fields: std::collections::HashMap::new(),
+            type_params: Vec::new(),
+            original_name: None,
+            llvm_name: None,
+            default_param_count: 0,
+            variants: None,
+        }
+    }
+
+    fn make_json_number_symbol(span: Span) -> Symbol {
+        let mut methods = std::collections::HashMap::new();
+        for (name, return_type) in [
+            ("to_string", Type::Primitive(PrimitiveType::Str)),
+            ("as_int", Type::Primitive(PrimitiveType::Int)),
+            ("as_float", Type::Primitive(PrimitiveType::Float)),
+        ] {
+            methods.insert(
+                name.to_string(),
+                MethodSig {
+                    params: vec![],
+                    return_type: if name == "to_string" {
+                        return_type
+                    } else {
+                        Self::json_result(return_type)
+                    },
+                    is_static: false,
+                },
+            );
+        }
+        Symbol {
+            kind: SymbolKind::Class,
+            span,
+            type_: Some(Type::Named("JsonNumber".to_string(), Vec::new())),
+            interfaces: std::collections::HashMap::new(),
+            methods,
+            fields: std::collections::HashMap::new(),
+            type_params: Vec::new(),
+            original_name: None,
+            llvm_name: None,
+            default_param_count: 0,
+            variants: None,
+        }
+    }
+
+    fn make_json_token_reader_symbol(span: Span) -> Symbol {
+        let mut methods = std::collections::HashMap::new();
+        methods.insert(
+            "next".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Self::json_result(Type::Optional(Box::new(Type::Named(
+                    "JsonToken".to_string(),
+                    Vec::new(),
+                )))),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "close".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Type::Void,
+                is_static: false,
+            },
+        );
+        Symbol {
+            kind: SymbolKind::Class,
+            span,
+            type_: Some(Type::Named("JsonTokenReader".to_string(), Vec::new())),
+            interfaces: std::collections::HashMap::new(),
+            methods,
+            fields: std::collections::HashMap::new(),
+            type_params: Vec::new(),
+            original_name: None,
+            llvm_name: None,
+            default_param_count: 0,
+            variants: None,
+        }
+    }
+
+    fn make_json_token_symbol(span: Span) -> Symbol {
+        let mut methods = std::collections::HashMap::new();
+        methods.insert(
+            "kind".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Self::json_result(Type::Named(
+                    "JsonTokenKind".to_string(),
+                    Vec::new(),
+                )),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "text".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Self::json_result(Type::Primitive(PrimitiveType::Str)),
+                is_static: false,
+            },
+        );
+        methods.insert(
+            "value".to_string(),
+            MethodSig {
+                params: vec![],
+                return_type: Self::json_result(Type::Named("Json".to_string(), Vec::new())),
+                is_static: false,
+            },
+        );
+        Symbol {
+            kind: SymbolKind::Class,
+            span,
+            type_: Some(Type::Named("JsonToken".to_string(), Vec::new())),
             interfaces: std::collections::HashMap::new(),
             methods,
             fields: std::collections::HashMap::new(),
@@ -1428,6 +1958,52 @@ impl SemanticAnalyzer {
                         variants: None,
                     },
                 )?;
+                // Native package errors are used as Result type arguments.
+                // Keep qualified spellings (`sql.SqlError` and
+                // `net.HttpError`) ergonomic while retaining class metadata
+                // for interface checks. The type resolver stores the bare
+                // class name after resolving a qualified type, so these error
+                // classes must also be present in module scope.
+                if let Some(error_name) = match module_name {
+                    "io" => Some("IoError"),
+                    "sync" => Some("SyncError"),
+                    "sql" => Some("SqlError"),
+                    "net.http" => Some("HttpError"),
+                    "net.websocket" => Some("HttpError"),
+                    "net.tls" => Some("TlsError"),
+                    "env" => Some("EnvError"),
+                    "fs" => Some("FsError"),
+                    "uuid" => Some("UuidError"),
+                    "log" => Some("LogError"),
+                    "random" => Some("RandomError"),
+                    "crypto" => Some("CryptoError"),
+                    "math" => Some("MathError"),
+                    "regex" => Some("RegexError"),
+                    "process" => Some("ProcessError"),
+                    "cli" => Some("CliError"),
+                    "datetime" => Some("DateTimeError"),
+                    "data.json" => Some("JsonError"),
+                    "data.csv" => Some("CsvError"),
+                    _ => None,
+                } && let Some(error_symbol) = module_symbols.get(error_name)
+                {
+                    self.add_import_symbol_if_absent(error_name, error_symbol.clone())?;
+                }
+                if module_name == "net"
+                    && let Some(error_symbol) = module_symbols.get("HttpError")
+                {
+                    self.add_import_symbol_if_absent("HttpError", error_symbol.clone())?;
+                }
+                if module_name == "net"
+                    && let Some(error_symbol) = module_symbols.get("NetError")
+                {
+                    self.add_import_symbol_if_absent("NetError", error_symbol.clone())?;
+                }
+                if module_name == "net.url"
+                    && let Some(error_symbol) = module_symbols.get("UrlError")
+                {
+                    self.add_import_symbol_if_absent("UrlError", error_symbol.clone())?;
+                }
             }
             ImportSpec::Item { item, alias } => {
                 let symbol_name = alias.as_ref().unwrap_or(item);

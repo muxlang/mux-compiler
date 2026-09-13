@@ -24,6 +24,7 @@ pub(super) fn collect(nodes: &[AstNode]) -> Vec<SemanticError> {
             }
             AstNode::Statement(statement) => collect_statement(statement, &mut warnings),
             AstNode::Enum { .. } => {}
+            AstNode::Test { .. } => {}
         }
     }
     warnings.extend(collect_binding_warnings(nodes));
@@ -171,7 +172,7 @@ fn collect_binding_warnings(nodes: &[AstNode]) -> Vec<SemanticError> {
                     collect_function_bindings(function, &mut analysis);
                 }
             }
-            AstNode::Interface { .. } | AstNode::Enum { .. } => {}
+            AstNode::Interface { .. } | AstNode::Enum { .. } | AstNode::Test { .. } => {}
         }
     }
     analysis.warnings
@@ -324,6 +325,15 @@ fn collect_binding_expression(expression: &ExpressionNode, analysis: &mut Bindin
             collect_binding_expression(cond, analysis);
             collect_binding_expression(then_expr, analysis);
             collect_binding_expression(else_expr, analysis);
+        }
+        ExpressionKind::Match { expr, arms } => {
+            collect_binding_expression(expr, analysis);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_binding_expression(guard, analysis);
+                }
+                collect_binding_block(&arm.body, analysis);
+            }
         }
         ExpressionKind::Lambda { params, body, .. } => {
             collect_binding_lambda(params, body, analysis);
@@ -578,6 +588,15 @@ fn collect_expression(expression: &ExpressionNode, warnings: &mut Vec<SemanticEr
             collect_expression(cond, warnings);
             collect_expression(then_expr, warnings);
             collect_expression(else_expr, warnings);
+        }
+        ExpressionKind::Match { expr, arms } => {
+            collect_expression(expr, warnings);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_expression(guard, warnings);
+                }
+                collect_block(&arm.body, warnings);
+            }
         }
         ExpressionKind::Lambda { body, .. } => collect_block(body, warnings),
         ExpressionKind::Literal(_)
