@@ -23,11 +23,10 @@ fn main() {
         let _ = set_git_hooks_dir::setup(workspace_root.join(".github/hooks"), workspace_root);
     }
 
-    let profile = if env::var("CARGO_PROFILE_RELEASE").is_ok() {
-        "release"
-    } else {
-        "debug"
-    };
+    // Cargo exposes the active profile as `PROFILE` to build scripts. The
+    // profile-specific `CARGO_PROFILE_*` variables describe configuration and
+    // are not set for every invocation, including `cargo build --release`.
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
 
     let target_dir =
         env::var("CARGO_TARGET_DIR").map_or_else(|_| workspace_root.join("target"), PathBuf::from);
