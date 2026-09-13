@@ -162,6 +162,14 @@ fn ensure_llvm_prefix(workspace_root: &Path) {
         return;
     };
 
+    // Hosted CI images install the required LLVM toolchain but do not need a
+    // repository-local Cargo config. Writing one and aborting would make the
+    // first clean build fail even though llvm-config already found the right
+    // toolchain; the checked-in workflows provide their own environment.
+    if env::var("CI").is_ok() {
+        return;
+    }
+
     if let Err(e) = write_llvm_prefix_to_config(workspace_root, &prefix) {
         eprintln!("error[build]: {e}");
         std::process::exit(1);
