@@ -2824,7 +2824,14 @@ fn native_runtime_deps(target_os: &str) -> &'static [&'static str] {
 /// budget. Keeping them together also means the whole link line can be read in
 /// one place.
 fn build_linker_args(object_file: &Path, lib_dir: &Path) -> Vec<std::ffi::OsString> {
-    let explicit_runtime = runtime_lib_path_from_env();
+    // Unit tests use synthetic object paths and expect the directory-based
+    // resolution below. A real link always receives an object that was just
+    // produced by clang, so only then should the explicit archive override
+    // participate in linker argument construction.
+    let explicit_runtime = object_file
+        .is_file()
+        .then(runtime_lib_path_from_env)
+        .flatten();
     build_linker_args_for_with_runtime(
         env::consts::OS,
         object_file,
