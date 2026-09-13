@@ -40,12 +40,35 @@ fn runtime_library_for_child_process() -> PathBuf {
         .and_then(Path::parent)
         .expect("compiler repository root");
     [
-        repo_root.join("mux-runtime/target/debug/libmux_runtime.a"),
-        repo_root.join("mux-runtime/target/release/libmux_runtime.a"),
+        repo_root.join("mux-runtime/target/debug"),
+        repo_root.join("mux-runtime/target/release"),
     ]
     .into_iter()
-    .find(|path| path.is_file())
+    .find_map(|profile_dir| find_runtime_archive(&profile_dir))
     .expect("build mux-runtime or set MUX_RUNTIME_LIB before running CLI tests")
+}
+
+fn find_runtime_archive(profile_dir: &Path) -> Option<PathBuf> {
+    let exact = profile_dir.join("libmux_runtime.a");
+    if exact.is_file() {
+        return Some(exact);
+    }
+
+    let deps_dir = profile_dir.join("deps");
+    let mut candidates = std::fs::read_dir(deps_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("libmux_runtime-") && name.ends_with(".a"))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.into_iter().next()
 }
 
 #[test]
@@ -692,6 +715,7 @@ func main() returns void {
             .arg(&src)
             .arg("-o")
             .arg(dir.join("determinism_bin"))
+            .env("MUX_RUNTIME_LIB", runtime_library_for_child_process())
             .output()
             .expect("spawn mux build");
         assert!(
