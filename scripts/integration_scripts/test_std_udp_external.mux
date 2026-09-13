@@ -23,24 +23,24 @@ func main() returns void {
 
     auto bind_result = net.UdpSocket.bind("0.0.0.0:0")
     if bind_result.is_err() {
-        assert(false, "udp bind failed: " + bind_result.error())
+        assert(false, "udp bind failed: " + bind_result.error().message())
     } else {
         auto sock = bind_result.value()
         auto send_result = sock.send_to(payload, addr)
         if send_result.is_err() {
-            assert(false, "udp send failed: " + send_result.error())
+            assert(false, "udp send failed: " + send_result.error().message())
         } else {
             assert(send_result.value() == payload.size(), "unexpected udp write count")
         }
 
         auto receive_result = sock.recv_from(32)
         if receive_result.is_err() {
-            assert(false, "udp recv failed: " + receive_result.error())
+            assert(false, "udp recv failed: " + receive_result.error().message())
         } else {
             auto response = receive_result.value()
             auto response_bytes = response.bytes()
             if response_bytes.is_err() {
-                assert(false, "udp payload failed: " + response_bytes.error())
+                assert(false, "udp payload failed: " + response_bytes.error().message())
             } else {
                 auto payload_bytes = response_bytes.value()
                 assert(payload_bytes.size() == expected.size(), "unexpected udp response length")
@@ -52,7 +52,7 @@ func main() returns void {
             }
             auto response_address = response.address()
             if response_address.is_err() {
-                assert(false, "udp address failed: " + response_address.error())
+                assert(false, "udp address failed: " + response_address.error().message())
             } else {
                 print("udp ack received from " + response_address.value())
             }

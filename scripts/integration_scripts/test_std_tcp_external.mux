@@ -23,19 +23,19 @@ func main() returns void {
 
     auto connect_result = net.TcpStream.connect(addr)
     if connect_result.is_err() {
-        assert(false, "tcp connect failed: " + connect_result.error())
+        assert(false, "tcp connect failed: " + connect_result.error().message())
     } else {
         auto stream = connect_result.value()
         auto write_result = stream.write(payload)
         if write_result.is_err() {
-            assert(false, "tcp write failed: " + write_result.error())
+            assert(false, "tcp write failed: " + write_result.error().message())
         } else {
             assert(write_result.value() == 3, "expected to write 3 bytes")
         }
 
         auto read_result = stream.read(16)
         if read_result.is_err() {
-            assert(false, "tcp read failed: " + read_result.error())
+            assert(false, "tcp read failed: " + read_result.error().message())
         } else {
             auto response = read_result.value()
             assert(response.size() == expected.size(), "unexpected tcp response length")
