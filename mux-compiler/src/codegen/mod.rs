@@ -1387,13 +1387,17 @@ impl<'a> CodeGenerator<'a> {
         let target = Target::from_triple(&triple)
             .map_err(|e| format!("no LLVM target for {}: {}", triple, e.to_string()))?;
 
-        // PIC because distributions default to position-independent
-        // executables; a non-PIC object fails to link against them.
+        // Keep generated programs portable across machines. In particular,
+        // selecting every host feature can emit AVX-512 instructions that are
+        // unavailable on another machine and unsupported by tools such as
+        // Valgrind. PIC is required because distributions default to
+        // position-independent executables; a non-PIC object fails to link
+        // against them.
         let machine = target
             .create_target_machine(
                 &triple,
-                &TargetMachine::get_host_cpu_name().to_string(),
-                &TargetMachine::get_host_cpu_features().to_string(),
+                "",
+                "",
                 OptimizationLevel::None,
                 RelocMode::PIC,
                 CodeModel::Default,
