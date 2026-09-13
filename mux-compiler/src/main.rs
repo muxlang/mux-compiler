@@ -3102,13 +3102,12 @@ mod tests {
     use super::{
         REQUIRED_LLVM_MAJOR, TestCase, TestResult, append_linker_output, build_linker_args,
         build_linker_args_for, build_linker_args_for_with_runtime, clang_failure_detail,
-        clang_version_output, compiling_file,
-        dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
-        internal_compiler_error_report, llvm_config_candidates, materialize_span_edits,
-        merge_coverage, native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict,
-        print_version_banner, relativize_to_cwd, report_clang_for_doctor,
-        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
-        status_marker, validate_llvm_for_doctor,
+        clang_version_output, compiling_file, dir_holding_runtime_lib, extract_clang_major,
+        find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
+        llvm_config_candidates, materialize_span_edits, merge_coverage, native_runtime_deps,
+        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, relativize_to_cwd,
+        report_clang_for_doctor, report_runtime_for_doctor, runtime_lib_dir_is_static_only,
+        set_compiling_file, status_marker, validate_llvm_for_doctor,
     };
     use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, SpanEdit};
     use crate::lexer::Span;
