@@ -2199,6 +2199,36 @@ fn io_capability_symbols(span: Span) -> HashMap<String, Symbol> {
     ])
 }
 
+fn io_error_symbols(span: Span) -> HashMap<String, Symbol> {
+    HashMap::from([
+        (
+            "IoErrorKind".to_string(),
+            make_enum_symbol(
+                "IoErrorKind",
+                &[
+                    "Invalid",
+                    "Io",
+                    "NotFound",
+                    "Permission",
+                    "NotUnicode",
+                    "Closed",
+                    "Os",
+                ],
+                span,
+            ),
+        ),
+        (
+            "IoError".to_string(),
+            make_error_class_symbol_with_fields(
+                "IoError",
+                io_error_methods(),
+                io_error_fields(),
+                span,
+            ),
+        ),
+    ])
+}
+
 fn implement_io_capability(symbol: &mut Symbol, name: &str, methods: HashMap<String, MethodSig>) {
     symbol
         .interfaces
@@ -2216,31 +2246,12 @@ pub fn io_module_class_symbols(span: Span) -> HashMap<String, Symbol> {
     implement_io_capability(&mut writer, "Seek", seek_methods());
 
     let mut symbols = io_capability_symbols(span);
-    symbols.insert(
-        "IoErrorKind".to_string(),
-        make_enum_symbol(
-            "IoErrorKind",
-            &[
-                "Invalid",
-                "Io",
-                "NotFound",
-                "Permission",
-                "NotUnicode",
-                "Closed",
-                "Os",
-            ],
-            span,
-        ),
-    );
+    symbols.extend(io_error_symbols(span));
     symbols.insert("Reader".to_string(), reader);
     symbols.insert("Writer".to_string(), writer);
     symbols.insert(
         "Stream".to_string(),
         make_class_symbol("Stream", erased_stream_methods(), span),
-    );
-    symbols.insert(
-        "IoError".to_string(),
-        make_error_class_symbol_with_fields("IoError", io_error_methods(), io_error_fields(), span),
     );
     symbols
 }
@@ -2630,6 +2641,7 @@ pub fn net_module_class_symbols(span: Span) -> HashMap<String, Symbol> {
         ),
     );
     classes.extend(io_capability_symbols(span));
+    classes.extend(io_error_symbols(span));
     classes.insert(
         "http".to_string(),
         make_import_module_symbol("net.http", span),
@@ -2841,6 +2853,7 @@ pub fn tls_module_class_symbols(span: Span) -> HashMap<String, Symbol> {
     implement_io_capability(&mut tls_stream, "Readable", readable_methods());
     implement_io_capability(&mut tls_stream, "Writable", writable_methods());
     let mut symbols = io_capability_symbols(span);
+    symbols.extend(io_error_symbols(span));
     symbols.insert("TlsStream".to_string(), tls_stream);
     symbols.insert(
         "TlsConfig".to_string(),
@@ -5359,6 +5372,30 @@ mod tests {
                 .contains_key("to_json")
         );
         assert!(csv.interfaces["CsvRepresentable"].1.contains_key("to_csv"));
+    }
+
+    #[test]
+    fn io_error_contract_is_shared_by_io_network_and_tls_modules() {
+        let span = Span::new(1, 1);
+        let modules = [
+            io_module_class_symbols(span),
+            net_module_class_symbols(span),
+            tls_module_class_symbols(span),
+        ];
+
+        for symbols in modules {
+            let error = symbols
+                .get("IoError")
+                .expect("IO-producing modules must expose IoError");
+            assert_eq!(error.kind, SymbolKind::Class);
+            assert_eq!(error.methods["message"].return_type, str_());
+            assert_eq!(error.interfaces["Error"].1["message"].return_type, str_());
+
+            let error_kind = symbols
+                .get("IoErrorKind")
+                .expect("IO-producing modules must expose IoErrorKind");
+            assert_eq!(error_kind.kind, SymbolKind::Enum);
+        }
     }
 
     #[test]
