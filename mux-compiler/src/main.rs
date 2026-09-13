@@ -26,6 +26,7 @@ use source::Source;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::env;
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{Read as IoRead, Write as IoWrite};
@@ -767,7 +768,7 @@ struct TestResult {
 
 fn collect_mux_files(path: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if path.is_file() {
-        if path.extension().and_then(|ext| ext.to_str()) == Some("mux") {
+        if is_mux_file(path) {
             files.push(path.to_path_buf());
         }
         return Ok(());
@@ -780,11 +781,15 @@ fn collect_mux_files(path: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<(
         let entry_path = entry.path();
         if entry_path.is_dir() {
             collect_mux_files(&entry_path, files)?;
-        } else if entry_path.extension().and_then(|ext| ext.to_str()) == Some("mux") {
+        } else if is_mux_file(&entry_path) {
             files.push(entry_path);
         }
     }
     Ok(())
+}
+
+fn is_mux_file(path: &Path) -> bool {
+    path.extension().and_then(OsStr::to_str) == Some("mux")
 }
 
 /// Convert the lexer's one-based display column into a byte offset. Source
@@ -1237,156 +1242,245 @@ fn coverage_record_body(contents: &str) -> Result<&str, String> {
         .ok_or_else(|| "coverage report is incomplete or has an unsupported format".to_string())
 }
 
-fn merge_coverage(results: &[TestResult], output: &Path) -> Result<(), String> {
-    let mut statements: BTreeMap<(String, usize), u64> = BTreeMap::new();
-    let mut branches: BTreeMap<(String, usize, i64), [Option<u64>; 2]> = BTreeMap::new();
-    let mut files_seen = HashSet::new();
-    let mut sites_seen = 0usize;
+type StatementCoverage = BTreeMap<(String, usize), u64>;
+type BranchCoverage = BTreeMap<(String, usize, i64), [Option<u64>; 2]>;
 
-    for result in results {
-        let Some(site_file) = result.coverage_sites_file.as_ref() else {
+fn map_coverage_location(
+    result: &TestResult,
+    temporary: &Path,
+    recorded_path: &str,
+    mut line: usize,
+) -> Option<(String, usize)> {
+    if !coverage_source_matches(recorded_path, temporary) {
+        return Some((recorded_path.to_string(), line));
+    }
+    if result
+        .coverage_generated_wrapper_line
+        .is_some_and(|wrapper| line >= wrapper)
+    {
+        return None;
+    }
+    if let (Some(generated), Some(original)) = (
+        result.coverage_generated_body_line,
+        result.coverage_original_body_line,
+    ) && line >= generated
+    {
+        line = original.saturating_add(line - generated);
+    }
+    Some((result.case.file.to_string_lossy().to_string(), line))
+}
+
+fn merge_coverage_sites(
+    result: &TestResult,
+    temporary: &Path,
+    statements: &mut StatementCoverage,
+    branches: &mut BranchCoverage,
+    files_seen: &mut HashSet<String>,
+) -> Result<usize, String> {
+    let Some(site_file) = result.coverage_sites_file.as_ref() else {
+        return Err(format!(
+            "coverage site path missing for {}",
+            result.case.name
+        ));
+    };
+    let contents = fs::read_to_string(site_file).map_err(|error| {
+        format!(
+            "could not read coverage sites for {}: {error}",
+            result.case.name
+        )
+    })?;
+    let mut sites_seen = 0;
+    for (site_number, record) in contents.lines().enumerate() {
+        let fields: Vec<_> = record.split('\t').collect();
+        if fields.len() < 3 {
             return Err(format!(
-                "coverage site path missing for {}",
-                result.case.name
+                "malformed coverage site {}:{}",
+                site_file.display(),
+                site_number + 1
             ));
+        }
+        let recorded_path = decode_coverage_path(fields[1])?;
+        let line = fields[2]
+            .parse::<usize>()
+            .map_err(|_| "coverage site line is not a positive integer".to_string())?;
+        let Some((source, line)) = map_coverage_location(result, temporary, &recorded_path, line)
+        else {
+            continue;
         };
-        let site_contents = fs::read_to_string(site_file).map_err(|error| {
-            format!(
-                "could not read coverage sites for {}: {error}",
-                result.case.name
-            )
-        })?;
-        let Some(record_file) = result.coverage_file.as_ref() else {
-            return Err(format!(
-                "coverage record path missing for {}",
-                result.case.name
-            ));
-        };
-        let temporary = result
-            .coverage_source
-            .as_deref()
-            .ok_or_else(|| "coverage temporary source path missing".to_string())?;
-        let map_location = |encoded_path: &str, mut line: usize| {
-            let mut source = PathBuf::from(encoded_path);
-            if coverage_source_matches(encoded_path, temporary) {
-                if result
-                    .coverage_generated_wrapper_line
-                    .is_some_and(|wrapper| line >= wrapper)
-                {
-                    return None;
-                }
-                source = result.case.file.clone();
-                if let (Some(generated), Some(original)) = (
-                    result.coverage_generated_body_line,
-                    result.coverage_original_body_line,
-                ) && line >= generated
-                {
-                    line = original.saturating_add(line - generated);
-                }
+        files_seen.insert(source.clone());
+        match fields[0] {
+            "D" if fields.len() == 3 => {
+                statements.entry((source, line)).or_insert(0);
+                sites_seen += 1;
             }
-            Some((source.to_string_lossy().to_string(), line))
-        };
-
-        for (site_number, record) in site_contents.lines().enumerate() {
-            let fields: Vec<_> = record.split('\t').collect();
-            if fields.len() < 3 {
+            "C" if fields.len() == 4 => {
+                let branch_id = fields[3]
+                    .parse::<i64>()
+                    .map_err(|_| "coverage branch id is invalid".to_string())?;
+                branches
+                    .entry((source, line, branch_id))
+                    .or_insert([None, None]);
+                sites_seen += 1;
+            }
+            _ => {
                 return Err(format!(
                     "malformed coverage site {}:{}",
                     site_file.display(),
                     site_number + 1
                 ));
             }
-            let recorded_path = decode_coverage_path(fields[1])?;
-            let line = fields[2]
-                .parse::<usize>()
-                .map_err(|_| "coverage site line is not a positive integer".to_string())?;
-            let Some((source, line)) = map_location(&recorded_path, line) else {
-                continue;
-            };
-            files_seen.insert(source.clone());
-            match fields[0] {
-                "D" if fields.len() == 3 => {
-                    statements.entry((source, line)).or_insert(0);
-                    sites_seen += 1;
-                }
-                "C" if fields.len() == 4 => {
-                    let branch_id = fields[3]
-                        .parse::<i64>()
-                        .map_err(|_| "coverage branch id is invalid".to_string())?;
-                    branches
-                        .entry((source, line, branch_id))
-                        .or_insert([None, None]);
-                    sites_seen += 1;
-                }
-                _ => {
-                    return Err(format!(
-                        "malformed coverage site {}:{}",
-                        site_file.display(),
-                        site_number + 1
-                    ));
-                }
-            }
         }
+    }
+    Ok(sites_seen)
+}
 
-        let contents = fs::read_to_string(record_file).map_err(|error| {
-            format!(
-                "could not read coverage records for {}: {error}",
-                result.case.name
-            )
-        })?;
-        for (record_number, record) in coverage_record_body(&contents)?.lines().enumerate() {
-            let fields: Vec<_> = record.split('\t').collect();
-            if fields.len() < 4 {
-                return Err(format!(
-                    "malformed coverage record {}:{}",
-                    record_file.display(),
-                    record_number + 1
-                ));
-            }
-            let recorded_path = decode_coverage_path(fields[1])?;
-            let line = fields[2]
-                .parse::<usize>()
-                .ok()
-                .filter(|line| *line > 0)
-                .ok_or_else(|| "coverage line is not a positive integer".to_string())?;
-            let hits = fields
-                .last()
-                .and_then(|field| field.parse::<u64>().ok())
-                .filter(|hits| *hits > 0)
-                .ok_or_else(|| "coverage count is not a positive integer".to_string())?;
-            let Some((source, line)) = map_location(&recorded_path, line) else {
-                continue;
-            };
-            files_seen.insert(source.clone());
-            match fields[0] {
-                "S" if fields.len() == 4 => {
-                    let count = statements.entry((source, line)).or_default();
-                    *count = count
-                        .checked_add(hits)
-                        .ok_or_else(|| "merged coverage counter overflow".to_string())?;
-                }
-                "B" if fields.len() == 6 => {
-                    let branch_id = fields[3]
-                        .parse::<i64>()
-                        .map_err(|_| "coverage branch id is invalid".to_string())?;
-                    let taken = fields[4]
-                        .parse::<i32>()
-                        .map_err(|_| "coverage branch outcome is invalid".to_string())?;
-                    if !matches!(taken, 0 | 1) {
-                        return Err("coverage branch outcome is not boolean".to_string());
-                    }
-                    let counts = branches
-                        .entry((source, line, branch_id))
-                        .or_insert([None, None]);
-                    let count = counts[taken as usize]
-                        .unwrap_or(0)
-                        .checked_add(hits)
-                        .ok_or_else(|| "merged coverage counter overflow".to_string())?;
-                    counts[taken as usize] = Some(count);
-                }
-                _ => return Err(format!("malformed coverage record {}", record_number + 1)),
-            }
+fn merge_coverage_records(
+    result: &TestResult,
+    temporary: &Path,
+    statements: &mut StatementCoverage,
+    branches: &mut BranchCoverage,
+    files_seen: &mut HashSet<String>,
+) -> Result<(), String> {
+    let Some(record_file) = result.coverage_file.as_ref() else {
+        return Err(format!(
+            "coverage record path missing for {}",
+            result.case.name
+        ));
+    };
+    let contents = fs::read_to_string(record_file).map_err(|error| {
+        format!(
+            "could not read coverage records for {}: {error}",
+            result.case.name
+        )
+    })?;
+    for (record_number, record) in coverage_record_body(&contents)?.lines().enumerate() {
+        let fields: Vec<_> = record.split('\t').collect();
+        if fields.len() < 4 {
+            return Err(format!(
+                "malformed coverage record {}:{}",
+                record_file.display(),
+                record_number + 1
+            ));
         }
+        let recorded_path = decode_coverage_path(fields[1])?;
+        let line = fields[2]
+            .parse::<usize>()
+            .ok()
+            .filter(|line| *line > 0)
+            .ok_or_else(|| "coverage line is not a positive integer".to_string())?;
+        let hits = fields
+            .last()
+            .and_then(|field| field.parse::<u64>().ok())
+            .filter(|hits| *hits > 0)
+            .ok_or_else(|| "coverage count is not a positive integer".to_string())?;
+        let Some((source, line)) = map_coverage_location(result, temporary, &recorded_path, line)
+        else {
+            continue;
+        };
+        files_seen.insert(source.clone());
+        match fields[0] {
+            "S" if fields.len() == 4 => {
+                let count = statements.entry((source, line)).or_default();
+                *count = count
+                    .checked_add(hits)
+                    .ok_or_else(|| "merged coverage counter overflow".to_string())?;
+            }
+            "B" if fields.len() == 6 => {
+                let branch_id = fields[3]
+                    .parse::<i64>()
+                    .map_err(|_| "coverage branch id is invalid".to_string())?;
+                let taken = fields[4]
+                    .parse::<i32>()
+                    .map_err(|_| "coverage branch outcome is invalid".to_string())?;
+                if !matches!(taken, 0 | 1) {
+                    return Err("coverage branch outcome is not boolean".to_string());
+                }
+                let counts = branches
+                    .entry((source, line, branch_id))
+                    .or_insert([None, None]);
+                let count = counts[taken as usize]
+                    .unwrap_or(0)
+                    .checked_add(hits)
+                    .ok_or_else(|| "merged coverage counter overflow".to_string())?;
+                counts[taken as usize] = Some(count);
+            }
+            _ => return Err(format!("malformed coverage record {}", record_number + 1)),
+        }
+    }
+    Ok(())
+}
+
+fn append_lcov_source(
+    report: &mut String,
+    source: &str,
+    statements: &StatementCoverage,
+    branches: &BranchCoverage,
+) {
+    report.push_str("TN:\n");
+    report.push_str(&format!("SF:{source}\n"));
+    let source_lines: Vec<_> = statements
+        .iter()
+        .filter(|((statement_source, _), _)| statement_source == source)
+        .collect();
+    let line_found = source_lines.len();
+    let line_hit = source_lines.iter().filter(|(_, count)| **count > 0).count();
+    report.push_str(&format!("LF:{line_found}\nLH:{line_hit}\n"));
+    for ((statement_source, line), count) in statements {
+        if statement_source == source {
+            report.push_str(&format!("DA:{line},{count}\n"));
+        }
+    }
+
+    let branch_sites: BTreeMap<(usize, i64), [Option<u64>; 2]> = branches
+        .iter()
+        .filter_map(|((branch_source, line, branch_id), counts)| {
+            (branch_source == source).then_some(((*line, *branch_id), *counts))
+        })
+        .collect();
+    if branch_sites.is_empty() {
+        report.push_str("end_of_record\n");
+        return;
+    }
+    let branch_total = branch_sites.len() * 2;
+    let branch_hit = branch_sites
+        .values()
+        .map(|counts| usize::from(counts[0].is_some()) + usize::from(counts[1].is_some()))
+        .sum::<usize>();
+    report.push_str(&format!("BRF:{branch_total}\nBRH:{branch_hit}\n"));
+    for ((line, branch_id), counts) in branch_sites {
+        for (taken, count) in counts.into_iter().enumerate() {
+            let hit = count.map_or_else(|| "-".to_string(), |value| value.to_string());
+            report.push_str(&format!("BRDA:{line},0,{branch_id}-{taken},{hit}\n"));
+        }
+    }
+    report.push_str("end_of_record\n");
+}
+
+fn merge_coverage(results: &[TestResult], output: &Path) -> Result<(), String> {
+    let mut statements = StatementCoverage::new();
+    let mut branches = BranchCoverage::new();
+    let mut files_seen = HashSet::new();
+    let mut sites_seen = 0;
+
+    for result in results {
+        let temporary = result
+            .coverage_source
+            .as_deref()
+            .ok_or_else(|| "coverage temporary source path missing".to_string())?;
+        sites_seen += merge_coverage_sites(
+            result,
+            temporary,
+            &mut statements,
+            &mut branches,
+            &mut files_seen,
+        )?;
+        merge_coverage_records(
+            result,
+            temporary,
+            &mut statements,
+            &mut branches,
+            &mut files_seen,
+        )?;
     }
     if sites_seen == 0 || files_seen.is_empty() {
         return Err("coverage produced no executable records".to_string());
@@ -1397,69 +1491,25 @@ fn merge_coverage(results: &[TestResult], output: &Path) -> Result<(), String> {
     source_names.extend(branches.keys().map(|(source, _, _)| source.clone()));
     let mut report = String::new();
     for source in source_names {
-        report.push_str("TN:\n");
-        report.push_str(&format!("SF:{source}\n"));
-        let source_lines: Vec<_> = statements
-            .iter()
-            .filter(|((statement_source, _), _)| statement_source == &source)
-            .collect();
-        let line_found = source_lines.len();
-        let line_hit = source_lines.iter().filter(|(_, count)| **count > 0).count();
-        report.push_str(&format!("LF:{line_found}\nLH:{line_hit}\n"));
-        for ((statement_source, line), count) in &statements {
-            if statement_source == &source {
-                report.push_str(&format!("DA:{line},{count}\n"));
-            }
-        }
-        let mut branch_sites: BTreeMap<(usize, i64), [Option<u64>; 2]> = BTreeMap::new();
-        for ((branch_source, line, branch_id), counts) in &branches {
-            if branch_source == &source {
-                branch_sites.insert((*line, *branch_id), *counts);
-            }
-        }
-        if !branch_sites.is_empty() {
-            let branch_total = branch_sites.len() * 2;
-            let branch_hit = branch_sites
-                .values()
-                .map(|counts| usize::from(counts[0].is_some()) + usize::from(counts[1].is_some()))
-                .sum::<usize>();
-            report.push_str(&format!("BRF:{branch_total}\nBRH:{branch_hit}\n"));
-            for ((line, branch_id), counts) in branch_sites {
-                for (taken, count) in counts.into_iter().enumerate() {
-                    let hit = count.map_or_else(|| "-".to_string(), |value| value.to_string());
-                    report.push_str(&format!("BRDA:{line},0,{branch_id}-{taken},{hit}\n"));
-                }
-            }
-        }
-        report.push_str("end_of_record\n");
+        append_lcov_source(&mut report, &source, &statements, &branches);
     }
     fs::write(output, report)
         .map_err(|error| format!("could not write {}: {error}", output.display()))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_test_command(
+fn discover_test_cases(
     requested_files: &[PathBuf],
-    jobs: usize,
     filter: Option<&str>,
     tag: Option<&str>,
-    fail_fast: bool,
-    format: TestOutputFormat,
-    timeout_seconds: u64,
-    coverage: bool,
-) -> i32 {
+) -> Result<Vec<TestCase>, String> {
     let mut files = Vec::new();
     if requested_files.is_empty() {
-        if let Err(error) = collect_mux_files(Path::new("tests"), &mut files) {
-            eprintln!("mux test: could not discover tests: {error}");
-            return 1;
-        }
+        collect_mux_files(Path::new("tests"), &mut files)
+            .map_err(|error| format!("mux test: could not discover tests: {error}"))?;
     } else {
         for path in requested_files {
-            if let Err(error) = collect_mux_files(path, &mut files) {
-                eprintln!("mux test: could not read {}: {error}", path.display());
-                return 1;
-            }
+            collect_mux_files(path, &mut files)
+                .map_err(|error| format!("mux test: could not read {}: {error}", path.display()))?;
         }
     }
     files.sort();
@@ -1467,28 +1517,27 @@ fn run_test_command(
 
     let mut cases = Vec::new();
     for path in files {
-        let source = match fs::read_to_string(&path) {
-            Ok(source) => source,
-            Err(error) => {
-                eprintln!("mux test: could not read {}: {error}", path.display());
-                return 1;
-            }
-        };
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("mux test: could not read {}: {error}", path.display()))?;
         let start_id = cases.len();
-        match extract_test_cases(&path, &source, start_id) {
-            Ok(mut found) => cases.append(&mut found),
-            Err(error) => {
-                eprintln!("mux test: {error}");
-                return 1;
-            }
-        }
+        let mut found = extract_test_cases(&path, &source, start_id)
+            .map_err(|error| format!("mux test: {error}"))?;
+        cases.append(&mut found);
     }
     cases.retain(|case| test_case_matches(case, filter, tag));
     if cases.is_empty() {
-        eprintln!("mux test: no matching tests found");
-        return 1;
+        return Err("mux test: no matching tests found".to_string());
     }
+    Ok(cases)
+}
 
+fn run_test_cases(
+    cases: Vec<TestCase>,
+    jobs: usize,
+    fail_fast: bool,
+    timeout_seconds: u64,
+    coverage: bool,
+) -> Vec<TestResult> {
     let queue = Arc::new(Mutex::new(VecDeque::from(cases)));
     let results = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(AtomicBool::new(false));
@@ -1528,124 +1577,155 @@ fn run_test_command(
             .cmp(&right.case.file)
             .then_with(|| left.case.name.cmp(&right.case.name))
     });
-    let coverage_failed = if coverage {
-        let merge_result = merge_coverage(&results, Path::new("lcov.info"));
-        for result in &results {
-            if let Some(source) = result.coverage_source.as_ref() {
-                let _ = fs::remove_file(source);
-            }
-            if let Some(record_file) = result.coverage_file.as_ref()
-                && let Some(directory) = record_file.parent()
-            {
-                let _ = fs::remove_dir_all(directory);
-            }
+    results
+}
+
+fn finish_coverage(results: &[TestResult]) -> bool {
+    let merge_result = merge_coverage(results, Path::new("lcov.info"));
+    for result in results {
+        if let Some(source) = result.coverage_source.as_ref() {
+            let _ = fs::remove_file(source);
         }
-        match merge_result {
-            Ok(()) => false,
-            Err(error) => {
-                eprintln!("mux test: coverage failed: {error}");
-                true
-            }
-        }
-    } else {
-        false
-    };
-    let failed = results.iter().any(|result| !result.passed) || coverage_failed;
-    match format {
-        TestOutputFormat::Text => {
-            for result in &results {
-                let status = if result.passed { "PASS" } else { "FAIL" };
-                println!(
-                    "{status} {} ({:.2}s) - {}{}",
-                    result.case.name,
-                    result.elapsed.as_secs_f64(),
-                    result.case.file.display(),
-                    if result.case.tags.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", result.case.tags.join(","))
-                    }
-                );
-                if !result.passed {
-                    if !result.output.trim().is_empty() {
-                        eprintln!("{}", result.output.trim_end());
-                    }
-                    if result.timed_out {
-                        eprintln!("mux test: test process was terminated after its timeout");
-                    }
-                }
-            }
-            println!(
-                "\n{} test(s): {} passed, {} failed",
-                results.len(),
-                results.iter().filter(|result| result.passed).count(),
-                results.iter().filter(|result| !result.passed).count()
-            );
-        }
-        TestOutputFormat::Json => {
-            print!("[");
-            for (index, result) in results.iter().enumerate() {
-                if index > 0 {
-                    print!(",");
-                }
-                print!(
-                    "{{\"name\":\"{}\",\"file\":\"{}\",\"tags\":[{}],\"passed\":{},\"timed_out\":{},\"duration_ms\":{},\"output\":\"{}\"}}",
-                    fix_json_escape(&result.case.name),
-                    fix_json_escape(&result.case.file.to_string_lossy()),
-                    result
-                        .case
-                        .tags
-                        .iter()
-                        .map(|tag| format!("\"{}\"", fix_json_escape(tag)))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    result.passed,
-                    result.timed_out,
-                    result.elapsed.as_millis(),
-                    fix_json_escape(&result.output),
-                );
-            }
-            println!("]");
-        }
-        TestOutputFormat::Junit => {
-            let failures = results.iter().filter(|result| !result.passed).count();
-            println!(
-                "<testsuite tests=\"{}\" failures=\"{}\">",
-                results.len(),
-                failures
-            );
-            for result in &results {
-                let time = format!("{:.3}", result.elapsed.as_secs_f64());
-                println!(
-                    "  <testcase classname=\"{}\" name=\"{}\" time=\"{}\">",
-                    xml_escape(&result.case.file.to_string_lossy()),
-                    xml_escape(&result.case.name),
-                    time
-                );
-                for tag in &result.case.tags {
-                    println!(
-                        "    <property name=\"tag\" value=\"{}\" />",
-                        xml_escape(tag)
-                    );
-                }
-                if !result.passed {
-                    let message = if result.timed_out {
-                        "test process timed out"
-                    } else {
-                        result.output.trim()
-                    };
-                    println!(
-                        "    <failure message=\"{}\">{}</failure>",
-                        xml_escape(message),
-                        xml_escape(message)
-                    );
-                }
-                println!("  </testcase>");
-            }
-            println!("</testsuite>");
+        if let Some(record_file) = result.coverage_file.as_ref()
+            && let Some(directory) = record_file.parent()
+        {
+            let _ = fs::remove_dir_all(directory);
         }
     }
-    i32::from(failed)
+    match merge_result {
+        Ok(()) => false,
+        Err(error) => {
+            eprintln!("mux test: coverage failed: {error}");
+            true
+        }
+    }
+}
+
+fn print_text_results(results: &[TestResult]) {
+    for result in results {
+        let status = if result.passed { "PASS" } else { "FAIL" };
+        let tags = if result.case.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", result.case.tags.join(","))
+        };
+        println!(
+            "{status} {} ({:.2}s) - {}{tags}",
+            result.case.name,
+            result.elapsed.as_secs_f64(),
+            result.case.file.display(),
+        );
+        if !result.passed {
+            if !result.output.trim().is_empty() {
+                eprintln!("{}", result.output.trim_end());
+            }
+            if result.timed_out {
+                eprintln!("mux test: test process was terminated after its timeout");
+            }
+        }
+    }
+    println!(
+        "\n{} test(s): {} passed, {} failed",
+        results.len(),
+        results.iter().filter(|result| result.passed).count(),
+        results.iter().filter(|result| !result.passed).count()
+    );
+}
+
+fn print_json_results(results: &[TestResult]) {
+    print!("[");
+    for (index, result) in results.iter().enumerate() {
+        if index > 0 {
+            print!(",");
+        }
+        print!(
+            "{{\"name\":\"{}\",\"file\":\"{}\",\"tags\":[{}],\"passed\":{},\"timed_out\":{},\"duration_ms\":{},\"output\":\"{}\"}}",
+            fix_json_escape(&result.case.name),
+            fix_json_escape(&result.case.file.to_string_lossy()),
+            result
+                .case
+                .tags
+                .iter()
+                .map(|tag| format!("\"{}\"", fix_json_escape(tag)))
+                .collect::<Vec<_>>()
+                .join(","),
+            result.passed,
+            result.timed_out,
+            result.elapsed.as_millis(),
+            fix_json_escape(&result.output),
+        );
+    }
+    println!("]");
+}
+
+fn print_junit_results(results: &[TestResult]) {
+    let failures = results.iter().filter(|result| !result.passed).count();
+    println!(
+        "<testsuite tests=\"{}\" failures=\"{}\">",
+        results.len(),
+        failures
+    );
+    for result in results {
+        let time = format!("{:.3}", result.elapsed.as_secs_f64());
+        println!(
+            "  <testcase classname=\"{}\" name=\"{}\" time=\"{}\">",
+            xml_escape(&result.case.file.to_string_lossy()),
+            xml_escape(&result.case.name),
+            time
+        );
+        for tag in &result.case.tags {
+            println!(
+                "    <property name=\"tag\" value=\"{}\" />",
+                xml_escape(tag)
+            );
+        }
+        if !result.passed {
+            let message = if result.timed_out {
+                "test process timed out"
+            } else {
+                result.output.trim()
+            };
+            println!(
+                "    <failure message=\"{}\">{}</failure>",
+                xml_escape(message),
+                xml_escape(message)
+            );
+        }
+        println!("  </testcase>");
+    }
+    println!("</testsuite>");
+}
+
+fn print_test_results(format: TestOutputFormat, results: &[TestResult]) {
+    match format {
+        TestOutputFormat::Text => print_text_results(results),
+        TestOutputFormat::Json => print_json_results(results),
+        TestOutputFormat::Junit => print_junit_results(results),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_test_command(
+    requested_files: &[PathBuf],
+    jobs: usize,
+    filter: Option<&str>,
+    tag: Option<&str>,
+    fail_fast: bool,
+    format: TestOutputFormat,
+    timeout_seconds: u64,
+    coverage: bool,
+) -> i32 {
+    let cases = match discover_test_cases(requested_files, filter, tag) {
+        Ok(cases) => cases,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    let results = run_test_cases(cases, jobs, fail_fast, timeout_seconds, coverage);
+    let coverage_failed = coverage && finish_coverage(&results);
+    print_test_results(format, &results);
+    i32::from(results.iter().any(|result| !result.passed) || coverage_failed)
 }
 
 fn xml_escape(value: &str) -> String {
