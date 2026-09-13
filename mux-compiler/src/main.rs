@@ -451,14 +451,23 @@ fn runtime_lib_dir_is_static_only(dir: &Path) -> bool {
 }
 
 fn runtime_lib_from_env() -> Option<PathBuf> {
-    let path = env::var("MUX_RUNTIME_LIB").ok()?;
-    let path = PathBuf::from(path);
-    if path.exists() {
-        return path.parent().map(Path::to_path_buf);
+    runtime_lib_path_from_env()?.parent().map(Path::to_path_buf)
+}
+
+/// Return the exact library selected by `MUX_RUNTIME_LIB`.
+///
+/// This environment variable is an explicit override, not merely a search
+/// directory. Passing only its parent to the linker lets `-l` choose a
+/// neighboring shared library over the requested archive, which breaks
+/// leak-check and other specialized runtime builds.
+fn runtime_lib_path_from_env() -> Option<PathBuf> {
+    let path = PathBuf::from(env::var_os("MUX_RUNTIME_LIB")?);
+    if path.is_file() {
+        return Some(path);
     }
 
     eprintln!(
-        "MUX_RUNTIME_LIB is set but does not exist: {}",
+        "MUX_RUNTIME_LIB is set but is not a file: {}",
         path.display()
     );
     None
@@ -2815,7 +2824,13 @@ fn native_runtime_deps(target_os: &str) -> &'static [&'static str] {
 /// budget. Keeping them together also means the whole link line can be read in
 /// one place.
 fn build_linker_args(object_file: &Path, lib_dir: &Path) -> Vec<std::ffi::OsString> {
-    build_linker_args_for(env::consts::OS, object_file, lib_dir)
+    let explicit_runtime = runtime_lib_path_from_env();
+    build_linker_args_for_with_runtime(
+        env::consts::OS,
+        object_file,
+        lib_dir,
+        explicit_runtime.as_deref(),
+    )
 }
 
 fn append_linker_output(args: &mut Vec<std::ffi::OsString>, output: &Path) {
@@ -2834,6 +2849,15 @@ fn build_linker_args_for(
     target_os: &str,
     object_file: &Path,
     lib_dir: &Path,
+) -> Vec<std::ffi::OsString> {
+    build_linker_args_for_with_runtime(target_os, object_file, lib_dir, None)
+}
+
+fn build_linker_args_for_with_runtime(
+    target_os: &str,
+    object_file: &Path,
+    lib_dir: &Path,
+    explicit_runtime: Option<&Path>,
 ) -> Vec<std::ffi::OsString> {
     let windows = target_os == "windows";
     let macos = target_os == "macos";
@@ -2901,7 +2925,9 @@ fn build_linker_args_for(
     } else {
         "libmux_runtime.a"
     };
-    if runtime_static.exists()
+    if let Some(explicit_runtime) = explicit_runtime {
+        linker_args.push(explicit_runtime.as_os_str().to_owned());
+    } else if runtime_static.exists()
         && runtime_static.file_name().and_then(std::ffi::OsStr::to_str)
             != Some(expected_static_name)
     {
@@ -3075,7 +3101,8 @@ fn main() {
 mod tests {
     use super::{
         REQUIRED_LLVM_MAJOR, TestCase, TestResult, append_linker_output, build_linker_args,
-        build_linker_args_for, clang_failure_detail, clang_version_output, compiling_file,
+        build_linker_args_for, build_linker_args_for_with_runtime, clang_failure_detail,
+        clang_version_output, compiling_file,
         dir_holding_runtime_lib, extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
         internal_compiler_error_report, llvm_config_candidates, materialize_span_edits,
         merge_coverage, native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict,
@@ -3500,6 +3527,31 @@ mod tests {
         assert!(args.iter().any(|a| a == "-lmux_runtime"));
         let l_index = args.iter().position(|a| a == "-L").expect("-L present");
         assert_eq!(args[l_index + 1], dir.as_os_str());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_runtime_path_wins_over_a_neighboring_shared_library() {
+        let dir = unique_tmp("rtlib_explicit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join(static_lib_name());
+        let shared = dir.join(dynamic_lib_name());
+        std::fs::write(&archive, b"archive").unwrap();
+        std::fs::write(&shared, b"shared").unwrap();
+
+        let args = build_linker_args_for_with_runtime(
+            "linux",
+            Path::new("scratch.o"),
+            &dir,
+            Some(&archive),
+        );
+        assert!(args.iter().any(|arg| arg == archive.as_os_str()));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == std::ffi::OsStr::new("-lmux_runtime"))
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
