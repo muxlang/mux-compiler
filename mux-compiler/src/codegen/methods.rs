@@ -2171,144 +2171,169 @@ impl<'a> CodeGenerator<'a> {
         args: &[ExpressionNode],
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
         match type_name {
-            "Headers" => match method_name {
-                "set" | "append" => {
-                    let (name, value) = gen_two_expr(self, args)?;
-                    let runtime_name = if method_name == "set" {
-                        "mux_net_http_headers_set"
-                    } else {
-                        "mux_net_http_headers_append"
-                    };
-                    self.build_net_call(runtime_name, &[obj_value, name, value])
-                        .map(Some)
-                }
-                "get" | "values" | "remove" => {
-                    let name = gen_one_expr(self, args)?;
-                    let runtime_name = match method_name {
-                        "get" => "mux_net_http_headers_get",
-                        "values" => "mux_net_http_headers_values",
-                        "remove" => "mux_net_http_headers_remove",
-                        _ => unreachable!(),
-                    };
-                    self.build_net_call(runtime_name, &[obj_value, name])
-                        .map(Some)
-                }
-                _ => Ok(None),
-            },
-            "HttpRequest" => match method_name {
-                "send" => {
-                    self.ensure_no_args(method_name, args)?;
-                    self.build_net_call("mux_net_http_request_send", &[obj_value])
-                        .map(Some)
-                }
-                "path_param" => {
-                    let name = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_http_request_path_param", &[obj_value, name])
-                        .map(Some)
-                }
-                "set_body_reader" => {
-                    let reader = gen_one_expr(self, args)?;
-                    self.build_net_call(
-                        "mux_net_http_request_set_body_reader",
-                        &[obj_value, reader],
-                    )
+            "Headers" => self.generate_headers_method(obj_value, method_name, args),
+            "HttpRequest" => self.generate_http_request_method(obj_value, method_name, args),
+            "HttpResponse" => self.generate_http_response_method(obj_value, method_name, args),
+            "HttpRouter" => self.generate_http_router_method(obj_value, method_name, args),
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_headers_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "set" | "append" => {
+                let (name, value) = gen_two_expr(self, args)?;
+                let runtime_name = if method_name == "set" {
+                    "mux_net_http_headers_set"
+                } else {
+                    "mux_net_http_headers_append"
+                };
+                self.build_net_call(runtime_name, &[obj_value, name, value])
                     .map(Some)
-                }
-                _ => Ok(None),
-            },
-            "HttpResponse" => match method_name {
-                "write" => {
-                    let stream = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_http_response_write", &[stream, obj_value])
-                        .map(Some)
-                }
-                "error_for_status" => {
-                    self.ensure_no_args(method_name, args)?;
-                    let runtime_name = match method_name {
-                        "error_for_status" => "mux_net_http_response_error_for_status",
-                        _ => unreachable!(),
-                    };
-                    self.build_net_call(runtime_name, &[obj_value]).map(Some)
-                }
-                "read_bytes" | "read_text" | "read_json" => {
-                    let limit = gen_one_expr(self, args)?;
-                    let runtime_name = match method_name {
-                        "read_bytes" => "mux_net_http_response_read_bytes",
-                        "read_text" => "mux_net_http_response_read_text",
-                        "read_json" => "mux_net_http_response_read_json",
-                        _ => unreachable!(),
-                    };
-                    self.build_net_call(runtime_name, &[obj_value, limit])
-                        .map(Some)
-                }
-                "reader" => {
-                    let limit = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_http_response_reader", &[obj_value, limit])
-                        .map(Some)
-                }
-                "save" => {
-                    let path = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_http_response_save", &[obj_value, path])
-                        .map(Some)
-                }
-                _ => Ok(None),
-            },
-            "HttpRouter" => match method_name {
-                "route" => {
-                    if args.len() != 3 {
-                        return Err("route() method takes exactly 3 arguments".to_string());
-                    }
-                    let method = self.generate_expression(&args[0])?;
-                    let path = self.generate_expression(&args[1])?;
-                    let handler = self.generate_expression(&args[2])?;
-                    self.build_net_call(
-                        "mux_net_http_router_route",
-                        &[obj_value, method, path, handler],
-                    )
+            }
+            "get" | "values" | "remove" => {
+                let name = gen_one_expr(self, args)?;
+                let runtime_name = match method_name {
+                    "get" => "mux_net_http_headers_get",
+                    "values" => "mux_net_http_headers_values",
+                    "remove" => "mux_net_http_headers_remove",
+                    _ => unreachable!(),
+                };
+                self.build_net_call(runtime_name, &[obj_value, name])
                     .map(Some)
-                }
-                "middleware" => {
-                    let middleware = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_http_router_use", &[obj_value, middleware])
-                        .map(Some)
-                }
-                "basic_auth" => {
-                    if args.len() != 2 {
-                        return Err("basic_auth() method takes exactly 2 arguments".to_string());
-                    }
-                    let username = self.generate_expression(&args[0])?;
-                    let password = self.generate_expression(&args[1])?;
-                    self.build_net_call(
-                        "mux_net_http_router_basic_auth",
-                        &[obj_value, username, password],
-                    )
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_http_request_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "send" => {
+                self.ensure_no_args(method_name, args)?;
+                self.build_net_call("mux_net_http_request_send", &[obj_value])
                     .map(Some)
-                }
-                "bearer_auth" => {
-                    let token = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_http_router_bearer_auth", &[obj_value, token])
-                        .map(Some)
-                }
-                "oauth_oidc" => {
-                    if args.len() != 3 {
-                        return Err("oauth_oidc() method takes exactly 3 arguments".to_string());
-                    }
-                    let issuer = self.generate_expression(&args[0])?;
-                    let audience = self.generate_expression(&args[1])?;
-                    let jwks_url = self.generate_expression(&args[2])?;
-                    self.build_net_call(
-                        "mux_net_http_router_oauth_oidc",
-                        &[obj_value, issuer, audience, jwks_url],
-                    )
+            }
+            "path_param" => {
+                let name = gen_one_expr(self, args)?;
+                self.build_net_call("mux_net_http_request_path_param", &[obj_value, name])
                     .map(Some)
+            }
+            "set_body_reader" => {
+                let reader = gen_one_expr(self, args)?;
+                self.build_net_call("mux_net_http_request_set_body_reader", &[obj_value, reader])
+                    .map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_http_response_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "write" => {
+                let stream = gen_one_expr(self, args)?;
+                self.build_net_call("mux_net_http_response_write", &[stream, obj_value])
+                    .map(Some)
+            }
+            "error_for_status" => {
+                self.ensure_no_args(method_name, args)?;
+                self.build_net_call("mux_net_http_response_error_for_status", &[obj_value])
+                    .map(Some)
+            }
+            "read_bytes" | "read_text" | "read_json" => {
+                let limit = gen_one_expr(self, args)?;
+                let runtime_name = match method_name {
+                    "read_bytes" => "mux_net_http_response_read_bytes",
+                    "read_text" => "mux_net_http_response_read_text",
+                    "read_json" => "mux_net_http_response_read_json",
+                    _ => unreachable!(),
+                };
+                self.build_net_call(runtime_name, &[obj_value, limit])
+                    .map(Some)
+            }
+            "reader" => {
+                let limit = gen_one_expr(self, args)?;
+                self.build_net_call("mux_net_http_response_reader", &[obj_value, limit])
+                    .map(Some)
+            }
+            "save" => {
+                let path = gen_one_expr(self, args)?;
+                self.build_net_call("mux_net_http_response_save", &[obj_value, path])
+                    .map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_http_router_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "route" => {
+                if args.len() != 3 {
+                    return Err("route() method takes exactly 3 arguments".to_string());
                 }
-                "handle" => {
-                    let request = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_http_router_handle", &[obj_value, request])
-                        .map(Some)
+                let (method, path, handler) = gen_three_expr(self, args)?;
+                self.build_net_call(
+                    "mux_net_http_router_route",
+                    &[obj_value, method, path, handler],
+                )
+                .map(Some)
+            }
+            "middleware" => {
+                let middleware = gen_one_expr(self, args)?;
+                self.build_net_call("mux_net_http_router_use", &[obj_value, middleware])
+                    .map(Some)
+            }
+            "basic_auth" => {
+                if args.len() != 2 {
+                    return Err("basic_auth() method takes exactly 2 arguments".to_string());
                 }
-                _ => Ok(None),
-            },
+                let (username, password) = gen_two_expr(self, args)?;
+                self.build_net_call(
+                    "mux_net_http_router_basic_auth",
+                    &[obj_value, username, password],
+                )
+                .map(Some)
+            }
+            "bearer_auth" => {
+                let token = gen_one_expr(self, args)?;
+                self.build_net_call("mux_net_http_router_bearer_auth", &[obj_value, token])
+                    .map(Some)
+            }
+            "oauth_oidc" => {
+                if args.len() != 3 {
+                    return Err("oauth_oidc() method takes exactly 3 arguments".to_string());
+                }
+                let (issuer, audience, jwks_url) = gen_three_expr(self, args)?;
+                self.build_net_call(
+                    "mux_net_http_router_oauth_oidc",
+                    &[obj_value, issuer, audience, jwks_url],
+                )
+                .map(Some)
+            }
+            "handle" => {
+                let request = gen_one_expr(self, args)?;
+                self.build_net_call("mux_net_http_router_handle", &[obj_value, request])
+                    .map(Some)
+            }
             _ => Ok(None),
         }
     }
@@ -2689,206 +2714,219 @@ impl<'a> CodeGenerator<'a> {
         args: &[ExpressionNode],
     ) -> Result<Option<BasicValueEnum<'a>>, String> {
         match type_name {
-            "TcpStream" => match method_name {
-                "read" => {
-                    let size = gen_one_expr(self, args)?;
-                    let call = self.build_net_call("mux_net_tcp_read", &[obj_value, size])?;
-                    Ok(Some(call))
-                }
-                "write" => {
-                    let data = gen_one_expr(self, args)?;
-                    let call = self.build_net_call("mux_net_tcp_write", &[obj_value, data])?;
-                    Ok(Some(call))
-                }
-                "close" => {
-                    self.ensure_no_args("close", args)?;
-                    let call = self.build_net_call("mux_net_tcp_close", &[obj_value])?;
-                    Ok(Some(call))
-                }
-                "set_nonblocking" => {
-                    let bool_val = gen_one_expr(self, args)?;
-                    let converted = self.bool_to_i32(bool_val)?;
-                    let call = self
-                        .build_net_call("mux_net_tcp_set_nonblocking", &[obj_value, converted])?;
-                    Ok(Some(call))
-                }
-                "set_read_timeout" | "set_write_timeout" => {
-                    let timeout = gen_one_expr(self, args)?;
-                    let runtime_name = if method_name == "set_read_timeout" {
-                        "mux_net_tcp_set_read_timeout"
-                    } else {
-                        "mux_net_tcp_set_write_timeout"
-                    };
-                    let call = self.build_net_call(runtime_name, &[obj_value, timeout])?;
-                    Ok(Some(call))
-                }
-                "shutdown_read" | "shutdown_write" => {
-                    self.ensure_no_args(method_name, args)?;
-                    let runtime_name = if method_name == "shutdown_read" {
-                        "mux_net_tcp_shutdown_read"
-                    } else {
-                        "mux_net_tcp_shutdown_write"
-                    };
-                    self.build_net_call(runtime_name, &[obj_value]).map(Some)
-                }
-                "set_nodelay" => {
-                    let enabled = gen_one_expr(self, args)?;
-                    let converted = self.bool_to_i32(enabled)?;
-                    self.build_net_call("mux_net_tcp_set_nodelay", &[obj_value, converted])
-                        .map(Some)
-                }
-                "nodelay" => {
-                    self.ensure_no_args("nodelay", args)?;
-                    self.build_net_call("mux_net_tcp_nodelay", &[obj_value])
-                        .map(Some)
-                }
-                "set_keepalive" => {
-                    let enabled = gen_one_expr(self, args)?;
-                    let converted = self.bool_to_i32(enabled)?;
-                    self.build_net_call("mux_net_tcp_set_keepalive", &[obj_value, converted])
-                        .map(Some)
-                }
-                "keepalive" => {
-                    self.ensure_no_args("keepalive", args)?;
-                    self.build_net_call("mux_net_tcp_keepalive", &[obj_value])
-                        .map(Some)
-                }
-                "set_ttl" => {
-                    let ttl = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_tcp_set_ttl", &[obj_value, ttl])
-                        .map(Some)
-                }
-                "ttl" => {
-                    self.ensure_no_args("ttl", args)?;
-                    self.build_net_call("mux_net_tcp_ttl", &[obj_value])
-                        .map(Some)
-                }
-                "peer_addr" => {
-                    self.ensure_no_args("peer_addr", args)?;
-                    let call = self.build_net_call("mux_net_tcp_peer_addr", &[obj_value])?;
-                    Ok(Some(call))
-                }
-                "local_addr" => {
-                    self.ensure_no_args("local_addr", args)?;
-                    let call = self.build_net_call("mux_net_tcp_local_addr", &[obj_value])?;
-                    Ok(Some(call))
-                }
-                "set_recv_buffer_size" | "set_send_buffer_size" => {
-                    let size = gen_one_expr(self, args)?;
-                    let runtime_name = if method_name == "set_recv_buffer_size" {
-                        "mux_net_tcp_set_recv_buffer_size"
-                    } else {
-                        "mux_net_tcp_set_send_buffer_size"
-                    };
-                    self.build_net_call(runtime_name, &[obj_value, size])
-                        .map(Some)
-                }
-                "recv_buffer_size" | "send_buffer_size" => {
-                    self.ensure_no_args(method_name, args)?;
-                    let runtime_name = if method_name == "recv_buffer_size" {
-                        "mux_net_tcp_recv_buffer_size"
-                    } else {
-                        "mux_net_tcp_send_buffer_size"
-                    };
-                    self.build_net_call(runtime_name, &[obj_value]).map(Some)
-                }
-                _ => Ok(None),
-            },
-            "TcpListener" => match method_name {
-                "accept" => {
-                    self.ensure_no_args("accept", args)?;
-                    let call = self.build_net_call("mux_net_tcp_listener_accept", &[obj_value])?;
-                    Ok(Some(call))
-                }
-                "close" => {
-                    self.ensure_no_args("close", args)?;
-                    let call = self.build_net_call("mux_net_tcp_listener_close", &[obj_value])?;
-                    Ok(Some(call))
-                }
-                "set_nonblocking" => {
-                    let bool_val = gen_one_expr(self, args)?;
-                    let converted = self.bool_to_i32(bool_val)?;
-                    let call = self.build_net_call(
-                        "mux_net_tcp_listener_set_nonblocking",
-                        &[obj_value, converted],
-                    )?;
-                    Ok(Some(call))
-                }
-                "local_addr" => {
-                    self.ensure_no_args("local_addr", args)?;
-                    let call =
-                        self.build_net_call("mux_net_tcp_listener_local_addr", &[obj_value])?;
-                    Ok(Some(call))
-                }
-                _ => Ok(None),
-            },
-            "LocalStream" => match method_name {
-                "read" => {
-                    let size = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_local_read", &[obj_value, size])
-                        .map(Some)
-                }
-                "write" => {
-                    let data = gen_one_expr(self, args)?;
-                    self.build_net_call("mux_net_local_write", &[obj_value, data])
-                        .map(Some)
-                }
-                "set_read_timeout" | "set_write_timeout" => {
-                    let timeout = gen_one_expr(self, args)?;
-                    let runtime_name = if method_name == "set_read_timeout" {
-                        "mux_net_local_set_read_timeout"
-                    } else {
-                        "mux_net_local_set_write_timeout"
-                    };
-                    self.build_net_call(runtime_name, &[obj_value, timeout])
-                        .map(Some)
-                }
-                "set_nonblocking" => {
-                    let enabled = gen_one_expr(self, args)?;
-                    let converted = self.bool_to_i32(enabled)?;
-                    self.build_net_call("mux_net_local_set_nonblocking", &[obj_value, converted])
-                        .map(Some)
-                }
-                "shutdown_read" | "shutdown_write" => {
-                    self.ensure_no_args(method_name, args)?;
-                    let runtime_name = if method_name == "shutdown_read" {
-                        "mux_net_local_shutdown_read"
-                    } else {
-                        "mux_net_local_shutdown_write"
-                    };
-                    self.build_net_call(runtime_name, &[obj_value]).map(Some)
-                }
-                "close" => {
-                    self.ensure_no_args("close", args)?;
-                    self.build_net_call("mux_net_local_close", &[obj_value])
-                        .map(Some)
-                }
-                _ => Ok(None),
-            },
-            "LocalListener" => match method_name {
-                "accept" => {
-                    self.ensure_no_args("accept", args)?;
-                    self.build_net_call("mux_net_local_listener_accept", &[obj_value])
-                        .map(Some)
-                }
-                "set_nonblocking" => {
-                    let enabled = gen_one_expr(self, args)?;
-                    let converted = self.bool_to_i32(enabled)?;
-                    self.build_net_call(
-                        "mux_net_local_listener_set_nonblocking",
-                        &[obj_value, converted],
-                    )
-                    .map(Some)
-                }
-                "close" => {
-                    self.ensure_no_args("close", args)?;
-                    self.build_net_call("mux_net_local_listener_close", &[obj_value])
-                        .map(Some)
-                }
-                _ => Ok(None),
-            },
+            "TcpStream" => self.generate_tcp_stream_method(obj_value, method_name, args),
+            "TcpListener" => self.generate_tcp_listener_method(obj_value, method_name, args),
+            "LocalStream" => self.generate_local_stream_method(obj_value, method_name, args),
+            "LocalListener" => self.generate_local_listener_method(obj_value, method_name, args),
             _ => Ok(None),
         }
+    }
+
+    fn generate_tcp_stream_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if let Some(runtime_name) = Self::tcp_stream_argument_runtime(method_name) {
+            return self.generate_net_stream_argument_method(obj_value, args, runtime_name);
+        }
+        if let Some(runtime_name) = Self::tcp_stream_bool_runtime(method_name) {
+            return self.generate_net_stream_bool_method(obj_value, args, runtime_name);
+        }
+        if let Some(runtime_name) = Self::tcp_stream_no_argument_runtime(method_name) {
+            return self.generate_net_stream_no_argument_method(
+                obj_value,
+                method_name,
+                args,
+                runtime_name,
+            );
+        }
+        Ok(None)
+    }
+
+    fn tcp_stream_argument_runtime(method_name: &str) -> Option<&'static str> {
+        match method_name {
+            "read" => Some("mux_net_tcp_read"),
+            "write" => Some("mux_net_tcp_write"),
+            "set_read_timeout" => Some("mux_net_tcp_set_read_timeout"),
+            "set_write_timeout" => Some("mux_net_tcp_set_write_timeout"),
+            "set_ttl" => Some("mux_net_tcp_set_ttl"),
+            "set_recv_buffer_size" => Some("mux_net_tcp_set_recv_buffer_size"),
+            "set_send_buffer_size" => Some("mux_net_tcp_set_send_buffer_size"),
+            _ => None,
+        }
+    }
+
+    fn tcp_stream_bool_runtime(method_name: &str) -> Option<&'static str> {
+        match method_name {
+            "set_nonblocking" => Some("mux_net_tcp_set_nonblocking"),
+            "set_nodelay" => Some("mux_net_tcp_set_nodelay"),
+            "set_keepalive" => Some("mux_net_tcp_set_keepalive"),
+            _ => None,
+        }
+    }
+
+    fn tcp_stream_no_argument_runtime(method_name: &str) -> Option<&'static str> {
+        match method_name {
+            "close" => Some("mux_net_tcp_close"),
+            "shutdown_read" => Some("mux_net_tcp_shutdown_read"),
+            "shutdown_write" => Some("mux_net_tcp_shutdown_write"),
+            "nodelay" => Some("mux_net_tcp_nodelay"),
+            "keepalive" => Some("mux_net_tcp_keepalive"),
+            "ttl" => Some("mux_net_tcp_ttl"),
+            "peer_addr" => Some("mux_net_tcp_peer_addr"),
+            "local_addr" => Some("mux_net_tcp_local_addr"),
+            "recv_buffer_size" => Some("mux_net_tcp_recv_buffer_size"),
+            "send_buffer_size" => Some("mux_net_tcp_send_buffer_size"),
+            _ => None,
+        }
+    }
+
+    fn generate_tcp_listener_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "accept" => self.generate_net_stream_no_argument_method(
+                obj_value,
+                method_name,
+                args,
+                "mux_net_tcp_listener_accept",
+            ),
+            "close" => self.generate_net_stream_no_argument_method(
+                obj_value,
+                method_name,
+                args,
+                "mux_net_tcp_listener_close",
+            ),
+            "set_nonblocking" => self.generate_net_stream_bool_method(
+                obj_value,
+                args,
+                "mux_net_tcp_listener_set_nonblocking",
+            ),
+            "local_addr" => self.generate_net_stream_no_argument_method(
+                obj_value,
+                method_name,
+                args,
+                "mux_net_tcp_listener_local_addr",
+            ),
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_local_stream_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "read" => {
+                self.generate_net_stream_argument_method(obj_value, args, "mux_net_local_read")
+            }
+            "write" => {
+                self.generate_net_stream_argument_method(obj_value, args, "mux_net_local_write")
+            }
+            "set_read_timeout" => self.generate_net_stream_argument_method(
+                obj_value,
+                args,
+                "mux_net_local_set_read_timeout",
+            ),
+            "set_write_timeout" => self.generate_net_stream_argument_method(
+                obj_value,
+                args,
+                "mux_net_local_set_write_timeout",
+            ),
+            "set_nonblocking" => self.generate_net_stream_bool_method(
+                obj_value,
+                args,
+                "mux_net_local_set_nonblocking",
+            ),
+            "shutdown_read" => self.generate_net_stream_no_argument_method(
+                obj_value,
+                method_name,
+                args,
+                "mux_net_local_shutdown_read",
+            ),
+            "shutdown_write" => self.generate_net_stream_no_argument_method(
+                obj_value,
+                method_name,
+                args,
+                "mux_net_local_shutdown_write",
+            ),
+            "close" => self.generate_net_stream_no_argument_method(
+                obj_value,
+                method_name,
+                args,
+                "mux_net_local_close",
+            ),
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_local_listener_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        match method_name {
+            "accept" => self.generate_net_stream_no_argument_method(
+                obj_value,
+                method_name,
+                args,
+                "mux_net_local_listener_accept",
+            ),
+            "set_nonblocking" => self.generate_net_stream_bool_method(
+                obj_value,
+                args,
+                "mux_net_local_listener_set_nonblocking",
+            ),
+            "close" => self.generate_net_stream_no_argument_method(
+                obj_value,
+                method_name,
+                args,
+                "mux_net_local_listener_close",
+            ),
+            _ => Ok(None),
+        }
+    }
+
+    fn generate_net_stream_argument_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        args: &[ExpressionNode],
+        runtime_name: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let argument = gen_one_expr(self, args)?;
+        self.build_net_call(runtime_name, &[obj_value, argument])
+            .map(Some)
+    }
+
+    fn generate_net_stream_bool_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        args: &[ExpressionNode],
+        runtime_name: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        let value = gen_one_expr(self, args)?;
+        let converted = self.bool_to_i32(value)?;
+        self.build_net_call(runtime_name, &[obj_value, converted])
+            .map(Some)
+    }
+
+    fn generate_net_stream_no_argument_method(
+        &mut self,
+        obj_value: BasicValueEnum<'a>,
+        method_name: &str,
+        args: &[ExpressionNode],
+        runtime_name: &str,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        self.ensure_no_args(method_name, args)?;
+        self.build_net_call(runtime_name, &[obj_value]).map(Some)
     }
 
     fn generate_net_udp_method(
