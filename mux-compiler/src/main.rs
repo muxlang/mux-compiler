@@ -2845,6 +2845,7 @@ fn append_linker_output(args: &mut Vec<std::ffi::OsString>, output: &Path) {
 /// so every platform's dialect except the host's is unreachable from a test. CI
 /// runs on Linux, and the Windows spelling of these flags was wrong for months
 /// with nothing able to catch it.
+#[cfg(test)]
 fn build_linker_args_for(
     target_os: &str,
     object_file: &Path,
