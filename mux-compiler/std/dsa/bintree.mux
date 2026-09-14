@@ -6,6 +6,7 @@ class BinaryTree<T is Comparable> is Collection<T> {
     list<T> values
     list<int> left_children
     list<int> right_children
+    list<int> heights
 
     func len() returns int {
         return self.count
@@ -34,6 +35,9 @@ class BinaryTree<T is Comparable> is Collection<T> {
         }
         while !self.right_children.is_empty() {
             self.right_children.pop_back()
+        }
+        while !self.heights.is_empty() {
+            self.heights.pop_back()
         }
     
         return
@@ -72,29 +76,13 @@ class BinaryTree<T is Comparable> is Collection<T> {
             return
         }
 
-        auto current = self.root
-
-        while true {
-            if value == self.values[current] {
-                return
-            }
-
-            if value < self.values[current] {
-                if self.left_children[current] == -1 {
-                    self.left_children[current] = self.create_node(value)
-                    self.count = self.count + 1
-                    return
-                }
-                current = self.left_children[current]
-            } else {
-                if self.right_children[current] == -1 {
-                    self.right_children[current] = self.create_node(value)
-                    self.count = self.count + 1
-                    return
-                }
-                current = self.right_children[current]
-            }
+        if self.contains(value) {
+            return
         }
+
+        self.root = self.insert_node(self.root, value)
+        self.count = self.count + 1
+        return
     }
 
     func remove(T value) returns void {
@@ -103,76 +91,11 @@ class BinaryTree<T is Comparable> is Collection<T> {
             return
         }
 
-        auto parent = -1
-        auto current = self.root
-        auto is_left_child = false
-
-        while current != -1 && self.values[current] != value {
-            parent = current
-            if value < self.values[current] {
-                is_left_child = true
-                current = self.left_children[current]
-            } else {
-                is_left_child = false
-                current = self.right_children[current]
-            }
-        }
-
-        if current == -1 {
+        if !self.contains(value) {
             return
         }
-
-        // Case 1: no children
-        if self.left_children[current] == -1 && self.right_children[current] == -1 {
-            if parent == -1 {
-                self.root = -1
-            } else if is_left_child {
-                self.left_children[parent] = -1
-            } else {
-                self.right_children[parent] = -1
-            }
-            self.count = self.count - 1
-            return
-        }
-
-        // Case 2: one child
-        if self.left_children[current] == -1 || self.right_children[current] == -1 {
-            auto child = self.left_children[current]
-            if child == -1 {
-                child = self.right_children[current]
-            }
-
-            if parent == -1 {
-                self.root = child
-            } else if is_left_child {
-                self.left_children[parent] = child
-            } else {
-                self.right_children[parent] = child
-            }
-
-            self.count = self.count - 1
-            return
-        }
-
-        // Case 3: two children - use inorder successor
-        auto succ_parent = current
-        auto succ = self.right_children[current]
-
-        while self.left_children[succ] != -1 {
-            succ_parent = succ
-            succ = self.left_children[succ]
-        }
-
-        self.values[current] = self.values[succ]
-
-        if succ_parent == current {
-            self.right_children[succ_parent] = self.right_children[succ]
-        } else {
-            self.left_children[succ_parent] = self.right_children[succ]
-        }
-
+        self.root = self.remove_node(self.root, value)
         self.count = self.count - 1
-    
         return
     }
 
@@ -200,7 +123,118 @@ class BinaryTree<T is Comparable> is Collection<T> {
         self.values.push_back(value)
         self.left_children.push_back(-1)
         self.right_children.push_back(-1)
+        self.heights.push_back(1)
         return idx
+    }
+
+    func node_height(int index) returns int {
+        if index == -1 {
+            return 0
+        }
+        return self.heights[index]
+    }
+
+    func update_height(int index) returns void {
+        if index == -1 {
+            return
+        }
+        auto left_height = self.node_height(self.left_children[index])
+        auto right_height = self.node_height(self.right_children[index])
+        if left_height > right_height {
+            self.heights[index] = left_height + 1
+        } else {
+            self.heights[index] = right_height + 1
+        }
+        return
+    }
+
+    func rotate_left(int index) returns int {
+        auto pivot = self.right_children[index]
+        auto middle = self.left_children[pivot]
+        self.left_children[pivot] = index
+        self.right_children[index] = middle
+        self.update_height(index)
+        self.update_height(pivot)
+        return pivot
+    }
+
+    func rotate_right(int index) returns int {
+        auto pivot = self.left_children[index]
+        auto middle = self.right_children[pivot]
+        self.right_children[pivot] = index
+        self.left_children[index] = middle
+        self.update_height(index)
+        self.update_height(pivot)
+        return pivot
+    }
+
+    func rebalance(int index) returns int {
+        if index == -1 {
+            return -1
+        }
+        self.update_height(index)
+        auto balance = self.node_height(self.left_children[index]) - self.node_height(self.right_children[index])
+        if balance > 1 {
+            auto left = self.left_children[index]
+            if self.node_height(self.right_children[left]) > self.node_height(self.left_children[left]) {
+                self.left_children[index] = self.rotate_left(left)
+            }
+            return self.rotate_right(index)
+        }
+        if balance < -1 {
+            auto right = self.right_children[index]
+            if self.node_height(self.left_children[right]) > self.node_height(self.right_children[right]) {
+                self.right_children[index] = self.rotate_right(right)
+            }
+            return self.rotate_left(index)
+        }
+        return index
+    }
+
+    func insert_node(int index, T value) returns int {
+        if index == -1 {
+            return self.create_node(value)
+        }
+        if value < self.values[index] {
+            auto child = self.left_children[index]
+            auto inserted = self.insert_node(child, value)
+            self.left_children[index] = inserted
+        } else {
+            auto child = self.right_children[index]
+            auto inserted = self.insert_node(child, value)
+            self.right_children[index] = inserted
+        }
+        return self.rebalance(index)
+    }
+
+    func minimum_index(int index) returns int {
+        auto current = index
+        while self.left_children[current] != -1 {
+            current = self.left_children[current]
+        }
+        return current
+    }
+
+    func remove_node(int index, T value) returns int {
+        if index == -1 {
+            return -1
+        }
+        if value < self.values[index] {
+            self.left_children[index] = self.remove_node(self.left_children[index], value)
+        } else if value > self.values[index] {
+            self.right_children[index] = self.remove_node(self.right_children[index], value)
+        } else {
+            if self.left_children[index] == -1 {
+                return self.right_children[index]
+            }
+            if self.right_children[index] == -1 {
+                return self.left_children[index]
+            }
+            auto successor = self.minimum_index(self.right_children[index])
+            self.values[index] = self.values[successor]
+            self.right_children[index] = self.remove_node(self.right_children[index], self.values[successor])
+        }
+        return self.rebalance(index)
     }
 
     func min() returns optional<T> {

@@ -1,0 +1,18 @@
+import std.dsa.weighted_graph.WeightedGraph
+
+WeightedGraph<string> graph = WeightedGraph<string>.new_directed()
+graph.add_edge("a", "b", 1.5)
+graph.add_edge("a", "c", 4.0)
+graph.add_edge("b", "c", 2.0)
+graph.add_edge("a", "b", 0.5)
+
+print("edge weight: " + graph.edge_weight("a", "b").to_string())
+print("edge count: " + graph.neighbors("a").size().to_string())
+match graph.shortest_path("a", "c") {
+    some(path) { print("shortest path: " + path.to_string()) }
+    none { print("shortest path: none") }
+}
+
+WeightedGraph<string> undirected = WeightedGraph<string>.new_undirected()
+undirected.add_edge("left", "right", 3.0)
+print("undirected reverse: " + undirected.has_edge("right", "left").to_string())

@@ -31,4 +31,18 @@ print("Seeded random 1: " + random.next_int().to_string())
 random.seed(12345)
 print("Seeded random 2: " + random.next_int().to_string())
 
+match random.bytes(4) {
+    ok(data) { print("Random bytes length: " + data.size().to_string()) }
+    err(e) { print("Random bytes error: " + e.message()) }
+}
+
+match random.normal(0.0, 1.0) {
+    ok(value) { print("Normal sample: " + value.to_string()) }
+    err(e) { print("Normal sample error: " + e.message()) }
+}
+match random.exponential(2.0) {
+    ok(value) { print("Exponential sample: " + value.to_string()) }
+    err(e) { print("Exponential sample error: " + e.message()) }
+}
+
 print("Random module tests complete!")

@@ -127,4 +127,16 @@ match datetime.year(-9999999999999) {
     err(_) { print("PASS: invalid year timestamp") }
 }
 
+func format_rfc3339_sample() returns result<int, DateTimeError> {
+    auto timestamp = use datetime.parse_timestamp("2024-02-29T12:34:56+02:00")
+    auto value = use datetime.format_timestamp(timestamp)
+    print("RFC3339: " + value)
+    return ok(1)
+}
+
+auto rfc3339_result = format_rfc3339_sample()
+if rfc3339_result.is_err() {
+    print("FAIL: RFC3339: " + rfc3339_result.error().message())
+}
+
 print("All datetime tests passed!")

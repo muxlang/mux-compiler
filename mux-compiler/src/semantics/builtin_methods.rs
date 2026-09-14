@@ -7,11 +7,13 @@ impl SemanticAnalyzer {
         prim: &PrimitiveType,
         method_name: &str,
     ) -> Option<MethodSig> {
-        use PrimitiveType::{Bool, Char, Float, Int, Str};
+        use PrimitiveType::{Bool, Byte, Bytes, Char, Float, Int, Str};
         let resolver = match prim {
             Int => Some(Self::get_int_method_sig as fn(&Self, &str) -> Option<MethodSig>),
+            Byte => Some(Self::get_byte_method_sig as fn(&Self, &str) -> Option<MethodSig>),
             Float => Some(Self::get_float_method_sig as fn(&Self, &str) -> Option<MethodSig>),
             Str => Some(Self::get_string_method_sig as fn(&Self, &str) -> Option<MethodSig>),
+            Bytes => Some(Self::get_bytes_method_sig as fn(&Self, &str) -> Option<MethodSig>),
             Bool => Some(Self::get_bool_method_sig as fn(&Self, &str) -> Option<MethodSig>),
             Char => Some(Self::get_char_method_sig as fn(&Self, &str) -> Option<MethodSig>),
             PrimitiveType::Void | PrimitiveType::Auto => None,
@@ -59,6 +61,16 @@ impl SemanticAnalyzer {
         )
     }
 
+    fn make_byte_parse_result_method_sig() -> MethodSig {
+        Self::make_instance_method_sig(
+            vec![],
+            Type::Result(
+                Box::new(Type::Primitive(PrimitiveType::Byte)),
+                Box::new(Type::Named("ByteError".to_string(), Vec::new())),
+            ),
+        )
+    }
+
     fn get_int_method_sig(&self, method_name: &str) -> Option<MethodSig> {
         match method_name {
             "to_string" => Some(Self::make_to_string_method_sig()),
@@ -74,9 +86,197 @@ impl SemanticAnalyzer {
                 vec![],
                 Type::Primitive(PrimitiveType::Char),
             )),
+            "to_byte" => Some(Self::make_byte_parse_result_method_sig()),
             "eq" => Some(Self::make_eq_method_sig(PrimitiveType::Int)),
             "cmp" => Some(Self::make_cmp_method_sig(PrimitiveType::Int)),
             "hash" => Some(Self::make_hash_method_sig()),
+            _ => None,
+        }
+    }
+
+    fn get_byte_method_sig(&self, method_name: &str) -> Option<MethodSig> {
+        match method_name {
+            "to_string" => Some(Self::make_to_string_method_sig()),
+            "to_int" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Primitive(PrimitiveType::Int),
+            )),
+            "to_byte" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Primitive(PrimitiveType::Byte),
+            )),
+            "eq" => Some(Self::make_eq_method_sig(PrimitiveType::Byte)),
+            "cmp" => Some(Self::make_cmp_method_sig(PrimitiveType::Byte)),
+            "hash" => Some(Self::make_hash_method_sig()),
+            "checked_add" | "checked_sub" | "checked_mul" | "checked_div" | "checked_rem" => {
+                Some(Self::make_instance_method_sig(
+                    vec![Type::Primitive(PrimitiveType::Byte)],
+                    Type::Result(
+                        Box::new(Type::Primitive(PrimitiveType::Byte)),
+                        Box::new(Type::Named("ByteError".to_string(), Vec::new())),
+                    ),
+                ))
+            }
+            "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "saturating_add"
+            | "saturating_sub" | "saturating_mul" | "bit_and" | "bit_or" | "bit_xor"
+            | "rotate_left" | "rotate_right" => Some(Self::make_instance_method_sig(
+                vec![if matches!(method_name, "rotate_left" | "rotate_right") {
+                    Type::Primitive(PrimitiveType::Int)
+                } else {
+                    Type::Primitive(PrimitiveType::Byte)
+                }],
+                Type::Primitive(PrimitiveType::Byte),
+            )),
+            "bit_not" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Primitive(PrimitiveType::Byte),
+            )),
+            "shift_left" | "shift_right" => Some(Self::make_instance_method_sig(
+                vec![Type::Primitive(PrimitiveType::Int)],
+                Type::Result(
+                    Box::new(Type::Primitive(PrimitiveType::Byte)),
+                    Box::new(Type::Named("ByteError".to_string(), Vec::new())),
+                ),
+            )),
+            _ => None,
+        }
+    }
+
+    fn get_bytes_method_sig(&self, method_name: &str) -> Option<MethodSig> {
+        let int = Type::Primitive(PrimitiveType::Int);
+        let byte = Type::Primitive(PrimitiveType::Byte);
+        let bytes = Type::Primitive(PrimitiveType::Bytes);
+        let bytes_error = Type::Named("BytesError".to_string(), Vec::new());
+        match method_name {
+            "to_string" => Some(Self::make_to_string_method_sig()),
+            "to_list" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::List(Box::new(byte.clone())),
+            )),
+            "to_utf8" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Result(
+                    Box::new(Type::Primitive(PrimitiveType::Str)),
+                    Box::new(bytes_error.clone()),
+                ),
+            )),
+            "to_utf8_lossy" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Primitive(PrimitiveType::Str),
+            )),
+            "cursor" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Result(
+                    Box::new(Type::Named("BytesCursor".to_string(), Vec::new())),
+                    Box::new(bytes_error.clone()),
+                ),
+            )),
+            "len" | "size" => Some(Self::make_instance_method_sig(vec![], int)),
+            "is_empty" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Primitive(PrimitiveType::Bool),
+            )),
+            "get" => Some(Self::make_instance_method_sig(
+                vec![int],
+                Type::Optional(Box::new(byte)),
+            )),
+            "push_back" | "push_front" => Some(Self::make_instance_method_sig(
+                vec![byte.clone()],
+                Type::Primitive(PrimitiveType::Void),
+            )),
+            "pop_back" | "pop_front" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Optional(Box::new(byte)),
+            )),
+            "clear" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Primitive(PrimitiveType::Void),
+            )),
+            "reserve" | "truncate" => Some(Self::make_instance_method_sig(
+                vec![int],
+                Type::Primitive(PrimitiveType::Void),
+            )),
+            "resize" => Some(Self::make_instance_method_sig(
+                vec![int, byte.clone()],
+                Type::Primitive(PrimitiveType::Void),
+            )),
+            "fill" => Some(Self::make_instance_method_sig(
+                vec![byte.clone()],
+                Type::Primitive(PrimitiveType::Void),
+            )),
+            "extend" => Some(Self::make_instance_method_sig(
+                vec![bytes],
+                Type::Primitive(PrimitiveType::Void),
+            )),
+            "contains" => Some(Self::make_instance_method_sig(
+                vec![byte.clone()],
+                Type::Primitive(PrimitiveType::Bool),
+            )),
+            "find" => Some(Self::make_instance_method_sig(
+                vec![byte],
+                Type::Optional(Box::new(int)),
+            )),
+            "insert" => Some(Self::make_instance_method_sig(
+                vec![int, Type::Primitive(PrimitiveType::Byte)],
+                Type::Primitive(PrimitiveType::Void),
+            )),
+            "remove" => Some(Self::make_instance_method_sig(
+                vec![int],
+                Type::Optional(Box::new(Type::Primitive(PrimitiveType::Byte))),
+            )),
+            "copy_within" => Some(Self::make_instance_method_sig(
+                vec![int.clone(), int.clone(), int.clone()],
+                Type::Primitive(PrimitiveType::Void),
+            )),
+            "format" => Some(Self::make_instance_method_sig(
+                vec![int.clone(), int.clone()],
+                Type::Result(
+                    Box::new(Type::Primitive(PrimitiveType::Str)),
+                    Box::new(bytes_error.clone()),
+                ),
+            )),
+            "to_binary" | "to_octal" | "to_decimal" | "to_hex" => {
+                Some(Self::make_instance_method_sig(
+                    vec![],
+                    Type::Result(
+                        Box::new(Type::Primitive(PrimitiveType::Str)),
+                        Box::new(bytes_error.clone()),
+                    ),
+                ))
+            }
+            "read_uint_le" | "read_uint_be" => Some(Self::make_instance_method_sig(
+                vec![int.clone(), int.clone()],
+                Type::Result(Box::new(int.clone()), Box::new(bytes_error.clone())),
+            )),
+            "write_uint_le" | "write_uint_be" => Some(Self::make_instance_method_sig(
+                vec![int.clone(), int.clone(), int.clone()],
+                Type::Result(
+                    Box::new(Type::Primitive(PrimitiveType::Void)),
+                    Box::new(bytes_error.clone()),
+                ),
+            )),
+            "read_float_le" | "read_float_be" => Some(Self::make_instance_method_sig(
+                vec![int.clone()],
+                Type::Result(
+                    Box::new(Type::Primitive(PrimitiveType::Float)),
+                    Box::new(bytes_error.clone()),
+                ),
+            )),
+            "write_float_le" | "write_float_be" => Some(Self::make_instance_method_sig(
+                vec![int, Type::Primitive(PrimitiveType::Float)],
+                Type::Result(
+                    Box::new(Type::Primitive(PrimitiveType::Void)),
+                    Box::new(bytes_error.clone()),
+                ),
+            )),
+            "read_varint" => Some(Self::make_instance_method_sig(
+                vec![int.clone()],
+                Type::Result(Box::new(int.clone()), Box::new(bytes_error)),
+            )),
+            "write_varint" => Some(Self::make_instance_method_sig(
+                vec![int.clone(), int.clone()],
+                Type::Result(Box::new(int), Box::new(bytes_error)),
+            )),
             _ => None,
         }
     }
@@ -109,6 +309,7 @@ impl SemanticAnalyzer {
             "to_int" => Some(Self::make_str_parse_result_method_sig(PrimitiveType::Int)),
             "to_float" => Some(Self::make_str_parse_result_method_sig(PrimitiveType::Float)),
             "to_char" => Some(Self::make_str_parse_result_method_sig(PrimitiveType::Char)),
+            "to_byte" => Some(Self::make_byte_parse_result_method_sig()),
             "eq" => Some(Self::make_eq_method_sig(PrimitiveType::Str)),
             "cmp" => Some(Self::make_cmp_method_sig(PrimitiveType::Str)),
             "hash" => Some(Self::make_hash_method_sig()),
@@ -181,6 +382,10 @@ impl SemanticAnalyzer {
         match method_name {
             "to_string" => Some(Self::make_to_string_method_sig()),
             "to_int" => Some(Self::make_str_parse_result_method_sig(PrimitiveType::Int)),
+            "to_codepoint" => Some(Self::make_instance_method_sig(
+                vec![],
+                Type::Primitive(PrimitiveType::Int),
+            )),
             "to_char" => Some(Self::make_instance_method_sig(
                 vec![],
                 Type::Primitive(PrimitiveType::Char),
@@ -233,6 +438,16 @@ impl SemanticAnalyzer {
                 return_type: Type::List(Box::new(elem_type.clone())),
                 is_static: false,
             }),
+            "to_bytes" if matches!(elem_type, Type::Primitive(PrimitiveType::Byte)) => {
+                Some(MethodSig {
+                    params: vec![],
+                    return_type: Type::Result(
+                        Box::new(Type::Primitive(PrimitiveType::Bytes)),
+                        Box::new(Type::Named("BytesError".to_string(), Vec::new())),
+                    ),
+                    is_static: false,
+                })
+            }
             "to_string" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Str),
@@ -337,42 +552,53 @@ impl SemanticAnalyzer {
         }
     }
 
-    fn get_optional_method_sig(&self, method_name: &str) -> Option<MethodSig> {
-        fn bool_method_sig() -> MethodSig {
-            MethodSig {
+    fn get_optional_method_sig(&self, inner: &Type, method_name: &str) -> Option<MethodSig> {
+        match method_name {
+            "is_some" | "is_none" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Bool),
                 is_static: false,
-            }
-        }
-
-        match method_name {
+            }),
+            "value" => Some(MethodSig {
+                params: vec![],
+                return_type: inner.clone(),
+                is_static: false,
+            }),
             "to_string" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Str),
                 is_static: false,
             }),
-            "is_some" | "is_none" => Some(bool_method_sig()),
             _ => None,
         }
     }
 
-    fn get_result_method_sig(&self, method_name: &str) -> Option<MethodSig> {
-        fn bool_method_sig() -> MethodSig {
-            MethodSig {
+    fn get_result_method_sig(
+        &self,
+        ok: &Type,
+        error: &Type,
+        method_name: &str,
+    ) -> Option<MethodSig> {
+        match method_name {
+            "is_ok" | "is_err" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Bool),
                 is_static: false,
-            }
-        }
-
-        match method_name {
+            }),
+            "value" | "error" => Some(MethodSig {
+                params: vec![],
+                return_type: if method_name == "value" {
+                    ok.clone()
+                } else {
+                    error.clone()
+                },
+                is_static: false,
+            }),
             "to_string" => Some(MethodSig {
                 params: vec![],
                 return_type: Type::Primitive(PrimitiveType::Str),
                 is_static: false,
             }),
-            "is_ok" | "is_err" => Some(bool_method_sig()),
             _ => None,
         }
     }
@@ -408,10 +634,11 @@ impl SemanticAnalyzer {
                 self.get_map_method_sig(key_type, value_type, method_name)
             }
             Type::Set(elem_type) => self.get_set_method_sig(elem_type, method_name),
-            Type::Optional(_) => self.get_optional_method_sig(method_name),
-            Type::Result(_, _) => self.get_result_method_sig(method_name),
+            Type::Optional(inner) => self.get_optional_method_sig(inner, method_name),
+            Type::Result(ok, error) => self.get_result_method_sig(ok, error, method_name),
             Type::Tuple(_, _) => self.get_tuple_method_sig(method_name),
             Type::Reference(inner) => self.get_method_sig(inner, method_name),
+            Type::TraitObject(inner) => self.get_method_sig(inner, method_name),
             _ => None,
         }
     }
@@ -475,15 +702,53 @@ mod tests {
     }
 
     #[test]
-    fn references_delegate_method_lookup_to_the_inner_type() {
+    fn sum_type_inspection_methods_have_typed_signatures() {
         let analyzer = SemanticAnalyzer::new();
         let optional = Type::Optional(Box::new(primitive(PrimitiveType::Int)));
-        let reference = Type::Reference(Box::new(optional.clone()));
-
-        assert_eq!(
-            analyzer.get_method_sig(&reference, "is_some"),
-            analyzer.get_method_sig(&optional, "is_some")
+        let result = Type::Result(
+            Box::new(primitive(PrimitiveType::Int)),
+            Box::new(primitive(PrimitiveType::Str)),
         );
-        assert_eq!(analyzer.get_method_sig(&reference, "missing"), None);
+
+        for method in ["is_some", "is_none"] {
+            assert_eq!(
+                analyzer
+                    .get_method_sig(&optional, method)
+                    .unwrap()
+                    .return_type,
+                primitive(PrimitiveType::Bool)
+            );
+        }
+        for method in ["is_ok", "is_err"] {
+            assert_eq!(
+                analyzer
+                    .get_method_sig(&result, method)
+                    .unwrap()
+                    .return_type,
+                primitive(PrimitiveType::Bool)
+            );
+        }
+        assert_eq!(
+            analyzer
+                .get_method_sig(&result, "value")
+                .unwrap()
+                .return_type,
+            primitive(PrimitiveType::Int)
+        );
+        assert_eq!(
+            analyzer
+                .get_method_sig(&result, "error")
+                .unwrap()
+                .return_type,
+            primitive(PrimitiveType::Str)
+        );
+        assert_eq!(
+            analyzer
+                .get_method_sig(&optional, "value")
+                .unwrap()
+                .return_type,
+            primitive(PrimitiveType::Int)
+        );
+        assert!(analyzer.get_method_sig(&optional, "error").is_none());
     }
 }

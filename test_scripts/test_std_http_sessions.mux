@@ -1,0 +1,30 @@
+import std.net
+import std.net.http
+import std.net.websocket
+
+// Keep the long-lived protocol constructors type-checked without opening a
+// network connection in the ordinary offline fixture suite.
+func session_api_surface() returns void {
+    auto connection_result = net.TcpStream.connect("127.0.0.1:1")
+    if connection_result.is_err() {
+        return
+    }
+    auto connection = connection_result.value()
+    auto sse_result = http.SseStream.from_tcp(connection)
+    if sse_result.is_ok() {
+        auto sse = sse_result.value()
+        sse.close()
+    }
+    auto websocket_result = websocket.WebSocketSession.from_tcp(connection)
+    if websocket_result.is_ok() {
+        auto websocket = websocket_result.value()
+        websocket.close()
+    }
+    connection.close()
+    return
+}
+
+func main() returns void {
+    print("HTTP session API type-check passed")
+    return
+}

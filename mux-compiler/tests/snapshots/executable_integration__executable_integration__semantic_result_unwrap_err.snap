@@ -2,18 +2,12 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 2 errors found
+error: 1 error found
 
-error[E0200]: match cannot be used as an expression; it can only be used as a statement
---> test_scripts/error_cases/semantic_result_unwrap_err.mux:6:10
+error[E0305]: Non-exhaustive match: missing pattern for Result: err
+--> test_scripts/error_cases/semantic_result_unwrap_err.mux:6:7
    |
- 6 | auto x = match res {
-   |          ^^^^^
+ 6 | match res {
+   |       ^^^
    |
-= help: Use 'match' as a standalone statement with 'return' in each arm, or use an if/else expression for inline conditionals.
-
-error[E0200]: Expected newline before statement
---> test_scripts/error_cases/semantic_result_unwrap_err.mux:6:20
-   |
- 6 | auto x = match res {
-   |                    ^
+= help: Add match arm for: err, or add a wildcard '_' pattern to cover all remaining cases

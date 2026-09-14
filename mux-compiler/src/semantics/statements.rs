@@ -1,7 +1,7 @@
-use super::{SemanticAnalyzer, SemanticError, SymbolKind, Type, format_type};
+use super::{SemanticAnalyzer, SemanticError, SymbolKind, Type, format_type, narrowing};
 use crate::ast::{
-    ExpressionKind, ExpressionNode, ImportSpec, PatternNode, PrimitiveType, StatementKind,
-    StatementNode, TypeNode,
+    ExpressionKind, ExpressionNode, ImportSpec, LiteralNode, PatternNode, PrimitiveType,
+    StatementKind, StatementNode, TypeNode,
 };
 use crate::diagnostic::DiagnosticCode;
 use crate::diagnostic::Files;
@@ -125,6 +125,7 @@ impl SemanticAnalyzer {
             name,
             Self::make_symbol(SymbolKind::Variable, span, Some(expr_type)),
         )?;
+        self.record_flow_binding(name, expr);
         Ok(())
     }
 
@@ -162,11 +163,15 @@ impl SemanticAnalyzer {
         self.analyze_expression(expr)?;
         self.resolve_empty_collection_types(&declared_type, expr)?;
         let expr_type = self.get_expression_type(expr)?;
-        self.check_type_compatibility(&declared_type, &expr_type, expr.span)?;
+        let byte_literal = self.check_byte_literal(&declared_type, &expr_type, expr)?;
+        if !byte_literal {
+            self.check_type_compatibility(&declared_type, &expr_type, expr.span)?;
+        }
         self.symbol_table.add_symbol(
             name,
             Self::make_symbol(SymbolKind::Variable, span, Some(declared_type)),
         )?;
+        self.record_flow_binding(name, expr);
         Ok(())
     }
 
@@ -262,12 +267,43 @@ impl SemanticAnalyzer {
         self.analyze_expression(expr)?;
         self.resolve_empty_collection_types(&declared_type, expr)?;
         let expr_type = self.get_expression_type(expr)?;
-        self.check_type_compatibility(&declared_type, &expr_type, expr.span)?;
+        let byte_literal = self.check_byte_literal(&declared_type, &expr_type, expr)?;
+        if !byte_literal {
+            self.check_type_compatibility(&declared_type, &expr_type, expr.span)?;
+        }
         self.symbol_table.add_symbol(
             name,
             Self::make_symbol(SymbolKind::Constant, span, Some(declared_type)),
         )?;
         Ok(())
+    }
+
+    fn check_byte_literal(
+        &self,
+        expected: &Type,
+        actual: &Type,
+        expr: &ExpressionNode,
+    ) -> Result<bool, SemanticError> {
+        if !matches!(expected, Type::Primitive(PrimitiveType::Byte))
+            || !matches!(actual, Type::Primitive(PrimitiveType::Int))
+        {
+            return Ok(false);
+        }
+        let ExpressionKind::Literal(LiteralNode::Integer(value)) = &expr.kind else {
+            return Err(SemanticError::new(
+                DiagnosticCode::TypeMismatch,
+                "A byte can only be initialized from an integer literal in the range 0..255",
+                expr.span,
+            ));
+        };
+        if !(0..=255).contains(value) {
+            return Err(SemanticError::new(
+                DiagnosticCode::TypeMismatch,
+                format!("Byte literal {value} is outside the range 0..255"),
+                expr.span,
+            ));
+        }
+        Ok(true)
     }
 
     /// Reject a condition that is not a `bool`.
@@ -310,14 +346,28 @@ impl SemanticAnalyzer {
         self.analyze_expression(cond)?;
         self.check_condition_is_bool(cond, "If")?;
 
+        self.record_expression_guard(cond);
+        let before = self.flow.clone();
+
         self.symbol_table.push_scope()?;
+        self.flow = before.clone();
+        self.assume_flow_condition(cond, true);
         self.analyze_block(then_block, files.as_deref_mut())?;
+        let then_flow = self.flow.clone();
         self.symbol_table.pop_scope()?;
 
         if let Some(else_block) = else_block {
             self.symbol_table.push_scope()?;
+            self.flow = before;
+            self.assume_flow_condition(cond, false);
             self.analyze_block(else_block, files)?;
+            let else_flow = self.flow.clone();
             self.symbol_table.pop_scope()?;
+            self.flow = narrowing::FlowState::join(then_flow, else_flow);
+        } else {
+            self.flow = before;
+            self.assume_flow_condition(cond, false);
+            self.flow = narrowing::FlowState::join(then_flow, self.flow.clone());
         }
 
         Ok(())
@@ -353,7 +403,10 @@ impl SemanticAnalyzer {
             var,
             Self::make_symbol(SymbolKind::Variable, span, Some(var_type)),
         )?;
+        let before = self.flow.clone();
+        self.invalidate_loop_writes(body);
         self.analyze_block(body, files)?;
+        self.flow = narrowing::FlowState::join(before, self.flow.clone());
         self.symbol_table.pop_scope()?;
         Ok(())
     }
@@ -366,8 +419,16 @@ impl SemanticAnalyzer {
     ) -> Result<(), SemanticError> {
         self.analyze_expression(cond)?;
         self.check_condition_is_bool(cond, "While")?;
+        self.record_expression_guard(cond);
+        let before = self.flow.clone();
+        self.invalidate_expression_writes(cond);
         self.symbol_table.push_scope()?;
+        self.flow = before.clone();
+        self.assume_flow_condition(cond, true);
+        self.invalidate_loop_writes(body);
         self.analyze_block(body, files)?;
+        let body_flow = self.flow.clone();
+        self.flow = narrowing::FlowState::join(before, body_flow);
         self.symbol_table.pop_scope()?;
         Ok(())
     }
@@ -439,20 +500,90 @@ impl SemanticAnalyzer {
         let expecting_return = self.current_return_type.is_some()
             && !matches!(self.current_return_type, Some(Type::Void));
         let mut arm_return_types = Vec::new();
+        let before = self.flow.clone();
+        let mut merged = narrowing::FlowState::unreachable();
 
         for arm in arms {
             self.symbol_table.push_scope()?;
+            self.flow = before.clone();
             self.set_pattern_types(&arm.pattern, &expr_type, expr.span)?;
             self.analyze_pattern(&arm.pattern)?;
+            self.assume_flow_pattern(expr, &arm.pattern);
             if let Some(guard) = &arm.guard {
                 self.analyze_expression(guard)?;
+                self.record_expression_guard(guard);
+                self.assume_flow_condition(guard, true);
             }
             self.analyze_block(&arm.body, files.as_deref_mut())?;
+            merged = narrowing::FlowState::join(merged, self.flow.clone());
             self.collect_match_arm_returns(arm, expecting_return, &mut arm_return_types)?;
             self.symbol_table.pop_scope()?;
         }
 
+        // A non-exhaustive match may fall through without selecting an arm.
+        // Keeping the pre-match state is conservative and avoids authorizing
+        // an extraction that only some arms establish.
+        self.flow = narrowing::FlowState::join(before, merged);
+
         self.validate_match_arm_return_types(&arm_return_types)?;
+        self.check_match_exhaustiveness(&expr_type, arms, expr.span)
+    }
+
+    pub(super) fn analyze_match_expression(
+        &mut self,
+        expr: &ExpressionNode,
+        arms: &[crate::ast::MatchArm],
+    ) -> Result<(), SemanticError> {
+        self.analyze_expression(expr)?;
+        let expr_type = self.get_expression_type(expr)?;
+        let before = self.flow.clone();
+        let mut merged = narrowing::FlowState::unreachable();
+        for arm in arms {
+            self.symbol_table.push_scope()?;
+            self.flow = before.clone();
+            self.set_pattern_types(&arm.pattern, &expr_type, expr.span)?;
+            self.analyze_pattern(&arm.pattern)?;
+            self.assume_flow_pattern(expr, &arm.pattern);
+            if let Some(guard) = &arm.guard {
+                self.analyze_expression(guard)?;
+                self.check_condition_is_bool(guard, "Match guard")?;
+                self.record_expression_guard(guard);
+                self.assume_flow_condition(guard, true);
+            }
+            if arm.body.len() != 1 {
+                self.symbol_table.pop_scope()?;
+                return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
+                    "Match expression arms must contain exactly one value",
+                    arm.body
+                        .first()
+                        .map_or(expr.span, |statement| statement.span),
+                    "Use `{ value }` for a value arm, or `{ return value }` for an explicit diverging arm",
+                ));
+            }
+            match &arm.body[0].kind {
+                StatementKind::Expression(value) => self.analyze_expression(value)?,
+                StatementKind::Return(Some(value)) => {
+                    self.analyze_return_with_value(value)?;
+                    self.flow.reachable = false;
+                }
+                StatementKind::Return(None) => {
+                    self.analyze_return_without_value(arm.body[0].span)?;
+                    self.flow.reachable = false;
+                }
+                _ => {
+                    self.symbol_table.pop_scope()?;
+                    return Err(SemanticError::new(
+                        DiagnosticCode::InvalidOperation,
+                        "Match expression arm must be a value or return",
+                        arm.body[0].span,
+                    ));
+                }
+            }
+            merged = narrowing::FlowState::join(merged, self.flow.clone());
+            self.symbol_table.pop_scope()?;
+        }
+        self.flow = narrowing::FlowState::join(before, merged);
         self.check_match_exhaustiveness(&expr_type, arms, expr.span)
     }
 
@@ -586,9 +717,19 @@ impl SemanticAnalyzer {
             }
             StatementKind::Return(Some(expr)) => {
                 self.analyze_return_with_value(expr)?;
+                self.flow.reachable = false;
             }
             StatementKind::Return(None) => {
                 self.analyze_return_without_value(stmt.span)?;
+                self.flow.reachable = false;
+            }
+            // A break/continue cannot reach the statements that follow it in
+            // the current block. Marking that path unreachable is also what
+            // lets flow-sensitive wrapper narrowing survive an early loop
+            // exit, for example `if maybe.is_none() { break }` followed by
+            // `maybe.value()` in the same loop body.
+            StatementKind::Break | StatementKind::Continue => {
+                self.flow.reachable = false;
             }
             StatementKind::Import { module_path, spec } => {
                 // Already resolved during the hoisting pass (see
@@ -603,7 +744,6 @@ impl SemanticAnalyzer {
                 self.analyze_nested_function_captures(func, stmt.span)?;
                 self.analyze_function(func, None)?;
             }
-            _ => {}
         }
         Ok(())
     }

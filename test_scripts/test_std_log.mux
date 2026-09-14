@@ -1,0 +1,11 @@
+import std.log
+
+func main() returns void {
+    auto logger = log.Logger.new()
+    auto invalid = logger.set_level("verbose")
+    if invalid.is_err() {
+        assert(invalid.error().kind == log.LogErrorKind.Invalid, "log error kind")
+        print("log error kind: invalid")
+    }
+    return
+}

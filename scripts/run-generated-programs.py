@@ -412,16 +412,40 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def executable_candidates(
+    candidate: Path, *, windows: bool | None = None
+) -> list[Path]:
+    """Return the explicit path and its native Windows executable spelling.
+
+    ``Path`` does not apply ``PATHEXT`` when it is used as an explicit
+    subprocess argument.  That matters for the runner's default
+    ``target/debug/mux`` path: the compiler emits ``mux.exe`` on Windows, but
+    ``Path.is_file()`` cannot discover it from the extensionless spelling.
+    Keep an explicitly supplied existing path authoritative, while allowing
+    the conventional extensionless default to resolve to the native binary.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows and candidate.suffix.lower() != ".exe":
+        return [candidate.with_name(candidate.name + ".exe"), candidate]
+    return [candidate]
+
+
 def resolve_mux_binary(candidate: Path) -> Path | Failure:
     try:
         mux_bin = confined_path(candidate, "mux binary")
     except ValueError as error:
         return Failure("path-error", str(error))
+
+    for executable in executable_candidates(mux_bin):
+        if executable.is_file():
+            return executable
+
     if not mux_bin.is_file():
         return Failure(
             "path-error", f"mux binary not found at {mux_bin}; run cargo build first"
         )
-    return mux_bin
+    return Failure("path-error", f"mux binary is not a regular file: {mux_bin}")
 
 
 def runtime_env(args: argparse.Namespace) -> dict[str, str] | Failure:

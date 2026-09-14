@@ -1,6 +1,6 @@
-// optional and result nest in either direction. Only the scalar and
-// single-pointer payloads were wired up, so wrapping a result in an optional
-// was rejected as an unsupported type.
+// Optional and result values can nest in either direction, including tuple
+// payloads. Each wrapper remains an ordinary value that can be matched or
+// inspected independently.
 
 func try_parse(optional<string> maybe) returns optional<result<int, string>> {
     match maybe {

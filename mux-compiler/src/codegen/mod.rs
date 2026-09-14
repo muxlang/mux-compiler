@@ -14,6 +14,7 @@
 //! - statements: Statement code generation
 //! - types: Type conversion functions
 
+use std::fs::OpenOptions;
 use std::io::Write;
 
 use inkwell::AddressSpace;
@@ -96,6 +97,9 @@ pub struct CodeGenerator<'a> {
     type_map: HashMap<String, BasicTypeEnum<'a>>,
     vtable_map: HashMap<String, PointerValue<'a>>,
     vtable_type_map: HashMap<String, inkwell::types::StructType<'a>>,
+    trait_object_layouts: HashMap<String, inkwell::types::StructType<'a>>,
+    trait_object_copies: HashMap<String, PointerValue<'a>>,
+    trait_object_destructors: HashMap<String, PointerValue<'a>>,
     class_copy_fns: HashMap<String, PointerValue<'a>>,
     class_destructor_fns: HashMap<String, PointerValue<'a>>,
     enum_variants: HashMap<String, Vec<String>>,
@@ -163,6 +167,12 @@ pub struct CodeGenerator<'a> {
     context_stack: Vec<GenericContext>,
     generated_methods: HashMap<String, bool>,
     rc_scope_stack: Vec<Vec<(String, RcSlot<'a>)>>,
+    /// Return blocks whose scope-variable cleanup is emitted after the whole
+    /// function has been generated. A return can appear textually before a
+    /// local declaration that becomes live on a later loop iteration; emitting
+    /// cleanup immediately would permanently omit that slot from the earlier
+    /// return block.
+    return_cleanup_blocks: Vec<BasicBlock<'a>>,
     /// Owned RC temporaries produced during the current statement's expression
     /// evaluation that have not been bound to a variable. They are decremented
     /// at the statement boundary so intermediate values (string literals,
@@ -198,6 +208,7 @@ pub struct CodeGenerator<'a> {
     closure_scope_stack: Vec<Vec<(String, PointerValue<'a>)>>,
     loop_targets: Vec<LoopTargets<'a>>,
     source_name: String,
+    coverage_enabled: bool,
     /// ABI type sizing used to pick a union slot large enough for every variant
     /// at a heterogeneous enum payload position (issue #309). Built from LLVM's
     /// default data layout; only relative size/alignment comparisons are used, so
@@ -207,17 +218,36 @@ pub struct CodeGenerator<'a> {
 }
 
 impl<'a> CodeGenerator<'a> {
-    fn collect_imported_functions(&self) -> Vec<(String, FunctionNode)> {
+    fn source_name_for_module(&self, module_path: &str) -> String {
+        let fallback_path = module_path
+            .strip_prefix("./")
+            .unwrap_or(module_path)
+            .replace('.', "/");
+        self.analyzer
+            .module_source_paths()
+            .get(module_path)
+            .map_or_else(
+                || format!("{fallback_path}.mux"),
+                |path| path.to_string_lossy().into_owned(),
+            )
+    }
+
+    fn collect_imported_functions(&self) -> Vec<(String, String, FunctionNode)> {
         self.analyzer
             .all_module_asts()
             .iter()
             .flat_map(|(module_path, module_nodes)| {
                 let module_name_for_mangling = mangle_module_path(module_path);
+                let source_name = self.source_name_for_module(module_path);
                 module_nodes
                     .iter()
                     .filter_map(|node| {
                         if let AstNode::Function(func) = node {
-                            Some((module_name_for_mangling.clone(), func.clone()))
+                            Some((
+                                module_name_for_mangling.clone(),
+                                source_name.clone(),
+                                func.clone(),
+                            ))
                         } else {
                             None
                         }
@@ -275,9 +305,9 @@ impl<'a> CodeGenerator<'a> {
 
     fn declare_imported_functions(
         &mut self,
-        imported_functions: &[(String, FunctionNode)],
+        imported_functions: &[(String, String, FunctionNode)],
     ) -> Result<(), String> {
-        for (module_name, func) in imported_functions {
+        for (module_name, _, func) in imported_functions {
             self.function_nodes.insert(func.name.clone(), func.clone());
             if func.type_params.is_empty() {
                 let mangled_name = format!("{}!{}", module_name, func.name);
@@ -320,6 +350,28 @@ impl<'a> CodeGenerator<'a> {
     /// into the caller. `main` later registers the object types and fills in the
     /// globals (see `register_enum_object_types`).
     fn generate_all_enum_object_support(&mut self, nodes: &[AstNode]) -> Result<(), String> {
+        self.generate_enum_object_support("HttpErrorKind")?;
+        self.generate_enum_object_support("SqlErrorKind")?;
+        self.generate_enum_object_support("EnvErrorKind")?;
+        self.generate_enum_object_support("FsErrorKind")?;
+        self.generate_enum_object_support("NetErrorKind")?;
+        self.generate_enum_object_support("UrlErrorKind")?;
+        self.generate_enum_object_support("UuidErrorKind")?;
+        self.generate_enum_object_support("JsonErrorKind")?;
+        self.generate_enum_object_support("JsonDuplicatePolicy")?;
+        self.generate_enum_object_support("JsonTokenKind")?;
+        self.generate_enum_object_support("CsvErrorKind")?;
+        self.generate_enum_object_support("ByteErrorKind")?;
+        self.generate_enum_object_support("BytesErrorKind")?;
+        self.generate_enum_object_support("SyncErrorKind")?;
+        self.generate_enum_object_support("ProcessErrorKind")?;
+        self.generate_enum_object_support("TlsErrorKind")?;
+        self.generate_enum_object_support("MathErrorKind")?;
+        self.generate_enum_object_support("RandomErrorKind")?;
+        self.generate_enum_object_support("CliErrorKind")?;
+        self.generate_enum_object_support("CryptoErrorKind")?;
+        self.generate_enum_object_support("RegexErrorKind")?;
+        self.generate_enum_object_support("LogErrorKind")?;
         for node in nodes {
             if let AstNode::Enum { name, .. } = node {
                 // Every enum, because every enum can now be boxed as a managed
@@ -347,6 +399,129 @@ impl<'a> CodeGenerator<'a> {
     }
 
     fn generate_enum_and_class_constructors(&mut self, nodes: &[AstNode]) -> Result<(), String> {
+        let variants = self
+            .enum_asts
+            .get("HttpErrorKind")
+            .cloned()
+            .ok_or("HttpErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("HttpErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("SqlErrorKind")
+            .cloned()
+            .ok_or("SqlErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("SqlErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("EnvErrorKind")
+            .cloned()
+            .ok_or("EnvErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("EnvErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("FsErrorKind")
+            .cloned()
+            .ok_or("FsErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("FsErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("NetErrorKind")
+            .cloned()
+            .ok_or("NetErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("NetErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("UrlErrorKind")
+            .cloned()
+            .ok_or("UrlErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("UrlErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("UuidErrorKind")
+            .cloned()
+            .ok_or("UuidErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("UuidErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("JsonErrorKind")
+            .cloned()
+            .ok_or("JsonErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("JsonErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("JsonDuplicatePolicy")
+            .cloned()
+            .ok_or("JsonDuplicatePolicy enum layout was not generated")?;
+        self.generate_enum_constructors("JsonDuplicatePolicy", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("JsonTokenKind")
+            .cloned()
+            .ok_or("JsonTokenKind enum layout was not generated")?;
+        self.generate_enum_constructors("JsonTokenKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("CsvErrorKind")
+            .cloned()
+            .ok_or("CsvErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("CsvErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("ByteErrorKind")
+            .cloned()
+            .ok_or("ByteErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("ByteErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("BytesErrorKind")
+            .cloned()
+            .ok_or("BytesErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("BytesErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("SyncErrorKind")
+            .cloned()
+            .ok_or("SyncErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("SyncErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("ProcessErrorKind")
+            .cloned()
+            .ok_or("ProcessErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("ProcessErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("TlsErrorKind")
+            .cloned()
+            .ok_or("TlsErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("TlsErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("MathErrorKind")
+            .cloned()
+            .ok_or("MathErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("MathErrorKind", &variants)?;
+        let variants = self
+            .enum_asts
+            .get("RandomErrorKind")
+            .cloned()
+            .ok_or("RandomErrorKind enum layout was not generated")?;
+        self.generate_enum_constructors("RandomErrorKind", &variants)?;
+        for (name, message) in [
+            ("CliErrorKind", "CliErrorKind enum layout was not generated"),
+            (
+                "CryptoErrorKind",
+                "CryptoErrorKind enum layout was not generated",
+            ),
+            (
+                "RegexErrorKind",
+                "RegexErrorKind enum layout was not generated",
+            ),
+            ("LogErrorKind", "LogErrorKind enum layout was not generated"),
+        ] {
+            let variants = self.enum_asts.get(name).cloned().ok_or(message)?;
+            self.generate_enum_constructors(name, &variants)?;
+        }
         for node in nodes {
             match node {
                 AstNode::Enum { name, variants, .. } => {
@@ -680,15 +855,19 @@ impl<'a> CodeGenerator<'a> {
 
     fn generate_imported_user_functions(
         &mut self,
-        imported_functions: &[(String, FunctionNode)],
+        imported_functions: &[(String, String, FunctionNode)],
     ) -> Result<(), String> {
-        for (module_name_mangled, func) in imported_functions {
+        for (module_name_mangled, source_name, func) in imported_functions {
             if func.type_params.is_empty() {
                 let mangled_name = format!("{}!{}", module_name_mangled, func.name);
                 // A module function reads its own module's globals by bare name.
-                self.with_mangled_module_globals(module_name_mangled, |me| {
+                let saved_source_name = self.source_name.clone();
+                self.source_name.clone_from(source_name);
+                let result = self.with_mangled_module_globals(module_name_mangled, |me| {
                     me.generate_function_with_llvm_name(func, &mangled_name)
-                })?;
+                });
+                self.source_name = saved_source_name;
+                result?;
             }
         }
         Ok(())
@@ -828,6 +1007,9 @@ impl<'a> CodeGenerator<'a> {
             type_map,
             vtable_map: HashMap::new(),
             vtable_type_map: HashMap::new(),
+            trait_object_layouts: HashMap::new(),
+            trait_object_copies: HashMap::new(),
+            trait_object_destructors: HashMap::new(),
             class_copy_fns: HashMap::new(),
             class_destructor_fns: HashMap::new(),
             enum_variants,
@@ -856,12 +1038,14 @@ impl<'a> CodeGenerator<'a> {
             context_stack: Vec::new(),
             generated_methods: HashMap::new(),
             rc_scope_stack: Vec::new(),
+            return_cleanup_blocks: Vec::new(),
             temp_values: Vec::new(),
             closure_temp_values: Vec::new(),
             enum_temp_values: Vec::new(),
             closure_scope_stack: Vec::new(),
             loop_targets: Vec::new(),
             source_name: source_name.to_string(),
+            coverage_enabled: std::env::var_os("MUX_COVERAGE_MODE").is_some(),
             target_data: inkwell::targets::TargetData::create(""),
         }
     }
@@ -875,6 +1059,89 @@ impl<'a> CodeGenerator<'a> {
     /// the compiler diagnostic emitter's `--> file:line:col` locator.
     fn panic_location(&self, span: &crate::lexer::Span) -> String {
         format!("{}:{}:{}", self.source_name, span.row_start, span.col_start)
+    }
+
+    pub(super) fn emit_coverage_record(
+        &mut self,
+        span: &crate::lexer::Span,
+        kind: i32,
+        branch_id: i64,
+        taken: Option<inkwell::values::IntValue<'a>>,
+    ) -> Result<(), String> {
+        if !self.coverage_enabled {
+            return Ok(());
+        }
+        self.record_coverage_site(span, kind, branch_id)?;
+        let file_name = format!("coverage_file_{}", self.string_counter);
+        self.string_counter += 1;
+        let file = self
+            .builder
+            .build_global_string_ptr(&self.source_name, &file_name)
+            .map_err(|error| error.to_string())?
+            .as_pointer_value();
+        let taken = if let Some(value) = taken {
+            self.builder
+                .build_int_z_extend(value, self.context.i32_type(), "coverage_taken")
+                .map_err(|error| error.to_string())?
+        } else {
+            self.context.i32_type().const_zero()
+        };
+        let function = self
+            .runtime_function("mux_coverage_record")
+            .ok_or("mux_coverage_record not found")?;
+        self.builder
+            .build_call(
+                function,
+                &[
+                    file.into(),
+                    self.context
+                        .i64_type()
+                        .const_int(span.row_start as u64, false)
+                        .into(),
+                    self.context.i32_type().const_int(kind as u64, false).into(),
+                    self.context
+                        .i64_type()
+                        .const_int(branch_id as u64, false)
+                        .into(),
+                    taken.into(),
+                ],
+                "coverage_record",
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Persist the set of instrumented source sites while the generated
+    /// program is being compiled. Runtime hit records alone cannot describe
+    /// an unvisited statement or branch, so the test runner needs this static
+    /// sidecar to build a truthful LCOV denominator.
+    fn record_coverage_site(
+        &self,
+        span: &crate::lexer::Span,
+        kind: i32,
+        branch_id: i64,
+    ) -> Result<(), String> {
+        let Some(path) = std::env::var_os("MUX_COVERAGE_SITES_FILE") else {
+            return Ok(());
+        };
+        let encoded = self
+            .source_name
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let record = if kind == 0 {
+            format!("D\t{}\t{}\n", encoded, span.row_start)
+        } else {
+            format!("C\t{}\t{}\t{}\n", encoded, span.row_start, branch_id)
+        };
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| format!("could not open coverage site sidecar: {error}"))?;
+        file.write_all(record.as_bytes())
+            .map_err(|error| format!("could not write coverage site sidecar: {error}"))
     }
 
     // Runtime declarations are implemented in the `runtime` submodule to keep
@@ -1082,9 +1349,13 @@ impl<'a> CodeGenerator<'a> {
             .map(|(path, nodes)| (path.clone(), nodes.clone()))
             .collect();
         for (module_path, module_nodes) in &module_asts {
-            self.with_module_globals(module_path, |me| {
+            let saved_source_name = self.source_name.clone();
+            self.source_name = self.source_name_for_module(module_path);
+            let result = self.with_module_globals(module_path, |me| {
                 me.generate_class_methods_for_all_nodes(module_nodes)
-            })?;
+            });
+            self.source_name = saved_source_name;
+            result?;
         }
         self.generate_class_methods_for_all_nodes(main_module_nodes)?;
 
@@ -1116,13 +1387,17 @@ impl<'a> CodeGenerator<'a> {
         let target = Target::from_triple(&triple)
             .map_err(|e| format!("no LLVM target for {}: {}", triple, e.to_string()))?;
 
-        // PIC because distributions default to position-independent
-        // executables; a non-PIC object fails to link against them.
+        // Keep generated programs portable across machines. In particular,
+        // selecting every host feature can emit AVX-512 instructions that are
+        // unavailable on another machine and unsupported by tools such as
+        // Valgrind. PIC is required because distributions default to
+        // position-independent executables; a non-PIC object fails to link
+        // against them.
         let machine = target
             .create_target_machine(
                 &triple,
-                &TargetMachine::get_host_cpu_name().to_string(),
-                &TargetMachine::get_host_cpu_features().to_string(),
+                "",
+                "",
                 OptimizationLevel::None,
                 RelocMode::PIC,
                 CodeModel::Default,
@@ -1163,7 +1438,6 @@ mod address_taken;
 mod classes;
 mod closure_temps;
 mod constructors;
-mod deserialize;
 mod expressions;
 mod functions;
 mod generics;

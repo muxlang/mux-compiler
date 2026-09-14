@@ -2,62 +2,27 @@ import std.dsa.collection.Collection
 
 func sort<T is Comparable>(list<T> items) returns list<T> {
     auto out = items
-    int n = out.size()
-
-    if n <= 1 {
-        return out
-    }
-
-    int low = 0
-    int high = n - 1
-
-    list<int> stack = []
-    stack.push_back(low)
-    stack.push_back(high)
-
-    while stack.size() > 0 {
-        int h = stack[stack.size() - 1]
-        stack.pop_back()
-        int l = stack[stack.size() - 1]
-        stack.pop_back()
-
-        if l < h {
-            auto pivot = out[h]
-            int i = l - 1
-
-            int j = l
-            while j < h {
-                if out[j] <= pivot {
-                    i = i + 1
-                    auto tmp = out[i]
-                    out[i] = out[j]
-                    out[j] = tmp
-                }
-                j = j + 1
-            }
-
-            auto tmp = out[i + 1]
-            out[i + 1] = out[h]
-            out[h] = tmp
-
-            int p = i + 1
-
-            if p - 1 > l {
-                stack.push_back(l)
-                stack.push_back(p - 1)
-            }
-            if p + 1 < h {
-                stack.push_back(p + 1)
-                stack.push_back(h)
-            }
+    // Stable insertion sort: equal elements retain their original order.
+    // This is intentionally a copying operation; callers that need to keep
+    // the source list unchanged can pass it directly.
+    int i = 1
+    while i < out.size() {
+        auto key = out[i]
+        int j = i - 1
+        while j >= 0 && key < out[j] {
+            out[j + 1] = out[j]
+            j = j - 1
         }
+        out[j + 1] = key
+        i = i + 1
     }
-
     return out
 }
 
-func binary_search<T is Comparable, E is Collection<T>>(E items, T target) returns int {
-    auto values = sort(items.to_list())
+func binary_search<T is Comparable, E is Collection<T>>(E items, T target) returns optional<int> {
+    // The caller owns the ordering contract. Sorting here would hide an
+    // accidental unsorted input and make the returned index misleading.
+    auto values = items.to_list()
     int left = 0
     int right = values.size() - 1
 
@@ -66,7 +31,7 @@ func binary_search<T is Comparable, E is Collection<T>>(E items, T target) retur
         auto value = values[mid]
 
         if value == target {
-            return mid
+            return some(mid)
         }
 
         if value < target {
@@ -76,10 +41,10 @@ func binary_search<T is Comparable, E is Collection<T>>(E items, T target) retur
         }
     }
 
-    return -1
+    return none
 }
 
-func max<T is Comparable & Stringable, E is Collection<T>>(E collection) returns optional<T> {
+func max<T is Comparable, E is Collection<T>>(E collection) returns optional<T> {
     if collection.is_empty() {
         return none
     }
@@ -98,7 +63,7 @@ func max<T is Comparable & Stringable, E is Collection<T>>(E collection) returns
     return some(best)
 }
 
-func min<T is Comparable & Stringable, E is Collection<T>>(E collection) returns optional<T> {
+func min<T is Comparable, E is Collection<T>>(E collection) returns optional<T> {
     if collection.is_empty() {
         return none
     }
@@ -132,58 +97,225 @@ func reverse<T, E is Collection<T>>(E collection) returns list<T> {
 
 func sort_by<T>(list<T> items, func(T, T) returns int cmp) returns list<T> {
     auto out = items
-    int n = out.size()
-
-    if n <= 1 {
-        return out
+    int i = 1
+    while i < out.size() {
+        auto key = out[i]
+        int j = i - 1
+        while j >= 0 && cmp(key, out[j]) < 0 {
+            out[j + 1] = out[j]
+            j = j - 1
+        }
+        out[j + 1] = key
+        i = i + 1
     }
+    return out
+}
 
-    int low = 0
-    int high = n - 1
+func sort_in_place<T is Comparable>(list<T> items) returns void {
+    int i = 1
+    while i < items.size() {
+        auto key = items[i]
+        int j = i - 1
+        while j >= 0 && key < items[j] {
+            items[j + 1] = items[j]
+            j = j - 1
+        }
+        items[j + 1] = key
+        i = i + 1
+    }
+    return
+}
 
-    list<int> stack = []
-    stack.push_back(low)
-    stack.push_back(high)
+func sort_by_in_place<T>(list<T> items, func(T, T) returns int cmp) returns void {
+    int i = 1
+    while i < items.size() {
+        auto key = items[i]
+        int j = i - 1
+        while j >= 0 && cmp(key, items[j]) < 0 {
+            items[j + 1] = items[j]
+            j = j - 1
+        }
+        items[j + 1] = key
+        i = i + 1
+    }
+    return
+}
 
-    while stack.size() > 0 {
-        int h = stack[stack.size() - 1]
-        stack.pop_back()
-        int l = stack[stack.size() - 1]
-        stack.pop_back()
-
-        if l < h {
-            auto pivot = out[h]
-            int i = l - 1
-
-            int j = l
-            while j < h {
-                if cmp(out[j], pivot) <= 0 {
-                    i = i + 1
-                    auto tmp = out[i]
-                    out[i] = out[j]
-                    out[j] = tmp
-                }
-                j = j + 1
-            }
-
-            auto tmp = out[i + 1]
-            out[i + 1] = out[h]
-            out[h] = tmp
-
-            int p = i + 1
-
-            if p - 1 > l {
-                stack.push_back(l)
-                stack.push_back(p - 1)
-            }
-            if p + 1 < h {
-                stack.push_back(p + 1)
-                stack.push_back(h)
-            }
+func binary_search_by<T, E is Collection<T>>(E collection, T target, func(T, T) returns int cmp) returns optional<int> {
+    auto values = collection.to_list()
+    int left = 0
+    int right = values.size() - 1
+    while left <= right {
+        int mid = (left + right) / 2
+        int ordering = cmp(values[mid], target)
+        if ordering == 0 {
+            return some(mid)
+        }
+        if ordering < 0 {
+            left = mid + 1
+        } else {
+            right = mid - 1
         }
     }
+    return none
+}
 
-    return out
+func lower_bound<T is Comparable, E is Collection<T>>(E collection, T target) returns int {
+    auto values = collection.to_list()
+    int left = 0
+    int right = values.size()
+    while left < right {
+        int mid = (left + right) / 2
+        if values[mid] < target {
+            left = mid + 1
+        } else {
+            right = mid
+        }
+    }
+    return left
+}
+
+func upper_bound<T is Comparable, E is Collection<T>>(E collection, T target) returns int {
+    auto values = collection.to_list()
+    int left = 0
+    int right = values.size()
+    while left < right {
+        int mid = (left + right) / 2
+        if values[mid] <= target {
+            left = mid + 1
+        } else {
+            right = mid
+        }
+    }
+    return left
+}
+
+func lower_bound_by<T, E is Collection<T>>(E collection, T target, func(T, T) returns int cmp) returns int {
+    auto values = collection.to_list()
+    int left = 0
+    int right = values.size()
+    while left < right {
+        int mid = (left + right) / 2
+        if cmp(values[mid], target) < 0 {
+            left = mid + 1
+        } else {
+            right = mid
+        }
+    }
+    return left
+}
+
+func upper_bound_by<T, E is Collection<T>>(E collection, T target, func(T, T) returns int cmp) returns int {
+    auto values = collection.to_list()
+    int left = 0
+    int right = values.size()
+    while left < right {
+        int mid = (left + right) / 2
+        if cmp(values[mid], target) <= 0 {
+            left = mid + 1
+        } else {
+            right = mid
+        }
+    }
+    return left
+}
+
+// Stable partition. Matching values stay in their original order, followed by
+// non-matching values in their original order. The returned index is the first
+// non-matching value.
+func partition<T>(list<T> items, func(T) returns bool predicate) returns int {
+    list<T> matching = []
+    list<T> remaining = []
+    int i = 0
+    while i < items.size() {
+        if predicate(items[i]) {
+            matching.push_back(items[i])
+        } else {
+            remaining.push_back(items[i])
+        }
+        i = i + 1
+    }
+
+    i = 0
+    while i < matching.size() {
+        items[i] = matching[i]
+        i = i + 1
+    }
+    int boundary = i
+    int j = 0
+    while j < remaining.size() {
+        items[i] = remaining[j]
+        i = i + 1
+        j = j + 1
+    }
+    return boundary
+}
+
+func find<T, E is Collection<T>>(E collection, func(T) returns bool predicate) returns optional<T> {
+    auto values = collection.to_list()
+    int i = 0
+    while i < values.size() {
+        if predicate(values[i]) {
+            return some(values[i])
+        }
+        i = i + 1
+    }
+    return none
+}
+
+func find_index<T, E is Collection<T>>(E collection, func(T) returns bool predicate) returns int {
+    auto values = collection.to_list()
+    int i = 0
+    while i < values.size() {
+        if predicate(values[i]) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func reduce<T, U, E is Collection<T>>(E collection, U initial, func(U, T) returns U combine) returns U {
+    auto values = collection.to_list()
+    auto total = initial
+    int i = 0
+    while i < values.size() {
+        total = combine(total, values[i])
+        i = i + 1
+    }
+    return total
+}
+
+func max_by<T, E is Collection<T>>(E collection, func(T, T) returns int cmp) returns optional<T> {
+    auto values = collection.to_list()
+    if values.is_empty() {
+        return none
+    }
+    auto best = values[0]
+    int i = 1
+    while i < values.size() {
+        if cmp(values[i], best) > 0 {
+            best = values[i]
+        }
+        i = i + 1
+    }
+    return some(best)
+}
+
+func min_by<T, E is Collection<T>>(E collection, func(T, T) returns int cmp) returns optional<T> {
+    auto values = collection.to_list()
+    if values.is_empty() {
+        return none
+    }
+    auto best = values[0]
+    int i = 1
+    while i < values.size() {
+        if cmp(values[i], best) < 0 {
+            best = values[i]
+        }
+        i = i + 1
+    }
+    return some(best)
 }
 
 func index_of<T is Equatable, E is Collection<T>>(E collection, T target) returns int {

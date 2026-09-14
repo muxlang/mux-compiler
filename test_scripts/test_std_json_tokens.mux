@@ -1,0 +1,46 @@
+import std.data.json
+import std.io
+
+func token_kind_name(JsonTokenKind kind) returns string {
+    match kind {
+        StartObject { return "start_object" }
+        EndObject { return "end_object" }
+        StartArray { return "start_array" }
+        EndArray { return "end_array" }
+        Colon { return "colon" }
+        Comma { return "comma" }
+        String { return "string" }
+        Number { return "number" }
+        Bool { return "bool" }
+        Null { return "null" }
+    }
+}
+
+func run_tokens() returns result<int, JsonError> {
+    io.Reader source = io.Reader.from_bytes(b"{\"answer\":1.50}")
+    auto tokens = use json.token_reader(source, 1024)
+    auto item = use tokens.next()
+    if item.is_none() {
+        print("missing token")
+    } else {
+        auto token = item.value()
+        auto kind = use token.kind()
+        print("kind: " + token_kind_name(kind))
+        auto text = use token.text()
+        print("text: " + text)
+    }
+    tokens.close()
+    source.close()
+    return ok(0)
+}
+
+func main() returns void {
+    print("=== std.data.json token smoke test ===")
+    auto result = run_tokens()
+    if result.is_err() {
+        print(result.error().message())
+        return
+    }
+    print("=== std.data.json token done ===")
+    return
+}

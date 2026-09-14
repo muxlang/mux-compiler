@@ -1,0 +1,51 @@
+import std.net
+import std.io
+import std.process
+
+func run_local_net() returns result<int, NetError> {
+    // Use a process-unique logical name: Unix uses it as a socket path and
+    // Windows maps it to a named pipe, so no POSIX root or separator is needed.
+    string path = "mux-local-net-smoke-" + process.id().to_string()
+
+    auto listener = use net.LocalListener.bind(path)
+    auto client = use net.LocalStream.connect(path)
+    use client.set_read_timeout(1000)
+    use client.set_write_timeout(1000)
+    auto server = use listener.accept()
+
+    bytes payload = b"hello"
+    auto write_result = client.write(payload)
+    if write_result.is_err() {
+        return err(NetError.from_message(write_result.error().message()))
+    }
+    auto count = write_result.value()
+    print("wrote: " + count.to_string())
+    auto read_result = server.read(5)
+    if read_result.is_err() {
+        return err(NetError.from_message(read_result.error().message()))
+    }
+    auto received = read_result.value()
+    auto text_result = received.to_utf8()
+    if text_result.is_err() {
+        return err(NetError.from_message(text_result.error().message()))
+    }
+    auto text = text_result.value()
+    print("read: " + text)
+
+    client.close()
+    server.close()
+    listener.close()
+    return ok(1)
+}
+
+func main() returns void {
+    print("=== std.net local stream smoke test ===")
+    auto result = run_local_net()
+    if result.is_err() {
+        print(result.error().message())
+        return
+    }
+
+    print("=== std.net local stream done ===")
+    return
+}

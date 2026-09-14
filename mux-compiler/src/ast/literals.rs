@@ -8,6 +8,7 @@ pub enum LiteralNode {
     Float(OrderedFloat<f64>),
     Integer(i64),
     String(String),
+    Bytes(Vec<u8>),
     Boolean(bool),
     Char(char),
 }

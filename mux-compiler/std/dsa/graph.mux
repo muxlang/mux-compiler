@@ -1,9 +1,10 @@
 import std.dsa.collection.Collection
 
-class Graph<T is Hashable & Stringable> is Collection<T> {
-    map<T, list<T> > adjacency
+class Graph<T is Hashable> is Collection<T> {
+    map<T, set<T> > adjacency
     // Stores vertices in first-seen order for deterministic to_list output.
     list<T> vertices
+    bool directed = true
 
     func len() returns int {
         return self.adjacency.size()
@@ -36,7 +37,7 @@ class Graph<T is Hashable & Stringable> is Collection<T> {
 
     func add_vertex(T value) returns void {
         if !self.adjacency.contains(value) {
-            list<T> empty = []
+            set<T> empty = {}
             self.adjacency.put(value, empty)
             self.vertices.push_back(value)
         }
@@ -47,16 +48,21 @@ class Graph<T is Hashable & Stringable> is Collection<T> {
     func add_edge(T from, T to) returns void {
         self.add_vertex(from)
         self.add_vertex(to)
-        list<T> neighbors = self.adjacency[from]
-        neighbors.push_back(to)
+        set<T> neighbors = self.adjacency[from]
+        neighbors.add(to)
         self.adjacency.put(from, neighbors)
+        if !self.directed {
+            set<T> reverse_neighbors = self.adjacency[to]
+            reverse_neighbors.add(from)
+            self.adjacency.put(to, reverse_neighbors)
+        }
     
         return
     }
 
     func neighbors(T value) returns list<T> {
         if self.adjacency.contains(value) {
-            return self.adjacency[value]
+            return self.adjacency[value].to_list()
         }
         list<T> empty = []
         return empty
@@ -134,17 +140,7 @@ class Graph<T is Hashable & Stringable> is Collection<T> {
         if !self.adjacency.contains(from) {
             return false
         }
-
-        auto next_nodes = self.adjacency[from]
-        int i = 0
-        while i < next_nodes.size() {
-            if next_nodes[i] == to {
-                return true
-            }
-            i = i + 1
-        }
-
-        return false
+        return self.adjacency[from].contains(to)
     }
 
     func degree(T value) returns int {
@@ -156,22 +152,28 @@ class Graph<T is Hashable & Stringable> is Collection<T> {
             return
         }
 
-        auto next_nodes = self.adjacency[from]
-        list<T> remaining = []
-        bool removed = false
-        int i = 0
-        while i < next_nodes.size() {
-            if !removed && next_nodes[i] == to {
-                removed = true
-            } else {
-                remaining.push_back(next_nodes[i])
-            }
-            i = i + 1
+        set<T> neighbors = self.adjacency[from]
+        neighbors.remove(to)
+        self.adjacency.put(from, neighbors)
+        if !self.directed && self.adjacency.contains(to) {
+            set<T> reverse_neighbors = self.adjacency[to]
+            reverse_neighbors.remove(from)
+            self.adjacency.put(to, reverse_neighbors)
         }
 
-        self.adjacency.put(from, remaining)
-
         return
+    }
+
+    common func new_directed() returns Graph<T> {
+        auto out = Graph<T>.new()
+        out.directed = true
+        return out
+    }
+
+    common func new_undirected() returns Graph<T> {
+        auto out = Graph<T>.new()
+        out.directed = false
+        return out
     }
 
     func remove_vertex(T value) returns void {
@@ -212,7 +214,7 @@ class Graph<T is Hashable & Stringable> is Collection<T> {
 
         i = 0
         while i < self.vertices.size() {
-            auto next_nodes = self.adjacency[self.vertices[i]]
+            auto next_nodes = self.adjacency[self.vertices[i]].to_list()
             int k = 0
             while k < next_nodes.size() {
                 auto neighbor = next_nodes[k]
@@ -260,10 +262,143 @@ class Graph<T is Hashable & Stringable> is Collection<T> {
     }
 
     func has_cycle() returns bool {
-        match self.topological_sort() {
-            some(_) { return false }
-            none { return true }
+        if !self.directed {
+            return self.has_undirected_cycle()
         }
+        auto order = self.topological_sort()
+        if order.is_some() {
+            return false
+        }
+        return true
     }
 
+    // For an undirected graph, the reverse half of every edge is present, so
+    // topological sorting would report every ordinary edge as a cycle. Track
+    // each BFS node's parent instead and ignore that one reverse edge.
+    func has_undirected_cycle() returns bool {
+        set<T> visited = {}
+        int root_index = 0
+        while root_index < self.vertices.size() {
+            auto root = self.vertices[root_index]
+            if !visited.contains(root) {
+                list<T> queue = []
+                list<T> parents = []
+                int head = 0
+                queue.push_back(root)
+                parents.push_back(root)
+                visited.add(root)
+
+                while head < queue.size() {
+                    auto current = queue[head]
+                    auto parent = parents[head]
+                    head = head + 1
+                    auto next_nodes = self.neighbors(current)
+                    int i = 0
+                    while i < next_nodes.size() {
+                        auto next = next_nodes[i]
+                        if next == current {
+                            return true
+                        }
+                        if !visited.contains(next) {
+                            visited.add(next)
+                            queue.push_back(next)
+                            parents.push_back(current)
+                        } else if next != parent {
+                            return true
+                        }
+                        i = i + 1
+                    }
+                }
+            }
+            root_index = root_index + 1
+        }
+        return false
     }
+
+    // Directed connectivity follows outgoing edges from the first vertex.
+    // For undirected graphs this is ordinary connectedness. Empty graphs are
+    // connected by convention.
+    func is_connected() returns bool {
+        if self.vertices.is_empty() {
+            return true
+        }
+        return self.bfs(self.vertices[0]).size() == self.vertices.size()
+    }
+
+    // Return one shortest unweighted path, if one exists. Neighbors are sets,
+    // so the exact path is deterministic only up to the set's defined order.
+    func shortest_path(T start, T target) returns optional<list<T>> {
+        if !self.adjacency.contains(start) || !self.adjacency.contains(target) {
+            return none
+        }
+
+        // Keep the BFS frontier and predecessor indices in parallel lists. It
+        // avoids transient Optional/map values while still preserving generic
+        // vertex values and deterministic reconstruction.
+        list<T> discovered = []
+        list<int> predecessors = []
+        list<T> queue = []
+        list<int> queue_indices = []
+        int head = 0
+        queue.push_back(start)
+        discovered.push_back(start)
+        predecessors.push_back(-1)
+        queue_indices.push_back(0)
+        int target_index = 0
+        bool found_target = start == target
+
+        while head < queue.size() {
+            auto current = queue[head]
+            int current_index = queue_indices[head]
+            head = head + 1
+            if current == target {
+                target_index = current_index
+                found_target = true
+                break
+            }
+            auto next_nodes = self.neighbors(current)
+            int i = 0
+            while i < next_nodes.size() {
+                auto next = next_nodes[i]
+                bool seen = false
+                int discovered_index = 0
+                while discovered_index < discovered.size() {
+                    if discovered[discovered_index] == next {
+                        seen = true
+                        break
+                    }
+                    discovered_index = discovered_index + 1
+                }
+                if !seen {
+                    discovered.push_back(next)
+                    predecessors.push_back(current_index)
+                    queue.push_back(next)
+                    queue_indices.push_back(discovered.size() - 1)
+                }
+                i = i + 1
+            }
+        }
+        if !found_target {
+            return none
+        }
+
+        list<T> reversed = []
+        int step_index = target_index
+        while step_index >= 0 {
+            auto value = discovered[step_index]
+            reversed.push_back(value)
+            if value == start {
+                break
+            }
+            step_index = predecessors[step_index]
+        }
+
+        list<T> path = []
+        int i = reversed.size() - 1
+        while i >= 0 {
+            path.push_back(reversed[i])
+            i = i - 1
+        }
+        return some(path)
+    }
+}

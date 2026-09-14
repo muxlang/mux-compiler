@@ -1,0 +1,27 @@
+interface Greeter {
+    func greet(string suffix) returns string
+}
+
+class Alpha is Greeter {
+    func greet(string suffix) returns string {
+        return "alpha-" + suffix
+    }
+}
+
+class Beta is Greeter {
+    func greet(string suffix) returns string {
+        return "beta-" + suffix
+    }
+}
+
+func invoke(dyn<Greeter> value, string suffix) returns string {
+    return value.greet(suffix)
+}
+
+func main() returns void {
+    auto alpha = Alpha.new()
+    auto beta = Beta.new()
+    print(invoke(alpha, "one"))
+    print(invoke(beta, "two"))
+    return
+}

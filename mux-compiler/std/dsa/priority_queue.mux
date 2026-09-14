@@ -1,0 +1,112 @@
+import std.dsa.collection.Collection
+
+class PriorityQueue<T is Comparable> is Collection<T> {
+    list<T> items
+    bool is_max = false
+
+    func len() returns int {
+        return self.items.size()
+    }
+
+    func is_empty() returns bool {
+        return self.items.is_empty()
+    }
+
+    func clear() returns void {
+        while !self.items.is_empty() {
+            self.items.pop_back()
+        }
+        return
+    }
+
+    func to_list() returns list<T> {
+        return self.items
+    }
+
+    func contains(T value) returns bool {
+        int i = 0
+        while i < self.items.size() {
+            if self.items[i] == value {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    func push(T value) returns void {
+        self.items.push_back(value)
+        self.sift_up(self.items.size() - 1)
+        return
+    }
+
+    func peek() returns optional<T> {
+        return self.items.get(0)
+    }
+
+    func pop() returns optional<T> {
+        if self.items.is_empty() {
+            return none
+        }
+        auto root = self.items[0]
+        if self.items.size() == 1 {
+            self.items.pop_back()
+            return some(root)
+        }
+        auto last = self.items[self.items.size() - 1]
+        self.items.pop_back()
+        self.items[0] = last
+        self.sift_down(0)
+        return some(root)
+    }
+
+    common func new_max() returns PriorityQueue<T> {
+        auto out = PriorityQueue<T>.new()
+        out.is_max = true
+        return out
+    }
+
+    func better_than(T left, T right) returns bool {
+        if self.is_max {
+            return right < left
+        }
+        return left < right
+    }
+
+    func sift_up(int index) returns void {
+        auto current = index
+        while current > 0 {
+            auto parent = (current - 1) / 2
+            if !self.better_than(self.items[current], self.items[parent]) {
+                return
+            }
+            auto value = self.items[current]
+            self.items[current] = self.items[parent]
+            self.items[parent] = value
+            current = parent
+        }
+        return
+    }
+
+    func sift_down(int index) returns void {
+        auto current = index
+        while true {
+            auto left = current * 2 + 1
+            auto right = current * 2 + 2
+            auto best = current
+            if left < self.items.size() && self.better_than(self.items[left], self.items[best]) {
+                best = left
+            }
+            if right < self.items.size() && self.better_than(self.items[right], self.items[best]) {
+                best = right
+            }
+            if best == current {
+                return
+            }
+            auto value = self.items[current]
+            self.items[current] = self.items[best]
+            self.items[best] = value
+            current = best
+        }
+    }
+}

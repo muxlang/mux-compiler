@@ -11,7 +11,14 @@ yanked = "deny"
 # mysql's transitive `proc-macro-error2` dependency is unmaintained and has no
 # safe replacement available yet (RUSTSEC-2026-0173). Keep the exception
 # explicit and narrow; remove it when mysql-common-derive migrates.
-ignore = ["RUSTSEC-2026-0173"]
+ignore = [
+    "RUSTSEC-2026-0173",
+    # No compatible upgrade is currently available through tiberius.
+    "RUSTSEC-2025-0134",
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+]
 
 [licenses]
 version = 2
@@ -19,6 +26,7 @@ confidence-threshold = 0.8
 allow = [
     "0BSD",
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",

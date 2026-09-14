@@ -1,0 +1,41 @@
+// A single erased Stream list can own reader-backed and writer-backed values.
+// Capability failures stay typed at the individual operation.
+import std.io
+
+func main() returns void {
+    auto reader_stream_result = io.Stream.from_reader(io.Reader.from_bytes(b"hello"))
+    auto writer_stream_result = io.Stream.from_writer(io.Writer.new())
+
+    if reader_stream_result.is_err() || writer_stream_result.is_err() {
+        print("stream construction failed")
+        return
+    }
+
+    list<io.Stream> streams = []
+    streams.push_back(reader_stream_result.value())
+    streams.push_back(writer_stream_result.value())
+
+    auto reader_stream = streams[0]
+    auto writer_stream = streams[1]
+
+    match reader_stream.read(2) {
+        ok(bytes) { print("reader: " + bytes.to_utf8_lossy()) }
+        err(error) { print("reader error: " + error.message()) }
+    }
+    match reader_stream.write(b"x") {
+        ok(_) { print("reader write unexpectedly succeeded") }
+        err(error) { print("reader write rejected: " + error.message()) }
+    }
+    match writer_stream.write(b"ok") {
+        ok(count) { print("writer: " + count.to_string()) }
+        err(error) { print("writer error: " + error.message()) }
+    }
+    match writer_stream.read(1) {
+        ok(_) { print("writer read unexpectedly succeeded") }
+        err(error) { print("writer read rejected: " + error.message()) }
+    }
+
+    reader_stream.close()
+    writer_stream.close()
+    return
+}

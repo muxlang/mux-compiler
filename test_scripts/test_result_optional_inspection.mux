@@ -1,0 +1,33 @@
+
+func inspect_result() returns result<int, string> {
+    auto result = "41".to_int()
+    if result.is_err() {
+        return err(result.error())
+    }
+    auto value = result.value()
+    assert(value == 41, "result value")
+    return ok(value + 1)
+}
+
+func inspect_optional(optional<int> input) returns optional<int> {
+    if input.is_none() {
+        return none
+    }
+    auto value = input.value()
+    return some(value + 1)
+}
+
+func main() returns void {
+    match inspect_result() {
+        ok(value) { assert(value == 42, "result inspection") }
+        err(error) {
+            print(error)
+            assert(false, "unexpected result error")
+        }
+    }
+    assert(inspect_optional(some(6)) == some(7), "Some inspection")
+    auto missing = inspect_optional(none)
+    assert(missing.is_none(), "None inspection")
+    print("result and optional inspection passed")
+    return
+}

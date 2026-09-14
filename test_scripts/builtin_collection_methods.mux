@@ -9,7 +9,10 @@ func main() returns void {
 
     // generic algorithms over a plain list
     print("sort:     " + algorithm.sort(nums).to_string())
-    print("bsearch:  " + algorithm.binary_search([1, 3, 5, 8], 5).to_string())
+    match algorithm.binary_search([1, 3, 5, 8], 5) {
+        some(index) { print("bsearch:  " + index.to_string()) }
+        none { print("bsearch:  none") }
+    }
     print("reverse:  " + algorithm.reverse(nums).to_string())
     print("index_of: " + algorithm.index_of(nums, 8).to_string())
     print("unique:   " + algorithm.unique([1, 1, 2, 2, 3]).to_string())

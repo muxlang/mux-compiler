@@ -3,8 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const CATALOG_PROBE: &str = r#"
-#![deny(unused_must_use)]
+const CATALOG_PROBE: &str = r##"#![deny(unused_must_use)]
 
 use mux_lang::diagnostic::DiagnosticCode;
 
@@ -16,7 +15,7 @@ fn main() {
     DiagnosticCode::LexUnexpectedCharacter.info();
     DiagnosticCode::parse("E0100");
 }
-"#;
+"##;
 
 fn cargo_executable() -> String {
     env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned())

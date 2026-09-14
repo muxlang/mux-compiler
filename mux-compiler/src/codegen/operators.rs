@@ -223,7 +223,43 @@ impl<'a> CodeGenerator<'a> {
         if let Some(result) = self.try_generate_string_compare(left_expr, left, right, int_pred)? {
             return Ok(result);
         }
+        if let Some(result) = self.try_generate_bytes_compare(left_expr, left, right, int_pred)? {
+            return Ok(result);
+        }
         self.generate_numeric_compare(left, right, int_pred, float_pred, label)
+    }
+
+    fn try_generate_bytes_compare(
+        &mut self,
+        left_expr: &ExpressionNode,
+        left: BasicValueEnum<'a>,
+        right: BasicValueEnum<'a>,
+        predicate: inkwell::IntPredicate,
+    ) -> Result<Option<BasicValueEnum<'a>>, String> {
+        if !matches!(
+            self.resolve_expression_type_with_fallback(left_expr),
+            Ok(Type::Primitive(PrimitiveType::Bytes))
+        ) {
+            return Ok(None);
+        }
+        let func = self
+            .runtime_function("mux_value_compare")
+            .ok_or("mux_value_compare not found")?;
+        let left_ptr = self.ensure_pointer(left);
+        let right_ptr = self.ensure_pointer(right);
+        let ordering = self
+            .builder
+            .build_call(func, &[left_ptr.into(), right_ptr.into()], "bytes_cmp")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("mux_value_compare should return a value")?
+            .into_int_value();
+        let zero = ordering.get_type().const_zero();
+        self.builder
+            .build_int_compare(predicate, ordering, zero, "bytes_ord")
+            .map(|value| Some(value.into()))
+            .map_err(|e| e.to_string())
     }
 
     /// Order two strings lexicographically, via the runtime's `strcmp`-shaped
@@ -554,6 +590,28 @@ impl<'a> CodeGenerator<'a> {
         expr: &ExpressionNode,
     ) -> Result<Type, String> {
         self.publish_locals_to_analyzer();
+        // Method receivers are resolved from codegen's scoped variable table.
+        // The analyzer's program-wide fallback can retain an older binding when
+        // two match arms reuse a name (for example, `t: Thread<void>` followed
+        // by `t: Thread<int>`), which would substitute the wrong generic method
+        // result. Derive this common identifier-receiver shape from the live
+        // receiver type before consulting the analyzer.
+        if let ExpressionKind::Call { func, .. } = &expr.kind
+            && let ExpressionKind::FieldAccess {
+                expr: receiver,
+                field,
+            } = &func.kind
+            && let ExpressionKind::Identifier(name) = &receiver.kind
+            && let Some((_, _, receiver_type)) = self
+                .variables
+                .get(name)
+                .or_else(|| self.global_variables.get(name))
+            && let Some(method_sig) = self.analyzer.get_method_sig(receiver_type, field)
+        {
+            return self
+                .resolve_type(&method_sig.return_type)
+                .map_err(|e| e.to_string());
+        }
         let analyzer_result = self.analyzer.get_expression_type(expr);
         let ty = match analyzer_result {
             Ok(ty) => ty,
@@ -688,6 +746,9 @@ impl<'a> CodeGenerator<'a> {
                     Type::Map(_, value) => Ok(*value),
                     // Indexing a string yields a character (#389).
                     Type::Primitive(PrimitiveType::Str) => Ok(Type::Primitive(PrimitiveType::Char)),
+                    Type::Primitive(PrimitiveType::Bytes) => {
+                        Ok(Type::Primitive(PrimitiveType::Byte))
+                    }
                     Type::Tuple(left, right) => match &index.kind {
                         ExpressionKind::Literal(LiteralNode::Integer(0)) => Ok(*left),
                         ExpressionKind::Literal(LiteralNode::Integer(1)) => Ok(*right),
@@ -1354,7 +1415,17 @@ impl<'a> CodeGenerator<'a> {
                     kind.string_label(),
                 )
             }
-            Type::Primitive(PrimitiveType::Int | PrimitiveType::Char) => {
+            Type::Primitive(PrimitiveType::Bytes) => {
+                let left_ptr = self.ensure_pointer(left);
+                let right_ptr = self.ensure_pointer(right);
+                self.call_comparison_runtime(
+                    left_ptr,
+                    right_ptr,
+                    kind.value_runtime(),
+                    kind.value_label(),
+                )
+            }
+            Type::Primitive(PrimitiveType::Int | PrimitiveType::Byte | PrimitiveType::Char) => {
                 let left_int = self.get_raw_int_value(left)?;
                 let right_int = self.get_raw_int_value(right)?;
                 self.builder
@@ -1608,6 +1679,13 @@ impl<'a> CodeGenerator<'a> {
                         "Invalid left operand type for 'in' operator with string: {left_type:?}"
                     )),
                 }
+            }
+            Type::Primitive(PrimitiveType::Bytes) => {
+                let byte = self.box_value(left);
+                let result =
+                    self.call_runtime_function("mux_bytes_contains", &[right, byte.into()])?;
+                self.register_temp(byte.into());
+                Ok(result)
             }
             _ => Err(format!(
                 "'in' operator not supported for type: {right_type:?}"

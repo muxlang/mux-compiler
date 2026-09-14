@@ -1,16 +1,23 @@
 import std.data.csv
+import std.io
+
+func report_text(result<string, CsvError> output, string label) returns void {
+  if output.is_ok() {
+    print(output.value())
+  } else {
+    print(label + " failed: " + output.error().message())
+  }
+  return
+}
 
 // Test 1: parse without headers (all rows treated as data)
 string csv1 = "a,b,c\n1,2,3\n4,5,6"
 match csv.parse(csv1) {
   ok(result) {
     print("Test 1 - parse (no headers):")
-    match result.stringify() {
-      ok(output) { print(output) }
-      err(e) { print("stringify failed: " + e) }
-    }
+    report_text(result.stringify(), "stringify")
   }
-  err(msg) { print("Test 1 failed: " + msg) }
+  err(msg) { print("Test 1 failed: " + msg.message()) }
 }
 
 // Test 2: parse_with_headers (first row becomes headers)
@@ -18,36 +25,27 @@ string csv2 = "name,age,city\nAlice,30,NYC\nBob,25,LA"
 match csv.parse_with_headers(csv2) {
   ok(result) {
     print("\nTest 2 - parse_with_headers:")
-    match result.stringify() {
-      ok(output) { print(output) }
-      err(e) { print("stringify failed: " + e) }
-    }
+    report_text(result.stringify(), "stringify")
   }
-  err(msg) { print("Test 2 failed: " + msg) }
+  err(msg) { print("Test 2 failed: " + msg.message()) }
 }
 
 // Test 3: stringify method on parsed CSV
 match csv.parse_with_headers("x,y\n1,2\n3,4") {
   ok(csv_data) {
     print("\nTest 3 - stringify on parsed CSV:")
-    match csv_data.stringify() {
-      ok(output) { print(output) }
-      err(e) { print("stringify failed: " + e) }
-    }
+    report_text(csv_data.stringify(), "stringify")
   }
-  err(msg) { print("Test 3 failed: " + msg) }
+  err(msg) { print("Test 3 failed: " + msg.message()) }
 }
 
 // Test 4: stringify on CSV without headers
 match csv.parse("a,b\n1,2") {
   ok(csv_data) {
     print("\nTest 4 - stringify on CSV without headers:")
-    match csv_data.stringify() {
-      ok(output) { print(output) }
-      err(e) { print("stringify failed: " + e) }
-    }
+    report_text(csv_data.stringify(), "stringify")
   }
-  err(msg) { print("Test 4 failed: " + msg) }
+  err(msg) { print("Test 4 failed: " + msg.message()) }
 }
 
 // Test 5: inspect headers and rows fields
@@ -58,7 +56,7 @@ match csv.parse_with_headers("name,age\nAlice,30\nBob,25") {
     print("Test 5 - rows field:")
     print(csv_data.rows.to_string())
   }
-  err(msg) { print("Test 5 failed: " + msg) }
+  err(msg) { print("Test 5 failed: " + msg.message()) }
 }
 
 // Test 6: ensure rows field is usable without headers
@@ -67,7 +65,7 @@ match csv.parse("a,b\n1,2\n3,4") {
     print("\nTest 6 - rows field without headers:")
     print(csv_data.rows.to_string())
   }
-  err(msg) { print("Test 6 failed: " + msg) }
+  err(msg) { print("Test 6 failed: " + msg.message()) }
 }
 
 // Test 7: empty input
@@ -75,12 +73,77 @@ string empty = ""
 match csv.parse(empty) {
   ok(result) {
     print("\nTest 7 - empty CSV:")
-    match result.stringify() {
-      ok(output) { print(output) }
-      err(e) { print("stringify failed: " + e) }
-    }
+    report_text(result.stringify(), "stringify")
   }
-  err(msg) { print("Test 7 failed: " + msg) }
+  err(msg) { print("Test 7 failed: " + msg.message()) }
 }
+
+// Test 8: explicit dialect options (semicolon delimiter and trimming)
+match csv.parse_with_options(" name ; age \n Alice ; 30", 59, 34, true, true, false) {
+  ok(result) {
+    print("\nTest 8 - parse_with_options:")
+    print(result.headers.to_string())
+    report_text(result.stringify_with(59, 34), "stringify_with")
+  }
+  err(msg) { print("Test 8 failed: " + msg.message()) }
+}
+
+// Test 9: stream records through the shared Reader/Writer handles
+func test_stream_adapters() returns void {
+  io.Reader source = io.Reader.from_bytes(b"name,age\nAda,36\n")
+  auto reader_result = csv.CsvReader.from_reader(source, true)
+  if reader_result.is_err() {
+    print("Test 9 failed: reader creation: " + reader_result.error().message())
+    return
+  }
+  auto reader = reader_result.value()
+  auto headers_result = reader.headers()
+  if headers_result.is_err() {
+    print("Test 9 failed: headers: " + headers_result.error().message())
+    return
+  }
+  auto row_result = reader.read()
+  if row_result.is_err() {
+    print("Test 9 failed: row: " + row_result.error().message())
+    return
+  }
+  auto maybe_row = row_result.value()
+  if maybe_row.is_none() {
+    print("Test 9 failed: expected one row")
+    return
+  }
+  io.Writer destination = io.Writer.new()
+  auto writer_result = csv.CsvWriter.from_writer(destination, 44, 34)
+  if writer_result.is_err() {
+    print("Test 9 failed: writer creation: " + writer_result.error().message())
+    return
+  }
+  auto writer = writer_result.value()
+  auto headers_write = writer.write(headers_result.value())
+  if headers_write.is_err() {
+    print("Test 9 failed: header write: " + headers_write.error().message())
+    return
+  }
+  auto row_write = writer.write(maybe_row.value())
+  if row_write.is_err() {
+    print("Test 9 failed: row write: " + row_write.error().message())
+    return
+  }
+  auto flushed = writer.flush()
+  if flushed.is_err() {
+    print("Test 9 failed: flush: " + flushed.error().message())
+    return
+  }
+  auto output = destination.bytes()
+  if output.is_err() {
+    print("Test 9 failed: output: " + output.error().message())
+    return
+  }
+  print("\nTest 9 - shared stream adapters:")
+  print(output.value().to_utf8_lossy())
+  return
+}
+
+test_stream_adapters()
 
 print("\nAll CSV tests completed!")

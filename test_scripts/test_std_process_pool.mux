@@ -1,0 +1,34 @@
+import std.process
+
+func exercise_pool() returns result<int, ProcessError> {
+    auto pool = use process.ProcessPool.with_config(1, 1)
+    auto command = use process.Command.new()
+    use command.set_program("echo")
+    use command.arg("mux process pool")
+
+    auto channel = use pool.submit(command)
+    auto item_result = channel.recv()
+    if item_result.is_err() {
+        return err(ProcessError.from_message(item_result.error().message()))
+    }
+    auto item = item_result.value()
+    if item.is_none() {
+        use pool.close()
+        print("process pool returned no output")
+        return err(ProcessError.from_message("process pool returned no output"))
+    }
+    auto output = use item.value()
+    auto status = use output.status()
+    print("process pool status: " + status.to_string())
+
+    use pool.close()
+    return ok(1)
+}
+
+func main() returns void {
+    auto result = exercise_pool()
+    if result.is_err() {
+        print("process pool failure: " + result.error().message())
+    }
+    return
+}

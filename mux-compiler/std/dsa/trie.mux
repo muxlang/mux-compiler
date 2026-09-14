@@ -1,0 +1,110 @@
+// A mutable prefix tree for Unicode strings. Removal unmarks a word while
+// retaining shared prefixes, so subsequent inserts remain cheap and stable.
+class Trie {
+    list<map<char, int> > children
+    list<bool> terminals
+
+    func len() returns int {
+        int total = 0
+        int i = 0
+        while i < self.terminals.size() {
+            if self.terminals[i] { total = total + 1 }
+            i = i + 1
+        }
+        return total
+    }
+
+    func is_empty() returns bool {
+        return self.len() == 0
+    }
+
+    func clear() returns void {
+        self.children = []
+        self.terminals = []
+        self.children.push_back({:})
+        self.terminals.push_back(false)
+        return
+    }
+
+    func insert(string word) returns void {
+        if self.children.is_empty() {
+            self.children.push_back({:})
+            self.terminals.push_back(false)
+        }
+        int node = 0
+        int i = 0
+        while i < word.length() {
+            char letter = word[i]
+            map<char, int> edges = self.children[node]
+            if !edges.contains(letter) {
+                int next = self.children.size()
+                edges.put(letter, next)
+                self.children[node] = edges
+                self.children.push_back({:})
+                self.terminals.push_back(false)
+            }
+            node = self.children[node][letter]
+            i = i + 1
+        }
+        self.terminals[node] = true
+        return
+    }
+
+    func contains(string word) returns bool {
+        auto node = self.find_node(word)
+        if node < 0 { return false }
+        return self.terminals[node]
+    }
+
+    func starts_with(string prefix) returns bool {
+        return self.find_node(prefix) >= 0
+    }
+
+    func remove(string word) returns bool {
+        auto node = self.find_node(word)
+        if node < 0 || !self.terminals[node] { return false }
+        self.terminals[node] = false
+        return true
+    }
+
+    func to_list() returns list<string> {
+        list<string> words = []
+        if self.children.is_empty() { return words }
+        self.collect(0, "", words)
+        return words
+    }
+
+    func words_with_prefix(string prefix) returns list<string> {
+        list<string> words = []
+        auto node = self.find_node(prefix)
+        if node < 0 { return words }
+        self.collect(node, prefix, words)
+        return words
+    }
+
+    func find_node(string text) returns int {
+        if self.children.is_empty() { return -1 }
+        int node = 0
+        int i = 0
+        while i < text.length() {
+            char letter = text[i]
+            map<char, int> edges = self.children[node]
+            if !edges.contains(letter) { return -1 }
+            node = edges[letter]
+            i = i + 1
+        }
+        return node
+    }
+
+    func collect(int node, string prefix, list<string> output) returns void {
+        if self.terminals[node] { output.push_back(prefix) }
+        auto keys = self.children[node].get_keys()
+        int i = 0
+        while i < keys.size() {
+            char letter = keys[i]
+            self.collect(self.children[node][letter], prefix + letter.to_string(), output)
+            i = i + 1
+        }
+        return
+    }
+}

@@ -1,0 +1,13 @@
+import std.data.json
+import std.data.csv
+
+func main() returns void {
+    auto json_error = JsonError.from_message("malformed document")
+    assert(json_error.kind == json.JsonErrorKind.Parse, "JSON error kind")
+    print("json: " + json_error.message())
+
+    auto csv_error = CsvError.from_message("duplicate header")
+    assert(csv_error.kind == csv.CsvErrorKind.Parse, "CSV error kind")
+    print("csv: " + csv_error.message())
+    return
+}

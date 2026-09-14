@@ -54,6 +54,7 @@ pub fn fold_with_env(
             LiteralNode::Boolean(v) => ConstValue::Bool(*v),
             LiteralNode::String(v) => ConstValue::Str(v.clone()),
             LiteralNode::Char(v) => ConstValue::Char(*v),
+            LiteralNode::Bytes(_) => return None,
         }),
         ExpressionKind::Identifier(name) => env.get(name).cloned(),
         ExpressionKind::Unary { op, expr, .. } => {

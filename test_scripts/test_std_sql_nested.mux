@@ -1,0 +1,28 @@
+import std.sql
+
+func run_nested_transaction() returns result<int, SqlError> {
+    auto conn = use sql.sqlite_memory()
+    use conn.execute("CREATE TABLE items (value INTEGER)")
+
+    auto outer = use conn.begin_transaction()
+    auto child = use outer.begin_transaction()
+    use child.execute("INSERT INTO items VALUES (42)")
+    use child.commit()
+    use outer.rollback()
+
+    auto rows = use conn.query("SELECT value FROM items")
+    auto all_rows = use rows.rows()
+    assert(all_rows.size() == 0, "nested query should return no rows")
+    conn.close()
+    return ok(0)
+}
+
+func main() returns void {
+    auto result = run_nested_transaction()
+    if result.is_err() {
+        print(result.error().message())
+        return
+    }
+    print("nested transaction rollback passed")
+    return
+}

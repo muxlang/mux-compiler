@@ -1,149 +1,156 @@
-import std.assert
+import std.datetime
 import std.sql
+import std.uuid
+
+func typed_sql_values() returns result<int, SqlError> {
+    auto datetime_result = datetime.parse_datetime("2026-09-08T12:34:56.123456Z")
+    if datetime_result.is_err() {
+        return err(SqlError.from_message(datetime_result.error().message()))
+    }
+    auto datetime_value = datetime_result.value()
+    auto sql_datetime = use sql.datetime(datetime_value)
+    auto decoded_datetime = use sql_datetime.as_datetime()
+    assert(decoded_datetime.to_string() == datetime_value.to_string(), "DateTime SQL round trip mismatch")
+
+    auto uuid_result = uuid.parse_uuid("550e8400-e29b-41d4-a716-446655440000")
+    if uuid_result.is_err() {
+        return err(SqlError.from_message(uuid_result.error().message()))
+    }
+    auto uuid_value = uuid_result.value()
+    auto sql_uuid = use sql.uuid(uuid_value)
+    auto decoded_uuid = use sql_uuid.as_uuid()
+    assert(decoded_uuid.to_string() == uuid_value.to_string(), "Uuid SQL round trip mismatch")
+    return ok(1)
+}
+
+func run_sqlite() returns result<int, SqlError> {
+    auto conn = use sql.sqlite_memory()
+    auto timeout_probe = use conn.query_with_timeout("SELECT 1", 1000)
+    auto timeout_row = use timeout_probe.next()
+    assert(timeout_row.is_some(), "timed query should return a row")
+    use conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, active INTEGER, payload BLOB, note TEXT)")
+    print("created users table")
+
+    auto first_blob = sql.bytes(b"AB")
+    auto first_insert = use conn.execute_params(
+        "INSERT INTO users (id, name, active, payload, note) VALUES (?, ?, ?, ?, ?)",
+        [sql.int(1), sql.string("Ada"), sql.bool(true), first_blob, sql.null()]
+    )
+    assert(first_insert == 1, "expected first insert count == 1")
+
+    auto second_insert = use conn.execute_params(
+        "INSERT INTO users (id, name, active, payload, note) VALUES (?, ?, ?, ?, ?)",
+        [sql.int(2), sql.string("Linus"), sql.bool(false), sql.bytes(b"C"), sql.string("ok")]
+    )
+    assert(second_insert == 1, "expected second insert count == 1")
+
+    auto duplicate = conn.execute_params(
+        "INSERT INTO users (id, name, active, payload, note) VALUES (?, ?, ?, ?, ?)",
+        [sql.int(1), sql.string("duplicate"), sql.bool(true), sql.bytes(b"X"), sql.null()]
+    )
+    if duplicate.is_err() {
+        auto duplicate_error = duplicate.error()
+        assert(duplicate_error.kind == sql.SqlErrorKind.Constraint, "SQL error kind")
+        assert(duplicate_error.provider == "sqlite", "SQL error provider")
+        print("structured SQL error: " + duplicate_error.message())
+    } else {
+        assert(false, "duplicate primary key should fail")
+    }
+
+    auto tx = use conn.begin_transaction()
+    auto transaction_insert = use tx.execute_params(
+        "INSERT INTO users (id, name, active, payload, note) VALUES (?, ?, ?, ?, ?)",
+        [sql.int(3), sql.string("Grace"), sql.bool(true), sql.bytes(b"D"), sql.string("txn")]
+    )
+    assert(transaction_insert == 1, "expected transaction insert count == 1")
+    use tx.savepoint("after_insert")
+
+    auto tx_rs = use tx.query("SELECT name FROM users WHERE id = 3")
+    auto tx_row = use tx_rs.next()
+    if tx_row.is_none() {
+        return err(SqlError.from_message("expected transaction query row"))
+    }
+    auto tx_row_value = tx_row.value()
+    auto tx_name = use tx_row_value.values()[0].as_string()
+    print("transaction row name: " + tx_name)
+
+    use tx_rs.close()
+    use tx.release_savepoint("after_insert")
+    use tx.commit()
+
+    auto batch_rs = use conn.query("SELECT id FROM users ORDER BY id LIMIT 2")
+    auto batch = use batch_rs.next_batch(2)
+    assert(batch.size() == 2, "expected two rows from batch query")
+    use batch_rs.close()
+
+    auto rs = use conn.query("SELECT id, name, active, payload, note FROM users ORDER BY id LIMIT 2")
+    auto first = use rs.next()
+    if first.is_none() {
+        return err(SqlError.from_message("expected first row from cursor"))
+    }
+    auto first_value = first.value()
+    auto id1 = use first_value.values()[0].as_int()
+    assert(id1 == 1, "first id mismatch")
+    auto name1 = use first_value.values()[1].as_string()
+    assert(name1 == "Ada", "first name mismatch")
+    print("first row name: " + name1)
+    auto active1 = use first_value.values()[2].as_bool()
+    assert(active1, "first active mismatch")
+    print("first row active: " + active1.to_string())
+    auto bytes1 = use first_value.values()[3].as_bytes()
+    assert(bytes1.size() == 2, "first payload length mismatch")
+    byte expected_first = 65
+    assert(bytes1[0] == expected_first, "first payload byte 0 mismatch")
+    byte expected_second = 66
+    assert(bytes1[1] == expected_second, "first payload byte 1 mismatch")
+    assert(first_value.values()[4].is_null(), "first note should be null")
+
+    auto second = use rs.next()
+    if second.is_none() {
+        return err(SqlError.from_message("expected second row from cursor"))
+    }
+    auto second_value = second.value()
+    auto id2 = use second_value.values()[0].as_int()
+    assert(id2 == 2, "second id mismatch")
+    auto name2 = use second_value.values()[1].as_string()
+    assert(name2 == "Linus", "second name mismatch")
+    print("second row name: " + name2)
+    auto active2 = use second_value.values()[2].as_bool()
+    assert(!active2, "second active mismatch")
+    print("second row active: " + active2.to_string())
+    auto bytes2 = use second_value.values()[3].as_bytes()
+    assert(bytes2.size() == 1, "second payload length mismatch")
+    byte expected_second_payload = 67
+    assert(bytes2[0] == expected_second_payload, "second payload byte mismatch")
+    auto note2 = use second_value.values()[4].as_string()
+    assert(note2 == "ok", "second note mismatch")
+
+    auto third = use rs.next()
+    if third.is_some() {
+        assert(false, "unexpected third row")
+    } else {
+        print("cursor exhausted after two rows")
+    }
+
+    use rs.close()
+    conn.close()
+    return ok(1)
+}
 
 func main() returns void {
     print("Starting sql sqlite smoke test")
-
-    match sql.connect("sqlite::memory:") {
-        ok(conn) {
-            match conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, active INTEGER, payload BLOB, note TEXT)") {
-                ok(_) { print("created users table") }
-                err(e) { assert.assert(false, "failed to create table: " + e) }
-            }
-
-            match conn.execute_params(
-                "INSERT INTO users (id, name, active, payload, note) VALUES (?, ?, ?, ?, ?)",
-                [sql.int(1), sql.string("Ada"), sql.bool(true), sql.bytes([65, 66]), sql.null()]
-            ) {
-                ok(count) { assert.assert(count == 1, "expected first insert count == 1") }
-                err(e) { assert.assert(false, "failed to insert first row: " + e) }
-            }
-
-            match conn.execute_params(
-                "INSERT INTO users (id, name, active, payload, note) VALUES (?, ?, ?, ?, ?)",
-                [sql.int(2), sql.string("Linus"), sql.bool(false), sql.bytes([67]), sql.string("ok")]
-            ) {
-                ok(count) { assert.assert(count == 1, "expected second insert count == 1") }
-                err(e) { assert.assert(false, "failed to insert second row: " + e) }
-            }
-
-            match conn.begin_transaction() {
-                ok(tx) {
-                    match tx.execute_params(
-                        "INSERT INTO users (id, name, active, payload, note) VALUES (?, ?, ?, ?, ?)",
-                        [sql.int(3), sql.string("Grace"), sql.bool(true), sql.bytes([68]), sql.string("txn")]
-                    ) {
-                        ok(count) { assert.assert(count == 1, "expected transaction insert count == 1") }
-                        err(e) { assert.assert(false, "transaction insert failed: " + e) }
-                    }
-
-                    match tx.query("SELECT name FROM users WHERE id = 3") {
-                        ok(tx_rs) {
-                            match tx_rs.next() {
-                                some(tx_row) {
-                                    match tx_row["name"].as_string() {
-                                        ok(tx_name) { print("transaction row name: " + tx_name) }
-                                        err(e) { assert.assert(false, "transaction row conversion failed: ") }
-                                    }
-                                }
-                                none { assert.assert(false, "expected transaction query row") }
-                            }
-                        }
-                        err(e) { assert.assert(false, "transaction query failed: " + e) }
-                    }
-
-                    match tx.commit() {
-                        ok(_) {}
-                        err(e) { assert.assert(false, "transaction commit failed: " + e) }
-                    }
-                }
-                err(e) { assert.assert(false, "begin transaction failed: " + e) }
-            }
-
-            match conn.query("SELECT id, name, active, payload, note FROM users ORDER BY id LIMIT 2") {
-                ok(rs) {
-                    match rs.next() {
-                        some(first) {
-                            match first["id"].as_int() {
-                                ok(id1) { assert.assert(id1 == 1, "first id mismatch") }
-                                err(e) { assert.assert(false, "first id conversion failed: ") }
-                            }
-                            match first["name"].as_string() {
-                                ok(name1) {
-                                    assert.assert(name1 == "Ada", "first name mismatch")
-                                    print("first row name: " + name1)
-                                }
-                                err(e) { assert.assert(false, "first name conversion failed: ") }
-                            }
-                            match first["active"].as_bool() {
-                                ok(active1) {
-                                    assert.assert(active1, "first active mismatch")
-                                    print("first row active: " + active1.to_string())
-                                }
-                                err(e) { assert.assert(false, "first active conversion failed: ") }
-                            }
-                            match first["payload"].as_bytes() {
-                                ok(bytes1) {
-                                    assert.assert(bytes1.size() == 2, "first payload length mismatch")
-                                    assert.assert(bytes1[0] == 65, "first payload byte 0 mismatch")
-                                    assert.assert(bytes1[1] == 66, "first payload byte 1 mismatch")
-                                }
-                                err(e) { assert.assert(false, "first payload conversion failed: ") }
-                            }
-                            assert.assert(first["note"].is_null(), "first note should be null")
-                        }
-                        none { assert.assert(false, "expected first row from cursor") }
-                    }
-
-                    match rs.next() {
-                        some(second) {
-                            match second["id"].as_int() {
-                                ok(id2) { assert.assert(id2 == 2, "second id mismatch") }
-                                err(e) { assert.assert(false, "second id conversion failed: ") }
-                            }
-                            match second["name"].as_string() {
-                                ok(name2) {
-                                    assert.assert(name2 == "Linus", "second name mismatch")
-                                    print("second row name: " + name2)
-                                }
-                                err(e) { assert.assert(false, "second name conversion failed: ") }
-                            }
-                            match second["active"].as_bool() {
-                                ok(active2) {
-                                    assert.assert(!active2, "second active mismatch")
-                                    print("second row active: " + active2.to_string())
-                                }
-                                err(e) { assert.assert(false, "second active conversion failed: ") }
-                            }
-                            match second["payload"].as_bytes() {
-                                ok(bytes2) {
-                                    assert.assert(bytes2.size() == 1, "second payload length mismatch")
-                                    assert.assert(bytes2[0] == 67, "second payload byte mismatch")
-                                }
-                                err(e) { assert.assert(false, "second payload conversion failed: ") }
-                            }
-                            match second["note"].as_string() {
-                                ok(note2) { assert.assert(note2 == "ok", "second note mismatch") }
-                                err(e) { assert.assert(false, "second note conversion failed: ") }
-                            }
-                        }
-                        none { assert.assert(false, "expected second row from cursor") }
-                    }
-
-                    match rs.next() {
-                        none { print("cursor exhausted after two rows") }
-                        some(_) { assert.assert(false, "unexpected third row") }
-                    }
-                }
-                err(e) { assert.assert(false, "query failed: " + e) }
-            }
-
-            conn.close()
-        }
-        err(e) { assert.assert(false, "connect failed: " + e) }
+    auto typed_values = typed_sql_values()
+    if typed_values.is_err() {
+        print("typed SQL value round trip failed: " + typed_values.error().message())
+        return
     }
+    assert(typed_values.value() == 1, "typed SQL value helper did not complete")
 
+    auto result = run_sqlite()
+    if result.is_err() {
+        print("sql sqlite smoke test failed: " + result.error().message())
+        return
+    }
     print("sql sqlite smoke test passed")
-
     return
 }

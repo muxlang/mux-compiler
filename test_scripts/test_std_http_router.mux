@@ -1,0 +1,104 @@
+import std.net
+
+func main() returns void {
+    auto router = net.HttpRouter.new()
+    auto auth_result = router.basic_auth("admin", "secret")
+    if auth_result.is_err() {
+        print("auth setup failed")
+        return
+    }
+    auto middleware_result = router.middleware(func(HttpRequest request, HttpNext next) returns result<HttpResponse, HttpError> {
+        auto response_result = next.handle(request)
+        if response_result.is_err() {
+            return err(response_result.error())
+        }
+        auto response = response_result.value()
+        response.headers = net.Headers.new()
+        auto header_result = response.headers.set("X-Mux", "router")
+        if header_result.is_err() {
+            return err(header_result.error())
+        }
+        return ok(response)
+    })
+    if middleware_result.is_err() {
+        print("middleware setup failed")
+        return
+    }
+    auto route_result = router.route("GET", "/hello", func(HttpRequest _request) returns result<HttpResponse, HttpError> {
+        auto response = net.HttpResponse.new()
+        response.status = 200
+        response.body = b"hello"
+        return ok(response)
+    })
+    if route_result.is_err() {
+        print("route setup failed")
+        return
+    }
+    auto request = net.HttpRequest.new()
+    request.method = "GET"
+    request.url = "/hello"
+    auto unauthenticated = router.handle(request)
+    if unauthenticated.is_err() {
+        print("unauthenticated dispatch failed")
+        return
+    }
+    print(unauthenticated.value().status.to_string())
+
+    auto headers = net.Headers.new()
+    auto header_result = headers.set("Authorization", "Basic YWRtaW46c2VjcmV0")
+    if header_result.is_err() {
+        print("authorization header failed")
+        return
+    }
+    request.headers = headers
+    auto response_result = router.handle(request)
+    if response_result.is_err() {
+        print("router dispatch failed")
+        return
+    }
+    auto response = response_result.value()
+    print(response.status.to_string())
+    print(response.body.to_string())
+
+    auto bearer_router = net.HttpRouter.new()
+    auto bearer_auth_result = bearer_router.bearer_auth("service-token")
+    if bearer_auth_result.is_err() {
+        print("bearer setup failed")
+        return
+    }
+    auto bearer_route_result = bearer_router.route("GET", "/bearer", func(HttpRequest _request) returns result<HttpResponse, HttpError> {
+        auto bearer_response = net.HttpResponse.new()
+        bearer_response.status = 200
+        bearer_response.body = b"bearer"
+        return ok(bearer_response)
+    })
+    if bearer_route_result.is_err() {
+        print("bearer route setup failed")
+        return
+    }
+    auto bearer_request = net.HttpRequest.new()
+    bearer_request.method = "GET"
+    bearer_request.url = "/bearer"
+    auto bearer_denied = bearer_router.handle(bearer_request)
+    if bearer_denied.is_err() {
+        print("bearer denial failed")
+        return
+    }
+    print(bearer_denied.value().status.to_string())
+
+    auto bearer_headers = net.Headers.new()
+    auto bearer_header_result = bearer_headers.set("authorization", "Bearer service-token")
+    if bearer_header_result.is_err() {
+        print("bearer header failed")
+        return
+    }
+    bearer_request.headers = bearer_headers
+    auto bearer_response_result = bearer_router.handle(bearer_request)
+    if bearer_response_result.is_err() {
+        print("bearer dispatch failed")
+        return
+    }
+    print(bearer_response_result.value().status.to_string())
+    print(bearer_response_result.value().body.to_string())
+    return
+}

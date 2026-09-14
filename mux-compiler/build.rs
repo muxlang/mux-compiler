@@ -23,11 +23,10 @@ fn main() {
         let _ = set_git_hooks_dir::setup(workspace_root.join(".github/hooks"), workspace_root);
     }
 
-    let profile = if env::var("CARGO_PROFILE_RELEASE").is_ok() {
-        "release"
-    } else {
-        "debug"
-    };
+    // Cargo exposes the active profile as `PROFILE` to build scripts. The
+    // profile-specific `CARGO_PROFILE_*` variables describe configuration and
+    // are not set for every invocation, including `cargo build --release`.
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
 
     let target_dir =
         env::var("CARGO_TARGET_DIR").map_or_else(|_| workspace_root.join("target"), PathBuf::from);
@@ -144,7 +143,7 @@ fn locked_git_commit(source: &str) -> Option<String> {
 /// `llvm-config-22` on PATH and write the prefix to `.cargo/config.toml`.
 /// Exits with an error on first-time setup so the next build picks it up.
 fn ensure_llvm_prefix(workspace_root: &Path) {
-    // Already set via environment — nothing to do.
+    // Already set via environment; nothing to do.
     if env::var("LLVM_SYS_221_PREFIX").is_ok() {
         return;
     }
@@ -162,6 +161,14 @@ fn ensure_llvm_prefix(workspace_root: &Path) {
     let Some(prefix) = prefix else {
         return;
     };
+
+    // Hosted CI images install the required LLVM toolchain but do not need a
+    // repository-local Cargo config. Writing one and aborting would make the
+    // first clean build fail even though llvm-config already found the right
+    // toolchain; the checked-in workflows provide their own environment.
+    if env::var("CI").is_ok() {
+        return;
+    }
 
     if let Err(e) = write_llvm_prefix_to_config(workspace_root, &prefix) {
         eprintln!("error[build]: {e}");
@@ -197,7 +204,7 @@ fn write_llvm_prefix_to_config(workspace_root: &Path, prefix: &str) -> std::io::
     })?;
 
     if let Ok(existing) = fs::read_to_string(&config_path) {
-        // File exists — append to [env] section or create it.
+        // File exists; append to [env] section or create it.
         if existing.contains("[env]") {
             let updated = existing.replacen(
                 "[env]",
@@ -223,7 +230,7 @@ fn write_llvm_prefix_to_config(workspace_root: &Path, prefix: &str) -> std::io::
             })?;
         }
     } else {
-        // File does not exist — create it.
+        // File does not exist; create it.
         let contents = format!("[env]\nLLVM_SYS_221_PREFIX = \"{prefix}\"\n");
         fs::write(&config_path, contents).map_err(|e| {
             std::io::Error::new(

@@ -32,6 +32,14 @@ pub enum AstNode {
         variants: Vec<EnumVariant>,
         span: Span,
     },
+    /// A named test block. Test blocks are parsed as declarations so normal
+    /// builds can omit them; the `mux test` command discovers and executes
+    /// them in isolated processes.
+    Test {
+        name: String,
+        body: Vec<StatementNode>,
+        span: Span,
+    },
     Statement(StatementNode),
 }
 
@@ -41,7 +49,8 @@ impl Spanned for AstNode {
             AstNode::Function(func) => &func.span,
             AstNode::Class { span, .. }
             | AstNode::Interface { span, .. }
-            | AstNode::Enum { span, .. } => span,
+            | AstNode::Enum { span, .. }
+            | AstNode::Test { span, .. } => span,
             AstNode::Statement(stmt) => stmt.span(),
         }
     }
@@ -204,6 +213,13 @@ pub enum ExpressionKind {
         cond: Box<ExpressionNode>,
         then_expr: Box<ExpressionNode>,
         else_expr: Box<ExpressionNode>,
+    },
+    /// An expression-valued pattern match. Each arm uses the same pattern and
+    /// braces as a statement match, but its final expression supplies the
+    /// value; a `return` arm may diverge explicitly.
+    Match {
+        expr: Box<ExpressionNode>,
+        arms: Vec<MatchArm>,
     },
     Lambda {
         params: Vec<Param>,

@@ -1,29 +1,103 @@
-// Test std.io package
+// Test std.io and std.fs packages
 import std.io
+import std.fs
+
+func append_file_test() returns result<int, IoError> {
+    auto append_path_result = fs.temp_file()
+    if append_path_result.is_err() {
+        return err(IoError.from_message(append_path_result.error().message()))
+    }
+    auto append_path = append_path_result.value()
+    auto appender = use io.Writer.append_file(append_path)
+    use appender.write_all(b"appended")
+    use appender.flush()
+    appender.close()
+    auto data_result = fs.read_bytes(append_path)
+    if data_result.is_err() {
+        return err(IoError.from_message(data_result.error().message()))
+    }
+    auto data = data_result.value()
+    print("append bytes: " + data.size().to_string())
+    auto remove_result = fs.remove(append_path)
+    if remove_result.is_err() {
+        return err(IoError.from_message(remove_result.error().message()))
+    }
+    return ok(0)
+}
 
 func main() returns void {
     // Test path operations
-    match io.basename("/home/user/file.txt") {
+    match fs.basename("/home/user/file.txt") {
         ok(name) { print("basename: " + name) }
-        err(e) { print("Error: " + e) }
+        err(e) { print("Error: " + e.message()) }
     }
     
-    match io.dirname("/home/user/file.txt") {
+    match fs.dirname("/home/user/file.txt") {
         ok(dir) { print("dirname: " + dir) }
-        err(e) { print("Error: " + e) }
+        err(e) { print("Error: " + e.message()) }
     }
     
-    match io.join("/home/user", "file.txt") {
+    match fs.join("/home/user", "file.txt") {
         ok(path) { print("join: " + path) }
-        err(e) { print("Error: " + e) }
+        err(e) { print("Error: " + e.message()) }
+    }
+
+    match fs.cwd() {
+        ok(path) { print("cwd: " + path) }
+        err(e) { print("Error: " + e.message()) }
+    }
+    match fs.absolute("functions.mux") {
+        ok(path) { print("absolute: " + path) }
+        err(e) { print("Error: " + e.message()) }
+    }
+    match fs.file_size("functions.mux") {
+        ok(size) { print("file size: " + size.to_string()) }
+        err(e) { print("Error: " + e.message()) }
     }
     
     // Test file existence
-    match io.exists("test_scripts/functions.mux") {
+    match fs.exists("test_scripts/functions.mux") {
         ok(exists) { print("exists: " + exists.to_string()) }
-        err(e) { print("Error: " + e) }
+        err(e) { print("Error: " + e.message()) }
     }
-    
+
+    match fs.read_bytes("functions.mux") {
+        ok(data) { print("bytes: " + data.size().to_string()) }
+        err(e) { print("Error: " + e.message()) }
+    }
+
+    match fs.exists("functions.mux") {
+        ok(found) { print("fs exists: " + found.to_string()) }
+        err(e) { print("fs error: " + e.message()) }
+    }
+
+    io.Reader reader = io.Reader.from_bytes(b"close me")
+    reader.close()
+    io.Writer writer = io.Writer.new()
+    match writer.write_all(b"abcd") {
+        ok(_) {}
+        err(e) { print("writer write error: " + e.message()) }
+    }
+    match writer.seek(1) {
+        ok(_) {}
+        err(e) { print("writer seek error: " + e.message()) }
+    }
+    match writer.write_all(b"X") {
+        ok(_) {}
+        err(e) { print("writer overwrite error: " + e.message()) }
+    }
+    match writer.bytes() {
+        ok(data) { print("writer cursor bytes: " + data.to_string()) }
+        err(e) { print("writer bytes error: " + e.message()) }
+    }
+    writer.close()
+    print("stream close operations completed")
+
+    auto append_result = append_file_test()
+    if append_result.is_err() {
+        print("append test error: " + append_result.error().message())
+    }
+
     print("IO tests completed!")
 
     return

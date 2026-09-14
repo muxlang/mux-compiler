@@ -1,4 +1,4 @@
-// Comprehensive test for nested generic types
+// Test nested generic types
 // Tests generic types nested up to 3 levels deep
 
 // ===== Helper Classes =====
@@ -85,20 +85,17 @@ stack_of_stacks.push(inner_stack1)
 stack_of_stacks.push(inner_stack2)
 print("Stack of stacks size: " + stack_of_stacks.get_size().to_string())
 
-match stack_of_stacks.pop() {
-    some(inner) {
-        match inner.pop() {
-            some(val) {
-                print("Popped from nested stack: " + val)
-            }
-            none {
-                print("Inner stack empty")
-            }
-        }
+auto maybe_inner = stack_of_stacks.pop()
+if maybe_inner.is_some() {
+    auto inner = maybe_inner.value()
+    auto maybe_value = inner.pop()
+    if maybe_value.is_some() {
+        print("Popped from nested stack: " + maybe_value.value())
+    } else {
+        print("Inner stack empty")
     }
-    none {
-        print("Outer stack empty")
-    }
+} else {
+    print("Outer stack empty")
 }
 
 // ===== Test 2: Level 2 - Different Generic Classes =====

@@ -3,6 +3,6 @@ func get_none() returns optional<int> {
     return none
 }
 auto opt = get_none()
-auto x = match opt {
-    some(v) { v }
+match opt {
+    some(v) { print(v.to_string()) }
 }

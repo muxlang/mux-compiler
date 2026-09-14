@@ -1,0 +1,335 @@
+import std.encoding
+import std.io
+
+func collect_writer(io.Writer writer) returns result<bytes, EncodingError> {
+    auto output = writer.bytes()
+    if output.is_err() {
+        return err(EncodingError.of("stream", EncodingErrorKind.Write, output.error().message()))
+    }
+    return ok(output.value())
+}
+
+func report_bytes(result<bytes, IoError> output, string label) returns void {
+    if output.is_ok() {
+        auto data = output.value()
+        print(label + ": " + data.to_utf8_lossy())
+    } else {
+        print(label + " output error: " + output.error().message())
+    }
+    return
+}
+
+func report_line(result<optional<string>, IoError> line_result, string label) returns void {
+    if line_result.is_err() {
+        print(label + " error: " + line_result.error().message())
+    } else {
+        auto line = line_result.value()
+        if line.is_some() {
+            print(label + ": " + line.value())
+        } else {
+            print(label + " missing")
+        }
+    }
+    return
+}
+
+func report_bytes_equal(result<bytes, IoError> output, string label, bytes expected) returns void {
+    if output.is_ok() {
+        print(label + ": " + (output.value() == expected).to_string())
+    } else {
+        print(label + " output error: " + output.error().message())
+    }
+    return
+}
+
+func test_base64_boundary(bytes boundary) returns result<int, EncodingError> {
+    io.Reader reader = io.Reader.from_bytes(boundary)
+    io.Writer writer = io.Writer.new()
+    use encoding.base64_encode_stream(reader, writer)
+    auto encoded = use collect_writer(writer)
+    io.Reader decode_reader = io.Reader.from_bytes(encoded)
+    io.Writer decode_writer = io.Writer.new()
+    use encoding.base64_decode_stream(decode_reader, decode_writer)
+    auto decoded = use collect_writer(decode_writer)
+    print("stream base64 boundary: " + (decoded == boundary).to_string())
+    reader.close()
+    writer.close()
+    decode_reader.close()
+    decode_writer.close()
+    return ok(1)
+}
+
+func test_base58_stream(bytes source) returns result<int, EncodingError> {
+    io.Reader reader = io.Reader.from_bytes(source)
+    io.Writer writer = io.Writer.new()
+    use encoding.base58_encode_stream(reader, writer)
+    auto encoded = use collect_writer(writer)
+    print("stream Base58: " + encoded.to_utf8_lossy())
+    io.Reader decode_reader = io.Reader.from_bytes(encoded)
+    io.Writer decode_writer = io.Writer.new()
+    use encoding.base58_decode_stream(decode_reader, decode_writer)
+    auto decoded = use collect_writer(decode_writer)
+    print("stream Base58 decode: " + decoded.to_utf8_lossy())
+    reader.close()
+    writer.close()
+    decode_reader.close()
+    decode_writer.close()
+    return ok(1)
+}
+
+byte first = 0
+byte second = 255
+bytes first_two = b"\x00\xff"
+print(encoding.hex_encode(first_two))
+
+match encoding.hex_decode("00FF2a") {
+    ok(values) {
+        print(values.size().to_string())
+        print(values[2].to_string())
+    }
+    err(error) { print(error.message()) }
+}
+
+match encoding.hex_decode("0") {
+    ok(_) { print("odd input accepted") }
+    err(error) { print(error.message()) }
+}
+
+match encoding.hex_decode("GG") {
+    ok(_) { print("invalid input accepted") }
+    err(error) { print(error.message()) }
+}
+
+auto structured_error = encoding.hex_decode("G0")
+if structured_error.is_err() {
+    auto error = structured_error.error()
+    assert(error.kind == encoding.EncodingErrorKind.InvalidByte, "encoding error kind")
+    print(error.codec + " / " + error.kind_name() + " / " + error.offset.to_string())
+}
+
+bytes encoded_source = b""
+byte m = 77
+byte u = 97
+byte n = 110
+encoded_source.push_back(m)
+encoded_source.push_back(u)
+encoded_source.push_back(n)
+print(encoding.base64_encode(encoded_source))
+
+io.Reader hex_reader = io.Reader.from_bytes(encoded_source)
+io.Writer hex_writer = io.Writer.new()
+match encoding.hex_encode_stream(hex_reader, hex_writer) {
+    ok(_) { report_bytes(hex_writer.bytes(), "stream hex") }
+    err(message) { print("stream hex encode error: " + message.message()) }
+}
+io.Reader decode_reader = io.Reader.from_bytes(b"4d756e")
+io.Writer decode_writer = io.Writer.new()
+match encoding.hex_decode_stream(decode_reader, decode_writer) {
+    ok(_) { report_bytes(decode_writer.bytes(), "stream hex decode") }
+    err(message) { print("stream hex decode error: " + message.message()) }
+}
+io.Reader line_reader = io.Reader.from_bytes(b"one\r\ntwo")
+report_line(line_reader.read_line(), "stream line")
+report_line(line_reader.read_line(), "stream line final")
+report_line(line_reader.read_line(), "stream line EOF")
+io.Reader base64_reader = io.Reader.from_bytes(encoded_source)
+io.Writer base64_writer = io.Writer.new()
+match encoding.base64_encode_stream(base64_reader, base64_writer) {
+    ok(_) { report_bytes(base64_writer.bytes(), "stream base64") }
+    err(message) { print("stream base64 encode error: " + message.message()) }
+}
+io.Reader base64_decode_reader = io.Reader.from_bytes(b"TXVu")
+io.Writer base64_decode_writer = io.Writer.new()
+match encoding.base64_decode_stream(base64_decode_reader, base64_decode_writer) {
+    ok(_) { report_bytes(base64_decode_writer.bytes(), "stream base64 decode") }
+    err(message) { print("stream base64 decode error: " + message.message()) }
+}
+io.Reader bad_base64_reader = io.Reader.from_bytes(b"TQ==QQ==")
+io.Writer bad_base64_writer = io.Writer.new()
+match encoding.base64_decode_stream(bad_base64_reader, bad_base64_writer) {
+    ok(_) { print("stream base64 padding accepted") }
+    err(message) { print("stream base64 padding error: " + message.message()) }
+}
+bytes boundary = b""
+int boundary_index = 0
+while boundary_index < 4097 {
+    boundary.push_back(m)
+    boundary_index = boundary_index + 1
+}
+auto boundary_result = test_base64_boundary(boundary)
+if boundary_result.is_err() {
+    print("stream base64 boundary error: " + boundary_result.error().message())
+}
+match encoding.base64_decode("TWFu") {
+    ok(values) { print(values.size().to_string()) print(values[1].to_string()) }
+    err(error) { print(error.message()) }
+}
+io.Reader base32_reader = io.Reader.from_bytes(encoded_source)
+io.Writer base32_writer = io.Writer.new()
+match encoding.base32_encode_stream(base32_reader, base32_writer) {
+    ok(_) { report_bytes(base32_writer.bytes(), "stream base32") }
+    err(message) { print("stream base32 encode error: " + message.message()) }
+}
+io.Reader base32_decode_reader = io.Reader.from_bytes(b"JVQW4===")
+io.Writer base32_decode_writer = io.Writer.new()
+match encoding.base32_decode_stream(base32_decode_reader, base32_decode_writer) {
+    ok(_) { report_bytes(base32_decode_writer.bytes(), "stream base32 decode") }
+    err(message) { print("stream base32 decode error: " + message.message()) }
+}
+io.Reader percent_reader = io.Reader.from_bytes(encoded_source)
+io.Writer percent_writer = io.Writer.new()
+match encoding.percent_encode_stream(percent_reader, percent_writer) {
+    ok(_) { report_bytes(percent_writer.bytes(), "stream percent") }
+    err(message) { print("stream percent encode error: " + message.message()) }
+}
+io.Reader percent_decode_reader = io.Reader.from_bytes(b"M%75n")
+io.Writer percent_decode_writer = io.Writer.new()
+match encoding.percent_decode_stream(percent_decode_reader, percent_decode_writer) {
+    ok(_) { report_bytes(percent_decode_writer.bytes(), "stream percent decode") }
+    err(message) { print("stream percent decode error: " + message.message()) }
+}
+io.Reader ascii85_reader = io.Reader.from_bytes(encoded_source)
+io.Writer ascii85_writer = io.Writer.new()
+match encoding.ascii85_encode_stream(ascii85_reader, ascii85_writer) {
+    ok(_) { report_bytes(ascii85_writer.bytes(), "stream ASCII85") }
+    err(message) { print("stream ASCII85 encode error: " + message.message()) }
+}
+io.Reader ascii85_decode_reader = io.Reader.from_bytes(b"9jqo")
+io.Writer ascii85_decode_writer = io.Writer.new()
+match encoding.ascii85_decode_stream(ascii85_decode_reader, ascii85_decode_writer) {
+    ok(_) { report_bytes(ascii85_decode_writer.bytes(), "stream ASCII85 decode") }
+    err(message) { print("stream ASCII85 decode error: " + message.message()) }
+}
+match encoding.base64_decode("Zh==") {
+    ok(_) { print("non-canonical base64 accepted") }
+    err(error) { print(error.message()) }
+}
+print(encoding.percent_encode(encoded_source))
+match encoding.percent_decode("Mux%00") {
+    ok(values) { print(values.size().to_string()) print(values[3].to_string()) }
+    err(error) { print(error.message()) }
+}
+match encoding.percent_decode("Mux!$;:@") {
+    ok(values) { print("percent ASCII punctuation: " + values.to_utf8_lossy()) }
+    err(error) { print("percent ASCII punctuation error: " + error.message()) }
+}
+print(encoding.base32_encode(encoded_source))
+match encoding.base32_decode("JVQW4===") {
+    ok(values) { print(values.size().to_string()) print(values[0].to_string()) }
+    err(error) { print(error.message()) }
+}
+print(encoding.base58_encode(encoded_source))
+match encoding.base58_decode("SzVj") {
+    ok(values) { print(values.size().to_string()) print(values[0].to_string()) }
+    err(error) { print(error.message()) }
+}
+auto base58_result = test_base58_stream(encoded_source)
+if base58_result.is_err() {
+    print("stream Base58 error: " + base58_result.error().message())
+}
+print(encoding.ascii85_encode(encoded_source))
+match encoding.ascii85_decode("9jqo") {
+    ok(values) { print(values.size().to_string()) print(values[0].to_string()) }
+    err(error) { print(error.message()) }
+}
+match encoding.ascii85_decode("!") {
+    ok(_) { print("invalid ASCII85 accepted") }
+    err(error) { print(error.message()) }
+}
+match encoding.ascii85_decode("!#") {
+    ok(_) { print("non-canonical ASCII85 accepted") }
+    err(error) { print(error.message()) }
+}
+
+auto utf8 = encoding.utf8_encode("A😀")
+match encoding.utf8_decode(utf8) {
+    ok(text) { print(text) }
+    err(error) { print(error.message()) }
+}
+print(encoding.utf8_decode_lossy(b"\xff").length().to_string())
+
+auto utf16 = encoding.utf16_encode("A😀", true, true)
+match encoding.utf16_decode(utf16, true, true) {
+    ok(text) { print(text) }
+    err(error) { print(error.message()) }
+}
+auto utf32 = encoding.utf32_encode("A😀", false, true)
+match encoding.utf32_decode(utf32, false, true) {
+    ok(text) { print(text) }
+    err(error) { print(error.message()) }
+}
+io.Reader utf16_stream_reader = io.Reader.from_bytes(encoding.utf8_encode("A😀"))
+io.Writer utf16_stream_writer = io.Writer.new()
+match encoding.utf16_encode_stream(utf16_stream_reader, utf16_stream_writer, true, true) {
+    ok(_) { report_bytes_equal(utf16_stream_writer.bytes(), "stream UTF-16 encode", utf16) }
+    err(message) { print("stream UTF-16 encode error: " + message.message()) }
+}
+io.Reader utf16_stream_decode_reader = io.Reader.from_bytes(utf16)
+io.Writer utf16_stream_decode_writer = io.Writer.new()
+match encoding.utf16_decode_stream(utf16_stream_decode_reader, utf16_stream_decode_writer, true, true) {
+    ok(_) { report_bytes(utf16_stream_decode_writer.bytes(), "stream UTF-16 decode") }
+    err(message) { print("stream UTF-16 decode error: " + message.message()) }
+}
+io.Reader utf32_stream_reader = io.Reader.from_bytes(encoding.utf8_encode("A😀"))
+io.Writer utf32_stream_writer = io.Writer.new()
+match encoding.utf32_encode_stream(utf32_stream_reader, utf32_stream_writer, false, true) {
+    ok(_) { report_bytes_equal(utf32_stream_writer.bytes(), "stream UTF-32 encode", utf32) }
+    err(message) { print("stream UTF-32 encode error: " + message.message()) }
+}
+io.Reader utf32_stream_decode_reader = io.Reader.from_bytes(utf32)
+io.Writer utf32_stream_decode_writer = io.Writer.new()
+match encoding.utf32_decode_stream(utf32_stream_decode_reader, utf32_stream_decode_writer, false, true) {
+    ok(_) { report_bytes(utf32_stream_decode_writer.bytes(), "stream UTF-32 decode") }
+    err(message) { print("stream UTF-32 decode error: " + message.message()) }
+}
+
+byte space = 32
+byte slash = 47
+byte question = 63
+bytes special = b"Mun"
+special.insert(1, space)
+special.insert(2, slash)
+special.insert(4, question)
+print(encoding.percent_encode_path(special))
+print(encoding.percent_encode_query(special))
+print(encoding.percent_encode_form(special))
+match encoding.percent_decode_form("Mux+Lang%21") {
+    ok(values) { print(values.size().to_string()) print(values[3].to_string()) }
+    err(error) { print(error.message()) }
+}
+match encoding.percent_decode_form("Mux!$;:@") {
+    ok(values) { print("percent form ASCII punctuation: " + values.to_utf8_lossy()) }
+    err(error) { print("percent form ASCII punctuation error: " + error.message()) }
+}
+
+hex_reader.close()
+hex_writer.close()
+decode_reader.close()
+decode_writer.close()
+line_reader.close()
+base64_reader.close()
+base64_writer.close()
+base64_decode_reader.close()
+base64_decode_writer.close()
+bad_base64_reader.close()
+bad_base64_writer.close()
+base32_reader.close()
+base32_writer.close()
+base32_decode_reader.close()
+base32_decode_writer.close()
+percent_reader.close()
+percent_writer.close()
+percent_decode_reader.close()
+percent_decode_writer.close()
+ascii85_reader.close()
+ascii85_writer.close()
+ascii85_decode_reader.close()
+ascii85_decode_writer.close()
+utf16_stream_reader.close()
+utf16_stream_writer.close()
+utf16_stream_decode_reader.close()
+utf16_stream_decode_writer.close()
+utf32_stream_reader.close()
+utf32_stream_writer.close()
+utf32_stream_decode_reader.close()
+utf32_stream_decode_writer.close()

@@ -1,46 +1,64 @@
-import std.assert
 import std.env
 import std.net
 
 func require_env(string key) returns string {
-    match env.get(key) {
-        some(value) { return value }
-        none {
-            assert.assert(false, "missing environment variable: " + key)
-            return ""
-        }
+    auto result = env.get(key)
+    if result.is_err() {
+        assert(false, "failed to read environment variable: " + result.error().message())
+        return ""
     }
+    auto optional = result.value()
+    if optional.is_none() {
+        assert(false, "missing environment variable: " + key)
+        return ""
+    }
+    return optional.value()
 }
 
 func main() returns void {
     auto addr = require_env("MUX_TEST_UDP_ADDR")
-    const list<int> payload = [109, 117, 120]
-    const list<int> expected = [85, 68, 80, 58, 109, 117, 120]
+    const bytes payload = b"mux"
+    const bytes expected = b"UDP:mux"
     print("Starting external udp integration test")
 
-    match net.UdpSocket.bind("0.0.0.0:0") {
-        ok(sock) {
-            match sock.send_to(payload, addr) {
-                ok(count) { assert.assert(count == payload.size(), "unexpected udp write count") }
-                err(e) { assert.assert(false, "udp send failed: " + e) }
-            }
-
-            match sock.recv_from(32) {
-                ok(response) {
-                    assert.assert(response.left.size() == expected.size(), "unexpected udp response length")
-                    auto idx = 0
-                    while idx < expected.size() {
-                        assert.assert(response.left[idx] == expected[idx], "unexpected udp byte at index " + idx.to_string())
-                        idx = idx + 1
-                    }
-                    print("udp ack received from " + response.right)
-                }
-                err(e) { assert.assert(false, "udp recv failed: " + e) }
-            }
-
-            sock.close()
+    auto bind_result = net.UdpSocket.bind("0.0.0.0:0")
+    if bind_result.is_err() {
+        assert(false, "udp bind failed: " + bind_result.error().message())
+    } else {
+        auto sock = bind_result.value()
+        auto send_result = sock.send_to(payload, addr)
+        if send_result.is_err() {
+            assert(false, "udp send failed: " + send_result.error().message())
+        } else {
+            assert(send_result.value() == payload.size(), "unexpected udp write count")
         }
-        err(e) { assert.assert(false, "udp bind failed: " + e) }
+
+        auto receive_result = sock.recv_from(32)
+        if receive_result.is_err() {
+            assert(false, "udp recv failed: " + receive_result.error().message())
+        } else {
+            auto response = receive_result.value()
+            auto response_bytes = response.bytes()
+            if response_bytes.is_err() {
+                assert(false, "udp payload failed: " + response_bytes.error().message())
+            } else {
+                auto payload_bytes = response_bytes.value()
+                assert(payload_bytes.size() == expected.size(), "unexpected udp response length")
+                auto idx = 0
+                while idx < expected.size() {
+                    assert(payload_bytes[idx] == expected[idx], "unexpected udp byte at index " + idx.to_string())
+                    idx = idx + 1
+                }
+            }
+            auto response_address = response.address()
+            if response_address.is_err() {
+                assert(false, "udp address failed: " + response_address.error().message())
+            } else {
+                print("udp ack received from " + response_address.value())
+            }
+        }
+
+        sock.close()
     }
 
     print("external udp integration test passed")

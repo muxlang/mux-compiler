@@ -1,0 +1,33 @@
+---
+source: mux-compiler/tests/executable_integration.rs
+expression: normalized
+---
+byte value: 42
+byte as int: 42
+byte comparison: true
+byte set contains: true
+checked add: 142
+wrapping add: 142
+saturating add: 142
+bit and: 32
+byte eq: false
+byte cmp: -1
+byte hash: 42
+int eq: true
+int cmp: -1
+int hash: -7
+float eq: true
+float cmp: -1
+float hash: -4375405161840865438
+string eq: true
+string cmp: -1
+string hash: -3955208539356840686
+bool eq: false
+bool hash: 1
+char eq: true
+char cmp: -1
+char hash: 97
+shift left: 84
+int to byte: 255
+string to byte: 42
+overflow rejected: Byte value 256 is outside the range 0..255

@@ -1,0 +1,23 @@
+import std.sync
+
+func run_ordered_map() returns result<int, SyncError> {
+    auto pool = use WorkerPool<string>.with_config(2, 1)
+    int offset = 10
+    auto values = use pool.map([3, 1, 2], func(int value) returns string {
+        offset = offset + 1
+        return (value + offset).to_string()
+    })
+    assert(values == ["14", "12", "13"], "ordered map values")
+    assert(offset == 10, "isolated capture")
+    use pool.close()
+    print("ordered map and isolated captures passed")
+    return ok(1)
+}
+
+func main() returns void {
+    auto result = run_ordered_map()
+    if result.is_err() {
+        print(result.error().message())
+    }
+    return
+}

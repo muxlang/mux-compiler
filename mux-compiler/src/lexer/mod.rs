@@ -268,6 +268,7 @@ impl<'a> Lexer<'a> {
             "for" => TokenType::For,
             "while" => TokenType::While,
             "match" => TokenType::Match,
+            "use" => TokenType::Use,
             "const" => TokenType::Const,
             "class" => TokenType::Class,
             "interface" => TokenType::Interface,
@@ -283,6 +284,7 @@ impl<'a> Lexer<'a> {
             "false" => TokenType::Bool(false),
             "common" => TokenType::Common,
             "where" => TokenType::Where,
+            "test" => TokenType::Test,
             _ => TokenType::Id(ident),
         }
     }
@@ -570,6 +572,7 @@ impl<'a> Lexer<'a> {
             '"' => self.handle_string_start(start_span),
             // '_' never arrives here: `next_token` matches it first so it can
             // decide between the wildcard token and an identifier.
+            'b' if self.source.peek() == Some('"') => self.read_bytes(start_span),
             'a'..='z' | 'A'..='Z' => Ok(self.read_identifier_or_keyword(first_char, start_span)),
             _ => Err(LexerError::with_help(
                 DiagnosticCode::LexUnexpectedCharacter,
@@ -740,6 +743,87 @@ impl<'a> Lexer<'a> {
         }
 
         self.handle_unterminated_string(&s, start_col, start_span)
+    }
+
+    fn read_bytes(&mut self, mut start_span: Span) -> Result<Token, LexerError> {
+        if self.source.next_char() != Some('"') {
+            return Err(LexerError::with_help(
+                DiagnosticCode::LexUnexpectedCharacter,
+                "Byte literal must start with a double quote",
+                start_span,
+                "Use b\"...\" for a byte literal",
+            ));
+        }
+        let mut bytes = Vec::new();
+        while let Some(c) = self.source.next_char() {
+            if c == '"' {
+                start_span.complete(self.source.line, self.source.col);
+                return Ok(Token::new(TokenType::Bytes(bytes), start_span));
+            }
+            if c == '\\' {
+                let Some(escape) = self.source.next_char() else {
+                    break;
+                };
+                if escape == 'x' {
+                    let Some(high) = self.source.next_char() else {
+                        break;
+                    };
+                    let Some(low) = self.source.next_char() else {
+                        break;
+                    };
+                    let Some(high) = high.to_digit(16) else {
+                        return Err(LexerError::with_help(
+                            DiagnosticCode::LexUnknownEscape,
+                            "Invalid hexadecimal byte escape",
+                            start_span,
+                            "Use two hexadecimal digits, for example \\xFF",
+                        ));
+                    };
+                    let Some(low) = low.to_digit(16) else {
+                        return Err(LexerError::with_help(
+                            DiagnosticCode::LexUnknownEscape,
+                            "Invalid hexadecimal byte escape",
+                            start_span,
+                            "Use two hexadecimal digits, for example \\xFF",
+                        ));
+                    };
+                    bytes.push(((high << 4) | low) as u8);
+                } else {
+                    let Some(decoded) = Self::decode_escape(escape) else {
+                        return Err(LexerError::with_help(
+                            DiagnosticCode::LexUnknownEscape,
+                            format!("Unknown byte escape: \\{escape}"),
+                            start_span,
+                            r#"Valid escapes include \\n, \\t, \\r, \\0, \\\\, \\" and \\xNN"#,
+                        ));
+                    };
+                    if !decoded.is_ascii() {
+                        return Err(LexerError::with_help(
+                            DiagnosticCode::LexInvalidCharacterLiteral,
+                            "Byte literals only contain ASCII characters",
+                            start_span,
+                            "Use \\xNN for an octet",
+                        ));
+                    }
+                    bytes.push(decoded as u8);
+                }
+            } else if c.is_ascii() {
+                bytes.push(c as u8);
+            } else {
+                return Err(LexerError::with_help(
+                    DiagnosticCode::LexInvalidCharacterLiteral,
+                    "Byte literals only contain ASCII characters",
+                    start_span,
+                    "Use \\xNN for an octet",
+                ));
+            }
+        }
+        Err(LexerError::with_help(
+            DiagnosticCode::LexUnterminatedString,
+            "Unterminated byte literal",
+            start_span,
+            "Make sure to close the byte literal with a matching quote",
+        ))
     }
 
     fn try_end_string(
@@ -967,7 +1051,7 @@ mod tests {
     #[test]
     fn test_position_tracking_across_lines() {
         // Test a more complex example across multiple lines
-        let input = "auto x = 42\nfunc test() {\n  return x\n}";
+        let input = "auto x = 42\nfunc check() {\n  return x\n}";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
 
@@ -986,7 +1070,7 @@ mod tests {
         assert_eq!(lexer.next_token().unwrap().token_type, TokenType::Func);
         assert_eq!(
             lexer.next_token().unwrap().token_type,
-            TokenType::Id("test".to_string())
+            TokenType::Id("check".to_string())
         );
         assert_eq!(lexer.next_token().unwrap().token_type, TokenType::OpenParen);
         assert_eq!(
@@ -1337,7 +1421,7 @@ world"
             _ => panic!("Expected Str token, got {:?}", tokens[0]),
         }
 
-        // test that uppercase legacy forms are treated as identifiers
+        // test that uppercase forms are treated as identifiers
         let input = "Some None Ok Err";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
@@ -1776,5 +1860,16 @@ world"
         assert_eq!(string_token.span.col_end, Some(16));
         // The string should span 3 lines (from row 2 to row 4)
         assert_eq!(string_token.span.row_end, Some(4));
+    }
+
+    #[test]
+    fn test_byte_literal_hex_escapes() {
+        let mut source = Source::from_test_str(r#"b"Mux\x00\xff""#);
+        let mut lexer = Lexer::new(&mut source);
+        let tokens = lexer.lex_all().unwrap();
+        assert!(matches!(
+            &tokens[0].token_type,
+            TokenType::Bytes(bytes) if bytes == &vec![b'M', b'u', b'x', 0, 255]
+        ));
     }
 }

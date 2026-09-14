@@ -24,13 +24,21 @@ use diagnostic::{
 use module_resolver::ModuleResolver;
 use source::Source;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::env;
+use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::rc::Rc;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 const REQUIRED_LLVM_MAJOR: u32 = 22;
 
@@ -128,12 +136,72 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = FixOutputFormat::Text)]
         format: FixOutputFormat,
     },
+    /// Discover and run named top-level test blocks
+    Test {
+        /// Source files to test. With no files, discover tests/**/*.mux.
+        files: Vec<PathBuf>,
+        /// Maximum number of test processes to run concurrently.
+        #[arg(short = 'j', long, default_value_t = default_test_jobs())]
+        jobs: usize,
+        /// Run only tests whose names contain this string.
+        #[arg(long)]
+        filter: Option<String>,
+        /// Run only tests carrying this annotation tag.
+        #[arg(long, value_parser = parse_test_tag)]
+        tag: Option<String>,
+        /// Stop scheduling new tests after the first failure.
+        #[arg(long)]
+        fail_fast: bool,
+        /// Select human, JSON, or JUnit XML output.
+        #[arg(long, value_enum, default_value_t = TestOutputFormat::Text)]
+        format: TestOutputFormat,
+        /// Maximum duration for each test process.
+        #[arg(long, default_value_t = 60, value_parser = parse_positive_timeout)]
+        timeout: u64,
+        /// Collect statement and branch coverage and write merged LCOV to lcov.info.
+        #[arg(long)]
+        coverage: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum FixOutputFormat {
     Text,
     Json,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TestOutputFormat {
+    Text,
+    Json,
+    Junit,
+}
+
+fn default_test_jobs() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+}
+
+fn parse_positive_timeout(raw: &str) -> Result<u64, String> {
+    let timeout = raw
+        .parse::<u64>()
+        .map_err(|_| format!("timeout must be a positive integer, found '{raw}'"))?;
+    if timeout == 0 {
+        return Err("timeout must be positive".to_string());
+    }
+    Ok(timeout)
+}
+
+fn parse_test_tag(raw: &str) -> Result<String, String> {
+    if raw.is_empty()
+        || !raw
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "_-".contains(character))
+    {
+        return Err(format!(
+            "test tag must contain only letters, numbers, '_' or '-', found '{raw}'"
+        ));
+    }
+    Ok(raw.to_string())
 }
 
 fn find_linker_command() -> Option<String> {
@@ -384,14 +452,23 @@ fn runtime_lib_dir_is_static_only(dir: &Path) -> bool {
 }
 
 fn runtime_lib_from_env() -> Option<PathBuf> {
-    let path = env::var("MUX_RUNTIME_LIB").ok()?;
-    let path = PathBuf::from(path);
-    if path.exists() {
-        return path.parent().map(Path::to_path_buf);
+    runtime_lib_path_from_env()?.parent().map(Path::to_path_buf)
+}
+
+/// Return the exact library selected by `MUX_RUNTIME_LIB`.
+///
+/// This environment variable is an explicit override, not merely a search
+/// directory. Passing only its parent to the linker lets `-l` choose a
+/// neighboring shared library over the requested archive, which breaks
+/// leak-check and other specialized runtime builds.
+fn runtime_lib_path_from_env() -> Option<PathBuf> {
+    let path = PathBuf::from(env::var_os("MUX_RUNTIME_LIB")?);
+    if path.is_file() {
+        return Some(path);
     }
 
     eprintln!(
-        "MUX_RUNTIME_LIB is set but does not exist: {}",
+        "MUX_RUNTIME_LIB is set but is not a file: {}",
         path.display()
     );
     None
@@ -662,6 +739,1004 @@ fn print_version_banner() {
     version_banner::print(linker_version.as_deref(), &get_llvm_version());
 }
 
+#[derive(Clone, Debug)]
+struct TestCase {
+    id: usize,
+    name: String,
+    file: PathBuf,
+    source_without_tests: String,
+    body: String,
+    body_start_line: usize,
+    timeout_seconds: Option<u64>,
+    tags: Vec<String>,
+}
+
+#[derive(Debug)]
+struct TestResult {
+    case: TestCase,
+    elapsed: Duration,
+    passed: bool,
+    timed_out: bool,
+    output: String,
+    coverage_file: Option<PathBuf>,
+    coverage_sites_file: Option<PathBuf>,
+    coverage_source: Option<PathBuf>,
+    coverage_generated_body_line: Option<usize>,
+    coverage_original_body_line: Option<usize>,
+    coverage_generated_wrapper_line: Option<usize>,
+}
+
+fn collect_mux_files(path: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if path.is_file() {
+        if is_mux_file(path) {
+            files.push(path.to_path_buf());
+        }
+        return Ok(());
+    }
+    if !path.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            collect_mux_files(&entry_path, files)?;
+        } else if is_mux_file(&entry_path) {
+            files.push(entry_path);
+        }
+    }
+    Ok(())
+}
+
+fn is_mux_file(path: &Path) -> bool {
+    path.extension().and_then(OsStr::to_str) == Some("mux")
+}
+
+/// Convert the lexer's one-based display column into a byte offset. Source
+/// columns count non-ASCII characters as two cells, so mirror that rule while
+/// walking the line. Test names and braces are normally ASCII; this also keeps
+/// offsets correct when a test contains Unicode before a nested brace.
+fn source_offset(source: &str, row: usize, col: usize) -> usize {
+    let mut offset = 0;
+    for (line_number, line) in source.split_inclusive('\n').enumerate() {
+        if line_number + 1 != row {
+            offset += line.len();
+            continue;
+        }
+        let mut display_col = 1;
+        for (byte_offset, character) in line.char_indices() {
+            if display_col >= col {
+                return offset + byte_offset;
+            }
+            display_col += if character.is_ascii() { 1 } else { 2 };
+        }
+        return offset + line.len();
+    }
+    source.len()
+}
+
+fn token_offset(source: &str, span: lexer::Span, end: bool) -> usize {
+    let column = if end {
+        span.col_end.unwrap_or(span.col_start.saturating_add(1))
+    } else {
+        span.col_start
+    };
+    source_offset(source, span.row_start, column)
+}
+
+fn parse_test_annotation(
+    source: &str,
+    test_start: usize,
+) -> Result<(Option<u64>, Vec<String>), String> {
+    let prefix = &source[..test_start];
+    let line = prefix.trim_end_matches(['\r', '\n']).rsplit('\n').next();
+    let Some(line) = line.map(str::trim) else {
+        return Ok((None, Vec::new()));
+    };
+    let Some(annotation) = line.strip_prefix("// mux:test") else {
+        return Ok((None, Vec::new()));
+    };
+    if annotation
+        .chars()
+        .next()
+        .is_some_and(|character| !character.is_whitespace())
+    {
+        return Err(
+            "test annotation must separate its name from entries with whitespace".to_string(),
+        );
+    }
+    let mut timeout_seconds = None;
+    let mut tags = Vec::new();
+    for assignment in annotation.split_whitespace() {
+        let Some((key, value)) = assignment.split_once('=') else {
+            return Err(format!(
+                "test annotation uses key=value entries, found '{assignment}'"
+            ));
+        };
+        match key {
+            "timeout" => {
+                let timeout = parse_positive_timeout(value)
+                    .map_err(|error| format!("test annotation {error}"))?;
+                if timeout_seconds.replace(timeout).is_some() {
+                    return Err("test annotation contains duplicate timeout".to_string());
+                }
+            }
+            "tags" => {
+                for tag in value.split(',') {
+                    if tag.is_empty()
+                        || !tag.chars().all(|character| {
+                            character.is_ascii_alphanumeric() || "_-".contains(character)
+                        })
+                    {
+                        return Err(format!("invalid test annotation tag '{tag}'"));
+                    }
+                    if !tags.iter().any(|existing| existing == tag) {
+                        tags.push(tag.to_string());
+                    }
+                }
+            }
+            _ => return Err(format!("unknown test annotation key '{key}'")),
+        }
+    }
+    Ok((timeout_seconds, tags))
+}
+
+fn extract_test_cases(path: &Path, source: &str, start_id: usize) -> Result<Vec<TestCase>, String> {
+    let mut source_file = Source::from_test_str(source);
+    let mut lexer = lexer::Lexer::new(&mut source_file);
+    let tokens = lexer
+        .lex_all()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+
+    let mut ranges = Vec::new();
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        if tokens[index].token_type != lexer::TokenType::Test {
+            index += 1;
+            continue;
+        }
+        let Some(name_token) = tokens.get(index + 1) else {
+            return Err(format!("{}: test is missing a name", path.display()));
+        };
+        let lexer::TokenType::Str(name) = &name_token.token_type else {
+            return Err(format!("{}: test name must be a string", path.display()));
+        };
+        let mut open_index = index + 2;
+        while tokens
+            .get(open_index)
+            .is_some_and(|token| token.token_type == lexer::TokenType::NewLine)
+        {
+            open_index += 1;
+        }
+        if tokens.get(open_index).map(|token| &token.token_type)
+            != Some(&lexer::TokenType::OpenBrace)
+        {
+            return Err(format!(
+                "{}: test '{name}' is missing its body",
+                path.display()
+            ));
+        }
+        let mut depth = 1usize;
+        let mut close_index = open_index + 1;
+        while close_index < tokens.len() && depth > 0 {
+            match tokens[close_index].token_type {
+                lexer::TokenType::OpenBrace => depth += 1,
+                lexer::TokenType::CloseBrace => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            close_index += 1;
+        }
+        if depth != 0 {
+            return Err(format!(
+                "{}: test '{name}' has an unterminated body",
+                path.display()
+            ));
+        }
+        let close_index = close_index - 1;
+        let start = token_offset(source, tokens[index].span, false);
+        let end = token_offset(source, tokens[close_index].span, true);
+        let body_start = token_offset(source, tokens[open_index].span, true);
+        let body_end = token_offset(source, tokens[close_index].span, false);
+        if start > end || body_start > body_end || body_end > source.len() {
+            return Err(format!("{}: invalid test source span", path.display()));
+        }
+        let (timeout_seconds, tags) = parse_test_annotation(source, start)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        ranges.push((start, end));
+        found.push((
+            name.clone(),
+            source[body_start..body_end].to_string(),
+            tokens[open_index].span.row_start,
+            timeout_seconds,
+            tags,
+        ));
+        index = close_index + 1;
+    }
+
+    if found.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut source_without_tests = source.to_string();
+    for (start, end) in ranges.into_iter().rev() {
+        let blanked = source[start..end]
+            .chars()
+            .map(|character| match character {
+                '\n' | '\r' => character,
+                _ => ' ',
+            })
+            .collect::<String>();
+        source_without_tests.replace_range(start..end, &blanked);
+    }
+    Ok(found
+        .into_iter()
+        .enumerate()
+        .map(
+            |(offset, (name, body, body_start_line, timeout_seconds, tags))| TestCase {
+                id: start_id + offset,
+                name,
+                file: path.to_path_buf(),
+                source_without_tests: source_without_tests.clone(),
+                body,
+                body_start_line,
+                timeout_seconds,
+                tags,
+            },
+        )
+        .collect())
+}
+
+fn rename_main_declaration(source: &str) -> String {
+    let mut source_file = Source::from_test_str(source);
+    let mut lexer = lexer::Lexer::new(&mut source_file);
+    let Ok(tokens) = lexer.lex_all() else {
+        return source.to_string();
+    };
+    for index in 0..tokens.len().saturating_sub(1) {
+        if tokens[index].token_type != lexer::TokenType::Func {
+            continue;
+        }
+        if !matches!(&tokens[index + 1].token_type, lexer::TokenType::Id(name) if name == "main") {
+            continue;
+        }
+        let start = token_offset(source, tokens[index + 1].span, false);
+        let end = token_offset(source, tokens[index + 1].span, true);
+        let mut renamed = source.to_string();
+        renamed.replace_range(start..end, "__mux_original_main");
+        return renamed;
+    }
+    source.to_string()
+}
+
+fn run_one_test(case: TestCase, timeout_seconds: u64, coverage: bool) -> TestResult {
+    let started = Instant::now();
+    let original_body_line = case.body_start_line;
+    let timeout_seconds = case.timeout_seconds.unwrap_or(timeout_seconds).max(1);
+    let parent = case.file.parent().unwrap_or_else(|| Path::new("."));
+    let stem = format!(".mux-test-{}-{}", process::id(), case.id);
+    let source_path = parent.join(format!("{stem}.mux"));
+    let artifact_dir = parent.join(&stem);
+    let output_path = artifact_dir.join("program");
+    let coverage_file = coverage.then(|| artifact_dir.join("coverage.records"));
+    let coverage_sites_file = coverage.then(|| artifact_dir.join("coverage.sites"));
+    let mut generated = case.source_without_tests.clone();
+    // A test process must execute only the selected body. If the source also
+    // has an application entry point, rename it out of the way instead of
+    // running it as a side effect of the test.
+    generated = rename_main_declaration(&generated);
+    generated.push_str("\nfunc __mux_test_body() returns void {\n");
+    let generated_body_line = generated.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    generated.push_str(&case.body);
+    // The return statement and main function below are runner scaffolding.
+    // Keep their source lines out of the user's LCOV record.
+    let generated_wrapper_line = generated.bytes().filter(|byte| *byte == b'\n').count() + 2;
+    generated.push_str(
+        "\n  return\n}\n\nfunc main() returns void {\n  __mux_test_body()\n  return\n}\n",
+    );
+
+    let result = (|| -> Result<(bool, bool, String), String> {
+        fs::create_dir(&artifact_dir)
+            .map_err(|error| format!("could not create temporary test directory: {error}"))?;
+        let mut source = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&source_path)
+            .map_err(|error| format!("could not create temporary test: {error}"))?;
+        source
+            .write_all(generated.as_bytes())
+            .map_err(|error| format!("could not write temporary test: {error}"))?;
+        let compiler = env::current_exe().map_err(|error| error.to_string())?;
+        let mut command = test_process_command(
+            &compiler,
+            &source_path,
+            &output_path,
+            coverage,
+            coverage_file.as_deref(),
+            coverage_sites_file.as_deref(),
+        );
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("could not start test compiler: {error}"))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            terminate_test_process(&mut child);
+            "test compiler did not provide a stdout pipe".to_string()
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            terminate_test_process(&mut child);
+            "test compiler did not provide a stderr pipe".to_string()
+        })?;
+        // Drain both pipes while the compiler and generated program run. A
+        // test that emits more than the OS pipe buffer must not deadlock while
+        // the runner waits for its process to exit.
+        let stdout_reader = spawn_test_output_reader(stdout);
+        let stderr_reader = spawn_test_output_reader(stderr);
+        let timeout = Duration::from_secs(timeout_seconds.max(1));
+        loop {
+            if child
+                .try_wait()
+                .map_err(|error| format!("could not inspect test process: {error}"))?
+                .is_some()
+            {
+                let (passed, text) = collect_test_output(&mut child, stdout_reader, stderr_reader)?;
+                return Ok((passed, false, text));
+            }
+            if started.elapsed() >= timeout {
+                terminate_test_process(&mut child);
+                let (_, output) = collect_test_output(&mut child, stdout_reader, stderr_reader)?;
+                return Ok((
+                    false,
+                    true,
+                    format!("timed out after {timeout_seconds}s\n{output}"),
+                ));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    })();
+
+    let (passed, timed_out, output) = result.unwrap_or_else(|error| (false, false, error));
+    let coverage_source = coverage_file.as_ref().map(|_| source_path.clone());
+    if coverage_file.is_none() {
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_dir_all(&artifact_dir);
+    }
+    TestResult {
+        case,
+        elapsed: started.elapsed(),
+        passed,
+        timed_out,
+        output,
+        coverage_file,
+        coverage_sites_file,
+        coverage_source,
+        coverage_generated_body_line: coverage.then_some(generated_body_line),
+        coverage_original_body_line: coverage.then_some(original_body_line),
+        coverage_generated_wrapper_line: coverage.then_some(generated_wrapper_line),
+    }
+}
+
+type TestOutputReader = JoinHandle<std::io::Result<Vec<u8>>>;
+
+fn spawn_test_output_reader<R: IoRead + Send + 'static>(mut reader: R) -> TestOutputReader {
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).map(|_| output)
+    })
+}
+
+fn collect_test_output(
+    child: &mut process::Child,
+    stdout_reader: TestOutputReader,
+    stderr_reader: TestOutputReader,
+) -> Result<(bool, String), String> {
+    let status = child
+        .wait()
+        .map_err(|error| format!("could not collect test output: {error}"))?;
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "test stdout reader panicked".to_string())?
+        .map_err(|error| format!("could not read test stdout: {error}"))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "test stderr reader panicked".to_string())?
+        .map_err(|error| format!("could not read test stderr: {error}"))?;
+    Ok((
+        status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        ),
+    ))
+}
+
+fn test_process_command(
+    compiler: &Path,
+    source: &Path,
+    output: &Path,
+    coverage: bool,
+    coverage_file: Option<&Path>,
+    coverage_sites_file: Option<&Path>,
+) -> Command {
+    #[cfg(unix)]
+    let mut command = {
+        // `setsid` makes the compiler and the executable it launches members
+        // of one fresh process group. Timeout cleanup can then terminate the
+        // complete test, including a child that is stuck in user code.
+        let mut command = Command::new("setsid");
+        command.arg(compiler);
+        command
+    };
+    #[cfg(not(unix))]
+    let mut command = Command::new(compiler);
+    command
+        .arg("run")
+        .arg(source)
+        .arg("--output")
+        .arg(output)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if coverage {
+        command.env("MUX_COVERAGE_MODE", "1");
+        if let Some(path) = coverage_file {
+            command.env("MUX_COVERAGE_FILE", path);
+        }
+        if let Some(path) = coverage_sites_file {
+            command.env("MUX_COVERAGE_SITES_FILE", path);
+        }
+    }
+    command
+}
+
+fn terminate_test_process(child: &mut process::Child) {
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill").args(["-TERM", &group]).status();
+        // Give the compiler a short grace period to flush diagnostics, then
+        // unconditionally kill the group. The compiler can have already
+        // exited while a generated test descendant still owns stdout/stderr;
+        // only checking the leader would leave that descendant alive and make
+        // `wait_with_output` hang indefinitely.
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = Command::new("kill").args(["-KILL", &group]).status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn test_case_matches(case: &TestCase, filter: Option<&str>, tag: Option<&str>) -> bool {
+    filter.is_none_or(|filter| case.name.contains(filter))
+        && tag.is_none_or(|tag| case.tags.iter().any(|candidate| candidate == tag))
+}
+
+fn decode_coverage_path(encoded: &str) -> Result<String, String> {
+    if !encoded.len().is_multiple_of(2) {
+        return Err("coverage source path has an odd hexadecimal length".to_string());
+    }
+    let mut bytes = Vec::with_capacity(encoded.len() / 2);
+    for pair in encoded.as_bytes().chunks_exact(2) {
+        let text = std::str::from_utf8(pair)
+            .map_err(|_| "coverage source path is not hexadecimal".to_string())?;
+        let byte = u8::from_str_radix(text, 16)
+            .map_err(|_| "coverage source path is not hexadecimal".to_string())?;
+        bytes.push(byte);
+    }
+    String::from_utf8(bytes).map_err(|_| "coverage source path is not UTF-8".to_string())
+}
+
+fn coverage_source_matches(recorded: &str, temporary: &Path) -> bool {
+    recorded == temporary.to_string_lossy()
+        || fs::canonicalize(recorded)
+            .ok()
+            .zip(fs::canonicalize(temporary).ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn coverage_record_body(contents: &str) -> Result<&str, String> {
+    contents
+        .strip_prefix("MUXCOV2\n")
+        .and_then(|body| body.strip_suffix("END\n"))
+        .ok_or_else(|| "coverage report is incomplete or has an unsupported format".to_string())
+}
+
+type StatementCoverage = BTreeMap<(String, usize), u64>;
+type BranchCoverage = BTreeMap<(String, usize, i64), [Option<u64>; 2]>;
+
+fn map_coverage_location(
+    result: &TestResult,
+    temporary: &Path,
+    recorded_path: &str,
+    mut line: usize,
+) -> Option<(String, usize)> {
+    if !coverage_source_matches(recorded_path, temporary) {
+        return Some((recorded_path.to_string(), line));
+    }
+    if result
+        .coverage_generated_wrapper_line
+        .is_some_and(|wrapper| line >= wrapper)
+    {
+        return None;
+    }
+    if let (Some(generated), Some(original)) = (
+        result.coverage_generated_body_line,
+        result.coverage_original_body_line,
+    ) && line >= generated
+    {
+        line = original.saturating_add(line - generated);
+    }
+    Some((result.case.file.to_string_lossy().to_string(), line))
+}
+
+fn merge_coverage_sites(
+    result: &TestResult,
+    temporary: &Path,
+    statements: &mut StatementCoverage,
+    branches: &mut BranchCoverage,
+    files_seen: &mut HashSet<String>,
+) -> Result<usize, String> {
+    let Some(site_file) = result.coverage_sites_file.as_ref() else {
+        return Err(format!(
+            "coverage site path missing for {}",
+            result.case.name
+        ));
+    };
+    let contents = fs::read_to_string(site_file).map_err(|error| {
+        format!(
+            "could not read coverage sites for {}: {error}",
+            result.case.name
+        )
+    })?;
+    let mut sites_seen = 0;
+    for (site_number, record) in contents.lines().enumerate() {
+        let fields: Vec<_> = record.split('\t').collect();
+        if fields.len() < 3 {
+            return Err(format!(
+                "malformed coverage site {}:{}",
+                site_file.display(),
+                site_number + 1
+            ));
+        }
+        let recorded_path = decode_coverage_path(fields[1])?;
+        let line = fields[2]
+            .parse::<usize>()
+            .map_err(|_| "coverage site line is not a positive integer".to_string())?;
+        let Some((source, line)) = map_coverage_location(result, temporary, &recorded_path, line)
+        else {
+            continue;
+        };
+        files_seen.insert(source.clone());
+        match fields[0] {
+            "D" if fields.len() == 3 => {
+                statements.entry((source, line)).or_insert(0);
+                sites_seen += 1;
+            }
+            "C" if fields.len() == 4 => {
+                let branch_id = fields[3]
+                    .parse::<i64>()
+                    .map_err(|_| "coverage branch id is invalid".to_string())?;
+                branches
+                    .entry((source, line, branch_id))
+                    .or_insert([None, None]);
+                sites_seen += 1;
+            }
+            _ => {
+                return Err(format!(
+                    "malformed coverage site {}:{}",
+                    site_file.display(),
+                    site_number + 1
+                ));
+            }
+        }
+    }
+    Ok(sites_seen)
+}
+
+fn merge_coverage_records(
+    result: &TestResult,
+    temporary: &Path,
+    statements: &mut StatementCoverage,
+    branches: &mut BranchCoverage,
+    files_seen: &mut HashSet<String>,
+) -> Result<(), String> {
+    let Some(record_file) = result.coverage_file.as_ref() else {
+        return Err(format!(
+            "coverage record path missing for {}",
+            result.case.name
+        ));
+    };
+    let contents = fs::read_to_string(record_file).map_err(|error| {
+        format!(
+            "could not read coverage records for {}: {error}",
+            result.case.name
+        )
+    })?;
+    for (record_number, record) in coverage_record_body(&contents)?.lines().enumerate() {
+        let fields: Vec<_> = record.split('\t').collect();
+        if fields.len() < 4 {
+            return Err(format!(
+                "malformed coverage record {}:{}",
+                record_file.display(),
+                record_number + 1
+            ));
+        }
+        let recorded_path = decode_coverage_path(fields[1])?;
+        let line = fields[2]
+            .parse::<usize>()
+            .ok()
+            .filter(|line| *line > 0)
+            .ok_or_else(|| "coverage line is not a positive integer".to_string())?;
+        let hits = fields
+            .last()
+            .and_then(|field| field.parse::<u64>().ok())
+            .filter(|hits| *hits > 0)
+            .ok_or_else(|| "coverage count is not a positive integer".to_string())?;
+        let Some((source, line)) = map_coverage_location(result, temporary, &recorded_path, line)
+        else {
+            continue;
+        };
+        files_seen.insert(source.clone());
+        match fields[0] {
+            "S" if fields.len() == 4 => {
+                let count = statements.entry((source, line)).or_default();
+                *count = count
+                    .checked_add(hits)
+                    .ok_or_else(|| "merged coverage counter overflow".to_string())?;
+            }
+            "B" if fields.len() == 6 => {
+                let branch_id = fields[3]
+                    .parse::<i64>()
+                    .map_err(|_| "coverage branch id is invalid".to_string())?;
+                let taken = fields[4]
+                    .parse::<i32>()
+                    .map_err(|_| "coverage branch outcome is invalid".to_string())?;
+                if !matches!(taken, 0 | 1) {
+                    return Err("coverage branch outcome is not boolean".to_string());
+                }
+                let counts = branches
+                    .entry((source, line, branch_id))
+                    .or_insert([None, None]);
+                let count = counts[taken as usize]
+                    .unwrap_or(0)
+                    .checked_add(hits)
+                    .ok_or_else(|| "merged coverage counter overflow".to_string())?;
+                counts[taken as usize] = Some(count);
+            }
+            _ => return Err(format!("malformed coverage record {}", record_number + 1)),
+        }
+    }
+    Ok(())
+}
+
+fn append_lcov_source(
+    report: &mut String,
+    source: &str,
+    statements: &StatementCoverage,
+    branches: &BranchCoverage,
+) {
+    report.push_str("TN:\n");
+    report.push_str(&format!("SF:{source}\n"));
+    let source_lines: Vec<_> = statements
+        .iter()
+        .filter(|((statement_source, _), _)| statement_source == source)
+        .collect();
+    let line_found = source_lines.len();
+    let line_hit = source_lines.iter().filter(|(_, count)| **count > 0).count();
+    report.push_str(&format!("LF:{line_found}\nLH:{line_hit}\n"));
+    for ((statement_source, line), count) in statements {
+        if statement_source == source {
+            report.push_str(&format!("DA:{line},{count}\n"));
+        }
+    }
+
+    let branch_sites: BTreeMap<(usize, i64), [Option<u64>; 2]> = branches
+        .iter()
+        .filter_map(|((branch_source, line, branch_id), counts)| {
+            (branch_source == source).then_some(((*line, *branch_id), *counts))
+        })
+        .collect();
+    if branch_sites.is_empty() {
+        report.push_str("end_of_record\n");
+        return;
+    }
+    let branch_total = branch_sites.len() * 2;
+    let branch_hit = branch_sites
+        .values()
+        .map(|counts| usize::from(counts[0].is_some()) + usize::from(counts[1].is_some()))
+        .sum::<usize>();
+    report.push_str(&format!("BRF:{branch_total}\nBRH:{branch_hit}\n"));
+    for ((line, branch_id), counts) in branch_sites {
+        for (taken, count) in counts.into_iter().enumerate() {
+            let hit = count.map_or_else(|| "-".to_string(), |value| value.to_string());
+            report.push_str(&format!("BRDA:{line},0,{branch_id}-{taken},{hit}\n"));
+        }
+    }
+    report.push_str("end_of_record\n");
+}
+
+fn merge_coverage(results: &[TestResult], output: &Path) -> Result<(), String> {
+    let mut statements = StatementCoverage::new();
+    let mut branches = BranchCoverage::new();
+    let mut files_seen = HashSet::new();
+    let mut sites_seen = 0;
+
+    for result in results {
+        let temporary = result
+            .coverage_source
+            .as_deref()
+            .ok_or_else(|| "coverage temporary source path missing".to_string())?;
+        sites_seen += merge_coverage_sites(
+            result,
+            temporary,
+            &mut statements,
+            &mut branches,
+            &mut files_seen,
+        )?;
+        merge_coverage_records(
+            result,
+            temporary,
+            &mut statements,
+            &mut branches,
+            &mut files_seen,
+        )?;
+    }
+    if sites_seen == 0 || files_seen.is_empty() {
+        return Err("coverage produced no executable records".to_string());
+    }
+
+    let mut source_names = BTreeSet::new();
+    source_names.extend(statements.keys().map(|(source, _)| source.clone()));
+    source_names.extend(branches.keys().map(|(source, _, _)| source.clone()));
+    let mut report = String::new();
+    for source in source_names {
+        append_lcov_source(&mut report, &source, &statements, &branches);
+    }
+    fs::write(output, report)
+        .map_err(|error| format!("could not write {}: {error}", output.display()))
+}
+
+fn discover_test_cases(
+    requested_files: &[PathBuf],
+    filter: Option<&str>,
+    tag: Option<&str>,
+) -> Result<Vec<TestCase>, String> {
+    let mut files = Vec::new();
+    if requested_files.is_empty() {
+        collect_mux_files(Path::new("tests"), &mut files)
+            .map_err(|error| format!("mux test: could not discover tests: {error}"))?;
+    } else {
+        for path in requested_files {
+            collect_mux_files(path, &mut files)
+                .map_err(|error| format!("mux test: could not read {}: {error}", path.display()))?;
+        }
+    }
+    files.sort();
+    files.dedup();
+
+    let mut cases = Vec::new();
+    for path in files {
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("mux test: could not read {}: {error}", path.display()))?;
+        let start_id = cases.len();
+        let mut found = extract_test_cases(&path, &source, start_id)
+            .map_err(|error| format!("mux test: {error}"))?;
+        cases.append(&mut found);
+    }
+    cases.retain(|case| test_case_matches(case, filter, tag));
+    if cases.is_empty() {
+        return Err("mux test: no matching tests found".to_string());
+    }
+    Ok(cases)
+}
+
+fn run_test_cases(
+    cases: Vec<TestCase>,
+    jobs: usize,
+    fail_fast: bool,
+    timeout_seconds: u64,
+    coverage: bool,
+) -> Vec<TestResult> {
+    let queue = Arc::new(Mutex::new(VecDeque::from(cases)));
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_count = jobs.max(1).min(queue.lock().map_or(1, |items| items.len()));
+    let mut workers = Vec::new();
+    for _ in 0..worker_count {
+        let queue = Arc::clone(&queue);
+        let results = Arc::clone(&results);
+        let stop = Arc::clone(&stop);
+        workers.push(thread::spawn(move || {
+            loop {
+                if fail_fast && stop.load(Ordering::Acquire) {
+                    break;
+                }
+                let case = queue.lock().ok().and_then(|mut items| items.pop_front());
+                let Some(case) = case else { break };
+                let result = run_one_test(case, timeout_seconds, coverage);
+                if !result.passed {
+                    stop.store(true, Ordering::Release);
+                }
+                if let Ok(mut completed) = results.lock() {
+                    completed.push(result);
+                }
+            }
+        }));
+    }
+    for worker in workers {
+        let _ = worker.join();
+    }
+
+    let mut results = results
+        .lock()
+        .map_or_else(|_| Vec::new(), |mut value| std::mem::take(&mut *value));
+    results.sort_by(|left, right| {
+        left.case
+            .file
+            .cmp(&right.case.file)
+            .then_with(|| left.case.name.cmp(&right.case.name))
+    });
+    results
+}
+
+fn finish_coverage(results: &[TestResult]) -> bool {
+    let merge_result = merge_coverage(results, Path::new("lcov.info"));
+    for result in results {
+        if let Some(source) = result.coverage_source.as_ref() {
+            let _ = fs::remove_file(source);
+        }
+        if let Some(record_file) = result.coverage_file.as_ref()
+            && let Some(directory) = record_file.parent()
+        {
+            let _ = fs::remove_dir_all(directory);
+        }
+    }
+    match merge_result {
+        Ok(()) => false,
+        Err(error) => {
+            eprintln!("mux test: coverage failed: {error}");
+            true
+        }
+    }
+}
+
+fn print_text_results(results: &[TestResult]) {
+    for result in results {
+        let status = if result.passed { "PASS" } else { "FAIL" };
+        let tags = if result.case.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", result.case.tags.join(","))
+        };
+        println!(
+            "{status} {} ({:.2}s) - {}{tags}",
+            result.case.name,
+            result.elapsed.as_secs_f64(),
+            result.case.file.display(),
+        );
+        if !result.passed {
+            if !result.output.trim().is_empty() {
+                eprintln!("{}", result.output.trim_end());
+            }
+            if result.timed_out {
+                eprintln!("mux test: test process was terminated after its timeout");
+            }
+        }
+    }
+    println!(
+        "\n{} test(s): {} passed, {} failed",
+        results.len(),
+        results.iter().filter(|result| result.passed).count(),
+        results.iter().filter(|result| !result.passed).count()
+    );
+}
+
+fn print_json_results(results: &[TestResult]) {
+    print!("[");
+    for (index, result) in results.iter().enumerate() {
+        if index > 0 {
+            print!(",");
+        }
+        print!(
+            "{{\"name\":\"{}\",\"file\":\"{}\",\"tags\":[{}],\"passed\":{},\"timed_out\":{},\"duration_ms\":{},\"output\":\"{}\"}}",
+            fix_json_escape(&result.case.name),
+            fix_json_escape(&result.case.file.to_string_lossy()),
+            result
+                .case
+                .tags
+                .iter()
+                .map(|tag| format!("\"{}\"", fix_json_escape(tag)))
+                .collect::<Vec<_>>()
+                .join(","),
+            result.passed,
+            result.timed_out,
+            result.elapsed.as_millis(),
+            fix_json_escape(&result.output),
+        );
+    }
+    println!("]");
+}
+
+fn print_junit_results(results: &[TestResult]) {
+    let failures = results.iter().filter(|result| !result.passed).count();
+    println!(
+        "<testsuite tests=\"{}\" failures=\"{}\">",
+        results.len(),
+        failures
+    );
+    for result in results {
+        let time = format!("{:.3}", result.elapsed.as_secs_f64());
+        println!(
+            "  <testcase classname=\"{}\" name=\"{}\" time=\"{}\">",
+            xml_escape(&result.case.file.to_string_lossy()),
+            xml_escape(&result.case.name),
+            time
+        );
+        for tag in &result.case.tags {
+            println!(
+                "    <property name=\"tag\" value=\"{}\" />",
+                xml_escape(tag)
+            );
+        }
+        if !result.passed {
+            let message = if result.timed_out {
+                "test process timed out"
+            } else {
+                result.output.trim()
+            };
+            println!(
+                "    <failure message=\"{}\">{}</failure>",
+                xml_escape(message),
+                xml_escape(message)
+            );
+        }
+        println!("  </testcase>");
+    }
+    println!("</testsuite>");
+}
+
+fn print_test_results(format: TestOutputFormat, results: &[TestResult]) {
+    match format {
+        TestOutputFormat::Text => print_text_results(results),
+        TestOutputFormat::Json => print_json_results(results),
+        TestOutputFormat::Junit => print_junit_results(results),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_test_command(
+    requested_files: &[PathBuf],
+    jobs: usize,
+    filter: Option<&str>,
+    tag: Option<&str>,
+    fail_fast: bool,
+    format: TestOutputFormat,
+    timeout_seconds: u64,
+    coverage: bool,
+) -> i32 {
+    let cases = match discover_test_cases(requested_files, filter, tag) {
+        Ok(cases) => cases,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    let results = run_test_cases(cases, jobs, fail_fast, timeout_seconds, coverage);
+    let coverage_failed = coverage && finish_coverage(&results);
+    print_test_results(format, &results);
+    i32::from(results.iter().any(|result| !result.passed) || coverage_failed)
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
     let cli = Cli::parse();
     match &cli.command {
@@ -710,6 +1785,28 @@ fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
         Commands::Format { file } => {
             eprintln!("formatting is not yet implemented for {}", file.display());
             process::exit(1);
+        }
+        Commands::Test {
+            files,
+            jobs,
+            filter,
+            tag,
+            fail_fast,
+            format,
+            timeout,
+            coverage,
+        } => {
+            let status = run_test_command(
+                files,
+                *jobs,
+                filter.as_deref(),
+                tag.as_deref(),
+                *fail_fast,
+                *format,
+                *timeout,
+                *coverage,
+            );
+            process::exit(status);
         }
     }
 }
@@ -1807,7 +2904,20 @@ fn native_runtime_deps(target_os: &str) -> &'static [&'static str] {
 /// budget. Keeping them together also means the whole link line can be read in
 /// one place.
 fn build_linker_args(object_file: &Path, lib_dir: &Path) -> Vec<std::ffi::OsString> {
-    build_linker_args_for(env::consts::OS, object_file, lib_dir)
+    // Unit tests use synthetic object paths and expect the directory-based
+    // resolution below. A real link always receives an object that was just
+    // produced by clang, so only then should the explicit archive override
+    // participate in linker argument construction.
+    let explicit_runtime = object_file
+        .is_file()
+        .then(runtime_lib_path_from_env)
+        .flatten();
+    build_linker_args_for_with_runtime(
+        env::consts::OS,
+        object_file,
+        lib_dir,
+        explicit_runtime.as_deref(),
+    )
 }
 
 fn append_linker_output(args: &mut Vec<std::ffi::OsString>, output: &Path) {
@@ -1822,10 +2932,20 @@ fn append_linker_output(args: &mut Vec<std::ffi::OsString>, output: &Path) {
 /// so every platform's dialect except the host's is unreachable from a test. CI
 /// runs on Linux, and the Windows spelling of these flags was wrong for months
 /// with nothing able to catch it.
+#[cfg(test)]
 fn build_linker_args_for(
     target_os: &str,
     object_file: &Path,
     lib_dir: &Path,
+) -> Vec<std::ffi::OsString> {
+    build_linker_args_for_with_runtime(target_os, object_file, lib_dir, None)
+}
+
+fn build_linker_args_for_with_runtime(
+    target_os: &str,
+    object_file: &Path,
+    lib_dir: &Path,
+    explicit_runtime: Option<&Path>,
 ) -> Vec<std::ffi::OsString> {
     let windows = target_os == "windows";
     let macos = target_os == "macos";
@@ -1893,7 +3013,9 @@ fn build_linker_args_for(
     } else {
         "libmux_runtime.a"
     };
-    if runtime_static.exists()
+    if let Some(explicit_runtime) = explicit_runtime {
+        linker_args.push(explicit_runtime.as_os_str().to_owned());
+    } else if runtime_static.exists()
         && runtime_static.file_name().and_then(std::ffi::OsStr::to_str)
             != Some(expected_static_name)
     {
@@ -1945,10 +3067,14 @@ fn main() {
     analyze_semantics_or_exit(&mut analyzer, &nodes, file_id, &mut files, deny_warnings);
 
     let context = inkwell::context::Context::create();
-    let source_name = file_path.file_name().map_or_else(
-        || file_path.to_string_lossy().into_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
+    let source_name = if env::var_os("MUX_COVERAGE_MODE").is_some() {
+        file_path.to_string_lossy().into_owned()
+    } else {
+        file_path.file_name().map_or_else(
+            || file_path.to_string_lossy().into_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    };
     let mut codegen = codegen::CodeGenerator::new(&context, &mut analyzer, &source_name);
 
     let stem = file_path
@@ -2003,11 +3129,20 @@ fn main() {
     } else {
         let source_path = file_path.with_extension("");
         let parent = source_path.parent().unwrap_or(Path::new("."));
-        parent.join(
-            source_path
-                .file_stem()
-                .unwrap_or_else(|| source_path.as_os_str()),
-        )
+        let stem = source_path
+            .file_stem()
+            .unwrap_or_else(|| source_path.as_os_str());
+        let output = parent.join(stem);
+        // Native Windows executables conventionally carry `.exe`; make the
+        // compiler's default output discoverable by shells and tooling while
+        // leaving an explicit `-o` path untouched.
+        #[cfg(windows)]
+        let output = {
+            let mut output = output;
+            output.set_extension("exe");
+            output
+        };
+        output
     };
 
     let mut linker_args = build_linker_args(&object_file, &lib_dir);
@@ -2053,21 +3188,138 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        REQUIRED_LLVM_MAJOR, append_linker_output, build_linker_args, build_linker_args_for,
-        clang_failure_detail, clang_version_output, compiling_file, dir_holding_runtime_lib,
-        extract_clang_major, find_runtime_lib_in_dir, format_panic_detail,
-        internal_compiler_error_report, llvm_config_candidates, materialize_span_edits,
-        native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict, print_version_banner,
-        relativize_to_cwd, report_clang_for_doctor, report_runtime_for_doctor,
-        runtime_lib_dir_is_static_only, set_compiling_file, status_marker,
-        validate_llvm_for_doctor,
+        REQUIRED_LLVM_MAJOR, TestCase, TestResult, append_linker_output, build_linker_args,
+        build_linker_args_for, build_linker_args_for_with_runtime, clang_failure_detail,
+        clang_version_output, compiling_file, dir_holding_runtime_lib, extract_clang_major,
+        find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
+        llvm_config_candidates, materialize_span_edits, merge_coverage, native_runtime_deps,
+        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, relativize_to_cwd,
+        report_clang_for_doctor, report_runtime_for_doctor, runtime_lib_dir_is_static_only,
+        set_compiling_file, status_marker, validate_llvm_for_doctor,
     };
     use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, SpanEdit};
     use crate::lexer::Span;
+    use clap::Parser as _;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn coverage_reports_require_a_complete_counted_format() {
+        for incomplete in ["", "MUXCOV2\n", "MUXCOV2\nS\ta\t1\t3\n", "END\n"] {
+            assert!(super::coverage_record_body(incomplete).is_err());
+        }
+        assert_eq!(
+            super::coverage_record_body("MUXCOV2\nS\ta\t1\t3\nEND\n").unwrap(),
+            "S\ta\t1\t3\n"
+        );
+        assert!(super::coverage_record_body("MUXCOV2\nEND\ntrailing").is_err());
+    }
 
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
+
+    #[test]
+    fn merges_source_coverage_with_lcov_counters() {
+        let root = std::env::temp_dir().join(format!(
+            "mux-coverage-merge-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let record = root.join("coverage.records");
+        let sites = root.join("coverage.sites");
+        let output = root.join("lcov.info");
+        std::fs::write(
+            &sites,
+            "D\t736f757263652e6d7578\t3\nD\t736f757263652e6d7578\t5\nC\t736f757263652e6d7578\t4\t9\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &record,
+            "MUXCOV2\nS\t736f757263652e6d7578\t3\t1\nB\t736f757263652e6d7578\t4\t9\t1\t1\nEND\n",
+        )
+        .unwrap();
+        let result = TestResult {
+            case: TestCase {
+                id: 0,
+                name: "coverage".to_string(),
+                file: PathBuf::from("source.mux"),
+                source_without_tests: String::new(),
+                body: String::new(),
+                body_start_line: 1,
+                timeout_seconds: None,
+                tags: Vec::new(),
+            },
+            elapsed: std::time::Duration::ZERO,
+            passed: true,
+            timed_out: false,
+            output: String::new(),
+            coverage_file: Some(record.clone()),
+            coverage_sites_file: Some(sites),
+            coverage_source: Some(root.join("generated.mux")),
+            coverage_generated_body_line: None,
+            coverage_original_body_line: None,
+            coverage_generated_wrapper_line: None,
+        };
+
+        merge_coverage(&[result], &output).unwrap();
+        let report = std::fs::read_to_string(&output).unwrap();
+        assert!(report.contains("LF:2\nLH:1\n"));
+        assert!(report.contains("DA:5,0\n"));
+        assert!(report.contains("BRF:2\nBRH:1\n"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn keeps_same_line_coverage_branches_separate_by_id() {
+        let root = std::env::temp_dir().join(format!(
+            "mux-coverage-branch-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let record = root.join("coverage.records");
+        let sites = root.join("coverage.sites");
+        let output = root.join("lcov.info");
+        std::fs::write(
+            &sites,
+            "C\t736f757263652e6d7578\t5\t3\nC\t736f757263652e6d7578\t5\t4\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &record,
+            "MUXCOV2\nB\t736f757263652e6d7578\t5\t3\t0\t7\nB\t736f757263652e6d7578\t5\t4\t1\t11\nEND\n",
+        )
+        .unwrap();
+        let result = TestResult {
+            case: TestCase {
+                id: 0,
+                name: "same-line-branches".to_string(),
+                file: PathBuf::from("source.mux"),
+                source_without_tests: String::new(),
+                body: String::new(),
+                body_start_line: 1,
+                timeout_seconds: None,
+                tags: Vec::new(),
+            },
+            elapsed: std::time::Duration::ZERO,
+            passed: true,
+            timed_out: false,
+            output: String::new(),
+            coverage_file: Some(record),
+            coverage_sites_file: Some(sites),
+            coverage_source: Some(root.join("generated.mux")),
+            coverage_generated_body_line: None,
+            coverage_original_body_line: None,
+            coverage_generated_wrapper_line: None,
+        };
+
+        merge_coverage(&[result], &output).unwrap();
+        let report = std::fs::read_to_string(&output).unwrap();
+        assert!(report.contains("BRF:4\nBRH:2\n"));
+        assert!(report.contains("BRDA:5,0,3-0,7\n"));
+        assert!(report.contains("BRDA:5,0,4-1,11\n"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn materializes_text_span_edits_against_the_current_source() {
@@ -2362,6 +3614,31 @@ mod tests {
         assert!(args.iter().any(|a| a == "-lmux_runtime"));
         let l_index = args.iter().position(|a| a == "-L").expect("-L present");
         assert_eq!(args[l_index + 1], dir.as_os_str());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_runtime_path_wins_over_a_neighboring_shared_library() {
+        let dir = unique_tmp("rtlib_explicit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join(static_lib_name());
+        let shared = dir.join(dynamic_lib_name());
+        std::fs::write(&archive, b"archive").unwrap();
+        std::fs::write(&shared, b"shared").unwrap();
+
+        let args = build_linker_args_for_with_runtime(
+            "linux",
+            Path::new("scratch.o"),
+            &dir,
+            Some(&archive),
+        );
+        assert!(args.iter().any(|arg| arg == archive.as_os_str()));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == std::ffi::OsStr::new("-lmux_runtime"))
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2788,5 +4065,129 @@ mod tests {
     fn version_banner_prints_without_error() {
         // Exercise the printing path used by `mux version`.
         print_version_banner();
+    }
+
+    #[test]
+    fn test_block_extraction_removes_all_blocks_and_preserves_bodies() {
+        let path = Path::new("fixture.mux");
+        let source = r#"
+test "first" {
+    print("one")
+}
+
+func helper() returns void {
+    return
+}
+
+test "second" {
+    if true {
+        helper()
+    }
+}
+"#;
+        let cases = super::extract_test_cases(path, source, 0).expect("test blocks should extract");
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].name, "first");
+        assert!(cases[0].body.contains("print(\"one\")"));
+        assert_eq!(cases[1].name, "second");
+        assert!(cases[1].body.contains("helper()"));
+        assert!(!cases[0].source_without_tests.contains("test \"first\""));
+        assert!(!cases[0].source_without_tests.contains("test \"second\""));
+        assert!(cases[0].source_without_tests.contains("func helper"));
+    }
+
+    #[test]
+    fn test_annotations_capture_timeout_and_tags() {
+        let path = Path::new("fixture.mux");
+        let source = r#"
+// mux:test timeout=3 tags=slow,integration,slow
+test "annotated" {
+    return
+}
+"#;
+        let cases = super::extract_test_cases(path, source, 0).expect("annotation should parse");
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].timeout_seconds, Some(3));
+        assert_eq!(cases[0].tags, vec!["slow", "integration"]);
+    }
+
+    #[test]
+    fn test_annotations_reject_malformed_values() {
+        let path = Path::new("fixture.mux");
+        let missing_separator = "// mux:testtimeout=3\ntest \"bad\" {\n    return\n}\n";
+        let error = super::extract_test_cases(path, missing_separator, 0)
+            .expect_err("annotation without a separator should fail");
+        assert!(error.contains("separate its name"), "{error}");
+
+        let invalid_tag = "// mux:test tags=slow,not/valid\ntest \"bad\" {\n    return\n}\n";
+        let error = super::extract_test_cases(path, invalid_tag, 0)
+            .expect_err("annotation with an invalid tag should fail");
+        assert!(error.contains("invalid test annotation tag"), "{error}");
+    }
+
+    #[test]
+    fn test_cli_rejects_non_positive_timeout_and_invalid_tag() {
+        assert!(super::Cli::try_parse_from(["mux", "test", "--timeout", "0"]).is_err());
+        assert!(super::Cli::try_parse_from(["mux", "test", "--tag", "slow/integration"]).is_err());
+        assert!(
+            super::Cli::try_parse_from(["mux", "test", "--timeout", "2", "--tag", "slow"]).is_ok()
+        );
+    }
+
+    #[test]
+    fn test_filter_and_tag_select_only_matching_cases() {
+        let path = Path::new("fixture.mux");
+        let source = r#"
+// mux:test tags=unit,fast
+test "adds numbers" {
+    return
+}
+
+// mux:test tags=integration
+test "talks to service" {
+    return
+}
+"#;
+        let cases = super::extract_test_cases(path, source, 0).expect("tests should extract");
+        assert!(super::test_case_matches(
+            &cases[0],
+            Some("adds"),
+            Some("unit")
+        ));
+        assert!(!super::test_case_matches(
+            &cases[0],
+            Some("service"),
+            Some("unit")
+        ));
+        assert!(super::test_case_matches(
+            &cases[1],
+            None,
+            Some("integration")
+        ));
+        assert!(!super::test_case_matches(&cases[1], None, Some("unit")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_output_collection_drains_large_pipes() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "head -c 131072 /dev/zero"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("shell should start");
+        let stdout = child.stdout.take().expect("stdout should be piped");
+        let stderr = child.stderr.take().expect("stderr should be piped");
+        let stdout_reader = super::spawn_test_output_reader(stdout);
+        let stderr_reader = super::spawn_test_output_reader(stderr);
+        let (passed, output) = super::collect_test_output(&mut child, stdout_reader, stderr_reader)
+            .expect("large output should be collected");
+        assert!(passed);
+        assert_eq!(output.len(), 131_072);
+    }
+
+    #[test]
+    fn test_report_xml_escapes_metadata() {
+        assert_eq!(super::xml_escape("a<&\"'"), "a&lt;&amp;&quot;&apos;");
     }
 }

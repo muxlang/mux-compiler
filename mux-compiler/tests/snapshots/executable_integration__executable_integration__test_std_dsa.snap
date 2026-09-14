@@ -47,15 +47,24 @@ tree is_empty after clear: true
 graph is_empty: true
 graph len: 6
 graph is_empty: false
+graph degree A after duplicate: 2
 graph neighbors of A: [B, C]
 graph neighbors of B: [D]
 graph neighbors of Z: []
 graph bfs from A: [A, B, C, D, E]
 graph bfs from D: [D, E]
+graph dfs from A: [A, B, D, E, C]
+graph topological sort: [X, A, B, C, D, E]
+graph shortest path: [A, B, D, E]
 graph to_list: [X, A, B, C, D, E]
 graph to_list deterministic: true
 graph len after clear: 0
 graph is_empty after clear: true
+undirected reverse edge: true
+undirected connected: true
+undirected acyclic: true
+undirected cycle: true
+undirected missing path: true
 === ALGORITHM TESTS ===
 unsorted: [9, 3, 5, 1, 7, 2, 8, 4]
 sorted: [1, 2, 3, 4, 5, 7, 8, 9]
@@ -63,7 +72,7 @@ search stack: [1, 3, 5, 7, 9]
 binary search for 5: 2
 binary search for 1: 0
 binary search for 9: 4
-binary search for 99: -1
+binary search for 99: none
 max: 9
 min: 1
 reverse: [9, 7, 5, 3, 1]

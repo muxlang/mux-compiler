@@ -1,0 +1,67 @@
+// These APIs are explicit program methods. The compiler must not synthesize
+// field mapping or silently change the interface signatures.
+
+import std.net
+import std.data.json
+import std.data.csv
+
+class ApiModel is JsonRepresentable, CsvRepresentable {
+    string value = ""
+
+    func to_json() returns result<Json, JsonError> {
+        return json.parse("{\"value\":\"\"}")
+    }
+
+    func to_csv() returns result<string, CsvError> {
+        return ok(self.value)
+    }
+
+    common func from_json(string text) returns result<ApiModel, JsonError> {
+        auto parsed = json.parse(text)
+        if parsed.is_err() {
+            return err(parsed.error())
+        }
+        return ok(ApiModel.new())
+    }
+
+    common func from_csv(string text) returns result<ApiModel, CsvError> {
+        auto model = ApiModel.new()
+        model.value = text
+        return ok(model)
+    }
+}
+
+func main() returns void {
+    auto model = ApiModel.new()
+    model.value = "widget"
+    match model.to_json() {
+        ok(_) { print("explicit json") }
+        err(_) { print("json failed") }
+    }
+    match model.to_csv() {
+        ok(text) { print("csv: " + text) }
+        err(_) { print("csv failed") }
+    }
+    match ApiModel.from_json("{}") {
+        ok(_) { print("explicit json parser") }
+        err(_) { print("json parser failed") }
+    }
+    match ApiModel.from_csv("gadget") {
+        ok(parsed) { print("explicit csv parser: " + parsed.value) }
+        err(_) { print("csv parser failed") }
+    }
+
+    auto router = net.HttpRouter.new()
+    auto oauth = router.oauth_oidc(
+        "https://issuer.example",
+        "api",
+        "https://issuer.example/.well-known/jwks.json"
+    )
+    if oauth.is_err() {
+        // Verification is a typed runtime boundary until the provider is wired.
+        print("oauth boundary")
+    } else {
+        print("oauth configured")
+    }
+    return
+}

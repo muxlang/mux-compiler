@@ -1,0 +1,34 @@
+import std.data.json
+
+func run() returns result<void, JsonError> {
+    print("=== std.data.json duplicate policy smoke test ===")
+
+    auto rejected = json.parse("{\"n\":1,\"n\":2}")
+    if rejected.is_err() {
+        print("reject: duplicate")
+    }
+
+    auto first = use json.parse_with(
+        "{\"n\":1,\"n\":9007199254740993}",
+        json.JsonDuplicatePolicy.First
+    )
+    auto first_text = use first.stringify(none)
+    print("first: " + first_text)
+
+    auto last = use json.parse_with(
+        "{\"n\":1,\"n\":2.50}",
+        json.JsonDuplicatePolicy.Last
+    )
+    auto last_text = use last.stringify(none)
+    print("last: " + last_text)
+    print("=== std.data.json duplicate policy done ===")
+    return ok()
+}
+
+func main() returns void {
+    auto result = run()
+    if result.is_err() {
+        print(result.error().message())
+    }
+    return
+}

@@ -1,46 +1,53 @@
-import std.assert
 import std.env
 import std.net
 
 func require_env(string key) returns string {
-    match env.get(key) {
-        some(value) { return value }
-        none {
-            assert.assert(false, "missing environment variable: " + key)
-            return ""
-        }
+    auto result = env.get(key)
+    if result.is_err() {
+        assert(false, "failed to read environment variable: " + result.error().message())
+        return ""
     }
+    auto optional = result.value()
+    if optional.is_none() {
+        assert(false, "missing environment variable: " + key)
+        return ""
+    }
+    return optional.value()
 }
 
 func main() returns void {
     auto addr = require_env("MUX_TEST_TCP_ADDR")
-    const list<int> payload = [109, 117, 120]
-    const list<int> expected = [65, 67, 75, 58, 109, 117, 120]
+    const bytes payload = b"mux"
+    const bytes expected = b"ACK:mux"
     print("Starting external tcp integration test")
 
-    match net.TcpStream.connect(addr) {
-        ok(stream) {
-            match stream.write(payload) {
-                ok(count) { assert.assert(count == 3, "expected to write 3 bytes") }
-                err(e) { assert.assert(false, "tcp write failed: " + e) }
-            }
-
-            match stream.read(16) {
-                ok(bytes) {
-                    assert.assert(bytes.size() == expected.size(), "unexpected tcp response length")
-                    auto idx = 0
-                    while idx < expected.size() {
-                        assert.assert(bytes[idx] == expected[idx], "unexpected tcp byte at index " + idx.to_string())
-                        idx = idx + 1
-                    }
-                    print("tcp ack received")
-                }
-                err(e) { assert.assert(false, "tcp read failed: " + e) }
-            }
-
-            stream.close()
+    auto connect_result = net.TcpStream.connect(addr)
+    if connect_result.is_err() {
+        assert(false, "tcp connect failed: " + connect_result.error().message())
+    } else {
+        auto stream = connect_result.value()
+        auto write_result = stream.write(payload)
+        if write_result.is_err() {
+            assert(false, "tcp write failed: " + write_result.error().message())
+        } else {
+            assert(write_result.value() == 3, "expected to write 3 bytes")
         }
-        err(e) { assert.assert(false, "tcp connect failed: " + e) }
+
+        auto read_result = stream.read(16)
+        if read_result.is_err() {
+            assert(false, "tcp read failed: " + read_result.error().message())
+        } else {
+            auto response = read_result.value()
+            assert(response.size() == expected.size(), "unexpected tcp response length")
+            auto idx = 0
+            while idx < expected.size() {
+                assert(response[idx] == expected[idx], "unexpected tcp byte at index " + idx.to_string())
+                idx = idx + 1
+            }
+            print("tcp ack received")
+        }
+
+        stream.close()
     }
 
     print("external tcp integration test passed")

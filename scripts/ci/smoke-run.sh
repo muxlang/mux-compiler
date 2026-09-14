@@ -16,6 +16,12 @@ set -euo pipefail
 mux="${1:?usage: smoke-run.sh <path-to-mux-executable> [program ...]}"
 shift
 
+smoke_tmp="$(mktemp -d "${TMPDIR:-/tmp}/mux-smoke.XXXXXX")"
+cleanup() {
+  rm -rf -- "$smoke_tmp"
+}
+trap cleanup EXIT INT TERM
+
 if [[ ! -x "$mux" && ! -f "$mux" ]]; then
   echo "no mux executable at $mux" >&2
   printf '::error::no mux executable at %s\n' "$mux"
@@ -77,17 +83,19 @@ diagnose() {
   ( unset MUX_RUNTIME_LIB; RUST_BACKTRACE=1 run_bounded 120 "$mux" run "$program" ) >&2 2>&1 || true
 }
 
-printf 'print("hello")\n' > smoke.mux
+smoke_source="$smoke_tmp/smoke.mux"
+smoke_output="$smoke_tmp/smoke.out"
+printf 'print("hello")\n' > "$smoke_source"
 
 # Output goes to a file rather than a command substitution: a substitution's pipe
 # stays open until every writer exits, so a grandchild outliving `mux run` would
 # block the caller past its own timeout.
-if ! run_program smoke.mux > smoke.out; then
-  diagnose smoke.mux
+if ! run_program "$smoke_source" > "$smoke_output"; then
+  diagnose "$smoke_source"
   printf '::error::%s failed to compile and run smoke.mux\n' "$mux"
   exit 1
 fi
-out="$(cat smoke.out)"
+out="$(cat "$smoke_output")"
 if [[ "$out" != "hello" ]]; then
   echo "unexpected output: $out" >&2
   printf '::error::%s produced unexpected output: %s\n' "$mux" "$out"

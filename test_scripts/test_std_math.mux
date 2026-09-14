@@ -21,4 +21,48 @@ import std.math as m
 float cosine = m.cos(0.0)
 print("Test 4: m.cos(0.0) = " + cosine.to_string())
 
+print("Test 5: math.trunc(-1.75) = " + math.trunc(-1.75).to_string())
+print("Test 6: math.fract(1.75) = " + math.fract(1.75).to_string())
+print("Test 7: math.sinh(0.0) = " + math.sinh(0.0).to_string())
+print("Test 8: math.is_finite(1.0) = " + math.is_finite(1.0).to_string())
+print("Test 9: math.gcd(84, 30) = " + math.gcd(84, 30).to_string())
+print("Test 10: math.lcm(21, 6) = " + math.lcm(21, 6).to_string())
+print("Test 11: math.isqrt(15) = " + math.isqrt(15).to_string())
+print("Test 12: math.exp2(10.0) = " + math.exp2(10.0).to_string())
+print("Test 13: math.cbrt(27.0) = " + math.cbrt(27.0).to_string())
+print("Test 14: math.erf(0.0) = " + math.erf(0.0).to_string())
+print("Test 15: math.gamma(5.0) = " + math.gamma(5.0).to_string())
+print("Test 16: math.clamp(12.0, 0.0, 10.0) = " + math.clamp(12.0, 0.0, 10.0).to_string())
+print("Test 17: math.lerp(10.0, 20.0, 0.25) = " + math.lerp(10.0, 20.0, 0.25).to_string())
+match math.inverse_lerp(10.0, 20.0, 15.0) {
+    ok(value) { print("Test 18: math.inverse_lerp(10.0, 20.0, 15.0) = " + value.to_string()) }
+    err(e) { print("Test 18 error: " + e.message()) }
+}
+match math.smoothstep(0.0, 1.0, 0.5) {
+    ok(value) { print("Test 19: math.smoothstep(0.0, 1.0, 0.5) = " + value.to_string()) }
+    err(e) { print("Test 19 error: " + e.message()) }
+}
+match math.factorial(5) {
+    ok(value) { print("Test 20: math.factorial(5) = " + value.to_string()) }
+    err(e) { print("Test 20 error: " + e.message()) }
+}
+match math.combinations(5, 2) {
+    ok(value) { print("Test 21: math.combinations(5, 2) = " + value.to_string()) }
+    err(e) { print("Test 21 error: " + e.message()) }
+}
+match math.permutations(5, 2) {
+    ok(value) { print("Test 22: math.permutations(5, 2) = " + value.to_string()) }
+    err(e) { print("Test 22 error: " + e.message()) }
+}
+
+list<float> terms = [10000000000000000.0, 1.0, -10000000000000000.0]
+match math.sum(terms) {
+    ok(value) { print("Test 23: math.sum(terms) = " + value.to_string()) }
+    err(e) { print("Test 23 error: " + e.message()) }
+}
+match math.product([1.5, 2.0, 4.0]) {
+    ok(value) { print("Test 24: math.product(...) = " + value.to_string()) }
+    err(e) { print("Test 24 error: " + e.message()) }
+}
+
 print("All std.math tests passed")

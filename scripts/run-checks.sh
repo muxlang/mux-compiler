@@ -45,6 +45,7 @@ run_step() {
 # or every program fails to link with "Could not locate the mux-runtime
 # library".
 run_step "cargo build" "${cargo_cmd[@]}" build -p mux-runtime -p mux-lang
+export MUX_RUNTIME_LIB="$repo_root/target/debug/libmux_runtime.a"
 
 # --service-tests-only runs the service_integration suite and nothing else.
 #

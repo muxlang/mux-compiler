@@ -1,79 +1,127 @@
 import std.data.json
 
-// Parse a valid JSON string and stringify compact + pretty
-string json_str = "{\"a\": [1, 2, 3], \"b\": null}"
-match json.parse(json_str) {
-  ok(val) {
-    // Test compact stringify
-    match val.stringify(none) {
-      ok(s) { print(s) }
-      err(e) { print("stringify compact failed: " + e) }
+func report(string label, result<int, JsonError> outcome) returns void {
+    if outcome.is_err() {
+        print(label + ": " + outcome.error().message())
     }
-    // Test pretty stringify with 2-space indent
-    match val.stringify(some(2)) {
-      ok(s) { print(s) }
-      err(e) { print("stringify pretty failed: " + e) }
-    }
-  }
-  err(e) { print("parse failed: " + e) }
+    return
 }
 
-// Build JSON structures by parsing literal JSON strings and stringify them
+func show_json(string input, optional<int> indent) returns result<int, JsonError> {
+    auto value = use json.parse(input)
+    auto text = use value.stringify(indent)
+    print(text)
+    return ok(1)
+}
+
+func object_mutation() returns result<int, JsonError> {
+    auto object = use json.parse("{}")
+    auto value = use json.parse("3")
+    use object.set_field("answer", value)
+    print("set field ok")
+    auto text = use object.stringify(none)
+    print(text)
+    return ok(1)
+}
+
+func array_mutation() returns result<int, JsonError> {
+    auto array = use json.parse("[]")
+    auto value = use json.parse("true")
+    use array.push(value)
+    print("push ok")
+    auto text = use array.stringify(none)
+    print(text)
+    return ok(1)
+}
+
+func pointer_mutation() returns result<int, JsonError> {
+    auto document = use json.parse("{\"a\": {\"b\": 1}, \"items\": []}")
+    auto pointer_value = use document.at_pointer("/a/b")
+    print("pointer read: " + pointer_value.to_string())
+    auto replacement = use json.parse("2")
+    use document.set_pointer("/a/b", replacement)
+    print("pointer set ok")
+    auto removed = use document.remove_pointer("/a/b")
+    print("pointer removed: " + removed.to_string())
+    return ok(1)
+}
+
+func merge_patch() returns result<int, JsonError> {
+    auto document = use json.parse("{\"keep\": 1, \"drop\": 2}")
+    auto patch = use json.parse("{\"drop\": null, \"added\": 3}")
+    use document.merge_patch(patch)
+    print("merge patch: " + document.to_string())
+    return ok(1)
+}
+
+func json_patch() returns result<int, JsonError> {
+    auto document = use json.parse("{\"name\": \"Ada\", \"items\": [1, 2]}")
+    auto operations = use json.parse("[{\"op\":\"replace\",\"path\":\"/name\",\"value\":\"Grace\"},{\"op\":\"add\",\"path\":\"/items/-\",\"value\":3}]")
+    auto patch_list = use operations.as_list()
+    use document.apply_patch(patch_list)
+    print("json patch: " + document.to_string())
+    return ok(1)
+}
+
+func json_lines() returns result<int, JsonError> {
+    auto lines = use json.parse_lines("1\n{\"ok\":true}\n")
+    auto text = use json.stringify_lines(lines)
+    print("json lines: " + text.replace("\n", "|"))
+    return ok(1)
+}
+
+func map_json() returns result<int, JsonError> {
+    auto value = use json.from_map({"x": 1.0, "y": 2.0})
+    auto text = use value.stringify(some(2))
+    print(text)
+    return ok(1)
+}
+
+func map_round_trip() returns result<int, JsonError> {
+    auto value = use json.parse("{\"x\": 1, \"y\": 2}")
+    auto fields = use json.to_map(value)
+    print(fields.to_string())
+    return ok(1)
+}
+
+func canonical_json() returns result<int, JsonError> {
+    auto document = use json.parse("{\"z\": 2, \"a\": 1}")
+    print("canonical: " + document.canonical())
+    return ok(1)
+}
+
+// Parse a valid JSON string and stringify compact + pretty.
+report("parse", show_json("{\"a\": [1, 2, 3], \"b\": null}", none))
+report("pretty", show_json("{\"a\": [1, 2, 3], \"b\": null}", some(2)))
 print("")
 
-// Test 1: Object with array
-match json.parse("{\"arr\": [1, 2, 3, 4], \"nested\": {\"x\": true}, \"num\": 42}") {
-  ok(o) {
-    match o.stringify(some(2)) {
-      ok(s) { print(s) }
-      err(e) { print("stringify failed: " + e) }
-    }
-  }
-  err(e) { print("parse object failed: " + e) }
-}
-
+// Object with array.
+report("parse object", show_json("{\"arr\": [1, 2, 3, 4], \"nested\": {\"x\": true}, \"num\": 42}", some(2)))
 print("")
 
-// Test 2: Array
-match json.parse("[1, 2, 3, 4]") {
-  ok(l) {
-    match l.stringify(none) {
-      ok(s) { print(s) }
-      err(e) { print("stringify failed: " + e) }
-    }
-  }
-  err(e) { print("parse array failed: " + e) }
-}
-
+// Array.
+report("parse array", show_json("[1, 2, 3, 4]", none))
 print("")
 
-// Test 3: from_map and stringify
-match json.from_map({"x": 1.0, "y": 2.0}) {
-  ok(j) {
-    match j.stringify(some(2)) {
-      ok(s) { print(s) }
-      err(e) { print("stringify failed: " + e) }
-    }
-  }
-  err(e) { print("from_map failed: " + e) }
-}
-
+// Build JSON from a map and stringify it.
+report("from_map", map_json())
 print("")
 
-// Test 4: to_map
-match json.parse("{\"x\": 1, \"y\": 2}") {
-  ok(j) {
-    match json.to_map(j) {
-      ok(m) { print(m.to_string()) }
-      err(e) { print("to_map failed: " + e) }
-    }
-  }
-  err(e) { print("parse failed: " + e) }
+report("to_map", map_round_trip())
+
+print("")
+auto invalid = json.parse("{k: 10}")
+if invalid.is_ok() {
+    print("parse succeeded unexpectedly")
+} else {
+    print("parse failed as expected: " + invalid.error().message())
 }
 
-// Test error cases
-print("")
-match json.parse("{k: 10}") {
-  ok(_) { print("parse succeeded unexpectedly") }
-  err(e) { print("parse failed as expected: " + e) }
-}
+report("object mutation", object_mutation())
+report("array mutation", array_mutation())
+report("pointer mutation", pointer_mutation())
+
+report("canonical document", canonical_json())
+report("merge patch", merge_patch())
+report("json patch", json_patch())
+report("json lines", json_lines())

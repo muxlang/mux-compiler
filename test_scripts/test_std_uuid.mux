@@ -1,0 +1,64 @@
+import std.uuid
+
+func main() returns void {
+    auto nil_uuid = uuid.Uuid.nil()
+    print("nil: " + nil_uuid.to_string())
+    print("nil check: " + nil_uuid.is_nil().to_string())
+
+    auto generated = uuid.Uuid.v7()
+    auto generated_version = generated.version()
+    if generated_version.is_some() {
+        print("v7 version: " + generated_version.value().to_string())
+    } else {
+        print("v7 version: missing")
+    }
+    print("v7 bytes: " + generated.to_bytes().size().to_string())
+    print("v7 compact length: " + generated.to_compact().length().to_string())
+
+    auto parsed_result = uuid.parse_uuid(generated.to_urn())
+    if parsed_result.is_err() {
+        print("parse error: " + parsed_result.error().message())
+    } else {
+        auto parsed = parsed_result.value()
+        print("round trip: " + (parsed.to_string() == generated.to_string()).to_string())
+    }
+
+    auto namespace = uuid.Uuid.nil()
+    auto name = "mux"
+    auto v3_result = uuid.Uuid.v3(namespace, name)
+    if v3_result.is_err() {
+        print("v3 error: " + v3_result.error().message())
+    } else {
+        auto v3 = v3_result.value()
+        auto v3_version = v3.version()
+        if v3_version.is_some() {
+            print("v3 version: " + v3_version.value().to_string())
+        } else {
+            print("v3 version: missing")
+        }
+    }
+    auto v5_result = uuid.Uuid.v5(namespace, name)
+    if v5_result.is_err() {
+        print("v5 error: " + v5_result.error().message())
+    } else {
+        auto v5 = v5_result.value()
+        auto v5_version = v5.version()
+        if v5_version.is_some() {
+            print("v5 version: " + v5_version.value().to_string())
+        } else {
+            print("v5 version: missing")
+        }
+    }
+
+    auto raw = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"
+    auto bytes_result = uuid.Uuid.from_bytes(raw)
+    if bytes_result.is_err() {
+        print("bytes error: " + bytes_result.error().message())
+    } else {
+        auto bytes_uuid = bytes_result.value()
+        auto parts = bytes_uuid.to_parts()
+        print("parts high: " + parts.left.to_string())
+        print("parts low: " + parts.right.to_string())
+    }
+    return
+}

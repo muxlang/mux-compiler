@@ -3,8 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const STYLES_PROBE: &str = r#"
-#![deny(unused_must_use)]
+const STYLES_PROBE: &str = r##"#![deny(unused_must_use)]
 
 use mux_lang::diagnostic::{ColorConfig, Styles};
 
@@ -21,7 +20,7 @@ fn main() {
     styles.secondary_label("secondary");
     styles.line_number("line");
 }
-"#;
+"##;
 
 fn cargo_executable() -> String {
     env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned())

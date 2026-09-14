@@ -10,6 +10,7 @@ pub mod expressions;
 pub mod format;
 pub mod free_vars;
 pub mod imports;
+mod narrowing;
 mod operators;
 pub mod patterns;
 pub mod statements;
@@ -74,6 +75,9 @@ fn missing_type_args_help(name: &str) -> String {
 }
 
 pub struct SemanticAnalyzer {
+    pub(super) flow: narrowing::FlowState,
+    pub(super) flow_generation: u64,
+    pub(super) expression_guards: HashMap<Span, narrowing::Guard>,
     pub(super) symbol_table: SymbolTable,
     current_bounds: std::collections::HashMap<String, GenericBounds>,
     /// Type parameters of the declaration whose signature is being resolved.
@@ -98,6 +102,10 @@ pub struct SemanticAnalyzer {
     /// concatenates these to build the compilation unit, so this map's
     /// iteration order is the order module code is emitted in (issue #344).
     pub all_module_asts: std::collections::BTreeMap<String, Vec<AstNode>>,
+    /// The file that supplied each imported module.  AST spans carry line
+    /// numbers but not a file id, so code generation keeps this side table for
+    /// source-aware coverage records.
+    pub module_source_paths: std::collections::BTreeMap<String, std::path::PathBuf>,
     pub module_dependencies: Vec<String>,
     pub(super) current_file: Option<std::path::PathBuf>, // Track current file for relative imports
     pub(super) current_file_id: Option<crate::diagnostic::FileId>,
@@ -178,6 +186,9 @@ impl SemanticAnalyzer {
         let symbol_table = SymbolTable::new();
         Self {
             symbol_table,
+            flow: narrowing::FlowState::default(),
+            flow_generation: 0,
+            expression_guards: HashMap::new(),
             current_bounds: std::collections::HashMap::new(),
             signature_type_params: std::collections::HashSet::new(),
             errors: Vec::new(),
@@ -187,6 +198,7 @@ impl SemanticAnalyzer {
             module_resolver: None,
             imported_symbols: std::collections::BTreeMap::new(),
             all_module_asts: std::collections::BTreeMap::new(),
+            module_source_paths: std::collections::BTreeMap::new(),
             module_dependencies: Vec::new(),
             current_file: None,
             current_file_id: None,
@@ -302,22 +314,6 @@ impl SemanticAnalyzer {
                 // module-qualified accesses (Module("net.http")) resolve correctly
                 self.imported_symbols
                     .insert(child.to_string(), child_symbols.clone());
-
-                // Also expose the short child name (e.g. "json") for backward
-                // compatibility so code referencing `json.parse` works after
-                // importing the parent (e.g. `import std.data`). Don't overwrite
-                // an existing user-provided namespace.
-                if let Some(short_name) = child.split('.').next_back()
-                    && !self.imported_symbols.contains_key(short_name)
-                {
-                    self.imported_symbols
-                        .insert(short_name.to_string(), child_symbols);
-                    // Register module symbol in symbol table so unqualified
-                    // module references resolve (e.g., json.parse)
-                    let _ = self
-                        .symbol_table
-                        .add_symbol(short_name, self.make_module_symbol(short_name, span));
-                }
             }
         }
     }
@@ -392,6 +388,11 @@ impl SemanticAnalyzer {
     #[must_use]
     pub fn all_module_asts(&self) -> &std::collections::BTreeMap<String, Vec<AstNode>> {
         &self.all_module_asts
+    }
+
+    #[must_use]
+    pub fn module_source_paths(&self) -> &std::collections::BTreeMap<String, std::path::PathBuf> {
+        &self.module_source_paths
     }
 
     /// Generate helpful context for binary operator type mismatches.
@@ -800,7 +801,7 @@ impl SemanticAnalyzer {
         // module are visible for classes to inherit during analysis.
         self.collect_interface_preconditions(ast);
         self.collect_where_preconditions(ast);
-        // One comprehensive generic-arity pass over every type annotation, now
+        // One generic-arity pass over every type annotation, now
         // that all type symbols and their type parameters are registered (#303).
         self.validate_all_type_arities(ast);
         self.analyze_nodes(ast, files);
@@ -835,6 +836,9 @@ impl SemanticAnalyzer {
         // Register builtin classes
         self.add_sync_builtin_types();
         self.add_csv_builtin_types();
+        self.add_bytes_cursor_builtin_type();
+        self.add_byte_error_builtin_type();
+        self.add_bytes_error_builtin_type();
     }
 
     fn add_sync_builtin_types(&mut self) {
@@ -852,6 +856,51 @@ impl SemanticAnalyzer {
         let _ = self.symbol_table.add_symbol("Csv", symbol);
     }
 
+    fn add_bytes_cursor_builtin_type(&mut self) {
+        let span = Span::new(0, 0);
+        for (name, symbol) in crate::semantics::stdlib::bytes_cursor_builtin_symbols(span) {
+            let _ = self.symbol_table.add_symbol(&name, symbol);
+        }
+    }
+
+    fn add_byte_error_builtin_type(&mut self) {
+        let span = Span::new(0, 0);
+        let _ = self.symbol_table.add_symbol(
+            "ByteErrorKind",
+            crate::semantics::stdlib::make_enum_symbol(
+                "ByteErrorKind",
+                &[
+                    "Invalid",
+                    "Parse",
+                    "Range",
+                    "Overflow",
+                    "DivideByZero",
+                    "Shift",
+                    "Io",
+                ],
+                span,
+            ),
+        );
+        let symbol = crate::semantics::stdlib::byte_error_builtin_symbol(span);
+        let _ = self.symbol_table.add_symbol("ByteError", symbol);
+    }
+
+    fn add_bytes_error_builtin_type(&mut self) {
+        let span = Span::new(0, 0);
+        let _ = self.symbol_table.add_symbol(
+            "BytesErrorKind",
+            crate::semantics::stdlib::make_enum_symbol(
+                "BytesErrorKind",
+                &[
+                    "Invalid", "Parse", "Range", "Overflow", "Bounds", "Utf8", "Io",
+                ],
+                span,
+            ),
+        );
+        let symbol = crate::semantics::stdlib::bytes_error_builtin_symbol(span);
+        let _ = self.symbol_table.add_symbol("BytesError", symbol);
+    }
+
     #[allow(clippy::only_used_in_recursion)]
     pub fn resolve_type(&self, type_node: &TypeNode) -> Result<Type, SemanticError> {
         match &type_node.kind {
@@ -867,6 +916,12 @@ impl SemanticAnalyzer {
                 }
                 crate::ast::PrimitiveType::Char => {
                     Ok(Type::Primitive(crate::ast::PrimitiveType::Char))
+                }
+                crate::ast::PrimitiveType::Byte => {
+                    Ok(Type::Primitive(crate::ast::PrimitiveType::Byte))
+                }
+                crate::ast::PrimitiveType::Bytes => {
+                    Ok(Type::Primitive(crate::ast::PrimitiveType::Bytes))
                 }
                 crate::ast::PrimitiveType::Str => {
                     Ok(Type::Primitive(crate::ast::PrimitiveType::Str))
@@ -920,11 +975,9 @@ impl SemanticAnalyzer {
                 ))
             }
 
-            TypeKind::TraitObject(_) => Err(SemanticError::new(
-                DiagnosticCode::InvalidOperation,
-                "Trait objects are not yet supported",
-                type_node.span,
-            )),
+            TypeKind::TraitObject(inner) => self
+                .resolve_trait_object_target(inner, type_node.span)
+                .map(|target| Type::TraitObject(Box::new(target))),
             TypeKind::Auto => Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,
                 "The 'auto' type is not allowed in this context",
@@ -1003,6 +1056,79 @@ impl SemanticAnalyzer {
             .map(|arg| self.resolve_type(arg))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Type::Named(name.to_string(), resolved_args))
+    }
+
+    fn resolve_trait_object_target(
+        &self,
+        type_node: &TypeNode,
+        span: Span,
+    ) -> Result<Type, SemanticError> {
+        let TypeKind::Named(name, type_args) = &type_node.kind else {
+            return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
+                "A dynamic interface must name an interface",
+                span,
+                "Use dyn<InterfaceName> with a declared interface.",
+            ));
+        };
+
+        let resolved_name = if let Some((module, bare)) = name.rsplit_once('.') {
+            if self
+                .imported_symbols
+                .get(module)
+                .is_some_and(|symbols| symbols.contains_key(bare))
+            {
+                bare
+            } else {
+                return Err(SemanticError::new(
+                    DiagnosticCode::UndefinedName,
+                    format!("Undefined interface '{name}'"),
+                    span,
+                ));
+            }
+        } else {
+            name.as_str()
+        };
+
+        let symbol = self
+            .symbol_table
+            .lookup(resolved_name)
+            .or_else(|| {
+                self.imported_symbols
+                    .values()
+                    .find_map(|symbols| symbols.get(resolved_name).cloned())
+            })
+            .ok_or_else(|| {
+                SemanticError::new(
+                    DiagnosticCode::UndefinedName,
+                    format!("Undefined interface '{name}'"),
+                    span,
+                )
+            })?;
+        if !matches!(symbol.kind, SymbolKind::Interface) {
+            return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
+                format!("'{resolved_name}' is not an interface"),
+                span,
+                "Use dyn<InterfaceName> only with a declared interface.",
+            ));
+        }
+        self.validate_named_type_arguments(resolved_name, type_args, span)?;
+        if !type_args.is_empty() {
+            return Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
+                format!(
+                    "Generic dynamic interface 'dyn<{resolved_name}<...>>' is not supported by the current ABI"
+                ),
+                span,
+                "Use dyn<InterfaceName> with a non-generic interface, or pass the concrete class through a generic function.",
+            ));
+        }
+        let resolved_args = type_args
+            .iter()
+            .map(|arg| self.resolve_type(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Type::Named(resolved_name.to_string(), resolved_args))
     }
 
     fn resolve_builtin_named_type(
@@ -1227,6 +1353,34 @@ impl SemanticAnalyzer {
                 else_expr,
                 ..
             } => self.resolve_if_expression_type(then_expr, else_expr, expr.span),
+            ExpressionKind::Match {
+                expr: subject,
+                arms,
+            } => {
+                let subject_type = self.get_expression_type(subject)?;
+                let mut values = Vec::new();
+                for arm in arms {
+                    self.symbol_table.push_scope()?;
+                    self.set_pattern_types(&arm.pattern, &subject_type, subject.span)?;
+                    if let Some(statement) = arm.body.last()
+                        && let crate::ast::StatementKind::Expression(value) = &statement.kind
+                    {
+                        values.push(self.get_expression_type(value)?);
+                    }
+                    self.symbol_table.pop_scope()?;
+                }
+                let Some(first) = values.first().cloned() else {
+                    return Err(SemanticError::new(
+                        DiagnosticCode::MissingReturn,
+                        "Match expression has no value-producing arm",
+                        expr.span,
+                    ));
+                };
+                for value in values.iter().skip(1) {
+                    self.check_type_compatibility(&first, value, expr.span)?;
+                }
+                Ok(first)
+            }
             ExpressionKind::Lambda {
                 params,
                 return_type,
@@ -1328,12 +1482,28 @@ impl SemanticAnalyzer {
         let Type::Named(name, _) = expr_type else {
             return None;
         };
-        let symbol = self.symbol_table.lookup(name)?;
+        let symbol = self.lookup_named_type_symbol(name)?;
         if symbol.kind != SymbolKind::Enum {
             return None;
         }
         let sig = symbol.methods.get(field)?;
         Some((name.clone(), sig.params.len()))
+    }
+
+    /// Imported stdlib enums are namespaced in `imported_symbols` rather than
+    /// inserted into the user's global symbol table. Enum construction still
+    /// needs their variant signatures, so resolve a named type from either
+    /// source without inspecting rendered values or diagnostics.
+    pub(super) fn lookup_named_type_symbol(&self, name: &str) -> Option<Symbol> {
+        if let Some(symbol) = self.symbol_table.lookup(name) {
+            return Some(symbol);
+        }
+        self.imported_symbols.values().find_map(|module_symbols| {
+            module_symbols
+                .get(name)
+                .filter(|symbol| matches!(symbol.kind, SymbolKind::Enum | SymbolKind::Class))
+                .cloned()
+        })
     }
 
     fn try_stdlib_method_lookup(&self, name: &str, field: &str) -> Option<Type> {
@@ -1361,7 +1531,7 @@ impl SemanticAnalyzer {
                 continue;
             }
             if let Some(class_sym) = module_symbols.get(name)
-                && matches!(class_sym.kind, SymbolKind::Class)
+                && matches!(class_sym.kind, SymbolKind::Class | SymbolKind::Enum)
                 && let Some(method_sig) = class_sym.methods.get(field)
             {
                 return Some(Type::Function {
@@ -1424,6 +1594,7 @@ impl SemanticAnalyzer {
             Type::Map(_, value_type) => Ok(*value_type),
             // Indexing a string yields a character, matching iteration.
             Type::Primitive(PrimitiveType::Str) => Ok(Type::Primitive(PrimitiveType::Char)),
+            Type::Primitive(PrimitiveType::Bytes) => Ok(Type::Primitive(PrimitiveType::Byte)),
             Type::EmptyMap => Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,
                 "Cannot index empty map",
@@ -1434,7 +1605,7 @@ impl SemanticAnalyzer {
                 DiagnosticCode::InvalidOperation,
                 "Cannot index non-list type",
                 span,
-                "Only lists, maps and strings can be indexed with '[]'. Examples: my_list[0], my_map['key'], text[0]",
+                "Only lists, maps, strings and bytes can be indexed with '[]'. Examples: my_list[0], my_map['key'], text[0], data[0]",
             )),
         }
     }
@@ -1703,6 +1874,21 @@ impl SemanticAnalyzer {
         op_span: &Span,
     ) -> Result<Type, SemanticError> {
         match op {
+            UnaryOp::Use => {
+                let operand_type = self.get_expression_type(expr)?;
+                match operand_type {
+                    Type::Result(payload, _) | Type::Optional(payload) => Ok(*payload),
+                    other => Err(SemanticError::with_help(
+                        DiagnosticCode::InvalidOperation,
+                        format!(
+                            "'use' requires result or optional, found {}",
+                            format_type(&other)
+                        ),
+                        *op_span,
+                        "Apply 'use' to a fallible or optional expression.",
+                    )),
+                }
+            }
             UnaryOp::Not => Ok(Type::Primitive(crate::ast::PrimitiveType::Bool)),
             UnaryOp::Neg => {
                 let operand_type = self.get_expression_type(expr)?;
@@ -1757,6 +1943,21 @@ impl SemanticAnalyzer {
                     )),
                 }
             }
+        }
+    }
+
+    fn validate_use_expression(&self, operand: &Type, span: Span) -> Result<(), SemanticError> {
+        match (operand, self.current_return_type.as_ref()) {
+            (Type::Optional(_), Some(Type::Optional(_))) => Ok(()),
+            (Type::Result(_, error), Some(Type::Result(_, expected_error))) => {
+                self.check_type_compatibility(expected_error, error, span)
+            }
+            _ => Err(SemanticError::with_help(
+                DiagnosticCode::InvalidOperation,
+                "'use' requires a result or optional operand and a compatible enclosing return type",
+                span,
+                "Result errors propagate to a Result-returning function; none propagates to an Optional-returning function.",
+            )),
         }
     }
 
@@ -1828,7 +2029,7 @@ impl SemanticAnalyzer {
             Type::Named(_, args) | Type::Instantiated(_, args) => args.clone(),
             _ => Vec::new(),
         };
-        let symbol = self.symbol_table.lookup(&enum_name)?;
+        let symbol = self.lookup_named_type_symbol(&enum_name)?;
         let sig = symbol.methods.get(field)?;
         let sig = if type_args.is_empty() {
             sig.clone()
@@ -1856,6 +2057,33 @@ impl SemanticAnalyzer {
             None => self.resolve_called_function_type(func)?,
         };
 
+        if let Some((callback_index, operation)) = self.worker_callback_argument(func)
+            && let Some(callback) = args.get(callback_index)
+        {
+            if let Some(captures) = self.lambda_captures.get(&callback.span)
+                && let Some((name, Type::Reference(_))) = captures
+                    .iter()
+                    .find(|(_, captured_type)| matches!(captured_type, Type::Reference(_)))
+            {
+                return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
+                    format!("{operation} callback cannot capture borrowed reference '{name}'"),
+                    callback.span,
+                    "Pass an owned value to the callback instead; spawned work may outlive the reference.",
+                ));
+            }
+            if let ExpressionKind::Lambda { return_type, .. } = &callback.kind
+                && let Type::Reference(_) = self.resolve_type(return_type)?
+            {
+                return Err(SemanticError::with_help(
+                    DiagnosticCode::InvalidOperation,
+                    format!("{operation} callback cannot return a borrowed reference"),
+                    callback.span,
+                    "Return an owned value instead; the referenced storage may not outlive the worker.",
+                ));
+            }
+        }
+
         match func_type {
             Type::Function {
                 params,
@@ -1876,6 +2104,35 @@ impl SemanticAnalyzer {
                 expr_span,
                 "Only functions can be called with '()'. Ensure the expression before '()' is a function.",
             )),
+        }
+    }
+
+    fn is_sync_spawn_call(&self, func: &ExpressionNode) -> bool {
+        matches!(
+            &func.kind,
+            ExpressionKind::FieldAccess { expr, field }
+                if field == "spawn"
+                    && matches!(&expr.kind, ExpressionKind::Identifier(name) if name == "sync")
+        )
+    }
+
+    fn worker_callback_argument(&mut self, func: &ExpressionNode) -> Option<(usize, String)> {
+        if self.is_sync_spawn_call(func) {
+            return Some((0, "sync.spawn".to_string()));
+        }
+        let ExpressionKind::FieldAccess { expr, field } = &func.kind else {
+            return None;
+        };
+        let index = match field.as_str() {
+            "submit" | "try_submit" | "submit_timeout" => 0,
+            "map" => 1,
+            _ => return None,
+        };
+        match self.get_expression_type(expr).ok()? {
+            Type::Named(name, _) | Type::Instantiated(name, _) if name == "WorkerPool" => {
+                Some((index, format!("WorkerPool.{field}")))
+            }
+            _ => None,
         }
     }
 
@@ -1901,10 +2158,7 @@ impl SemanticAnalyzer {
         // type arguments for the same reason `new` does: without them the
         // instantiation was never laid out, and codegen builds an object
         // against a layout that does not exist (issue #360).
-        if !matches!(
-            field.as_str(),
-            "new" | "from_json" | "list_from_json" | "list_from_csv"
-        ) {
+        if field != "new" {
             return Ok(());
         }
         let ExpressionKind::Identifier(class_name) = &expr.kind else {
@@ -1966,6 +2220,31 @@ impl SemanticAnalyzer {
         default_count: usize,
         expr_span: Span,
     ) -> Result<Type, SemanticError> {
+        // `ok()` is the unit-success constructor for `result<void, E>`.  The
+        // ordinary `ok(value)` constructor remains generic, but a void result
+        // has no source-level payload to pass, so its enclosing return type
+        // supplies the error type and the result shape.
+        if matches!(&func.kind, ExpressionKind::Identifier(name) if name == "ok") && args.is_empty()
+        {
+            if let Some(Type::Result(ok_type, _)) = &self.current_return_type
+                && matches!(
+                    ok_type.as_ref(),
+                    Type::Void | Type::Primitive(PrimitiveType::Void)
+                )
+            {
+                return Ok(self
+                    .current_return_type
+                    .clone()
+                    .expect("return type was checked"));
+            }
+            return Err(SemanticError::with_help(
+                DiagnosticCode::WrongArgumentCount,
+                "'ok()' is only valid for a function returning result<void, E>",
+                expr_span,
+                "Use ok(value) when the Result has a non-void success payload.",
+            ));
+        }
+
         let actual_default_count = self.call_default_param_count(func, default_count);
         let min_args = params.len() - actual_default_count;
         let max_args = params.len();
@@ -2014,7 +2293,11 @@ impl SemanticAnalyzer {
         let mut unifier = Unifier::new();
         for (param, arg) in renamed_params.iter().zip(args.iter()) {
             let arg_type = self.get_expression_type(arg)?;
-            unifier.unify(param, &arg_type, expr_span)?;
+            if matches!(param, Type::TraitObject(_)) {
+                self.check_type_compatibility(param, &arg_type, expr_span)?;
+            } else {
+                unifier.unify(param, &arg_type, expr_span)?;
+            }
         }
 
         if let Some(func_name) = self.call_function_name(func) {
@@ -2070,6 +2353,9 @@ impl SemanticAnalyzer {
             }
             Type::Reference(inner) => {
                 Type::Reference(Box::new(self.rename_type_vars(inner, mapping)))
+            }
+            Type::TraitObject(inner) => {
+                Type::TraitObject(Box::new(self.rename_type_vars(inner, mapping)))
             }
             Type::Map(key, value) => Type::Map(
                 Box::new(self.rename_type_vars(key, mapping)),
@@ -2363,10 +2649,22 @@ impl SemanticAnalyzer {
         obj_expr: &ExpressionNode,
     ) -> Result<Option<(String, crate::semantics::Symbol)>, SemanticError> {
         let obj_type = self.get_expression_type(obj_expr)?;
-        if let Type::Named(class_name, _) = &obj_type
-            && let Some(symbol) = self.symbol_table.lookup(class_name)
-        {
-            return Ok(Some((class_name.clone(), symbol)));
+        if let Type::Named(class_name, _) = &obj_type {
+            if let Some(symbol) = self.symbol_table.lookup(class_name) {
+                return Ok(Some((class_name.clone(), symbol)));
+            }
+            // Stdlib classes imported through a module namespace (for example
+            // `import std.net` and `net.HttpRequest.new()`) live in
+            // `imported_symbols`, not the top-level symbol table. Resolve the
+            // class there as well so mutable field assignment gets the same
+            // type/const validation as user-defined classes.
+            for module_symbols in self.imported_symbols.values() {
+                if let Some(symbol) = module_symbols.get(class_name)
+                    && symbol.kind == SymbolKind::Class
+                {
+                    return Ok(Some((class_name.clone(), symbol.clone())));
+                }
+            }
         }
         Ok(None)
     }
@@ -2727,12 +3025,22 @@ impl SemanticAnalyzer {
         span: Span,
     ) -> Result<Type, SemanticError> {
         for module_symbols in self.imported_symbols.values() {
-            if let Some(class_symbol) = module_symbols.get(name)
-                && let Some(method_sig) = class_symbol.methods.get(field)
-            {
-                let resolved_sig =
-                    self.resolve_method_sig_for_field(method_sig, &class_symbol.type_params, args);
-                return Ok(self.wrap_method_signature(&resolved_sig));
+            if let Some(class_symbol) = module_symbols.get(name) {
+                if let Some((field_type, _)) = class_symbol.fields.get(field) {
+                    return Ok(self.substitute_type_params(
+                        field_type,
+                        &class_symbol.type_params,
+                        args,
+                    ));
+                }
+                if let Some(method_sig) = class_symbol.methods.get(field) {
+                    let resolved_sig = self.resolve_method_sig_for_field(
+                        method_sig,
+                        &class_symbol.type_params,
+                        args,
+                    );
+                    return Ok(self.wrap_method_signature(&resolved_sig));
+                }
             }
         }
 
@@ -2766,6 +3074,31 @@ impl SemanticAnalyzer {
         actual: &Type,
         span: Span,
     ) -> Result<(), SemanticError> {
+        if let Type::TraitObject(target) = expected {
+            let compatible = match target.as_ref() {
+                Type::Named(interface_name, interface_args) => match actual {
+                    Type::TraitObject(actual_target) => actual_target.as_ref() == target.as_ref(),
+                    _ => self.type_implements_interface_with_args(
+                        actual,
+                        interface_name,
+                        interface_args,
+                    ),
+                },
+                _ => false,
+            };
+            if compatible {
+                return Ok(());
+            }
+            return Err(SemanticError::new(
+                DiagnosticCode::TypeMismatch,
+                format!(
+                    "Type mismatch: expected {}, got {}",
+                    format_type(expected),
+                    format_type(actual)
+                ),
+                span,
+            ));
+        }
         let mut temp_unifier = Unifier::new();
         temp_unifier.unify(expected, actual, span).map_err(|_| {
             SemanticError::new(
@@ -2824,6 +3157,11 @@ impl SemanticAnalyzer {
                 default_count: *default_count,
             },
             Type::Reference(inner) => Type::Reference(Box::new(self.substitute_type_param(
+                inner,
+                param,
+                replacement,
+            ))),
+            Type::TraitObject(inner) => Type::TraitObject(Box::new(self.substitute_type_param(
                 inner,
                 param,
                 replacement,
@@ -3159,6 +3497,12 @@ impl SemanticAnalyzer {
                     "Stringable" | "Equatable" | "Comparable" | "Hashable"
                 )
             }
+            PrimitiveType::Byte => {
+                matches!(
+                    interface_name,
+                    "Stringable" | "Equatable" | "Comparable" | "Hashable"
+                )
+            }
             PrimitiveType::Float => {
                 matches!(
                     interface_name,
@@ -3297,7 +3641,7 @@ impl SemanticAnalyzer {
         args: &[Type],
         method_name: &str,
     ) -> Option<MethodSig> {
-        let symbol = self.symbol_table.lookup(name)?;
+        let symbol = self.lookup_named_type_symbol(name)?;
         if let Some(sig) = symbol.methods.get(method_name) {
             return Some(if args.is_empty() {
                 sig.clone()
