@@ -6,7 +6,7 @@
 
 **The Programming Language For Everyone**
 
-[![Version](https://img.shields.io/badge/version-0.10.2-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
+[![Version](https://img.shields.io/badge/version-0.11.0-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-online-blue.svg?style=flat-square)](https://mux-lang.dev)
 [![Sonar Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=muxlang_mux-compiler&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=muxlang_mux-compiler)
@@ -198,7 +198,7 @@ Profiling is done with external tools so it stays decoupled from the compiler an
 Mux is actively being developed. Expect occasional breaking changes while the
 language, compiler, and standard library continue to converge.
 
-- **Current Version:** 0.10.2
+- **Current Version:** 0.11.0
 
 ## Versioning
 
