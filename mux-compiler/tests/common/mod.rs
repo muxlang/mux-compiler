@@ -13,6 +13,7 @@ pub fn runtime_library_for_child_process() -> PathBuf {
 
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let runtime_roots = [
+        manifest_dir.parent().map(Path::to_path_buf),
         manifest_dir.parent().map(|root| root.join("mux-runtime")),
         manifest_dir
             .parent()
