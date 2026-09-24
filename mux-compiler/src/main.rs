@@ -111,8 +111,14 @@ enum Commands {
         #[arg(short, long)]
         intermediate: bool,
     },
-    /// Format a Mux file
-    Format { file: PathBuf },
+    /// Format Mux files
+    Format {
+        /// Files or directories to format. With no paths, discover .mux files under .
+        files: Vec<PathBuf>,
+        /// Check whether files are formatted without changing them.
+        #[arg(short, long)]
+        check: bool,
+    },
     /// Check system dependencies for the Mux compiler
     Doctor {
         /// Validate contributor toolchain requirements (LLVM 22)
@@ -786,6 +792,23 @@ fn collect_mux_files(path: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<(
         }
     }
     Ok(())
+}
+
+fn discover_format_files(requested_paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    if requested_paths.is_empty() {
+        collect_mux_files(Path::new("."), &mut files)
+            .map_err(|error| format!("mux format: could not discover files: {error}"))?;
+    } else {
+        for path in requested_paths {
+            collect_mux_files(path, &mut files).map_err(|error| {
+                format!("mux format: could not read {}: {error}", path.display())
+            })?;
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
 }
 
 fn is_mux_file(path: &Path) -> bool {
@@ -1782,8 +1805,12 @@ fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
             *intermediate,
             cli.deny_warnings,
         ),
-        Commands::Format { file } => {
-            eprintln!("formatting is not yet implemented for {}", file.display());
+        Commands::Format { files, check: _ } => {
+            if let Err(error) = discover_format_files(files) {
+                eprintln!("{error}");
+            } else {
+                eprintln!("formatting is not yet implemented");
+            }
             process::exit(1);
         }
         Commands::Test {
