@@ -73,7 +73,7 @@ fn emit_diagnostic_batch(files: &Files, diagnostics: &[Diagnostic], deny_warning
 /// Mux compiler CLI
 #[derive(ClapParser)]
 #[command(name = "mux")]
-#[command(about = "CLI tool for Mux Programming Language", long_about = None)]
+#[command(about = "CLI for The Mux Programming Language", long_about = None)]
 #[command(styles = HELP_STYLES)]
 struct Cli {
     /// Name of the output executable
@@ -85,7 +85,7 @@ struct Cli {
     intermediate: bool,
 
     /// Treat warnings as compilation failures while preserving their codes.
-    #[arg(long, global = true)]
+    #[arg(short = 'd', long, global = true)]
     deny_warnings: bool,
 
     /// The command to run
@@ -136,7 +136,7 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = FixOutputFormat::Text)]
         format: FixOutputFormat,
     },
-    /// Discover and run named top-level test blocks
+    /// Discover and run named test blocks
     Test {
         /// Source files to test. With no files, discover tests/**/*.mux.
         files: Vec<PathBuf>,
