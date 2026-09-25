@@ -414,6 +414,7 @@ impl<'a> Parser<'a> {
             }
 
             let start_position = self.current;
+            let error_count_before_declaration = self.errors.len();
 
             match self.declaration() {
                 Ok(Some(decl)) => {
@@ -438,6 +439,29 @@ impl<'a> Parser<'a> {
                     let _ = self.skip_newlines();
                 }
                 Ok(None) => {
+                    let declaration_start = self
+                        .tokens
+                        .get(start_position)
+                        .and_then(|token| token.span.byte_range)
+                        .map(|range| range.start);
+                    let is_syntax_only_statement = self.mode == ParserMode::SyntaxOnly
+                        && self.errors.len() == error_count_before_declaration
+                        && declaration_start.is_some_and(|start| {
+                            self.syntax_events.iter().any(|event| {
+                                event.range.start == start
+                                    && matches!(
+                                        event.data.as_ref(),
+                                        Some(
+                                            SyntaxData::Import { .. }
+                                                | SyntaxData::VariableDeclaration { .. }
+                                        )
+                                    )
+                            })
+                        });
+                    if is_syntax_only_statement && let Err(e) = self.check_statement_termination() {
+                        self.record_error(e);
+                        self.synchronize();
+                    }
                     if self.current == start_position {
                         self.advance();
                     }

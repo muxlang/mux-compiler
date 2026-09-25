@@ -384,9 +384,17 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_declaration_content(&mut self) -> ParserResult<Option<AstNode>> {
         if self.check(TokenType::Auto) {
-            self.auto_declaration().map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.auto_declaration_fact().map(|_| None)
+            } else {
+                self.auto_declaration().map(Some)
+            }
         } else if self.check(TokenType::Const) {
-            self.const_declaration().map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.const_declaration_fact().map(|_| None)
+            } else {
+                self.const_declaration().map(Some)
+            }
         } else if self.check(TokenType::Common) {
             self.consume();
             if self.mode == ParserMode::SyntaxOnly {
@@ -475,6 +483,23 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_typed_declaration_with_recovery(
         &mut self,
     ) -> ParserResult<Option<AstNode>> {
+        if self.mode == ParserMode::SyntaxOnly {
+            return match self.typed_declaration_fact() {
+                Ok(_) => Ok(None),
+                Err(e)
+                    if matches!(
+                        e.message.as_str(),
+                        "must be terminated with a newline" | "expected newline after statement"
+                    ) =>
+                {
+                    self.record_error(e);
+                    self.synchronize();
+                    Ok(None)
+                }
+                Err(e) => Err(e),
+            };
+        }
+
         match self.typed_declaration() {
             Ok(node) => Ok(Some(node)),
             Err(e)
