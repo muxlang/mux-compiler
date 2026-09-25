@@ -885,13 +885,15 @@ impl<'a> Parser<'a> {
             .last_syntax_range_since(pattern_start, |data| matches!(data, SyntaxData::Pattern(_)))
             .expect("parsed match pattern has a syntax range");
         let guard = if self.matches(&[TokenType::If]) {
-            Some(self.parse_expression()?)
+            let expression = self.parse_expression()?;
+            let guard_range = expression.span.byte_range;
+            let compatibility_guard =
+                (self.mode == ParserMode::Compatibility).then_some(expression);
+            (compatibility_guard, guard_range)
         } else {
-            None
+            (None, None)
         };
-        let guard_range = guard
-            .as_ref()
-            .and_then(|expression| expression.span.byte_range);
+        let (guard, guard_range) = guard;
         self.skip_newlines();
         let body_start = self.syntax_events.len();
         let body = self.parse_match_arm_body(start_span)?;
@@ -1076,7 +1078,11 @@ impl<'a> Parser<'a> {
             TokenType::Underscore => {
                 self.advance(); // consume the underscore
                 Ok(ParsedPatternFact {
-                    node: materialize.then(|| PatternNode::Wildcard),
+                    node: if materialize {
+                        Some(PatternNode::Wildcard)
+                    } else {
+                        None
+                    },
                     kind: ParsedPatternKind::Wildcard,
                 })
             }
@@ -1112,7 +1118,11 @@ impl<'a> Parser<'a> {
                 }
                 self.consume_token(TokenType::CloseBracket, "Expected ']' after list pattern")?;
                 Ok(ParsedPatternFact {
-                    node: materialize.then(|| PatternNode::List { elements, rest }),
+                    node: if materialize {
+                        Some(PatternNode::List { elements, rest })
+                    } else {
+                        None
+                    },
                     kind: ParsedPatternKind::List {
                         elements: element_count,
                         has_rest,
@@ -1175,34 +1185,35 @@ impl<'a> Parser<'a> {
         let start_span = self.tokens[start].span;
 
         // Check if there's an expression after return
-        let value = if self.is_at_end()
+        let (value, value_range, end_span) = if self.is_at_end()
             || self.check(TokenType::NewLine)
             || self.check(TokenType::CloseBrace)
         {
             // return at end of input, or followed by newline/closing brace - void return
-            None
+            (None, None, start_span)
         } else {
             let expr = self.parse_expression()?;
 
             // Validate that postfix ++ and -- don't appear in return value
             self.check_no_postfix_increment_decrement(&expr)?;
 
-            Some(expr)
+            let value_range = expr
+                .span
+                .byte_range
+                .expect("parsed return expression has source range");
+            let end_span = expr.span;
+            (
+                (self.mode == ParserMode::Compatibility).then_some(expr),
+                Some(value_range),
+                end_span,
+            )
         };
-
-        let end_span = value.as_ref().map_or(start_span, |v| v.span);
 
         self.record_typed_syntax_node(
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::ReturnStatement {
-                value: value.as_ref().map(|expr| {
-                    expr.span
-                        .byte_range
-                        .expect("parsed return expression has source range")
-                }),
-            },
+            SyntaxData::ReturnStatement { value: value_range },
         );
 
         Ok((start, start_span, value, end_span))
@@ -1413,6 +1424,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn expression_statement(&mut self) -> ParserResult<LeafStatement> {
         let (range, expr) = self.parse_expression_statement()?;
+        let expr = expr.expect("compatibility expression statement value");
         let span = *expr.span();
         Ok(LeafStatement {
             range,
@@ -1425,7 +1437,7 @@ impl<'a> Parser<'a> {
         self.parse_expression_statement().map(drop)
     }
 
-    fn parse_expression_statement(&mut self) -> ParserResult<(ByteRange, ExpressionNode)> {
+    fn parse_expression_statement(&mut self) -> ParserResult<(ByteRange, Option<ExpressionNode>)> {
         let start = self.current;
         let expr = self.parse_expression()?;
         self.record_typed_syntax_node(
@@ -1458,6 +1470,7 @@ impl<'a> Parser<'a> {
         // Validate that postfix ++ and -- only appear at statement level
         self.validate_postfix_in_statement(&expr)?;
 
+        let expr = (self.mode == ParserMode::Compatibility).then_some(expr);
         Ok((range, expr))
     }
 

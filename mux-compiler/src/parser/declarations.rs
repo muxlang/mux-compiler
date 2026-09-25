@@ -844,7 +844,7 @@ impl<'a> Parser<'a> {
             name,
             type_range: None,
             type_fact: None,
-            value: Some(value),
+            value: (self.mode == ParserMode::Compatibility).then_some(value),
         })
     }
 
@@ -904,7 +904,7 @@ impl<'a> Parser<'a> {
             name,
             type_range: Some(type_range),
             type_fact: Some(type_fact),
-            value: Some(value),
+            value: (self.mode == ParserMode::Compatibility).then_some(value),
         })
     }
 
@@ -997,7 +997,7 @@ impl<'a> Parser<'a> {
             name,
             type_range: Some(type_range),
             type_fact: Some(type_fact),
-            value: Some(value),
+            value: (self.mode == ParserMode::Compatibility).then_some(value),
         })
     }
 
