@@ -71,7 +71,7 @@ impl BlockStatementFact {
 struct WhileStatementFact {
     range: ByteRange,
     span: Span,
-    condition: ExpressionNode,
+    condition: Option<ExpressionNode>,
     body: Vec<StatementNode>,
     syntax_data: SyntaxData,
 }
@@ -91,7 +91,7 @@ impl WhileStatementFact {
         }));
         AstNode::Statement(StatementNode {
             kind: StatementKind::While {
-                cond: condition,
+                cond: condition.expect("compatibility while condition"),
                 body,
             },
             span,
@@ -105,8 +105,8 @@ struct ForStatementFact {
     range: ByteRange,
     span: Span,
     variable: String,
-    variable_type: TypeNode,
-    iterator: ExpressionNode,
+    variable_type: TypeFact,
+    iterator: Option<ExpressionNode>,
     body: Vec<StatementNode>,
     syntax_data: SyntaxData,
 }
@@ -129,8 +129,8 @@ impl ForStatementFact {
         AstNode::Statement(StatementNode {
             kind: StatementKind::For {
                 var: variable,
-                var_type: variable_type,
-                iter: iterator,
+                var_type: variable_type.into_compat_type_node(),
+                iter: iterator.expect("compatibility for iterator"),
                 body,
             },
             span,
@@ -143,7 +143,7 @@ impl ForStatementFact {
 struct MatchStatementFact {
     range: ByteRange,
     span: Span,
-    expression: ExpressionNode,
+    expression: Option<ExpressionNode>,
     arms: Vec<MatchArm>,
     syntax_data: SyntaxData,
 }
@@ -177,7 +177,7 @@ impl MatchStatementFact {
         }));
         AstNode::Statement(StatementNode {
             kind: StatementKind::Match {
-                expr: expression,
+                expr: expression.expect("compatibility match expression"),
                 arms,
             },
             span,
@@ -190,7 +190,7 @@ impl MatchStatementFact {
 struct IfStatementFact {
     range: ByteRange,
     span: Span,
-    condition: ExpressionNode,
+    condition: Option<ExpressionNode>,
     then_block: Vec<StatementNode>,
     else_block: Option<Vec<StatementNode>>,
     syntax_data: SyntaxData,
@@ -212,7 +212,7 @@ impl IfStatementFact {
         }));
         AstNode::Statement(StatementNode {
             kind: StatementKind::If {
-                cond: condition,
+                cond: condition.expect("compatibility if condition"),
                 then_block,
                 else_block,
             },
@@ -606,6 +606,7 @@ impl<'a> Parser<'a> {
             syntax_data.clone(),
         );
         let span = start_span.combine(&end_span);
+        let condition = (self.mode == ParserMode::Compatibility).then_some(condition);
         Ok(IfStatementFact {
             range,
             span,
@@ -710,6 +711,7 @@ impl<'a> Parser<'a> {
             syntax_data.clone(),
         );
 
+        let condition = (self.mode == ParserMode::Compatibility).then_some(condition);
         Ok(WhileStatementFact {
             range,
             span,
@@ -724,7 +726,7 @@ impl<'a> Parser<'a> {
         let start_span = self.tokens[start].span;
 
         // parse the variable type.
-        let var_type = self.parse_type()?;
+        let var_type = self.parse_type_fact()?;
 
         let var = self.consume_identifier("Expected variable name")?;
         let variable_range = self
@@ -733,8 +735,7 @@ impl<'a> Parser<'a> {
             .byte_range
             .expect("for variable name has source range");
         let variable_type_range = var_type
-            .span
-            .byte_range
+            .source_range()
             .expect("for variable type has source range");
         self.consume_token(TokenType::In, "Expected 'in' after variable")?;
         let iter = self.parse_expression()?;
@@ -748,10 +749,18 @@ impl<'a> Parser<'a> {
         self.loop_depth += 1;
         let body_is_block = self.check(TokenType::OpenBrace);
         let body_event_start = self.syntax_events.len();
-        let body_result = if self.check(TokenType::OpenBrace) {
-            self.block().map(BlockStatementFact::into_compatibility_ast)
+        let body_result: ParserResult<Option<AstNode>> = if self.mode == ParserMode::SyntaxOnly {
+            if body_is_block {
+                self.block().map(|_| None)
+            } else {
+                self.syntax_only_statement().map(|()| None)
+            }
+        } else if body_is_block {
+            self.block()
+                .map(BlockStatementFact::into_compatibility_ast)
+                .map(Some)
         } else {
-            self.statement()
+            self.statement().map(Some)
         };
         self.loop_depth -= 1;
         let body = body_result?;
@@ -759,12 +768,13 @@ impl<'a> Parser<'a> {
             .last_statement_range_since(body_event_start)
             .expect("parsed for body has a syntax range");
 
-        let body_statements = match body {
-            AstNode::Statement(stmt) => match stmt.kind {
+        let body_statements = match (self.mode, body) {
+            (ParserMode::SyntaxOnly, _) => Vec::new(),
+            (ParserMode::Compatibility, Some(AstNode::Statement(stmt))) => match stmt.kind {
                 StatementKind::Block(block) => block,
                 _ => vec![stmt],
             },
-            _ => {
+            (ParserMode::Compatibility, _) => {
                 return Err(ParserError::new(
                     DiagnosticCode::ParseExpectedToken,
                     "Expected statement after for loop",
@@ -791,12 +801,13 @@ impl<'a> Parser<'a> {
             self.current,
             syntax_data.clone(),
         );
+        let iterator = (self.mode == ParserMode::Compatibility).then_some(iter);
         Ok(ForStatementFact {
             range,
             span,
             variable: var,
             variable_type: var_type,
-            iterator: iter,
+            iterator,
             body: body_statements,
             syntax_data,
         })
@@ -855,6 +866,7 @@ impl<'a> Parser<'a> {
             syntax_data.clone(),
         );
 
+        let expr = (self.mode == ParserMode::Compatibility).then_some(expr);
         Ok(MatchStatementFact {
             range,
             span,
