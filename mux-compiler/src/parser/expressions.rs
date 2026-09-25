@@ -821,14 +821,14 @@ impl<'a> Parser<'a> {
         self.parse_postfix_operators(expr)
     }
 
-    pub(super) fn parse_if_expression(&mut self, token_span: Span) -> ParserResult<ExpressionNode> {
+    fn parse_if_expression_parsed(&mut self, token_span: Span) -> ParserResult<ParsedExpression> {
         let expression_start = self.token_index_for_span(token_span);
-        let cond = self.parse_expression()?;
+        let cond = self.parse_expression_parsed()?;
         let condition_range = cond
             .span
             .byte_range
             .expect("if expression condition source range");
-        let then_expr = self.parse_if_branch_expression("then expression")?;
+        let then_expr = self.parse_if_branch_expression_parsed("then expression")?;
         let then_range = then_expr
             .span
             .byte_range
@@ -844,27 +844,31 @@ impl<'a> Parser<'a> {
         // shape is needed.
         let else_expr = if self.check(TokenType::If) {
             let if_span = self.advance().span;
-            self.parse_if_expression(if_span)?
+            self.parse_if_expression_parsed(if_span)?
         } else {
-            self.parse_if_branch_expression("else expression")?
+            self.parse_if_branch_expression_parsed("else expression")?
         };
         let else_range = else_expr
             .span
             .byte_range
             .expect("if expression else branch source range");
         let span = token_span.combine(&self.previous().span);
-        let kind = if self.mode == ParserMode::SyntaxOnly {
-            // The syntax event already records all three child ranges. Keep
-            // only a non-target carrier for the remaining parser decisions.
-            ExpressionKind::None
+        let node = if self.mode == ParserMode::SyntaxOnly {
+            None
         } else {
-            ExpressionKind::If {
-                cond: Box::new(cond),
-                then_expr: Box::new(then_expr),
-                else_expr: Box::new(else_expr),
-            }
+            Some(ExpressionNode {
+                kind: ExpressionKind::If {
+                    cond: Box::new(cond.node.expect("compatibility if condition has an AST")),
+                    then_expr: Box::new(
+                        then_expr.node.expect("compatibility if branch has an AST"),
+                    ),
+                    else_expr: Box::new(
+                        else_expr.node.expect("compatibility if branch has an AST"),
+                    ),
+                },
+                span,
+            })
         };
-        let expression = ExpressionNode { kind, span };
         self.record_typed_syntax_node(
             SyntaxKind::IfExpression,
             expression_start,
@@ -873,13 +877,14 @@ impl<'a> Parser<'a> {
                 condition: condition_range,
                 then_expression: then_range,
                 else_expression: else_range,
-                ast_span: expression
-                    .span
-                    .byte_range
-                    .expect("if expression AST span range"),
+                ast_span: span.byte_range.expect("if expression AST span range"),
             },
         );
-        Ok(expression)
+        Ok(ParsedExpression {
+            span,
+            node,
+            generic_target: None,
+        })
     }
 
     pub(super) fn parse_match_expression(
@@ -1011,16 +1016,13 @@ impl<'a> Parser<'a> {
     /// Parse one branch of an if-expression: `{ <expr> }`. Newlines are allowed
     /// around the value expression so a branch can span multiple lines; the branch
     /// is still a single value, not a statement block.
-    pub(super) fn parse_if_branch_expression(
-        &mut self,
-        what: &str,
-    ) -> ParserResult<ExpressionNode> {
+    fn parse_if_branch_expression_parsed(&mut self, what: &str) -> ParserResult<ParsedExpression> {
         self.consume_token(
             TokenType::OpenBrace,
             &format!("Expected '{{' before {what}"),
         )?;
         self.skip_newlines();
-        let expr = self.parse_expression()?;
+        let expr = self.parse_expression_parsed()?;
         self.skip_newlines();
         self.consume_token(
             TokenType::CloseBrace,
@@ -1107,9 +1109,7 @@ impl<'a> Parser<'a> {
             TokenType::Func => self
                 .parse_lambda_expression(token_span)
                 .map(|node| ParsedExpression::from_node(self, node)),
-            TokenType::If => self
-                .parse_if_expression(token_span)
-                .map(|node| ParsedExpression::from_node(self, node)),
+            TokenType::If => self.parse_if_expression_parsed(token_span),
             TokenType::Match => self
                 .parse_match_expression(token_span)
                 .map(|node| ParsedExpression::from_node(self, node)),
