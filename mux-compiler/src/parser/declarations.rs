@@ -65,6 +65,40 @@ struct EnumDeclarationFact {
     syntax_data: SyntaxData,
 }
 
+/// Parsed facts for one enum variant. The name, payload and constraint remain
+/// available for the compatibility AST, while syntax consumers use the
+/// recorded ranges.
+struct EnumVariantFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    data: Option<Vec<EnumVariantField>>,
+    where_clause: Option<WhereClause>,
+    syntax_data: SyntaxData,
+}
+
+impl EnumVariantFact {
+    fn into_compatibility_variant(self) -> EnumVariant {
+        let Self {
+            range,
+            span,
+            name,
+            data,
+            where_clause,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::EnumVariant { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        EnumVariant {
+            name,
+            data,
+            where_clause,
+        }
+    }
+}
+
 impl EnumDeclarationFact {
     fn into_compatibility_ast(self) -> AstNode {
         let Self {
@@ -1581,7 +1615,7 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let variant = self.parse_single_enum_variant()?;
-            variants.push(variant);
+            variants.push(variant.into_compatibility_variant());
             if !self.matches(&[TokenType::Comma]) {
                 self.skip_newlines();
                 break;
@@ -1594,8 +1628,9 @@ impl<'a> Parser<'a> {
         Ok(variants)
     }
 
-    pub(super) fn parse_single_enum_variant(&mut self) -> ParserResult<EnumVariant> {
+    fn parse_single_enum_variant(&mut self) -> ParserResult<EnumVariantFact> {
         let variant_start = self.current;
+        let start_span = self.peek().span;
         let variant_name = self.consume_identifier("Expected variant name")?;
         let name = self
             .previous()
@@ -1620,20 +1655,29 @@ impl<'a> Parser<'a> {
         let where_range = self.last_syntax_range_since(where_start, |data| {
             matches!(data, SyntaxData::WhereClause { .. })
         });
+        let syntax_data = SyntaxData::EnumVariant {
+            name,
+            fields,
+            where_clause: where_range,
+        };
+        let range = self
+            .source_range_for_tokens(variant_start, self.current)
+            .expect("enum variant source range");
+        let end_span = self.previous().span;
+        let span = start_span.combine(&end_span);
         self.record_typed_syntax_node(
             SyntaxKind::EnumVariant,
             variant_start,
             self.current,
-            SyntaxData::EnumVariant {
-                name,
-                fields,
-                where_clause: where_range,
-            },
+            syntax_data.clone(),
         );
-        Ok(EnumVariant {
+        Ok(EnumVariantFact {
+            range,
+            span,
             name: variant_name,
             data,
             where_clause,
+            syntax_data,
         })
     }
 
