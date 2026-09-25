@@ -124,37 +124,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn consume_identifier(&mut self, error_msg: &str) -> ParserResult<String> {
-        if self.is_at_end() {
-            return Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                format!("{error_msg}, but reached end of file"),
-                self.peek().span,
-            ));
-        }
-
-        match &self.peek().token_type {
-            TokenType::Id(name) => {
-                let name_clone = name.clone();
-                self.current += 1;
-                Ok(name_clone)
-            }
-            TokenType::Underscore => {
-                let name_clone = "_".to_string();
-                self.current += 1;
-                Ok(name_clone)
-            }
-            _ => {
-                let found_desc = Self::describe_token(&self.peek().token_type);
-                Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    format!("{error_msg}, found {found_desc}"),
-                    self.peek().span,
-                ))
-            }
-        }
-    }
-
     /// Format a human-readable description of a token type for use in error messages.
     pub(super) fn describe_token(token_type: &TokenType) -> String {
         match token_type {
@@ -246,8 +215,8 @@ mod tests {
             Some(&TokenType::NewLine)
         );
         assert_eq!(
-            parser.consume_identifier("expected name"),
-            Ok("value".to_string())
+            parser.consume_identifier_fact("expected name", true),
+            Ok(Some("value".to_string()))
         );
         assert!(parser.matches(&[TokenType::NewLine]));
         assert!(parser.is_at_end());

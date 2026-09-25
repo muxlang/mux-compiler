@@ -726,7 +726,10 @@ impl<'a> Parser<'a> {
                 let type_range = param_type
                     .source_range()
                     .expect("lambda parameter type source range");
-                let param_name = self.consume_identifier("Expected parameter name")?;
+                let param_name = self.consume_identifier_fact(
+                    "Expected parameter name",
+                    self.mode == ParserMode::Compatibility,
+                )?;
                 let name_range = self
                     .previous()
                     .span
@@ -752,7 +755,7 @@ impl<'a> Parser<'a> {
                 );
                 if self.mode == ParserMode::Compatibility {
                     params.push(Param {
-                        name: param_name,
+                        name: param_name.expect("compatibility lambda parameter name"),
                         type_: param_type.into_compat_type_node(),
                         default_value: None,
                     });
