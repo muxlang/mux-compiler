@@ -64,7 +64,7 @@ impl ImportDeclarationFact {
 struct EnumDeclarationFact {
     range: ByteRange,
     span: Span,
-    name: String,
+    name: Option<String>,
     type_params: Vec<TypeParameterFact>,
     variants: Vec<EnumVariantFact>,
 }
@@ -151,7 +151,7 @@ impl TraitReferenceFact {
 struct EnumVariantFact {
     range: ByteRange,
     span: Span,
-    name: String,
+    name: Option<String>,
     data: Option<EnumVariantDataFact>,
     where_clause: Option<WhereClauseFact>,
 }
@@ -169,7 +169,7 @@ impl EnumVariantFact {
             range.start <= span_range.start && span_range.end <= range.end
         }));
         EnumVariant {
-            name,
+            name: name.expect("compatibility enum variant name"),
             data: data.map(|fields| {
                 fields
                     .into_iter()
@@ -194,7 +194,7 @@ impl EnumDeclarationFact {
             range.start <= span_range.start && span_range.end <= range.end
         }));
         AstNode::Enum {
-            name,
+            name: name.expect("compatibility enum name"),
             type_params: type_params
                 .into_iter()
                 .map(TypeParameterFact::into_compatibility)
@@ -287,7 +287,7 @@ impl FunctionDeclarationFact {
 struct ClassDeclarationFact {
     range: ByteRange,
     span: Span,
-    name: String,
+    name: Option<String>,
     type_params: Vec<TypeParameterFact>,
     traits: Vec<TraitReferenceFact>,
     fields: Vec<FieldDeclarationFact>,
@@ -327,7 +327,7 @@ impl ClassDeclarationFact {
             .map(FunctionDeclarationFact::into_compatibility_function)
             .collect();
         AstNode::Class {
-            name,
+            name: name.expect("compatibility class fact must retain its name"),
             type_params,
             traits,
             fields,
@@ -341,7 +341,7 @@ impl ClassDeclarationFact {
 struct InterfaceDeclarationFact {
     range: ByteRange,
     span: Span,
-    name: String,
+    name: Option<String>,
     type_params: Vec<TypeParameterFact>,
     fields: Vec<FieldDeclarationFact>,
     methods: Vec<InterfaceMethodFact>,
@@ -412,7 +412,7 @@ impl InterfaceDeclarationFact {
             .map(InterfaceMethodFact::into_compatibility_function)
             .collect();
         AstNode::Interface {
-            name,
+            name: name.expect("compatibility interface fact must retain its name"),
             type_params,
             fields,
             methods,
@@ -424,7 +424,7 @@ impl InterfaceDeclarationFact {
 struct FieldDeclarationFact {
     range: ByteRange,
     span: Span,
-    name: String,
+    name: Option<String>,
     type_fact: TypeFact,
     is_generic_param: bool,
     is_const: bool,
@@ -448,7 +448,7 @@ impl FieldDeclarationFact {
             range.start <= span_range.start && span_range.end <= range.end
         }));
         Field {
-            name,
+            name: name.expect("compatibility field fact must retain its name"),
             type_: type_fact.into_compat_type_node(),
             is_generic_param,
             is_const,
@@ -467,7 +467,7 @@ pub(super) struct VariableDeclarationFact {
     kind: VariableDeclarationKind,
     name_range: ByteRange,
     name_span: Span,
-    name: String,
+    name: Option<String>,
     type_range: Option<ByteRange>,
     type_fact: Option<TypeFact>,
     value: Option<ExpressionNode>,
@@ -497,7 +497,7 @@ impl VariableDeclarationFact {
         let type_node = type_fact.map(TypeFact::into_compat_type_node);
         let statement = match kind {
             VariableDeclarationKind::Auto => StatementKind::AutoDecl(
-                name,
+                name.expect("compatibility auto declaration name"),
                 TypeNode {
                     kind: TypeKind::Auto,
                     span: name_span,
@@ -505,17 +505,17 @@ impl VariableDeclarationFact {
                 value.expect("auto declaration has initializer"),
             ),
             VariableDeclarationKind::Const => StatementKind::ConstDecl(
-                name,
+                name.expect("compatibility constant declaration name"),
                 type_node.expect("constant declaration has type"),
                 value.expect("constant declaration has initializer"),
             ),
             VariableDeclarationKind::Typed => StatementKind::TypedDecl(
-                name,
+                name.expect("compatibility typed declaration name"),
                 type_node.expect("typed declaration has type"),
                 value.expect("typed declaration has initializer"),
             ),
             VariableDeclarationKind::Uninitialized => StatementKind::UninitDecl(
-                name,
+                name.expect("compatibility uninitialized declaration name"),
                 type_node.expect("uninitialized declaration has type"),
             ),
         };
@@ -736,7 +736,10 @@ impl<'a> Parser<'a> {
         let start_span = self.peek().span;
         self.advance();
 
-        let name = self.consume_identifier("Expected variable name after 'auto'")?;
+        let name = self.consume_identifier_fact(
+            "Expected variable name after 'auto'",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name_span = self.tokens[self.current - 1].span;
 
         self.consume_token(TokenType::Eq, "Expected '=' after variable name")?;
@@ -813,7 +816,10 @@ impl<'a> Parser<'a> {
         let type_range = type_fact
             .source_range()
             .expect("constant type source range");
-        let name = self.consume_identifier("Expected constant name after type")?;
+        let name = self.consume_identifier_fact(
+            "Expected constant name after type",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name_span = self.previous().span;
 
         self.consume_token(TokenType::Eq, "Expected '=' after constant name")?;
@@ -871,7 +877,10 @@ impl<'a> Parser<'a> {
         let type_range = type_fact
             .source_range()
             .expect("typed declaration type source range");
-        let name = self.consume_identifier("Expected variable name after type")?;
+        let name = self.consume_identifier_fact(
+            "Expected variable name after type",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name_span = self.previous().span;
 
         // `Type name` with no initializer. Deciding here, after the name, is
@@ -961,7 +970,10 @@ impl<'a> Parser<'a> {
         let class_start = self.current;
         let start_span = self.tokens[self.current].span;
         self.consume_token(TokenType::Class, "Expected 'class' keyword")?;
-        let name = self.consume_identifier("Expected class name")?;
+        let name = self.consume_identifier_fact(
+            "Expected class name",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name_range = self
             .previous()
             .span
@@ -1419,7 +1431,10 @@ impl<'a> Parser<'a> {
         let interface_start = self.current;
         let start_span = self.tokens[self.current].span;
         self.consume_token(TokenType::Interface, "Expected 'interface' keyword")?;
-        let name = self.consume_identifier("Expected interface name")?;
+        let name = self.consume_identifier_fact(
+            "Expected interface name",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name_range = self
             .previous()
             .span
@@ -1785,7 +1800,10 @@ impl<'a> Parser<'a> {
         let enum_start = self.current;
         let start_span = self.tokens[self.current].span;
         self.consume_token(TokenType::Enum, "Expected 'enum' keyword")?;
-        let name = self.consume_identifier("Expected enum name")?;
+        let name = self.consume_identifier_fact(
+            "Expected enum name",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name_range = self
             .previous()
             .span
@@ -1900,7 +1918,10 @@ impl<'a> Parser<'a> {
     fn parse_single_enum_variant(&mut self) -> ParserResult<EnumVariantFact> {
         let variant_start = self.current;
         let start_span = self.peek().span;
-        let variant_name = self.consume_identifier("Expected variant name")?;
+        let variant_name = self.consume_identifier_fact(
+            "Expected variant name",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name = self
             .previous()
             .span
@@ -1961,17 +1982,16 @@ impl<'a> Parser<'a> {
                 let type_range = field_type
                     .source_range()
                     .expect("enum payload field type range");
-                let field_name = if let TokenType::Id(name) = self.peek().token_type.clone() {
+                let has_field_name = matches!(&self.peek().token_type, TokenType::Id(_));
+                let field_name = if let TokenType::Id(name) = &self.peek().token_type {
+                    let compatibility_name =
+                        (self.mode == ParserMode::Compatibility).then(|| name.clone());
                     self.advance();
-                    Some(name)
+                    compatibility_name
                 } else {
                     None
                 };
-                let field_name_range = self
-                    .previous()
-                    .span
-                    .byte_range
-                    .filter(|_| field_name.is_some());
+                let field_name_range = self.previous().span.byte_range.filter(|_| has_field_name);
                 self.record_typed_syntax_node(
                     SyntaxKind::EnumVariantField,
                     field_start,
@@ -2207,7 +2227,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn consume_identifier_fact(
+    pub(super) fn consume_identifier_fact(
         &mut self,
         error_msg: &str,
         compatibility: bool,
@@ -2613,7 +2633,10 @@ impl<'a> Parser<'a> {
         let type_range = field_type
             .source_range()
             .expect("class field type source range");
-        let field_name = self.consume_identifier("Expected field name")?;
+        let field_name = self.consume_identifier_fact(
+            "Expected field name",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name = self
             .previous()
             .span

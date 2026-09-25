@@ -99,7 +99,7 @@ impl WhileStatementFact {
 struct ForStatementFact {
     range: ByteRange,
     span: Span,
-    variable: String,
+    variable: Option<String>,
     variable_type: TypeFact,
     iterator: Option<ExpressionNode>,
     body: Vec<StatementNode>,
@@ -120,7 +120,7 @@ impl ForStatementFact {
         }));
         AstNode::Statement(StatementNode {
             kind: StatementKind::For {
-                var: variable,
+                var: variable.expect("compatibility for variable"),
                 var_type: variable_type.into_compat_type_node(),
                 iter: iterator.expect("compatibility for iterator"),
                 body,
@@ -708,7 +708,10 @@ impl<'a> Parser<'a> {
         // parse the variable type.
         let var_type = self.parse_type_fact()?;
 
-        let var = self.consume_identifier("Expected variable name")?;
+        let var = self.consume_identifier_fact(
+            "Expected variable name",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let variable_range = self
             .previous()
             .span
