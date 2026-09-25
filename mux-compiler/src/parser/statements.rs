@@ -1308,7 +1308,15 @@ impl<'a> Parser<'a> {
             });
         }
 
-        let statements = self.parse_block_statements_loop()?;
+        let stmts = if self.mode == ParserMode::Compatibility {
+            self.parse_block_statements_loop()?
+                .into_iter()
+                .filter_map(AstNode::into_statement)
+                .collect()
+        } else {
+            self.parse_syntax_block_statements_loop()?;
+            Vec::new()
+        };
 
         let end_span = if self.check(TokenType::CloseBrace) {
             self.consume_token(TokenType::CloseBrace, "Expected '}' after block")?
@@ -1319,11 +1327,6 @@ impl<'a> Parser<'a> {
                 self.peek().span,
             ));
         };
-        let stmts: Vec<StatementNode> = statements
-            .into_iter()
-            .filter_map(AstNode::into_statement)
-            .collect();
-
         Ok(BlockStatementFact {
             range: self
                 .source_range_for_tokens(block_start, self.current)
@@ -1340,20 +1343,34 @@ impl<'a> Parser<'a> {
             if self.check(TokenType::CloseBrace) {
                 break;
             }
-            self.parse_block_statement(&mut statements)?;
+            if let Some(statement) = self.parse_block_statement()? {
+                statements.push(statement);
+            }
         }
         Ok(statements)
     }
 
-    pub(super) fn parse_block_statement(
-        &mut self,
-        statements: &mut Vec<AstNode>,
-    ) -> ParserResult<()> {
+    fn parse_syntax_block_statements_loop(&mut self) -> ParserResult<()> {
+        while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
+            self.skip_newlines();
+            if self.check(TokenType::CloseBrace) {
+                break;
+            }
+            let statement = self.parse_block_statement()?;
+            debug_assert!(
+                statement.is_none(),
+                "syntax parsing must not build AST nodes"
+            );
+        }
+        Ok(())
+    }
+
+    fn parse_block_statement(&mut self) -> ParserResult<Option<AstNode>> {
         let start_position = self.current;
         match self.declaration() {
             Ok(Some(decl)) => {
-                statements.push(decl);
                 self.skip_newlines();
+                Ok(Some(decl))
             }
             Ok(None) => {
                 // Syntax-only declarations can consume a full construct without
@@ -1365,6 +1382,7 @@ impl<'a> Parser<'a> {
                 {
                     self.advance();
                 }
+                Ok(None)
             }
             Err(e) => {
                 self.record_error(e);
@@ -1373,9 +1391,9 @@ impl<'a> Parser<'a> {
                 if self.current == current_pos && !self.is_at_end() {
                     self.advance();
                 }
+                Ok(None)
             }
         }
-        Ok(())
     }
 
     pub(super) fn is_in_block(&self) -> bool {
