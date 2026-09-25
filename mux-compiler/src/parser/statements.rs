@@ -456,7 +456,7 @@ impl<'a> Parser<'a> {
         } else if self.looks_like_typed_decl() {
             self.typed_declaration_fact().map(drop)
         } else {
-            self.expression_statement().map(drop)
+            self.syntax_only_expression_statement()
         }
     }
 
@@ -1259,6 +1259,20 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn expression_statement(&mut self) -> ParserResult<LeafStatement> {
+        let (range, expr) = self.parse_expression_statement()?;
+        let span = *expr.span();
+        Ok(LeafStatement {
+            range,
+            kind: LeafStatementKind::Expression(expr),
+            span,
+        })
+    }
+
+    fn syntax_only_expression_statement(&mut self) -> ParserResult<()> {
+        self.parse_expression_statement().map(drop)
+    }
+
+    fn parse_expression_statement(&mut self) -> ParserResult<(ByteRange, ExpressionNode)> {
         let start = self.current;
         let expr = self.parse_expression()?;
         self.record_typed_syntax_node(
@@ -1287,16 +1301,11 @@ impl<'a> Parser<'a> {
             }
         }
         let _ = self.skip_newlines();
-        let span = *expr.span();
 
         // Validate that postfix ++ and -- only appear at statement level
         self.validate_postfix_in_statement(&expr)?;
 
-        Ok(LeafStatement {
-            range,
-            kind: LeafStatementKind::Expression(expr),
-            span,
-        })
+        Ok((range, expr))
     }
 
     pub(super) fn validate_postfix_in_statement(&self, expr: &ExpressionNode) -> ParserResult<()> {
