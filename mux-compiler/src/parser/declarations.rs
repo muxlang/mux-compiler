@@ -9,7 +9,6 @@ struct TestDeclarationFact {
     span: Span,
     name: String,
     body: Vec<StatementNode>,
-    syntax_data: SyntaxData,
 }
 
 impl TestDeclarationFact {
@@ -19,9 +18,7 @@ impl TestDeclarationFact {
             span,
             name,
             body,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::Test { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -33,9 +30,8 @@ struct ImportDeclarationFact {
     range: ByteRange,
     span: Span,
     module_path_range: ByteRange,
-    module_path: String,
-    spec: ImportSpec,
-    syntax_data: SyntaxData,
+    module_path: Option<String>,
+    spec: Option<ImportSpec>,
 }
 
 impl ImportDeclarationFact {
@@ -46,15 +42,16 @@ impl ImportDeclarationFact {
             module_path_range,
             module_path,
             spec,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::Import { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
         debug_assert!(range.start <= module_path_range.start && module_path_range.end <= range.end);
         AstNode::Statement(StatementNode {
-            kind: StatementKind::Import { module_path, spec },
+            kind: StatementKind::Import {
+                module_path: module_path.expect("compatibility import path"),
+                spec: spec.expect("compatibility import spec"),
+            },
             span,
         })
     }
@@ -66,7 +63,6 @@ struct EnumDeclarationFact {
     name: String,
     type_params: Vec<TypeParameterFact>,
     variants: Vec<EnumVariantFact>,
-    syntax_data: SyntaxData,
 }
 
 struct TypeParameterFact {
@@ -74,7 +70,6 @@ struct TypeParameterFact {
     span: Span,
     name: String,
     bounds: Vec<TraitBoundFact>,
-    syntax_data: SyntaxData,
 }
 
 impl TypeParameterFact {
@@ -84,13 +79,7 @@ impl TypeParameterFact {
             span,
             name,
             bounds,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(
-            syntax_data,
-            SyntaxData::TypeParameter { name: name_range, .. }
-                if range.start <= name_range.start && name_range.end <= range.end
-        ));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -105,27 +94,18 @@ impl TypeParameterFact {
 }
 
 struct TraitBoundFact {
-    range: ByteRange,
     span: Span,
     name: String,
     type_arguments: Vec<TypeFact>,
-    syntax_data: SyntaxData,
 }
 
 impl TraitBoundFact {
     fn into_compatibility(self) -> TraitBound {
         let Self {
-            range,
             span,
             name,
             type_arguments,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(
-            syntax_data,
-            SyntaxData::TraitBound { name: name_range, .. }
-                if range.start <= name_range.start && name_range.end <= range.end
-        ));
         TraitBound {
             name,
             type_params: type_arguments
@@ -138,27 +118,18 @@ impl TraitBoundFact {
 }
 
 struct TraitReferenceFact {
-    range: ByteRange,
     span: Span,
     name: String,
     type_arguments: Vec<TypeFact>,
-    syntax_data: SyntaxData,
 }
 
 impl TraitReferenceFact {
     fn into_compatibility(self) -> TraitRef {
         let Self {
-            range,
             span,
             name,
             type_arguments,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(
-            syntax_data,
-            SyntaxData::TraitReference { name: name_range, .. }
-                if range.start <= name_range.start && name_range.end <= range.end
-        ));
         TraitRef {
             name,
             type_args: type_arguments
@@ -179,7 +150,6 @@ struct EnumVariantFact {
     name: String,
     data: Option<EnumVariantDataFact>,
     where_clause: Option<WhereClauseFact>,
-    syntax_data: SyntaxData,
 }
 
 impl EnumVariantFact {
@@ -190,9 +160,7 @@ impl EnumVariantFact {
             name,
             data,
             where_clause,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::EnumVariant { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -217,9 +185,7 @@ impl EnumDeclarationFact {
             name,
             type_params,
             variants,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::Enum { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -248,7 +214,6 @@ struct FunctionDeclarationFact {
     body: Vec<StatementNode>,
     is_common: bool,
     where_clause: Option<WhereClauseFact>,
-    syntax_data: SyntaxData,
 }
 
 struct FunctionParameterFact {
@@ -288,9 +253,7 @@ impl FunctionDeclarationFact {
             body,
             is_common,
             where_clause,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::Function { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -324,7 +287,6 @@ struct ClassDeclarationFact {
     fields: Vec<FieldDeclarationFact>,
     methods: Vec<FunctionDeclarationFact>,
     where_clause: Option<WhereClauseFact>,
-    syntax_data: SyntaxData,
 }
 
 impl ClassDeclarationFact {
@@ -338,9 +300,7 @@ impl ClassDeclarationFact {
             fields,
             methods,
             where_clause,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::Class { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -379,37 +339,27 @@ struct InterfaceDeclarationFact {
     type_params: Vec<TypeParameterFact>,
     fields: Vec<FieldDeclarationFact>,
     methods: Vec<InterfaceMethodFact>,
-    syntax_data: SyntaxData,
 }
 
 struct InterfaceMethodFact {
-    range: ByteRange,
     span: Span,
     name: String,
     type_params: Vec<TypeParameterFact>,
     params: Vec<FunctionParameterFact>,
     return_type: TypeFact,
     where_clause: Option<WhereClauseFact>,
-    syntax_data: SyntaxData,
 }
 
 impl InterfaceMethodFact {
     fn into_compatibility_function(self) -> FunctionNode {
         let Self {
-            range,
             span,
             name,
             type_params,
             params,
             return_type,
             where_clause,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(
-            syntax_data,
-            SyntaxData::Function { name: name_range, .. }
-                if range.start <= name_range.start && name_range.end <= range.end
-        ));
         let type_params = type_params
             .into_iter()
             .map(TypeParameterFact::into_compatibility)
@@ -439,9 +389,7 @@ impl InterfaceDeclarationFact {
             type_params,
             fields,
             methods,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::Interface { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -476,7 +424,6 @@ struct FieldDeclarationFact {
     is_const: bool,
     default_value: Option<ExpressionNode>,
     where_clause: Option<WhereClauseFact>,
-    syntax_data: SyntaxData,
 }
 
 impl FieldDeclarationFact {
@@ -490,9 +437,7 @@ impl FieldDeclarationFact {
             is_const,
             default_value,
             where_clause,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::Field { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -1061,7 +1006,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::ClassDeclaration,
             class_start,
             self.current,
-            syntax_data.clone(),
+            syntax_data,
         );
         Ok(ClassDeclarationFact {
             range: self
@@ -1074,7 +1019,6 @@ impl<'a> Parser<'a> {
             fields,
             methods,
             where_clause,
-            syntax_data,
         })
     }
 
@@ -1143,7 +1087,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::TestDeclaration,
             test_start,
             self.current,
-            syntax_data.clone(),
+            syntax_data,
         );
         Ok(TestDeclarationFact {
             range: self
@@ -1152,7 +1096,6 @@ impl<'a> Parser<'a> {
             span,
             name,
             body,
-            syntax_data,
         })
     }
 
@@ -1184,7 +1127,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TypeParameter,
                 parameter_start,
                 self.current,
-                syntax_data.clone(),
+                syntax_data,
             );
             params.push(TypeParameterFact {
                 range: self
@@ -1193,7 +1136,6 @@ impl<'a> Parser<'a> {
                 span: parameter_span.combine(&self.previous().span),
                 name: param,
                 bounds,
-                syntax_data,
             });
             if !self.matches(&[TokenType::Comma]) {
                 break;
@@ -1232,16 +1174,12 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                syntax_data.clone(),
+                syntax_data,
             );
             bounds.push(TraitBoundFact {
-                range: self
-                    .source_range_for_tokens(bound_start, self.current)
-                    .expect("trait bound source range"),
                 span: bound_span,
                 name: bound_name,
                 type_arguments: type_args,
-                syntax_data,
             });
             if !self.matches(&[TokenType::Ref]) {
                 break;
@@ -1281,16 +1219,12 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TraitReference,
                 trait_start,
                 self.current,
-                syntax_data.clone(),
+                syntax_data,
             );
             traits_list.push(TraitReferenceFact {
-                range: self
-                    .source_range_for_tokens(trait_start, self.current)
-                    .expect("trait reference source range"),
                 span: trait_span,
                 name: trait_name,
                 type_arguments: type_args,
-                syntax_data,
             });
             if !self.matches(&[TokenType::Comma]) {
                 break;
@@ -1499,7 +1433,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::InterfaceDeclaration,
             interface_start,
             self.current,
-            syntax_data.clone(),
+            syntax_data,
         );
         Ok(InterfaceDeclarationFact {
             range: self
@@ -1510,7 +1444,6 @@ impl<'a> Parser<'a> {
             type_params,
             fields,
             methods,
-            syntax_data,
         })
     }
 
@@ -1543,7 +1476,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    syntax_data.clone(),
+                    syntax_data,
                 );
                 params.push(TypeParameterFact {
                     range: self
@@ -1552,7 +1485,6 @@ impl<'a> Parser<'a> {
                     span: parameter_span.combine(&self.previous().span),
                     name: param,
                     bounds,
-                    syntax_data,
                 });
                 if !self.matches(&[TokenType::Comma]) {
                     break;
@@ -1595,16 +1527,12 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                syntax_data.clone(),
+                syntax_data,
             );
             bounds.push(TraitBoundFact {
-                range: self
-                    .source_range_for_tokens(bound_start, self.current)
-                    .expect("trait bound source range"),
                 span: bound_span,
                 name: bound_name,
                 type_arguments: type_args,
-                syntax_data,
             });
             if !self.matches(&[TokenType::Plus]) {
                 break;
@@ -1719,19 +1647,15 @@ impl<'a> Parser<'a> {
             SyntaxKind::FunctionDeclaration,
             function_start,
             end,
-            syntax_data.clone(),
+            syntax_data,
         );
         Ok(InterfaceMethodFact {
-            range: self
-                .source_range_for_tokens(function_start, end)
-                .expect("interface method source range"),
             span: start_span,
             name,
             type_params,
             params,
             return_type,
             where_clause,
-            syntax_data,
         })
     }
 
@@ -1759,7 +1683,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    syntax_data.clone(),
+                    syntax_data,
                 );
                 params.push(TypeParameterFact {
                     range: self
@@ -1768,7 +1692,6 @@ impl<'a> Parser<'a> {
                     span: parameter_span.combine(&self.previous().span),
                     name: param,
                     bounds: Vec::new(),
-                    syntax_data,
                 });
                 if !self.matches(&[TokenType::Comma]) {
                     break;
@@ -1863,7 +1786,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::EnumDeclaration,
             enum_start,
             self.current,
-            syntax_data.clone(),
+            syntax_data,
         );
         Ok(EnumDeclarationFact {
             range: self
@@ -1873,7 +1796,6 @@ impl<'a> Parser<'a> {
             name,
             type_params,
             variants,
-            syntax_data,
         })
     }
 
@@ -1906,7 +1828,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    syntax_data.clone(),
+                    syntax_data,
                 );
                 params.push(TypeParameterFact {
                     range: self
@@ -1915,7 +1837,6 @@ impl<'a> Parser<'a> {
                     span: parameter_span.combine(&self.previous().span),
                     name: param,
                     bounds,
-                    syntax_data,
                 });
                 if !self.matches(&[TokenType::Comma]) {
                     break;
@@ -1986,7 +1907,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::EnumVariant,
             variant_start,
             self.current,
-            syntax_data.clone(),
+            syntax_data,
         );
         Ok(EnumVariantFact {
             range,
@@ -1994,7 +1915,6 @@ impl<'a> Parser<'a> {
             name: variant_name,
             data,
             where_clause,
-            syntax_data,
         })
     }
 
@@ -2044,10 +1964,11 @@ impl<'a> Parser<'a> {
         let import_start = self.current;
         let start_span = self.consume_token(TokenType::Import, "Expected 'import' keyword")?;
         let path_start = self.current;
-        let module_path = self.parse_module_path()?;
+        let compatibility = self.mode == ParserMode::Compatibility;
+        let module_path = self.parse_module_path_fact(compatibility)?;
         let path_end = self.current;
         let spec_start = self.current;
-        let spec = self.parse_import_spec(&module_path)?;
+        let spec = self.parse_import_spec_fact(module_path.as_deref(), compatibility)?;
         let end_span = self.previous().span;
         let span = start_span.combine(&end_span);
         let module_path_range = self
@@ -2063,7 +1984,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::ImportDeclaration,
             import_start,
             self.current,
-            syntax_data.clone(),
+            syntax_data,
         );
         Ok(ImportDeclarationFact {
             range: self
@@ -2073,7 +1994,6 @@ impl<'a> Parser<'a> {
             module_path_range,
             module_path,
             spec,
-            syntax_data,
         })
     }
 
@@ -2154,119 +2074,92 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Extracted: Parses the import spec following an import path.
-    pub(super) fn parse_import_spec(&mut self, module_path: &str) -> ParserResult<ImportSpec> {
-        if self.matches(&[TokenType::Dot]) {
-            self.parse_dot_import_spec()
+    fn parse_import_spec_fact(
+        &mut self,
+        module_path: Option<&str>,
+        compatibility: bool,
+    ) -> ParserResult<Option<ImportSpec>> {
+        let spec = if self.matches(&[TokenType::Dot]) {
+            self.parse_dot_import_spec_fact(compatibility)?
         } else {
-            self.parse_module_import_spec(module_path)
-        }
+            self.parse_module_import_spec_fact(module_path, compatibility)?
+        };
+        Ok(spec)
     }
 
-    /// Extracted: Handles dot import: .*, .(items), .item (with optional alias)
-    pub(super) fn parse_dot_import_spec(&mut self) -> ParserResult<ImportSpec> {
+    fn parse_dot_import_spec_fact(
+        &mut self,
+        compatibility: bool,
+    ) -> ParserResult<Option<ImportSpec>> {
         if self.matches(&[TokenType::Star]) {
-            Ok(ImportSpec::Wildcard)
+            Ok(if compatibility {
+                Some(ImportSpec::Wildcard)
+            } else {
+                None
+            })
         } else if self.matches(&[TokenType::OpenParen]) {
-            self.parse_import_items()
+            self.parse_import_items_fact(compatibility)
         } else {
-            let item = self.consume_identifier("Expected item name after '.'")?;
+            let item =
+                self.consume_identifier_fact("Expected item name after '.'", compatibility)?;
             let alias = if self.matches(&[TokenType::As]) {
-                Some(self.consume_identifier("Expected alias after 'as'")?)
+                self.consume_identifier_fact("Expected alias after 'as'", compatibility)?
             } else {
                 None
             };
-            Ok(ImportSpec::Item { item, alias })
+            if compatibility {
+                Ok(Some(ImportSpec::Item {
+                    item: item.expect("compatibility import item"),
+                    alias,
+                }))
+            } else {
+                Ok(None)
+            }
         }
     }
 
-    /// Extracted: Handles import module (as alias or as _)
-    pub(super) fn parse_module_import_spec(
+    fn parse_module_import_spec_fact(
         &mut self,
-        module_path: &str,
-    ) -> ParserResult<ImportSpec> {
+        module_path: Option<&str>,
+        compatibility: bool,
+    ) -> ParserResult<Option<ImportSpec>> {
         let alias = if self.matches(&[TokenType::As]) {
-            let alias_name = self.consume_identifier("Expected alias after 'as'")?;
-            if alias_name == "_" {
-                None
-            } else {
-                Some(alias_name)
-            }
-        } else {
+            let alias_name =
+                self.consume_identifier_fact("Expected alias after 'as'", compatibility)?;
+            alias_name.filter(|name| name != "_")
+        } else if compatibility {
             Some(
                 module_path
+                    .expect("compatibility import path")
                     .split('.')
                     .next_back()
-                    .unwrap_or(module_path)
+                    .unwrap_or(module_path.expect("compatibility import path"))
                     .to_string(),
             )
+        } else {
+            None
         };
-        Ok(ImportSpec::Module { alias })
+        Ok(if compatibility {
+            Some(ImportSpec::Module { alias })
+        } else {
+            None
+        })
     }
 
-    // Parse module path with support for dots, relative (./, ../), and absolute (/)
-    pub(super) fn parse_module_path(&mut self) -> ParserResult<String> {
-        let mut module_path = String::new();
-
-        // Handle relative/absolute paths
-        if self.matches(&[TokenType::Dot]) {
-            self.consume_token(TokenType::Slash, "Expected '/' after '.'")?;
-            module_path.push_str("./");
-        } else if self.matches(&[TokenType::DotDot]) {
-            self.consume_token(TokenType::Slash, "Expected '/' after '..'")?;
-            module_path.push_str("../");
-        } else if self.matches(&[TokenType::Slash]) {
-            // Absolute path /module
-            module_path.push('/');
-        }
-
-        // Parse first identifier
-        module_path.push_str(&self.consume_identifier("Expected module path")?);
-
-        // Parse remaining dotted parts (utils.logger.helpers)
-        // Stop if we see:
-        // - .* (wildcard import)
-        // - .( (multiple items import)
-        // - .identifier followed by end/as/newline (single item import)
-        while self.check(TokenType::Dot) {
-            let next = self.peek_ahead(1);
-
-            // Stop if next token after dot is * or (
-            if next.is_some_and(|t| matches!(t.token_type, TokenType::Star | TokenType::OpenParen))
-            {
-                break;
-            }
-
-            // Stop if next is identifier but there's no dot after it (single item import)
-            if next.is_some_and(|t| matches!(t.token_type, TokenType::Id(_))) {
-                let after_identifier = self.peek_ahead(2);
-                if !after_identifier.is_some_and(|t| matches!(t.token_type, TokenType::Dot)) {
-                    // This is .identifier at end - it's an item import, not part of module path
-                    break;
-                }
-            }
-
-            self.advance(); // consume dot
-            module_path.push('.');
-            module_path.push_str(&self.consume_identifier("Expected module name after '.'")?);
-        }
-
-        Ok(module_path)
-    }
-
-    // Parse (item1, item2 as alias, item3)
-    pub(super) fn parse_import_items(&mut self) -> ParserResult<ImportSpec> {
+    fn parse_import_items_fact(&mut self, compatibility: bool) -> ParserResult<Option<ImportSpec>> {
         let mut items = Vec::new();
 
         if !self.check(TokenType::CloseParen) {
             loop {
-                let item = self.consume_identifier("Expected item name")?;
+                let item = self.consume_identifier_fact("Expected item name", compatibility)?;
                 let alias = if self.matches(&[TokenType::As]) {
-                    Some(self.consume_identifier("Expected alias after 'as'")?)
+                    self.consume_identifier_fact("Expected alias after 'as'", compatibility)?
                 } else {
                     None
                 };
-                items.push((item, alias));
+                if compatibility {
+                    items.push((item.expect("compatibility import item"), alias));
+                }
 
                 if !self.matches(&[TokenType::Comma]) {
                     break;
@@ -2276,7 +2169,107 @@ impl<'a> Parser<'a> {
         }
 
         self.consume_token(TokenType::CloseParen, "Expected ')' after import items")?;
-        Ok(ImportSpec::Items { items })
+        Ok(if compatibility {
+            Some(ImportSpec::Items { items })
+        } else {
+            None
+        })
+    }
+
+    fn consume_identifier_fact(
+        &mut self,
+        error_msg: &str,
+        compatibility: bool,
+    ) -> ParserResult<Option<String>> {
+        if self.is_at_end() {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                format!("{error_msg}, but reached end of file"),
+                self.peek().span,
+            ));
+        }
+
+        match &self.peek().token_type {
+            TokenType::Id(name) => {
+                let name = compatibility.then(|| name.clone());
+                self.current += 1;
+                Ok(name)
+            }
+            TokenType::Underscore => {
+                let name = compatibility.then(|| "_".to_string());
+                self.current += 1;
+                Ok(name)
+            }
+            _ => {
+                let found_desc = Self::describe_token(&self.peek().token_type);
+                Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
+                    format!("{error_msg}, found {found_desc}"),
+                    self.peek().span,
+                ))
+            }
+        }
+    }
+
+    // Parse module path with support for dots, relative (./, ../), and absolute (/)
+    fn parse_module_path_fact(&mut self, compatibility: bool) -> ParserResult<Option<String>> {
+        let mut module_path = compatibility.then(String::new);
+
+        if self.matches(&[TokenType::Dot]) {
+            self.consume_token(TokenType::Slash, "Expected '/' after '.'")?;
+            if let Some(module_path) = &mut module_path {
+                module_path.push_str("./");
+            }
+        } else if self.matches(&[TokenType::DotDot]) {
+            self.consume_token(TokenType::Slash, "Expected '/' after '..'")?;
+            if let Some(module_path) = &mut module_path {
+                module_path.push_str("../");
+            }
+        } else if self.matches(&[TokenType::Slash])
+            && let Some(module_path) = &mut module_path
+        {
+            module_path.push('/');
+        }
+
+        if let Some(module_path) = &mut module_path {
+            module_path.push_str(
+                &self
+                    .consume_identifier_fact("Expected module path", true)?
+                    .expect("compatibility module path component"),
+            );
+        } else {
+            self.consume_identifier_fact("Expected module path", false)?;
+        }
+
+        while self.check(TokenType::Dot) {
+            let next = self.peek_ahead(1);
+            if next.is_some_and(|token| {
+                matches!(token.token_type, TokenType::Star | TokenType::OpenParen)
+            }) {
+                break;
+            }
+            if next.is_some_and(|token| matches!(token.token_type, TokenType::Id(_))) {
+                let after_identifier = self.peek_ahead(2);
+                if !after_identifier.is_some_and(|token| matches!(token.token_type, TokenType::Dot))
+                {
+                    break;
+                }
+            }
+
+            self.advance();
+            if let Some(module_path) = &mut module_path {
+                module_path.push('.');
+                module_path.push_str(
+                    &self
+                        .consume_identifier_fact("Expected module name after '.'", true)?
+                        .expect("compatibility module path component"),
+                );
+            } else {
+                self.consume_identifier_fact("Expected module name after '.'", false)?;
+            }
+        }
+
+        Ok(module_path)
     }
 
     pub(super) fn function_declaration(&mut self, is_common: bool) -> ParserResult<AstNode> {
@@ -2360,7 +2353,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::FunctionDeclaration,
             function_start,
             function_end,
-            syntax_data.clone(),
+            syntax_data,
         );
         Ok(FunctionDeclarationFact {
             range: self
@@ -2374,7 +2367,6 @@ impl<'a> Parser<'a> {
             body: body_statements,
             is_common,
             where_clause,
-            syntax_data,
         })
     }
 
@@ -2407,7 +2399,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    syntax_data.clone(),
+                    syntax_data,
                 );
                 params.push(TypeParameterFact {
                     range: self
@@ -2416,7 +2408,6 @@ impl<'a> Parser<'a> {
                     span: parameter_span.combine(&self.previous().span),
                     name: param,
                     bounds: trait_bounds,
-                    syntax_data,
                 });
                 if !self.matches(&[TokenType::Comma]) {
                     break;
@@ -2457,16 +2448,12 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                syntax_data.clone(),
+                syntax_data,
             );
             bounds.push(TraitBoundFact {
-                range: self
-                    .source_range_for_tokens(bound_start, self.current)
-                    .expect("trait bound source range"),
                 span: bound_span,
                 name: bound_name,
                 type_arguments: type_args,
-                syntax_data,
             });
             if !self.matches(&[TokenType::Ref]) {
                 break;
@@ -2641,7 +2628,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::FieldDeclaration,
             field_start,
             self.current,
-            syntax_data.clone(),
+            syntax_data,
         );
         Ok(FieldDeclarationFact {
             range: self
@@ -2654,7 +2641,6 @@ impl<'a> Parser<'a> {
             is_const,
             default_value,
             where_clause,
-            syntax_data,
         })
     }
 

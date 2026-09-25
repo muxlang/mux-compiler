@@ -1,6 +1,8 @@
 use super::statements::WhereClauseFact;
+use super::types::TypeFact;
 use super::*;
 use crate::syntax::SyntaxData;
+use ordered_float::OrderedFloat;
 
 /// Expression state used while parsing. Syntax-only parsing keeps source
 /// ranges and the one bit of semantic shape needed for generic-call
@@ -9,6 +11,24 @@ pub(super) struct ParsedExpression {
     pub(super) span: Span,
     pub(super) node: Option<ExpressionNode>,
     generic_target: Option<String>,
+}
+
+enum PrimaryToken {
+    OpenParen,
+    Int(i64),
+    Bool(bool),
+    None,
+    Char(char),
+    Str(Option<String>),
+    Bytes(Option<Vec<u8>>),
+    Float(OrderedFloat<f64>),
+    OpenBracket,
+    OpenBrace,
+    Func,
+    If,
+    Match,
+    Id(String),
+    Other,
 }
 
 impl ParsedExpression {
@@ -1081,47 +1101,72 @@ impl<'a> Parser<'a> {
             ));
         }
 
+        let compatibility = self.mode == ParserMode::Compatibility;
         let token_index = self.current;
         let token = self.consume();
-        let token_type = token.token_type.clone();
-        let syntax_token_type = token_type.clone();
         let token_span = token.span;
+        let token_type = match &token.token_type {
+            TokenType::OpenParen => PrimaryToken::OpenParen,
+            TokenType::Int(value) => PrimaryToken::Int(*value),
+            TokenType::Bool(value) => PrimaryToken::Bool(*value),
+            TokenType::None => PrimaryToken::None,
+            TokenType::Char(value) => PrimaryToken::Char(*value),
+            TokenType::Str(value) => PrimaryToken::Str(compatibility.then(|| value.clone())),
+            TokenType::Bytes(value) => PrimaryToken::Bytes(compatibility.then(|| value.clone())),
+            TokenType::Float(value) => PrimaryToken::Float(*value),
+            TokenType::OpenBracket => PrimaryToken::OpenBracket,
+            TokenType::OpenBrace => PrimaryToken::OpenBrace,
+            TokenType::Func => PrimaryToken::Func,
+            TokenType::If => PrimaryToken::If,
+            TokenType::Match => PrimaryToken::Match,
+            TokenType::Id(value) => PrimaryToken::Id(value.clone()),
+            _ => PrimaryToken::Other,
+        };
 
         let result = match token_type {
-            TokenType::OpenParen => self.parse_parenthesized_or_tuple_expression_parsed(token_span),
-            TokenType::Int(n) => self.parse_scalar_primary(token_span, None, || {
+            PrimaryToken::OpenParen => {
+                self.parse_parenthesized_or_tuple_expression_parsed(token_span)
+            }
+            PrimaryToken::Int(n) => self.parse_scalar_primary(token_span, None, || {
                 ExpressionKind::Literal(LiteralNode::Integer(n))
             }),
-            TokenType::Bool(b) => self.parse_scalar_primary(token_span, None, || {
+            PrimaryToken::Bool(b) => self.parse_scalar_primary(token_span, None, || {
                 ExpressionKind::Literal(LiteralNode::Boolean(b))
             }),
-            TokenType::None => self.parse_scalar_primary(token_span, None, || ExpressionKind::None),
-            TokenType::Char(c) => self.parse_scalar_primary(token_span, None, || {
+            PrimaryToken::None => {
+                self.parse_scalar_primary(token_span, None, || ExpressionKind::None)
+            }
+            PrimaryToken::Char(c) => self.parse_scalar_primary(token_span, None, || {
                 ExpressionKind::Literal(LiteralNode::Char(c))
             }),
-            TokenType::Str(s) => self.parse_scalar_primary(token_span, None, || {
-                ExpressionKind::Literal(LiteralNode::String(s))
+            PrimaryToken::Str(value) => self.parse_scalar_primary(token_span, None, || {
+                ExpressionKind::Literal(LiteralNode::String(
+                    value.expect("compatibility string literal has a payload"),
+                ))
             }),
-            TokenType::Bytes(bytes) => self.parse_scalar_primary(token_span, None, || {
-                ExpressionKind::Literal(LiteralNode::Bytes(bytes))
+            PrimaryToken::Bytes(value) => self.parse_scalar_primary(token_span, None, || {
+                ExpressionKind::Literal(LiteralNode::Bytes(
+                    value.expect("compatibility bytes literal has a payload"),
+                ))
             }),
-            TokenType::Float(f) => self.parse_scalar_primary(token_span, None, || {
+            PrimaryToken::Float(f) => self.parse_scalar_primary(token_span, None, || {
                 ExpressionKind::Literal(LiteralNode::Float(f))
             }),
-            TokenType::OpenBracket => self.parse_list_literal_expression_parsed(token_span),
-            TokenType::OpenBrace => self.parse_collection_literal_parsed(token_span),
-            TokenType::Func => self.parse_lambda_expression_parsed(token_span),
-            TokenType::If => self.parse_if_expression_parsed(token_span),
-            TokenType::Match => self.parse_match_expression_parsed(token_span),
-            TokenType::Id(id) => self.parse_scalar_primary(token_span, Some(id.clone()), || {
+            PrimaryToken::OpenBracket => self.parse_list_literal_expression_parsed(token_span),
+            PrimaryToken::OpenBrace => self.parse_collection_literal_parsed(token_span),
+            PrimaryToken::Func => self.parse_lambda_expression_parsed(token_span),
+            PrimaryToken::If => self.parse_if_expression_parsed(token_span),
+            PrimaryToken::Match => self.parse_match_expression_parsed(token_span),
+            PrimaryToken::Id(id) => self.parse_scalar_primary(token_span, Some(id.clone()), || {
                 ExpressionKind::Identifier(id)
             }),
-            _ => Err(self.unexpected_primary_error(token_type, token_span)),
+            PrimaryToken::Other => Err(self
+                .unexpected_primary_error(self.tokens[token_index].token_type.clone(), token_span)),
         };
         if result.is_ok()
             && let Some(range) = token_span.byte_range
         {
-            let data = match syntax_token_type {
+            let data = match &self.tokens[token_index].token_type {
                 TokenType::Id(_) => Some(SyntaxData::Name { token: range }),
                 TokenType::Int(_)
                 | TokenType::Float(_)
@@ -1310,18 +1355,17 @@ impl<'a> Parser<'a> {
 
         let arguments_start = self.current;
         let _ = self.matches(&[TokenType::Lt]);
-        let type_args = self.parse_type_arguments()?;
+        let type_arg_facts = self.parse_type_argument_facts()?;
         let end_span = self.consume_token(TokenType::Gt, "Expected '>' after type arguments")?;
         let target = expr
             .span
             .byte_range
             .expect("generic target has source range");
-        let arguments = type_args
+        let arguments = type_arg_facts
             .iter()
             .map(|argument| {
                 argument
-                    .span
-                    .byte_range
+                    .source_range()
                     .expect("generic type argument has source range")
             })
             .collect();
@@ -1335,6 +1379,10 @@ impl<'a> Parser<'a> {
         self.record_syntax_node(SyntaxKind::TypeArguments, arguments_start, self.current);
         let span = expr.span.combine(&end_span);
         let node = if self.mode == ParserMode::Compatibility {
+            let type_args = type_arg_facts
+                .into_iter()
+                .map(TypeFact::into_compat_type_node)
+                .collect();
             Some(ExpressionNode {
                 kind: ExpressionKind::GenericType(name.clone(), type_args),
                 span,

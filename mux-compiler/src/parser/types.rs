@@ -387,14 +387,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn parse_type_arguments(&mut self) -> ParserResult<Vec<TypeNode>> {
-        self.parse_type_argument_facts().map(|args| {
-            args.into_iter()
-                .map(TypeFact::into_compat_type_node)
-                .collect()
-        })
-    }
-
     pub(super) fn parse_type_argument_facts(&mut self) -> ParserResult<Vec<TypeFact>> {
         let start = self.current;
         let mut args = Vec::new();

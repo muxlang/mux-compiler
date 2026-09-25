@@ -31,7 +31,6 @@ pub(super) struct WhereClauseFact {
     pub(super) range: ByteRange,
     pub(super) span: Span,
     predicates: Vec<ExpressionNode>,
-    syntax_data: SyntaxData,
 }
 
 impl WhereClauseFact {
@@ -40,9 +39,7 @@ impl WhereClauseFact {
             range,
             span,
             predicates,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::WhereClause { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -74,7 +71,6 @@ struct WhileStatementFact {
     span: Span,
     condition: Option<ExpressionNode>,
     body: Vec<StatementNode>,
-    syntax_data: SyntaxData,
 }
 
 impl WhileStatementFact {
@@ -84,9 +80,7 @@ impl WhileStatementFact {
             span,
             condition,
             body,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::WhileStatement { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -109,7 +103,6 @@ struct ForStatementFact {
     variable_type: TypeFact,
     iterator: Option<ExpressionNode>,
     body: Vec<StatementNode>,
-    syntax_data: SyntaxData,
 }
 
 impl ForStatementFact {
@@ -121,9 +114,7 @@ impl ForStatementFact {
             variable_type,
             iterator,
             body,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::ForStatement { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -146,7 +137,6 @@ struct MatchStatementFact {
     span: Span,
     expression: Option<ExpressionNode>,
     arms: Vec<MatchArm>,
-    syntax_data: SyntaxData,
 }
 
 struct ParsedPatternFact {
@@ -170,9 +160,7 @@ impl MatchStatementFact {
             span,
             expression,
             arms,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::MatchStatement { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -194,7 +182,6 @@ struct IfStatementFact {
     condition: Option<ExpressionNode>,
     then_block: Vec<StatementNode>,
     else_block: Option<Vec<StatementNode>>,
-    syntax_data: SyntaxData,
 }
 
 impl IfStatementFact {
@@ -205,9 +192,7 @@ impl IfStatementFact {
             condition,
             then_block,
             else_block,
-            syntax_data,
         } = self;
-        debug_assert!(matches!(syntax_data, SyntaxData::IfStatement { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
@@ -311,9 +296,6 @@ impl<'a> Parser<'a> {
                 "A where block must contain at least one boolean predicate. Example: where { value > 0 }",
             ));
         }
-        let syntax_data = SyntaxData::WhereClause {
-            predicates: predicate_ranges,
-        };
         let range = self
             .source_range_for_tokens(start, self.current)
             .expect("where clause has source range");
@@ -321,13 +303,14 @@ impl<'a> Parser<'a> {
             SyntaxKind::WhereClause,
             start,
             self.current,
-            syntax_data.clone(),
+            SyntaxData::WhereClause {
+                predicates: predicate_ranges,
+            },
         );
         Ok(Some(WhereClauseFact {
             range,
             span,
             predicates,
-            syntax_data,
         }))
     }
 
@@ -595,16 +578,15 @@ impl<'a> Parser<'a> {
         let range = self
             .source_range_for_tokens(start, self.current)
             .expect("parsed if statement has a syntax range");
-        let syntax_data = SyntaxData::IfStatement {
-            condition: condition_range,
-            then_block: then_range,
-            else_branch: else_range,
-        };
         self.record_typed_syntax_node(
             SyntaxKind::IfStatement,
             start,
             self.current,
-            syntax_data.clone(),
+            SyntaxData::IfStatement {
+                condition: condition_range,
+                then_block: then_range,
+                else_branch: else_range,
+            },
         );
         let span = start_span.combine(&end_span);
         let condition = condition.node;
@@ -614,7 +596,6 @@ impl<'a> Parser<'a> {
             condition,
             then_block,
             else_block,
-            syntax_data,
         })
     }
 
@@ -698,10 +679,6 @@ impl<'a> Parser<'a> {
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
 
-        let syntax_data = SyntaxData::WhileStatement {
-            condition: condition_range,
-            body: body_range,
-        };
         let range = self
             .source_range_for_tokens(start, self.current)
             .expect("while statement has source range");
@@ -709,7 +686,10 @@ impl<'a> Parser<'a> {
             SyntaxKind::WhileStatement,
             start,
             self.current,
-            syntax_data.clone(),
+            SyntaxData::WhileStatement {
+                condition: condition_range,
+                body: body_range,
+            },
         );
 
         let condition = condition.node;
@@ -718,7 +698,6 @@ impl<'a> Parser<'a> {
             span,
             condition,
             body: body_statements,
-            syntax_data,
         })
     }
 
@@ -786,13 +765,6 @@ impl<'a> Parser<'a> {
 
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
-        let syntax_data = SyntaxData::ForStatement {
-            variable: variable_range,
-            variable_type: variable_type_range,
-            iterator: iterator_range,
-            body: body_range,
-            body_is_block,
-        };
         let range = self
             .source_range_for_tokens(start, self.current)
             .expect("for statement has source range");
@@ -800,7 +772,13 @@ impl<'a> Parser<'a> {
             SyntaxKind::ForStatement,
             start,
             self.current,
-            syntax_data.clone(),
+            SyntaxData::ForStatement {
+                variable: variable_range,
+                variable_type: variable_type_range,
+                iterator: iterator_range,
+                body: body_range,
+                body_is_block,
+            },
         );
         let iterator = iter.node;
         Ok(ForStatementFact {
@@ -810,7 +788,6 @@ impl<'a> Parser<'a> {
             variable_type: var_type,
             iterator,
             body: body_statements,
-            syntax_data,
         })
     }
 
@@ -852,11 +829,6 @@ impl<'a> Parser<'a> {
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after match arms")?;
         let span = start_span.combine(&end_span);
-        let syntax_data = SyntaxData::MatchStatement {
-            expression: expression_range,
-            arms: arm_ranges,
-            ast_span: span.byte_range.expect("match statement span range"),
-        };
         let range = self
             .source_range_for_tokens(statement_start, self.current)
             .expect("match statement has source range");
@@ -864,7 +836,11 @@ impl<'a> Parser<'a> {
             SyntaxKind::MatchStatement,
             statement_start,
             self.current,
-            syntax_data.clone(),
+            SyntaxData::MatchStatement {
+                expression: expression_range,
+                arms: arm_ranges,
+                ast_span: span.byte_range.expect("match statement span range"),
+            },
         );
 
         let expr = expr.node;
@@ -873,7 +849,6 @@ impl<'a> Parser<'a> {
             span,
             expression: expr,
             arms,
-            syntax_data,
         })
     }
 
