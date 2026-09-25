@@ -887,17 +887,30 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn parse_match_expression(
+    fn parse_match_expression_parsed(
         &mut self,
         token_span: Span,
-    ) -> ParserResult<ExpressionNode> {
+    ) -> ParserResult<ParsedExpression> {
         let match_start = self.token_index_for_span(token_span);
-        let expr = self.parse_expression()?;
+        let expr = self.parse_expression_parsed()?;
         let expression_range = expr
             .span
             .byte_range
             .expect("match expression value source range");
-        self.check_no_postfix_increment_decrement(&expr)?;
+        if self.mode == ParserMode::Compatibility {
+            self.check_no_postfix_increment_decrement(
+                expr.node
+                    .as_ref()
+                    .expect("compatibility match scrutinee has an AST"),
+            )?;
+        } else if let Some(range) = self.first_postfix_update_in(expr.span.byte_range) {
+            return Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
+                "Increment/Decrement operator can only be used as a standalone statement",
+                self.span_for_byte_range(range),
+                "Expressions like 'x + y++' are not supported. Use 'y++' as a separate statement before the expression.",
+            ));
+        }
         self.consume_token(TokenType::OpenBrace, "Expected '{' after match expression")?;
         self.skip_newlines();
         let mut arms = Vec::new();
@@ -912,7 +925,7 @@ impl<'a> Parser<'a> {
                 })
                 .expect("match expression pattern range");
             let guard = if self.matches(&[TokenType::If]) {
-                Some(self.parse_expression()?)
+                Some(self.parse_expression_parsed()?)
             } else {
                 None
             };
@@ -940,12 +953,15 @@ impl<'a> Parser<'a> {
                 };
                 (body, body_range, false)
             } else {
-                let value = self.parse_expression()?;
+                let value = self.parse_expression_parsed()?;
                 let body_range = value
                     .span
                     .byte_range
                     .expect("match expression arm value range");
                 let body = if self.mode == ParserMode::Compatibility {
+                    let value = value
+                        .node
+                        .expect("compatibility match arm value has an AST");
                     vec![StatementNode {
                         span: value.span,
                         kind: StatementKind::Expression(value),
@@ -975,7 +991,8 @@ impl<'a> Parser<'a> {
             if self.mode == ParserMode::Compatibility {
                 arms.push(MatchArm {
                     pattern: pattern.expect("compatibility match arm has a pattern"),
-                    guard,
+                    guard: guard
+                        .map(|guard| guard.node.expect("compatibility match guard has an AST")),
                     body,
                 });
             }
@@ -987,16 +1004,17 @@ impl<'a> Parser<'a> {
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after match arms")?;
         let span = token_span.combine(&end_span);
-        let kind = if self.mode == ParserMode::SyntaxOnly {
-            // The match expression and arm events retain the complete tree.
-            ExpressionKind::None
+        let node = if self.mode == ParserMode::SyntaxOnly {
+            None
         } else {
-            ExpressionKind::Match {
-                expr: Box::new(expr),
-                arms,
-            }
+            Some(ExpressionNode {
+                kind: ExpressionKind::Match {
+                    expr: Box::new(expr.node.expect("compatibility match scrutinee has an AST")),
+                    arms,
+                },
+                span,
+            })
         };
-        let expression = ExpressionNode { kind, span };
         self.record_typed_syntax_node(
             SyntaxKind::MatchExpression,
             match_start,
@@ -1004,13 +1022,14 @@ impl<'a> Parser<'a> {
             SyntaxData::MatchExpression {
                 expression: expression_range,
                 arms: arm_ranges,
-                ast_span: expression
-                    .span
-                    .byte_range
-                    .expect("match expression AST span range"),
+                ast_span: span.byte_range.expect("match expression AST span range"),
             },
         );
-        Ok(expression)
+        Ok(ParsedExpression {
+            span,
+            node,
+            generic_target: None,
+        })
     }
 
     /// Parse one branch of an if-expression: `{ <expr> }`. Newlines are allowed
@@ -1110,9 +1129,7 @@ impl<'a> Parser<'a> {
                 .parse_lambda_expression(token_span)
                 .map(|node| ParsedExpression::from_node(self, node)),
             TokenType::If => self.parse_if_expression_parsed(token_span),
-            TokenType::Match => self
-                .parse_match_expression(token_span)
-                .map(|node| ParsedExpression::from_node(self, node)),
+            TokenType::Match => self.parse_match_expression_parsed(token_span),
             TokenType::Id(id) => self.parse_scalar_primary(token_span, Some(id.clone()), || {
                 ExpressionKind::Identifier(id)
             }),
