@@ -293,19 +293,20 @@ impl<'a> Parser<'a> {
         first_key: ExpressionNode,
     ) -> ParserResult<ExpressionNode> {
         let first_value = self.parse_expression()?;
-        let mut entries = vec![(first_key, first_value)];
-        self.parse_collection_entries(&mut entries, true)?;
+        let mut syntax_entries = vec![(
+            first_key.span.byte_range.expect("map key has source range"),
+            first_value
+                .span
+                .byte_range
+                .expect("map value has source range"),
+        )];
+        let mut entries = Vec::new();
+        if self.mode == ParserMode::Compatibility {
+            entries.push((first_key, first_value));
+        }
+        self.parse_collection_entries(&mut entries, &mut syntax_entries, true)?;
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after collection")?;
-        let syntax_entries = entries
-            .iter()
-            .map(|(key, value)| {
-                (
-                    key.span.byte_range.expect("map key has source range"),
-                    value.span.byte_range.expect("map value has source range"),
-                )
-            })
-            .collect();
         self.record_typed_syntax_node(
             SyntaxKind::MapLiteral,
             self.token_index_for_span(start_span),
@@ -343,19 +344,19 @@ impl<'a> Parser<'a> {
         start_span: Span,
         first_elem: ExpressionNode,
     ) -> ParserResult<ExpressionNode> {
-        let mut elements = vec![first_elem];
-        self.parse_set_entries(&mut elements)?;
+        let mut syntax_elements = vec![
+            first_elem
+                .span
+                .byte_range
+                .expect("set element has source range"),
+        ];
+        let mut elements = Vec::new();
+        if self.mode == ParserMode::Compatibility {
+            elements.push(first_elem);
+        }
+        self.parse_set_entries(&mut elements, &mut syntax_elements)?;
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after collection")?;
-        let syntax_elements = elements
-            .iter()
-            .map(|element| {
-                element
-                    .span
-                    .byte_range
-                    .expect("set element has source range")
-            })
-            .collect();
         self.record_typed_syntax_node(
             SyntaxKind::SetLiteral,
             self.token_index_for_span(start_span),
@@ -373,6 +374,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_set_entries(
         &mut self,
         elements: &mut Vec<ExpressionNode>,
+        syntax_elements: &mut Vec<crate::lexer::ByteRange>,
     ) -> ParserResult<()> {
         loop {
             self.skip_newlines();
@@ -380,7 +382,10 @@ impl<'a> Parser<'a> {
                 break;
             }
             let elem = self.parse_expression()?;
-            elements.push(elem);
+            syntax_elements.push(elem.span.byte_range.expect("set element has source range"));
+            if self.mode == ParserMode::Compatibility {
+                elements.push(elem);
+            }
         }
         Ok(())
     }
@@ -388,6 +393,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_collection_entries(
         &mut self,
         entries: &mut Vec<(ExpressionNode, ExpressionNode)>,
+        syntax_entries: &mut Vec<(crate::lexer::ByteRange, crate::lexer::ByteRange)>,
         is_map: bool,
     ) -> ParserResult<()> {
         loop {
@@ -399,7 +405,13 @@ impl<'a> Parser<'a> {
                 let key = self.parse_expression()?;
                 self.consume_token(TokenType::Colon, "Expected ':' after map key")?;
                 let value = self.parse_expression()?;
-                entries.push((key, value));
+                syntax_entries.push((
+                    key.span.byte_range.expect("map key has source range"),
+                    value.span.byte_range.expect("map value has source range"),
+                ));
+                if self.mode == ParserMode::Compatibility {
+                    entries.push((key, value));
+                }
             }
         }
         Ok(())
@@ -510,7 +522,11 @@ impl<'a> Parser<'a> {
             );
 
             let tuple_expr = ExpressionNode {
-                kind: ExpressionKind::TupleLiteral(vec![first_expr, second_expr]),
+                kind: ExpressionKind::TupleLiteral(if self.mode == ParserMode::Compatibility {
+                    vec![first_expr, second_expr]
+                } else {
+                    Vec::new()
+                }),
                 span: start_span.combine(&self.previous().span),
             };
             return self.parse_postfix_operators(tuple_expr);
@@ -551,12 +567,22 @@ impl<'a> Parser<'a> {
         start_span: Span,
     ) -> ParserResult<ExpressionNode> {
         let mut elements = Vec::new();
+        let mut element_ranges = Vec::new();
 
         self.skip_newlines();
 
         if !self.check(TokenType::CloseBracket) {
             loop {
-                elements.push(self.parse_expression()?);
+                let element = self.parse_expression()?;
+                element_ranges.push(
+                    element
+                        .span
+                        .byte_range
+                        .expect("list element has source range"),
+                );
+                if self.mode == ParserMode::Compatibility {
+                    elements.push(element);
+                }
 
                 self.skip_newlines();
 
@@ -574,15 +600,6 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
 
         let end_span = self.consume_list_literal_close_span()?;
-        let element_ranges = elements
-            .iter()
-            .map(|element| {
-                element
-                    .span
-                    .byte_range
-                    .expect("list element has source range")
-            })
-            .collect();
         self.record_typed_syntax_node(
             SyntaxKind::ListLiteral,
             self.token_index_for_span(start_span),
@@ -1101,10 +1118,20 @@ impl<'a> Parser<'a> {
         let callee_range = expr.span.byte_range.expect("call target has source range");
         let callee_start = self.token_index_for_span(expr.span);
         let mut args = Vec::new();
+        let mut argument_ranges = Vec::new();
         if !self.check(TokenType::CloseParen) {
             loop {
                 self.skip_newlines();
-                args.push(self.parse_expression()?);
+                let argument = self.parse_expression()?;
+                argument_ranges.push(
+                    argument
+                        .span
+                        .byte_range
+                        .expect("call argument has source range"),
+                );
+                if self.mode == ParserMode::Compatibility {
+                    args.push(argument);
+                }
                 self.skip_newlines();
 
                 if !self.matches(&[TokenType::Comma]) {
@@ -1122,15 +1149,6 @@ impl<'a> Parser<'a> {
         }
         let end_span = self.consume_token(TokenType::CloseParen, "Expected ')' after arguments")?;
         let expr_span = *expr.span();
-        let argument_ranges = args
-            .iter()
-            .map(|argument| {
-                argument
-                    .span
-                    .byte_range
-                    .expect("call argument has source range")
-            })
-            .collect();
         self.record_typed_syntax_node(
             SyntaxKind::Expression,
             callee_start,

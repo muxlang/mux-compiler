@@ -625,6 +625,11 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_else_if_branch(
         &mut self,
     ) -> ParserResult<(Option<Vec<StatementNode>>, Span)> {
+        if self.mode == ParserMode::SyntaxOnly {
+            let nested = self.if_statement()?;
+            return Ok((Some(Vec::new()), nested.span));
+        }
+
         let nested = self.if_statement()?.into_compatibility_ast();
         match nested {
             AstNode::Statement(stmt) => {
