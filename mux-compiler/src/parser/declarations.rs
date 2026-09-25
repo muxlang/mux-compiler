@@ -99,7 +99,7 @@ impl TypeParameterFact {
 
 struct TraitBoundFact {
     span: Span,
-    name: String,
+    name: Option<String>,
     type_arguments: Vec<TypeFact>,
 }
 
@@ -111,7 +111,7 @@ impl TraitBoundFact {
             type_arguments,
         } = self;
         TraitBound {
-            name,
+            name: name.expect("compatibility trait bound name"),
             type_params: type_arguments
                 .into_iter()
                 .map(TypeFact::into_compat_type_node)
@@ -123,7 +123,7 @@ impl TraitBoundFact {
 
 struct TraitReferenceFact {
     span: Span,
-    name: String,
+    name: Option<String>,
     type_arguments: Vec<TypeFact>,
 }
 
@@ -135,7 +135,7 @@ impl TraitReferenceFact {
             type_arguments,
         } = self;
         TraitRef {
-            name,
+            name: name.expect("compatibility trait reference name"),
             type_args: type_arguments
                 .into_iter()
                 .map(TypeFact::into_compat_type_node)
@@ -1161,7 +1161,10 @@ impl<'a> Parser<'a> {
         let mut bounds = Vec::new();
         loop {
             let bound_start = self.current;
-            let bound_name = self.consume_identifier("Expected trait name in bound")?;
+            let bound_name = self.consume_identifier_fact(
+                "Expected trait name in bound",
+                self.mode == ParserMode::Compatibility,
+            )?;
             let bound_span = self.previous().span;
             let type_args = self.parse_optional_type_argument_facts()?;
             let type_arguments = type_args
@@ -1203,7 +1206,10 @@ impl<'a> Parser<'a> {
         let mut traits_list = Vec::new();
         loop {
             let trait_start = self.current;
-            let trait_name = self.consume_identifier("Expected trait name")?;
+            let trait_name = self.consume_identifier_fact(
+                "Expected trait name",
+                self.mode == ParserMode::Compatibility,
+            )?;
             let trait_span = self.previous().span;
             let name = trait_span
                 .byte_range
@@ -1519,7 +1525,10 @@ impl<'a> Parser<'a> {
         let mut bounds = Vec::new();
         loop {
             let bound_start = self.current;
-            let bound_name = self.consume_identifier("Expected trait name in bound")?;
+            let bound_name = self.consume_identifier_fact(
+                "Expected trait name in bound",
+                self.mode == ParserMode::Compatibility,
+            )?;
             let bound_span = self.previous().span;
             let name = bound_span
                 .byte_range
@@ -2452,7 +2461,10 @@ impl<'a> Parser<'a> {
         let mut bounds = Vec::new();
         loop {
             let bound_start = self.current;
-            let bound_name = self.consume_identifier("Expected trait name in bound")?;
+            let bound_name = self.consume_identifier_fact(
+                "Expected trait name in bound",
+                self.mode == ParserMode::Compatibility,
+            )?;
             let bound_span = self.previous().span;
             let name = bound_span.byte_range.expect("trait bound name range");
             let type_arguments_start = self.syntax_events.len();
