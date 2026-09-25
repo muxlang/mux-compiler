@@ -5,9 +5,9 @@ use crate::syntax::SyntaxData;
 /// Expression state used while parsing. Syntax-only parsing keeps source
 /// ranges and the one bit of semantic shape needed for generic-call
 /// disambiguation, without constructing an AST carrier for each Pratt step.
-struct ParsedExpression {
-    span: Span,
-    node: Option<ExpressionNode>,
+pub(super) struct ParsedExpression {
+    pub(super) span: Span,
+    pub(super) node: Option<ExpressionNode>,
     generic_target: Option<String>,
 }
 
@@ -32,7 +32,7 @@ impl ParsedExpression {
         }
     }
 
-    fn into_node(self) -> ExpressionNode {
+    pub(super) fn into_node(self) -> ExpressionNode {
         self.node.unwrap_or(ExpressionNode {
             kind: ExpressionKind::None,
             span: self.span,
@@ -46,7 +46,7 @@ impl<'a> Parser<'a> {
             .map(ParsedExpression::into_node)
     }
 
-    fn parse_expression_parsed(&mut self) -> ParserResult<ParsedExpression> {
+    pub(super) fn parse_expression_parsed(&mut self) -> ParserResult<ParsedExpression> {
         let start = self.current;
         let result = self.parse_precedence_parsed(Precedence::Assignment);
         if result.is_ok() {

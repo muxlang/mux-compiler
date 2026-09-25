@@ -1,3 +1,4 @@
+use super::expressions::ParsedExpression;
 use super::types::TypeFact;
 use super::*;
 
@@ -281,7 +282,7 @@ impl<'a> Parser<'a> {
             if self.check(TokenType::CloseBrace) {
                 break;
             }
-            let predicate = self.parse_expression()?;
+            let predicate = self.parse_expression_parsed()?;
             predicate_ranges.push(
                 predicate
                     .span
@@ -289,7 +290,7 @@ impl<'a> Parser<'a> {
                     .expect("where predicate has source range"),
             );
             if self.mode == ParserMode::Compatibility {
-                predicates.push(predicate);
+                predicates.push(predicate.node.expect("compatibility where predicate"));
             }
             self.skip_newlines();
             if !self.matches(&[TokenType::Comma]) {
@@ -552,12 +553,12 @@ impl<'a> Parser<'a> {
     fn if_statement(&mut self) -> ParserResult<IfStatementFact> {
         let start = self.current.saturating_sub(1);
         let start_span = self.tokens[start].span;
-        let condition = self.parse_expression()?;
+        let condition = self.parse_expression_parsed()?;
         let condition_range = condition
             .span
             .byte_range
             .expect("if condition has source range");
-        self.check_no_postfix_increment_decrement(&condition)?;
+        self.check_no_postfix_increment_decrement_parsed(&condition)?;
         self.skip_newlines();
 
         // Parse then block using the block() function directly
@@ -606,7 +607,7 @@ impl<'a> Parser<'a> {
             syntax_data.clone(),
         );
         let span = start_span.combine(&end_span);
-        let condition = (self.mode == ParserMode::Compatibility).then_some(condition);
+        let condition = condition.node;
         Ok(IfStatementFact {
             range,
             span,
@@ -676,14 +677,14 @@ impl<'a> Parser<'a> {
     fn while_statement(&mut self) -> ParserResult<WhileStatementFact> {
         let start = self.current.saturating_sub(1);
         let start_span = self.tokens[start].span;
-        let condition = self.parse_expression()?;
+        let condition = self.parse_expression_parsed()?;
         let condition_range = condition
             .span
             .byte_range
             .expect("while condition has source range");
 
         // Validate that postfix ++ and -- don't appear in condition
-        self.check_no_postfix_increment_decrement(&condition)?;
+        self.check_no_postfix_increment_decrement_parsed(&condition)?;
 
         // allow newline(s) before body.
         self.skip_newlines();
@@ -711,7 +712,7 @@ impl<'a> Parser<'a> {
             syntax_data.clone(),
         );
 
-        let condition = (self.mode == ParserMode::Compatibility).then_some(condition);
+        let condition = condition.node;
         Ok(WhileStatementFact {
             range,
             span,
@@ -738,11 +739,11 @@ impl<'a> Parser<'a> {
             .source_range()
             .expect("for variable type has source range");
         self.consume_token(TokenType::In, "Expected 'in' after variable")?;
-        let iter = self.parse_expression()?;
+        let iter = self.parse_expression_parsed()?;
         let iterator_range = iter.span.byte_range.expect("for iterator has source range");
 
         // Validate that postfix ++ and -- don't appear in iterator expression
-        self.check_no_postfix_increment_decrement(&iter)?;
+        self.check_no_postfix_increment_decrement_parsed(&iter)?;
 
         // allow newline(s) before body.
         self.skip_newlines();
@@ -801,7 +802,7 @@ impl<'a> Parser<'a> {
             self.current,
             syntax_data.clone(),
         );
-        let iterator = (self.mode == ParserMode::Compatibility).then_some(iter);
+        let iterator = iter.node;
         Ok(ForStatementFact {
             range,
             span,
@@ -816,11 +817,11 @@ impl<'a> Parser<'a> {
     fn match_statement(&mut self) -> ParserResult<MatchStatementFact> {
         let statement_start = self.current.saturating_sub(1);
         let start_span = self.tokens[self.current].span;
-        let expr = self.parse_expression()?;
+        let expr = self.parse_expression_parsed()?;
         let expression_range = expr.span.byte_range.expect("match expression source range");
 
         // Validate that postfix ++ and -- don't appear in match expression
-        self.check_no_postfix_increment_decrement(&expr)?;
+        self.check_no_postfix_increment_decrement_parsed(&expr)?;
 
         self.consume_token(TokenType::OpenBrace, "Expected '{' after match expression")?;
         self.skip_newlines();
@@ -866,7 +867,7 @@ impl<'a> Parser<'a> {
             syntax_data.clone(),
         );
 
-        let expr = (self.mode == ParserMode::Compatibility).then_some(expr);
+        let expr = expr.node;
         Ok(MatchStatementFact {
             range,
             span,
@@ -885,10 +886,9 @@ impl<'a> Parser<'a> {
             .last_syntax_range_since(pattern_start, |data| matches!(data, SyntaxData::Pattern(_)))
             .expect("parsed match pattern has a syntax range");
         let guard = if self.matches(&[TokenType::If]) {
-            let expression = self.parse_expression()?;
+            let expression = self.parse_expression_parsed()?;
             let guard_range = expression.span.byte_range;
-            let compatibility_guard =
-                (self.mode == ParserMode::Compatibility).then_some(expression);
+            let compatibility_guard = expression.node;
             (compatibility_guard, guard_range)
         } else {
             (None, None)
@@ -1192,21 +1192,17 @@ impl<'a> Parser<'a> {
             // return at end of input, or followed by newline/closing brace - void return
             (None, None, start_span)
         } else {
-            let expr = self.parse_expression()?;
+            let expr = self.parse_expression_parsed()?;
 
             // Validate that postfix ++ and -- don't appear in return value
-            self.check_no_postfix_increment_decrement(&expr)?;
+            self.check_no_postfix_increment_decrement_parsed(&expr)?;
 
             let value_range = expr
                 .span
                 .byte_range
                 .expect("parsed return expression has source range");
             let end_span = expr.span;
-            (
-                (self.mode == ParserMode::Compatibility).then_some(expr),
-                Some(value_range),
-                end_span,
-            )
+            (expr.node, Some(value_range), end_span)
         };
 
         self.record_typed_syntax_node(
@@ -1439,7 +1435,7 @@ impl<'a> Parser<'a> {
 
     fn parse_expression_statement(&mut self) -> ParserResult<(ByteRange, Option<ExpressionNode>)> {
         let start = self.current;
-        let expr = self.parse_expression()?;
+        let expr = self.parse_expression_parsed()?;
         self.record_typed_syntax_node(
             SyntaxKind::Statement,
             start,
@@ -1470,11 +1466,14 @@ impl<'a> Parser<'a> {
         // Validate that postfix ++ and -- only appear at statement level
         self.validate_postfix_in_statement(&expr)?;
 
-        let expr = (self.mode == ParserMode::Compatibility).then_some(expr);
+        let expr = expr.node;
         Ok((range, expr))
     }
 
-    pub(super) fn validate_postfix_in_statement(&self, expr: &ExpressionNode) -> ParserResult<()> {
+    pub(super) fn validate_postfix_in_statement(
+        &self,
+        expr: &ParsedExpression,
+    ) -> ParserResult<()> {
         if self.mode == ParserMode::SyntaxOnly {
             let range = expr.span.byte_range;
             let has_top_level_update = self.syntax_events.iter().any(|event| {
@@ -1487,9 +1486,13 @@ impl<'a> Parser<'a> {
             if has_top_level_update {
                 return Ok(());
             }
-            return self.check_no_postfix_increment_decrement(expr);
+            return self.check_no_postfix_increment_decrement_range(range);
         }
 
+        let expr = expr
+            .node
+            .as_ref()
+            .expect("compatibility expression statement");
         // If this is a postfix ++ or -- at the top level, it's valid
         if let ExpressionKind::Unary { op, postfix, .. } = &expr.kind
             && *postfix
@@ -1501,23 +1504,43 @@ impl<'a> Parser<'a> {
         self.check_no_postfix_increment_decrement(expr)
     }
 
+    pub(super) fn check_no_postfix_increment_decrement_parsed(
+        &self,
+        expr: &ParsedExpression,
+    ) -> ParserResult<()> {
+        if self.mode == ParserMode::SyntaxOnly {
+            self.check_no_postfix_increment_decrement_range(expr.span.byte_range)
+        } else {
+            self.check_no_postfix_increment_decrement(
+                expr.node.as_ref().expect("compatibility parsed expression"),
+            )
+        }
+    }
+
     #[allow(clippy::only_used_in_recursion)]
     pub(super) fn check_no_postfix_increment_decrement(
         &self,
         expr: &ExpressionNode,
     ) -> ParserResult<()> {
         if self.mode == ParserMode::SyntaxOnly {
-            if let Some(range) = self.first_postfix_update_in(expr.span.byte_range) {
-                return Err(ParserError::with_help(
-                    DiagnosticCode::ParseExpectedToken,
-                    "Increment/Decrement operator can only be used as a standalone statement",
-                    self.span_for_byte_range(range),
-                    "Expressions like 'x + y++' are not supported. Use 'y++' as a separate statement before the expression.",
-                ));
-            }
-            return Ok(());
+            return self.check_no_postfix_increment_decrement_range(expr.span.byte_range);
         }
         self.check_no_postfix_increment_decrement_kind(&expr.kind, expr.span)
+    }
+
+    pub(super) fn check_no_postfix_increment_decrement_range(
+        &self,
+        expression_range: Option<crate::lexer::ByteRange>,
+    ) -> ParserResult<()> {
+        if let Some(range) = self.first_postfix_update_in(expression_range) {
+            return Err(ParserError::with_help(
+                DiagnosticCode::ParseExpectedToken,
+                "Increment/Decrement operator can only be used as a standalone statement",
+                self.span_for_byte_range(range),
+                "Expressions like 'x + y++' are not supported. Use 'y++' as a separate statement before the expression.",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn check_no_postfix_increment_decrement_kind(

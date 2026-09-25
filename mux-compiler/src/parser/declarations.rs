@@ -789,10 +789,10 @@ impl<'a> Parser<'a> {
         let name_span = self.tokens[self.current - 1].span;
 
         self.consume_token(TokenType::Eq, "Expected '=' after variable name")?;
-        let value = self.parse_expression()?;
+        let value = self.parse_expression_parsed()?;
 
         // Validate that postfix ++ and -- don't appear in declarations
-        self.check_no_postfix_increment_decrement(&value)?;
+        self.check_no_postfix_increment_decrement_parsed(&value)?;
 
         self.record_typed_syntax_node(
             SyntaxKind::Statement,
@@ -844,7 +844,7 @@ impl<'a> Parser<'a> {
             name,
             type_range: None,
             type_fact: None,
-            value: (self.mode == ParserMode::Compatibility).then_some(value),
+            value: value.node,
         })
     }
 
@@ -866,10 +866,10 @@ impl<'a> Parser<'a> {
         let name_span = self.previous().span;
 
         self.consume_token(TokenType::Eq, "Expected '=' after constant name")?;
-        let value = self.parse_expression()?;
+        let value = self.parse_expression_parsed()?;
 
         // Validate that postfix ++ and -- don't appear in declarations
-        self.check_no_postfix_increment_decrement(&value)?;
+        self.check_no_postfix_increment_decrement_parsed(&value)?;
 
         self.record_typed_syntax_node(
             SyntaxKind::Statement,
@@ -904,7 +904,7 @@ impl<'a> Parser<'a> {
             name,
             type_range: Some(type_range),
             type_fact: Some(type_fact),
-            value: (self.mode == ParserMode::Compatibility).then_some(value),
+            value: value.node,
         })
     }
 
@@ -959,10 +959,10 @@ impl<'a> Parser<'a> {
         }
 
         self.consume_token(TokenType::Eq, "Expected '=' after variable name")?;
-        let value = self.parse_expression()?;
+        let value = self.parse_expression_parsed()?;
 
         // Validate that postfix ++ and -- don't appear in declarations
-        self.check_no_postfix_increment_decrement(&value)?;
+        self.check_no_postfix_increment_decrement_parsed(&value)?;
 
         self.record_typed_syntax_node(
             SyntaxKind::Statement,
@@ -997,7 +997,7 @@ impl<'a> Parser<'a> {
             name,
             type_range: Some(type_range),
             type_fact: Some(type_fact),
-            value: (self.mode == ParserMode::Compatibility).then_some(value),
+            value: value.node,
         })
     }
 
@@ -2539,8 +2539,17 @@ impl<'a> Parser<'a> {
                 expression: None,
             });
         }
-        let default_expr = self.parse_expression()?;
-        if !self.is_literal_expression(&default_expr) {
+        let default_expr = self.parse_expression_parsed()?;
+        let is_literal = match self.mode {
+            ParserMode::SyntaxOnly => {
+                self.is_literal_expression_range(default_expr.span.byte_range)
+            }
+            ParserMode::Compatibility => default_expr
+                .node
+                .as_ref()
+                .is_some_and(|expr| matches!(expr.kind, ExpressionKind::Literal(_))),
+        };
+        if !is_literal {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
                 "Default parameter values must be literals",
@@ -2550,7 +2559,7 @@ impl<'a> Parser<'a> {
         }
         *has_default = true;
         let range = default_expr.span.byte_range;
-        let expression = (self.mode == ParserMode::Compatibility).then_some(default_expr);
+        let expression = default_expr.node;
         Ok(ParameterDefaultFact { range, expression })
     }
 
@@ -2588,10 +2597,10 @@ impl<'a> Parser<'a> {
         // type is checked against the field in semantic analysis.
         let (default_value, default_value_range, has_default_value) =
             if self.matches(&[TokenType::Eq]) {
-                let value = self.parse_expression()?;
+                let value = self.parse_expression_parsed()?;
                 let value_range = value.span.byte_range;
                 let has_default_value = true;
-                let value = (self.mode == ParserMode::Compatibility).then_some(value);
+                let value = value.node;
                 (value, value_range, has_default_value)
             } else {
                 (None, None, false)
@@ -2660,15 +2669,12 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn is_literal_expression(&self, expr: &ExpressionNode) -> bool {
-        if self.mode == ParserMode::SyntaxOnly {
-            return expr.span.byte_range.is_some_and(|range| {
-                self.syntax_events.iter().any(|event| {
-                    event.range == range
-                        && matches!(event.data.as_ref(), Some(SyntaxData::Literal { .. }))
-                })
-            });
-        }
-        matches!(expr.kind, ExpressionKind::Literal(_))
+    fn is_literal_expression_range(&self, range: Option<ByteRange>) -> bool {
+        range.is_some_and(|range| {
+            self.syntax_events.iter().any(|event| {
+                event.range == range
+                    && matches!(event.data.as_ref(), Some(SyntaxData::Literal { .. }))
+            })
+        })
     }
 }
