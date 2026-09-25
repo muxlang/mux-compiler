@@ -2305,41 +2305,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn consume_identifier_fact(
-        &mut self,
-        error_msg: &str,
-        compatibility: bool,
-    ) -> ParserResult<Option<String>> {
-        if self.is_at_end() {
-            return Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                format!("{error_msg}, but reached end of file"),
-                self.peek().span,
-            ));
-        }
-
-        match &self.peek().token_type {
-            TokenType::Id(name) => {
-                let name = compatibility.then(|| name.clone());
-                self.current += 1;
-                Ok(name)
-            }
-            TokenType::Underscore => {
-                let name = compatibility.then(|| "_".to_string());
-                self.current += 1;
-                Ok(name)
-            }
-            _ => {
-                let found_desc = Self::describe_token(&self.peek().token_type);
-                Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    format!("{error_msg}, found {found_desc}"),
-                    self.peek().span,
-                ))
-            }
-        }
-    }
-
     // Parse module path with support for dots, relative (./, ../), and absolute (/)
     fn parse_module_path_fact(&mut self, compatibility: bool) -> ParserResult<Option<String>> {
         let mut module_path = compatibility.then(String::new);

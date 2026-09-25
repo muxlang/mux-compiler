@@ -1224,40 +1224,6 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    fn consume_identifier_for_expression(
-        &mut self,
-        error_msg: &str,
-    ) -> ParserResult<Option<String>> {
-        if self.is_at_end() {
-            return Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                format!("{error_msg}, but reached end of file"),
-                self.peek().span,
-            ));
-        }
-
-        match &self.peek().token_type {
-            TokenType::Id(name) => {
-                let name = (self.mode == ParserMode::Compatibility).then(|| name.clone());
-                self.current += 1;
-                Ok(name)
-            }
-            TokenType::Underscore => {
-                let name = (self.mode == ParserMode::Compatibility).then(|| "_".to_string());
-                self.current += 1;
-                Ok(name)
-            }
-            _ => {
-                let found_desc = Self::describe_token(&self.peek().token_type);
-                Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    format!("{error_msg}, found {found_desc}"),
-                    self.peek().span,
-                ))
-            }
-        }
-    }
-
     fn generic_target_name(&self, target: &GenericTarget) -> String {
         let mut name = String::new();
         for token in &self.tokens[target.start_token..target.end_token] {
@@ -1537,8 +1503,10 @@ impl<'a> Parser<'a> {
             if self.matches(&[TokenType::Dot]) {
                 let base_range = expr.span.byte_range.expect("field base has source range");
                 let start = self.token_index_for_span(expr.span);
-                let field =
-                    self.consume_identifier_for_expression("Expected field name after '.'")?;
+                let field = self.consume_identifier_fact(
+                    "Expected field name after '.'",
+                    self.mode == ParserMode::Compatibility,
+                )?;
                 let field_span = self.tokens[self.current - 1].span;
                 if let Some(field_range) = field_span.byte_range {
                     self.record_typed_syntax_node(

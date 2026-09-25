@@ -124,6 +124,41 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub(super) fn consume_identifier_fact(
+        &mut self,
+        error_msg: &str,
+        compatibility: bool,
+    ) -> ParserResult<Option<String>> {
+        if self.is_at_end() {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                format!("{error_msg}, but reached end of file"),
+                self.peek().span,
+            ));
+        }
+
+        match &self.peek().token_type {
+            TokenType::Id(name) => {
+                let name = compatibility.then(|| name.clone());
+                self.current += 1;
+                Ok(name)
+            }
+            TokenType::Underscore => {
+                let name = compatibility.then(|| "_".to_string());
+                self.current += 1;
+                Ok(name)
+            }
+            _ => {
+                let found_desc = Self::describe_token(&self.peek().token_type);
+                Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
+                    format!("{error_msg}, found {found_desc}"),
+                    self.peek().span,
+                ))
+            }
+        }
+    }
+
     /// Format a human-readable description of a token type for use in error messages.
     pub(super) fn describe_token(token_type: &TokenType) -> String {
         match token_type {
