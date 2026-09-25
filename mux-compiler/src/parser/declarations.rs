@@ -88,6 +88,50 @@ impl EnumDeclarationFact {
     }
 }
 
+struct FunctionDeclarationFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    type_params: Vec<(String, Vec<TraitBound>)>,
+    params: Vec<Param>,
+    return_type: TypeNode,
+    body: Vec<StatementNode>,
+    is_common: bool,
+    where_clause: Option<WhereClause>,
+    syntax_data: SyntaxData,
+}
+
+impl FunctionDeclarationFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            name,
+            type_params,
+            params,
+            return_type,
+            body,
+            is_common,
+            where_clause,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::Function { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Function(FunctionNode {
+            name,
+            type_params,
+            params,
+            return_type,
+            body,
+            span,
+            is_common,
+            where_clause,
+        })
+    }
+}
+
 /// Source ranges recorded by the grammar for a variable declaration. The
 /// expressions and type are retained only to materialize the legacy AST at
 /// parser call sites; syntax consumers use the recorded ranges.
@@ -1768,6 +1812,14 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn function_declaration(&mut self, is_common: bool) -> ParserResult<AstNode> {
+        self.function_declaration_fact(is_common)
+            .map(FunctionDeclarationFact::into_compatibility_ast)
+    }
+
+    fn function_declaration_fact(
+        &mut self,
+        is_common: bool,
+    ) -> ParserResult<FunctionDeclarationFact> {
         let function_start = self.current;
         let start_span = self.peek().span;
         self.consume_token(TokenType::Func, "Expected 'func' keyword")?;
@@ -1822,32 +1874,37 @@ impl<'a> Parser<'a> {
         let span = start_span.combine(&end_span);
         let ast_span = span.byte_range.expect("function span range");
         let function_end = self.current;
+        let syntax_data = SyntaxData::Function {
+            name: name_range,
+            ast_span,
+            type_parameters,
+            parameters,
+            return_type: return_type_range,
+            return_type_span,
+            where_clause: where_range,
+            body: body_range,
+            is_common,
+        };
         self.record_typed_syntax_node(
             SyntaxKind::FunctionDeclaration,
             function_start,
             function_end,
-            SyntaxData::Function {
-                name: name_range,
-                ast_span,
-                type_parameters,
-                parameters,
-                return_type: return_type_range,
-                return_type_span,
-                where_clause: where_range,
-                body: body_range,
-                is_common,
-            },
+            syntax_data.clone(),
         );
-        Ok(AstNode::Function(FunctionNode {
+        Ok(FunctionDeclarationFact {
+            range: self
+                .source_range_for_tokens(function_start, function_end)
+                .expect("function declaration source range"),
+            span,
             name,
             type_params,
             params,
             return_type,
             body: body_statements,
-            span,
             is_common,
             where_clause,
-        }))
+            syntax_data,
+        })
     }
 
     pub(super) fn parse_is_type_params(&mut self) -> ParserResult<Vec<(String, Vec<TraitBound>)>> {
