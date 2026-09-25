@@ -1762,15 +1762,17 @@ impl<'a> Parser<'a> {
                     self.current,
                     syntax_data,
                 );
-                params.push(TypeParameterFact {
-                    range: self
-                        .source_range_for_tokens(parameter_start, self.current)
-                        .expect("method type parameter source range"),
-                    span: parameter_span.combine(&self.previous().span),
-                    name: param,
-                    name_range: name,
-                    bounds: Vec::new(),
-                });
+                if self.mode == ParserMode::Compatibility {
+                    params.push(TypeParameterFact {
+                        range: self
+                            .source_range_for_tokens(parameter_start, self.current)
+                            .expect("method type parameter source range"),
+                        span: parameter_span.combine(&self.previous().span),
+                        name: param,
+                        name_range: name,
+                        bounds: Vec::new(),
+                    });
+                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -1807,14 +1809,16 @@ impl<'a> Parser<'a> {
                         default_value: None,
                     },
                 );
-                params.push(FunctionParameterFact {
-                    name: param_name,
-                    type_fact,
-                    default_value: ParameterDefaultFact {
-                        range: None,
-                        expression: None,
-                    },
-                });
+                if self.mode == ParserMode::Compatibility {
+                    params.push(FunctionParameterFact {
+                        name: param_name,
+                        type_fact,
+                        default_value: ParameterDefaultFact {
+                            range: None,
+                            expression: None,
+                        },
+                    });
+                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -2500,15 +2504,17 @@ impl<'a> Parser<'a> {
                     self.current,
                     syntax_data,
                 );
-                params.push(TypeParameterFact {
-                    range: self
-                        .source_range_for_tokens(parameter_start, self.current)
-                        .expect("function type parameter source range"),
-                    span: parameter_span.combine(&self.previous().span),
-                    name: param,
-                    name_range,
-                    bounds: trait_bounds,
-                });
+                if self.mode == ParserMode::Compatibility {
+                    params.push(TypeParameterFact {
+                        range: self
+                            .source_range_for_tokens(parameter_start, self.current)
+                            .expect("function type parameter source range"),
+                        span: parameter_span.combine(&self.previous().span),
+                        name: param,
+                        name_range,
+                        bounds: trait_bounds,
+                    });
+                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -2553,11 +2559,13 @@ impl<'a> Parser<'a> {
                 self.current,
                 syntax_data,
             );
-            bounds.push(TraitBoundFact {
-                span: bound_span,
-                name: bound_name,
-                type_arguments: type_args,
-            });
+            if self.mode == ParserMode::Compatibility {
+                bounds.push(TraitBoundFact {
+                    span: bound_span,
+                    name: bound_name,
+                    type_arguments: type_args,
+                });
+            }
             if !self.matches(&[TokenType::Ref]) {
                 break;
             }
@@ -2571,7 +2579,9 @@ impl<'a> Parser<'a> {
             let mut has_default = false;
             loop {
                 let param = self.parse_single_param(&mut has_default)?;
-                params.push(param);
+                if self.mode == ParserMode::Compatibility {
+                    params.push(param);
+                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
