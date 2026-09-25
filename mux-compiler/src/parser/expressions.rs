@@ -32,23 +32,6 @@ impl ParsedExpression {
         }
     }
 
-    fn from_node(parser: &Parser<'_>, node: ExpressionNode) -> Self {
-        let generic_target = parser.generic_target_name(&node);
-        if parser.mode == ParserMode::Compatibility {
-            Self {
-                span: node.span,
-                node: Some(node),
-                generic_target,
-            }
-        } else {
-            Self {
-                span: node.span,
-                node: None,
-                generic_target,
-            }
-        }
-    }
-
     fn into_node(self) -> ExpressionNode {
         self.node.unwrap_or(ExpressionNode {
             kind: ExpressionKind::None,
@@ -699,10 +682,10 @@ impl<'a> Parser<'a> {
         true
     }
 
-    pub(super) fn parse_lambda_expression(
+    fn parse_lambda_expression_parsed(
         &mut self,
         start_span: Span,
-    ) -> ParserResult<ExpressionNode> {
+    ) -> ParserResult<ParsedExpression> {
         let lambda_start = self.token_index_for_span(start_span);
         self.consume_token(TokenType::OpenParen, "Expected '(' after 'func' in lambda")?;
         let mut params = Vec::new();
@@ -791,20 +774,19 @@ impl<'a> Parser<'a> {
 
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
-        let kind = if self.mode == ParserMode::SyntaxOnly {
-            // Lambda ranges, parameter types, where predicates, and body
-            // statements are all recorded by syntax events. No compatibility
-            // lambda tree is needed during syntax parsing.
-            ExpressionKind::None
+        let node = if self.mode == ParserMode::SyntaxOnly {
+            None
         } else {
-            ExpressionKind::Lambda {
-                params,
-                return_type: return_type_fact.into_compat_type_node(),
-                body: body_statements,
-                where_clause: where_clause_fact.map(WhereClauseFact::into_compatibility),
-            }
+            Some(ExpressionNode {
+                kind: ExpressionKind::Lambda {
+                    params,
+                    return_type: return_type_fact.into_compat_type_node(),
+                    body: body_statements,
+                    where_clause: where_clause_fact.map(WhereClauseFact::into_compatibility),
+                },
+                span,
+            })
         };
-        let expr = ExpressionNode { kind, span };
         self.record_typed_syntax_node(
             SyntaxKind::LambdaExpression,
             lambda_start,
@@ -814,11 +796,14 @@ impl<'a> Parser<'a> {
                 return_type: return_type_range,
                 where_clause: where_range,
                 body: body_range,
-                ast_span: expr.span.byte_range.expect("lambda AST span range"),
+                ast_span: span.byte_range.expect("lambda AST span range"),
             },
         );
-
-        self.parse_postfix_operators(expr)
+        Ok(ParsedExpression {
+            span,
+            node,
+            generic_target: None,
+        })
     }
 
     fn parse_if_expression_parsed(&mut self, token_span: Span) -> ParserResult<ParsedExpression> {
@@ -1125,9 +1110,7 @@ impl<'a> Parser<'a> {
             }),
             TokenType::OpenBracket => self.parse_list_literal_expression_parsed(token_span),
             TokenType::OpenBrace => self.parse_collection_literal_parsed(token_span),
-            TokenType::Func => self
-                .parse_lambda_expression(token_span)
-                .map(|node| ParsedExpression::from_node(self, node)),
+            TokenType::Func => self.parse_lambda_expression_parsed(token_span),
             TokenType::If => self.parse_if_expression_parsed(token_span),
             TokenType::Match => self.parse_match_expression_parsed(token_span),
             TokenType::Id(id) => self.parse_scalar_primary(token_span, Some(id.clone()), || {
@@ -1263,274 +1246,6 @@ impl<'a> Parser<'a> {
         Ok(first)
     }
 
-    pub(super) fn parse_call_postfix(
-        &mut self,
-        expr: ExpressionNode,
-    ) -> ParserResult<ExpressionNode> {
-        let start = self.current.saturating_sub(1);
-        let result = self.parse_call_postfix_inner(expr);
-        if result.is_ok() {
-            self.record_syntax_node(SyntaxKind::CallArguments, start, self.current);
-        }
-        result
-    }
-
-    fn parse_call_postfix_inner(&mut self, expr: ExpressionNode) -> ParserResult<ExpressionNode> {
-        let callee_range = expr.span.byte_range.expect("call target has source range");
-        let callee_start = self.token_index_for_span(expr.span);
-        let mut args = Vec::new();
-        let mut argument_ranges = Vec::new();
-        if !self.check(TokenType::CloseParen) {
-            loop {
-                self.skip_newlines();
-                let argument = self.parse_expression()?;
-                argument_ranges.push(
-                    argument
-                        .span
-                        .byte_range
-                        .expect("call argument has source range"),
-                );
-                if self.mode == ParserMode::Compatibility {
-                    args.push(argument);
-                }
-                self.skip_newlines();
-
-                if !self.matches(&[TokenType::Comma]) {
-                    break;
-                }
-                // A trailing comma ends the list. Collection literals already
-                // allow one, and an argument list spanning several lines is
-                // exactly where people write it - so rejecting it here was an
-                // inconsistency between two forms that look the same.
-                self.skip_newlines();
-                if self.check(TokenType::CloseParen) {
-                    break;
-                }
-            }
-        }
-        let end_span = self.consume_token(TokenType::CloseParen, "Expected ')' after arguments")?;
-        let expr_span = *expr.span();
-        self.record_typed_syntax_node(
-            SyntaxKind::Expression,
-            callee_start,
-            self.current,
-            SyntaxData::Call {
-                callee: callee_range,
-                arguments: argument_ranges,
-            },
-        );
-        let callee = if self.mode == ParserMode::SyntaxOnly {
-            // Calls cannot be generic targets. Keep only a non-target shape
-            // carrier; the syntax event records the callee range and tree.
-            ExpressionNode {
-                kind: ExpressionKind::None,
-                span: expr_span,
-            }
-        } else {
-            expr
-        };
-        Ok(ExpressionNode {
-            kind: ExpressionKind::Call {
-                func: Box::new(callee),
-                args,
-            },
-            span: expr_span.combine(&end_span),
-        })
-    }
-
-    pub(super) fn parse_field_access_postfix(
-        &mut self,
-        expr: ExpressionNode,
-    ) -> ParserResult<ExpressionNode> {
-        let base_range = expr.span.byte_range.expect("field base has source range");
-        let start = self.token_index_for_span(expr.span);
-        let field = self.consume_identifier("Expected field name after '.'")?;
-        let expr_span = *expr.span();
-        let field_span = self.tokens[self.current - 1].span;
-        if let Some(field_range) = field_span.byte_range {
-            self.record_typed_syntax_node(
-                SyntaxKind::Expression,
-                start,
-                self.current,
-                SyntaxData::FieldAccess {
-                    base: base_range,
-                    field: field_range,
-                },
-            );
-        }
-        Ok(ExpressionNode {
-            kind: ExpressionKind::FieldAccess {
-                expr: Box::new(expr),
-                field,
-            },
-            span: expr_span.combine(&field_span),
-        })
-    }
-
-    pub(super) fn parse_index_postfix(
-        &mut self,
-        expr: ExpressionNode,
-    ) -> ParserResult<ExpressionNode> {
-        let start = self.current.saturating_sub(1);
-        let result = self.parse_index_postfix_inner(expr);
-        if result.is_ok() {
-            let end =
-                self.matching_delimiter_end(start, TokenType::OpenBracket, TokenType::CloseBracket);
-            self.record_syntax_node(SyntaxKind::IndexExpression, start, end);
-        }
-        result
-    }
-
-    fn parse_index_postfix_inner(&mut self, expr: ExpressionNode) -> ParserResult<ExpressionNode> {
-        let base_range = expr.span.byte_range.expect("index base has source range");
-        let start = self.token_index_for_span(expr.span);
-        // `xs[:b]` - an omitted start, so the colon comes first and there is no
-        // index expression to parse.
-        if self.matches(&[TokenType::Colon]) {
-            return self.finish_slice(expr, None);
-        }
-
-        let index = self.parse_expression()?;
-
-        // `xs[a:b]` or `xs[a:]`. Deciding here, after the first expression,
-        // is what lets an index and a slice share one entry point.
-        if self.matches(&[TokenType::Colon]) {
-            return self.finish_slice(expr, Some(index));
-        }
-
-        let end_span = self.consume_token(TokenType::CloseBracket, "Expected ']' after index")?;
-        let expr_span = *expr.span();
-        if let Some(index_range) = index.span.byte_range {
-            self.record_typed_syntax_node(
-                SyntaxKind::Expression,
-                start,
-                self.current,
-                SyntaxData::Index {
-                    base: base_range,
-                    index: index_range,
-                },
-            );
-        }
-        let base = if self.mode == ParserMode::SyntaxOnly {
-            ExpressionNode {
-                kind: ExpressionKind::None,
-                span: expr_span,
-            }
-        } else {
-            expr
-        };
-        let index = if self.mode == ParserMode::SyntaxOnly {
-            ExpressionNode {
-                kind: ExpressionKind::None,
-                span: index.span,
-            }
-        } else {
-            index
-        };
-        Ok(ExpressionNode {
-            kind: ExpressionKind::ListAccess {
-                expr: Box::new(base),
-                index: Box::new(index),
-            },
-            span: expr_span.combine(&end_span),
-        })
-    }
-
-    /// Finish `xs[start:` - the colon is consumed, the end bound is optional.
-    pub(super) fn finish_slice(
-        &mut self,
-        expr: ExpressionNode,
-        start: Option<ExpressionNode>,
-    ) -> ParserResult<ExpressionNode> {
-        let base_range = expr.span.byte_range.expect("slice base has source range");
-        let slice_start = self.token_index_for_span(expr.span);
-        let start_range = start
-            .as_ref()
-            .and_then(|expression| expression.span.byte_range);
-        let end = if self.check(TokenType::CloseBracket) {
-            None
-        } else {
-            Some(Box::new(self.parse_expression()?))
-        };
-        let end_span = self.consume_token(TokenType::CloseBracket, "Expected ']' after slice")?;
-        let end_range = end
-            .as_ref()
-            .and_then(|expression| expression.span.byte_range);
-        let expr_span = *expr.span();
-        let base = if self.mode == ParserMode::SyntaxOnly {
-            ExpressionNode {
-                kind: ExpressionKind::None,
-                span: expr_span,
-            }
-        } else {
-            expr
-        };
-        let start = if self.mode == ParserMode::SyntaxOnly {
-            None
-        } else {
-            start.map(Box::new)
-        };
-        let end = if self.mode == ParserMode::SyntaxOnly {
-            None
-        } else {
-            end
-        };
-        let expression = ExpressionNode {
-            kind: ExpressionKind::Slice {
-                expr: Box::new(base),
-                start,
-                end,
-            },
-            span: expr_span.combine(&end_span),
-        };
-        self.record_typed_syntax_node(
-            SyntaxKind::SliceExpression,
-            slice_start,
-            self.current,
-            SyntaxData::Slice {
-                base: base_range,
-                start: start_range,
-                end: end_range,
-            },
-        );
-        Ok(expression)
-    }
-
-    pub(super) fn should_consume_generic_type_args(
-        &self,
-        expr: &ExpressionNode,
-    ) -> Option<(String, bool)> {
-        if self.mode == ParserMode::SyntaxOnly
-            && expr.span.byte_range.is_some_and(|range| {
-                self.syntax_events.iter().any(|event| {
-                    event.range == range
-                        && matches!(
-                            event.data.as_ref(),
-                            Some(SyntaxData::Binary { .. } | SyntaxData::Unary { .. })
-                        )
-                })
-            })
-        {
-            return None;
-        }
-        let generic_target_name = self.generic_target_name(expr)?;
-
-        let gt_idx = self.find_matching_generic_gt_index()?;
-        let should_consume = self.should_consume_generics_for_target(&generic_target_name, gt_idx);
-
-        Some((generic_target_name, should_consume))
-    }
-
-    pub(super) fn generic_target_name(&self, expr: &ExpressionNode) -> Option<String> {
-        match &expr.kind {
-            ExpressionKind::Identifier(id) => Some(id.clone()),
-            ExpressionKind::FieldAccess { expr, field } => {
-                Some(format!("{}.{field}", self.generic_target_name(expr)?))
-            }
-            _ => None,
-        }
-    }
-
     pub(super) fn find_matching_generic_gt_index(&self) -> Option<usize> {
         let mut i = self.current + 1;
         let mut depth = 1usize;
@@ -1577,18 +1292,6 @@ impl<'a> Parser<'a> {
         } else {
             true
         }
-    }
-
-    pub(super) fn parse_generic_postfix(
-        &mut self,
-        expr: &ExpressionNode,
-    ) -> ParserResult<Option<ExpressionNode>> {
-        let start = self.current;
-        let result = self.parse_generic_postfix_inner(expr);
-        if matches!(result, Ok(Some(_))) {
-            self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
-        }
-        result
     }
 
     fn parse_generic_postfix_parsed(
@@ -1926,87 +1629,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_generic_postfix_inner(
-        &mut self,
-        expr: &ExpressionNode,
-    ) -> ParserResult<Option<ExpressionNode>> {
-        let Some((name, should_consume_generics)) = self.should_consume_generic_type_args(expr)
-        else {
-            return Ok(None);
-        };
-
-        if !should_consume_generics {
-            return Ok(None);
-        }
-
-        let _ = self.matches(&[TokenType::Lt]);
-        let type_args = self.parse_type_arguments()?;
-        let end_span = self.consume_token(TokenType::Gt, "Expected '>' after type arguments")?;
-        let target = expr
-            .span
-            .byte_range
-            .expect("generic target has source range");
-        let arguments = type_args
-            .iter()
-            .map(|argument| {
-                argument
-                    .span
-                    .byte_range
-                    .expect("generic type argument has source range")
-            })
-            .collect();
-        let syntax_start = self.token_index_for_span(expr.span);
-        self.record_typed_syntax_node(
-            SyntaxKind::Expression,
-            syntax_start,
-            self.current,
-            SyntaxData::Generic { target, arguments },
-        );
-        Ok(Some(ExpressionNode {
-            kind: ExpressionKind::GenericType(name, type_args),
-            span: expr.span.combine(&end_span),
-        }))
-    }
-
-    pub(super) fn parse_postfix_update(
-        &mut self,
-        expr: ExpressionNode,
-        op: UnaryOp,
-    ) -> ExpressionNode {
-        let expr_span = *expr.span();
-        let op_span = self.previous().span;
-        if let (Some(operand), Some(operator)) = (expr_span.byte_range, op_span.byte_range) {
-            let start = self.token_index_for_span(expr_span);
-            self.record_typed_syntax_node(
-                SyntaxKind::UnaryExpression,
-                start,
-                self.current,
-                SyntaxData::Unary {
-                    operator,
-                    operand,
-                    postfix: true,
-                },
-            );
-        }
-        let span = expr_span.combine(&op_span);
-        if self.mode == ParserMode::SyntaxOnly {
-            ExpressionNode {
-                kind: ExpressionKind::None,
-                span,
-            }
-        } else {
-            ExpressionNode {
-                kind: ExpressionKind::Unary {
-                    op,
-                    op_span,
-                    expr: Box::new(expr),
-                    postfix: true,
-                },
-                span,
-            }
-        }
-    }
-
     pub(super) fn skip_newline_gap_for_postfix(&mut self) -> bool {
         let mut lookahead = self.current;
         let mut found_newlines = false;
@@ -2030,54 +1652,6 @@ impl<'a> Parser<'a> {
         }
 
         false
-    }
-
-    pub(super) fn parse_postfix_operators(
-        &mut self,
-        mut expr: ExpressionNode,
-    ) -> ParserResult<ExpressionNode> {
-        loop {
-            if self.matches(&[TokenType::OpenParen]) {
-                expr = self.parse_call_postfix(expr)?;
-                continue;
-            }
-
-            if self.matches(&[TokenType::Dot]) {
-                expr = self.parse_field_access_postfix(expr)?;
-                continue;
-            }
-
-            if self.matches(&[TokenType::OpenBracket]) {
-                expr = self.parse_index_postfix(expr)?;
-                continue;
-            }
-
-            if self.check(TokenType::Lt) {
-                if let Some(next_expr) = self.parse_generic_postfix(&expr)? {
-                    expr = next_expr;
-                    continue;
-                }
-                break;
-            }
-
-            if self.matches(&[TokenType::Incr]) {
-                expr = self.parse_postfix_update(expr, UnaryOp::Incr);
-                continue;
-            }
-
-            if self.matches(&[TokenType::Decr]) {
-                expr = self.parse_postfix_update(expr, UnaryOp::Decr);
-                continue;
-            }
-
-            if self.skip_newline_gap_for_postfix() {
-                continue;
-            }
-
-            break;
-        }
-
-        Ok(expr)
     }
 
     pub(super) fn consume_operator(&mut self) -> Option<BinaryOp> {
