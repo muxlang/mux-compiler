@@ -2576,14 +2576,20 @@ impl<'a> Parser<'a> {
         // Check for optional default value. Any expression is allowed; it is
         // evaluated per instance when the constructor (`.new()`) runs, and its
         // type is checked against the field in semantic analysis.
-        let default_value = if self.matches(&[TokenType::Eq]) {
-            Some(self.parse_expression()?)
-        } else {
-            None
-        };
+        let (default_value, default_value_range, has_default_value) =
+            if self.matches(&[TokenType::Eq]) {
+                let value = self.parse_expression()?;
+                let value_range = value.span.byte_range;
+                let has_default_value = true;
+                let value = (self.mode == ParserMode::Compatibility).then_some(value);
+                (value, value_range, has_default_value)
+            } else {
+                (None, None, false)
+            };
 
-        // For const fields, require a default value
-        if is_const && default_value.is_none() {
+        // For const fields, require a default value even when syntax parsing
+        // discards its compatibility expression node.
+        if is_const && !has_default_value {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
                 "Const fields must have a default value",
@@ -2593,9 +2599,6 @@ impl<'a> Parser<'a> {
         }
 
         let is_generic_param = Self::is_field_generic_param(&field_type, type_param_names);
-        let default_value_range = default_value
-            .as_ref()
-            .and_then(|value| value.span.byte_range);
         let where_start = self.syntax_events.len();
         let where_clause = if self.check(TokenType::Where) {
             // Fields are newline-separated, so only a same-line `where`

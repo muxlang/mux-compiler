@@ -261,12 +261,22 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         self.consume_token(TokenType::OpenBrace, "Expected '{' after 'where'")?;
         let mut predicates = Vec::new();
+        let mut predicate_ranges = Vec::new();
         loop {
             self.skip_newlines();
             if self.check(TokenType::CloseBrace) {
                 break;
             }
-            predicates.push(self.parse_expression()?);
+            let predicate = self.parse_expression()?;
+            predicate_ranges.push(
+                predicate
+                    .span
+                    .byte_range
+                    .expect("where predicate has source range"),
+            );
+            if self.mode == ParserMode::Compatibility {
+                predicates.push(predicate);
+            }
             self.skip_newlines();
             if !self.matches(&[TokenType::Comma]) {
                 break;
@@ -278,7 +288,7 @@ impl<'a> Parser<'a> {
             "Expected '}' after where predicates (predicates are comma-separated)",
         )?;
         let span = start_span.combine(&end_span);
-        if predicates.is_empty() {
+        if predicate_ranges.is_empty() {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
                 "Empty 'where' block",
@@ -287,15 +297,7 @@ impl<'a> Parser<'a> {
             ));
         }
         let syntax_data = SyntaxData::WhereClause {
-            predicates: predicates
-                .iter()
-                .map(|predicate| {
-                    predicate
-                        .span
-                        .byte_range
-                        .expect("where predicate has source range")
-                })
-                .collect(),
+            predicates: predicate_ranges,
         };
         let range = self
             .source_range_for_tokens(start, self.current)
