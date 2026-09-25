@@ -17,7 +17,11 @@ pub(super) struct TypeFact {
 #[derive(Clone, Debug)]
 enum TypeFactKind {
     Primitive(PrimitiveType),
-    Named(String, Vec<TypeFact>),
+    Named {
+        name: Option<String>,
+        name_range: ByteRange,
+        args: Vec<TypeFact>,
+    },
     TraitObject(Box<TypeFact>),
     Reference(Box<TypeFact>),
     List(Box<TypeFact>),
@@ -28,6 +32,68 @@ enum TypeFactKind {
         params: Vec<TypeFact>,
         returns: Box<TypeFact>,
     },
+}
+
+#[derive(Clone, Copy)]
+enum TypeNameClass {
+    Primitive(PrimitiveName),
+    List,
+    Map,
+    Set,
+    Tuple,
+    Dyn,
+    Named,
+}
+
+#[derive(Clone, Copy)]
+enum PrimitiveName {
+    Int,
+    Float,
+    Bool,
+    Char,
+    Byte,
+    Bytes,
+    Str,
+    Void,
+    Auto,
+}
+
+impl PrimitiveName {
+    fn into_type(self) -> PrimitiveType {
+        match self {
+            Self::Int => PrimitiveType::Int,
+            Self::Float => PrimitiveType::Float,
+            Self::Bool => PrimitiveType::Bool,
+            Self::Char => PrimitiveType::Char,
+            Self::Byte => PrimitiveType::Byte,
+            Self::Bytes => PrimitiveType::Bytes,
+            Self::Str => PrimitiveType::Str,
+            Self::Void => PrimitiveType::Void,
+            Self::Auto => PrimitiveType::Auto,
+        }
+    }
+}
+
+impl TypeNameClass {
+    fn classify(name: &str) -> Self {
+        match name {
+            "int" => Self::Primitive(PrimitiveName::Int),
+            "float" => Self::Primitive(PrimitiveName::Float),
+            "bool" => Self::Primitive(PrimitiveName::Bool),
+            "char" => Self::Primitive(PrimitiveName::Char),
+            "byte" => Self::Primitive(PrimitiveName::Byte),
+            "bytes" => Self::Primitive(PrimitiveName::Bytes),
+            "string" => Self::Primitive(PrimitiveName::Str),
+            "void" => Self::Primitive(PrimitiveName::Void),
+            "auto" => Self::Primitive(PrimitiveName::Auto),
+            "list" => Self::List,
+            "map" => Self::Map,
+            "set" => Self::Set,
+            "tuple" => Self::Tuple,
+            "dyn" => Self::Dyn,
+            _ => Self::Named,
+        }
+    }
 }
 
 impl TypeFact {
@@ -41,8 +107,8 @@ impl TypeFact {
     pub(super) fn into_compat_type_node(self) -> TypeNode {
         let kind = match self.kind {
             TypeFactKind::Primitive(kind) => TypeKind::Primitive(kind),
-            TypeFactKind::Named(name, args) => TypeKind::Named(
-                name,
+            TypeFactKind::Named { name, args, .. } => TypeKind::Named(
+                name.expect("compatibility type fact has a name"),
                 args.into_iter()
                     .map(TypeFact::into_compat_type_node)
                     .collect(),
@@ -81,9 +147,11 @@ impl TypeFact {
         self.span.byte_range
     }
 
-    pub(super) fn generic_parameter_name(&self) -> Option<&str> {
+    pub(super) fn generic_parameter_name_range(&self) -> Option<ByteRange> {
         match &self.kind {
-            TypeFactKind::Named(name, args) if args.is_empty() => Some(name),
+            TypeFactKind::Named {
+                name_range, args, ..
+            } if args.is_empty() => Some(*name_range),
             _ => None,
         }
     }
@@ -92,9 +160,20 @@ impl TypeFact {
 impl<'a> Parser<'a> {
     fn parse_named_type_with_builtin_support(
         &mut self,
-        mut name: String,
+        name_class: TypeNameClass,
+        name_token: usize,
         start_span: Span,
     ) -> ParserResult<TypeFact> {
+        let compatibility = self.mode == super::ParserMode::Compatibility;
+        let mut name = compatibility.then(|| match &self.tokens[name_token].token_type {
+            TokenType::Id(name) => name.clone(),
+            _ => unreachable!("type name token is an identifier"),
+        });
+        let mut name_range = self.tokens[name_token]
+            .span
+            .byte_range
+            .expect("type name token has a source range");
+        let mut qualified = false;
         // A module-qualified type, `graph.Graph<string>`. This is the form
         // `import std.dsa.*` naturally leads you to write - the same path that
         // already works in expression position - and it was rejected outright
@@ -106,19 +185,29 @@ impl<'a> Parser<'a> {
         // place that knows which module namespaces are in scope.
         while self.check(TokenType::Dot) {
             self.advance();
-            let segment = self.consume_identifier("Expected a type name after '.'")?;
-            name.push('.');
-            name.push_str(&segment);
+            let segment =
+                self.consume_identifier_fact("Expected a type name after '.'", compatibility)?;
+            let segment_range = self
+                .previous()
+                .span
+                .byte_range
+                .expect("type name segment has a source range");
+            name_range = ByteRange::new(name_range.start, segment_range.end);
+            if let (Some(name), Some(segment)) = (&mut name, segment) {
+                name.push('.');
+                name.push_str(&segment);
+            }
+            qualified = true;
         }
 
-        if let Some(prim_type) = primitive_type(name.as_str()) {
+        if !qualified && let TypeNameClass::Primitive(primitive) = name_class {
             return Ok(TypeFact {
-                kind: TypeFactKind::Primitive(prim_type),
+                kind: TypeFactKind::Primitive(primitive.into_type()),
                 span: start_span,
             });
         }
 
-        if let Some(node) = self.parse_container_type(&name, start_span)? {
+        if !qualified && let Some(node) = self.parse_container_type(name_class, start_span)? {
             return Ok(node);
         }
 
@@ -130,7 +219,7 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
 
-        if name == "dyn" && !type_args.is_empty() {
+        if !qualified && matches!(name_class, TypeNameClass::Dyn) && !type_args.is_empty() {
             let trait_object = type_args.remove(0);
             return Ok(TypeFact {
                 kind: TypeFactKind::TraitObject(Box::new(trait_object)),
@@ -139,17 +228,24 @@ impl<'a> Parser<'a> {
         }
 
         Ok(TypeFact {
-            kind: TypeFactKind::Named(name, type_args),
+            kind: TypeFactKind::Named {
+                name,
+                name_range,
+                args: type_args,
+            },
             span: start_span,
         })
     }
 
     fn parse_container_type(
         &mut self,
-        name: &str,
+        name: TypeNameClass,
         start_span: Span,
     ) -> ParserResult<Option<TypeFact>> {
-        if !matches!(name, "list" | "map" | "set" | "tuple") {
+        if !matches!(
+            name,
+            TypeNameClass::List | TypeNameClass::Map | TypeNameClass::Set | TypeNameClass::Tuple
+        ) {
             return Ok(None);
         }
 
@@ -158,7 +254,7 @@ impl<'a> Parser<'a> {
         }
 
         let node = match name {
-            "list" => {
+            TypeNameClass::List => {
                 let element_type = self.parse_type_fact()?;
                 self.consume_token(TokenType::Gt, "Expected '>' after list element type")?;
                 TypeFact {
@@ -166,7 +262,7 @@ impl<'a> Parser<'a> {
                     span: start_span,
                 }
             }
-            "map" => {
+            TypeNameClass::Map => {
                 let key_type = self.parse_type_fact()?;
                 self.consume_token(
                     TokenType::Comma,
@@ -179,7 +275,7 @@ impl<'a> Parser<'a> {
                     span: start_span,
                 }
             }
-            "set" => {
+            TypeNameClass::Set => {
                 let element_type = self.parse_type_fact()?;
                 self.consume_token(TokenType::Gt, "Expected '>' after set element type")?;
                 TypeFact {
@@ -187,7 +283,7 @@ impl<'a> Parser<'a> {
                     span: start_span,
                 }
             }
-            "tuple" => {
+            TypeNameClass::Tuple => {
                 let left_type = self.parse_type_fact()?;
                 self.consume_token(TokenType::Comma, "Expected ',' in tuple type")?;
                 let right_type = self.parse_type_fact()?;
@@ -276,10 +372,10 @@ impl<'a> Parser<'a> {
                 .collect::<Option<Vec<_>>>()
         };
         Some(match kind {
-            TypeFactKind::Primitive(_) | TypeFactKind::Named(_, _) => SyntaxData::TypeName {
+            TypeFactKind::Primitive(_) | TypeFactKind::Named { .. } => SyntaxData::TypeName {
                 name: name()?,
                 arguments: match kind {
-                    TypeFactKind::Named(_, args) => ranges(args)?,
+                    TypeFactKind::Named { args, .. } => ranges(args)?,
                     _ => Vec::new(),
                 },
             },
@@ -337,50 +433,57 @@ impl<'a> Parser<'a> {
 
         // We are essentially doing a consume here, but without borrowing the
         // parser again so we do not have to clone it.
-        let token_type = self.tokens[self.current].token_type.clone();
-        let start_span = self.tokens[self.current].span;
+        let token_index = self.current;
+        let token_span = self.tokens[token_index].span;
+        let is_function_type = self.tokens[token_index].token_type == TokenType::Func;
+        let identifier_class = match &self.tokens[token_index].token_type {
+            TokenType::Id(name) => Some(TypeNameClass::classify(name)),
+            _ => None,
+        };
         self.advance();
 
-        match token_type {
-            TokenType::Id(name) => self.parse_named_type_with_builtin_support(name, start_span),
+        if let Some(class) = identifier_class {
+            return self.parse_named_type_with_builtin_support(class, token_index, token_span);
+        }
 
-            TokenType::Func => {
-                self.consume_token(
-                    TokenType::OpenParen,
-                    "Expected '(' after 'func' in function type",
-                )?;
-                let mut param_types = Vec::new();
+        if is_function_type {
+            self.consume_token(
+                TokenType::OpenParen,
+                "Expected '(' after 'func' in function type",
+            )?;
+            let mut param_types = Vec::new();
 
-                if !self.check(TokenType::CloseParen) {
-                    loop {
-                        // Parse parameter types only (no parameter names for function types)
-                        param_types.push(self.parse_type_fact()?);
+            if !self.check(TokenType::CloseParen) {
+                loop {
+                    // Parse parameter types only (no parameter names for function types)
+                    param_types.push(self.parse_type_fact()?);
 
-                        if !self.matches(&[TokenType::Comma]) {
-                            break;
-                        }
-                        self.skip_newlines();
+                    if !self.matches(&[TokenType::Comma]) {
+                        break;
                     }
+                    self.skip_newlines();
                 }
-
-                self.consume_token(TokenType::CloseParen, "Expected ')' after parameter types")?;
-                self.consume_token(TokenType::Returns, "Expected 'returns' in function type")?;
-
-                let return_type = Box::new(self.parse_type_fact()?);
-
-                Ok(TypeFact {
-                    kind: TypeFactKind::Function {
-                        params: param_types,
-                        returns: return_type,
-                    },
-                    span: start_span,
-                })
             }
-            _ => Err(ParserError::from_token(
+
+            self.consume_token(TokenType::CloseParen, "Expected ')' after parameter types")?;
+            self.consume_token(TokenType::Returns, "Expected 'returns' in function type")?;
+
+            let return_type = Box::new(self.parse_type_fact()?);
+
+            Ok(TypeFact {
+                kind: TypeFactKind::Function {
+                    params: param_types,
+                    returns: return_type,
+                },
+                span: token_span,
+            })
+        } else {
+            let token_type = self.tokens[token_index].token_type.clone();
+            Err(ParserError::from_token(
                 DiagnosticCode::ParseExpectedType,
                 "Expected type",
-                &Token::new(token_type, start_span),
-            )),
+                &Token::new(token_type, token_span),
+            ))
         }
     }
 
@@ -399,21 +502,6 @@ impl<'a> Parser<'a> {
         self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
         Ok(args)
     }
-}
-
-fn primitive_type(name: &str) -> Option<PrimitiveType> {
-    Some(match name {
-        "int" => PrimitiveType::Int,
-        "float" => PrimitiveType::Float,
-        "bool" => PrimitiveType::Bool,
-        "char" => PrimitiveType::Char,
-        "byte" => PrimitiveType::Byte,
-        "bytes" => PrimitiveType::Bytes,
-        "string" => PrimitiveType::Str,
-        "void" => PrimitiveType::Void,
-        "auto" => PrimitiveType::Auto,
-        _ => return None,
-    })
 }
 
 #[cfg(test)]

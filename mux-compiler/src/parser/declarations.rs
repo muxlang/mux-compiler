@@ -72,7 +72,8 @@ struct EnumDeclarationFact {
 struct TypeParameterFact {
     range: ByteRange,
     span: Span,
-    name: String,
+    name: Option<String>,
+    name_range: ByteRange,
     bounds: Vec<TraitBoundFact>,
 }
 
@@ -82,13 +83,15 @@ impl TypeParameterFact {
             range,
             span,
             name,
+            name_range,
             bounds,
         } = self;
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
+        debug_assert!(range.start <= name_range.start && name_range.end <= range.end);
         (
-            name,
+            name.expect("compatibility type parameter fact has a name"),
             bounds
                 .into_iter()
                 .map(TraitBoundFact::into_compatibility)
@@ -1128,7 +1131,10 @@ impl<'a> Parser<'a> {
         loop {
             let parameter_start = self.current;
             let parameter_span = self.peek().span;
-            let param = self.consume_identifier("Expected type parameter name")?;
+            let param = self.consume_identifier_fact(
+                "Expected type parameter name",
+                self.mode == ParserMode::Compatibility,
+            )?;
             let name = self
                 .previous()
                 .span
@@ -1155,6 +1161,7 @@ impl<'a> Parser<'a> {
                     .expect("class type parameter source range"),
                 span: parameter_span.combine(&self.previous().span),
                 name: param,
+                name_range: name,
                 bounds,
             });
             if !self.matches(&[TokenType::Comma]) {
@@ -1494,7 +1501,10 @@ impl<'a> Parser<'a> {
             loop {
                 let parameter_start = self.current;
                 let parameter_span = self.peek().span;
-                let param = self.consume_identifier("Expected type parameter name")?;
+                let param = self.consume_identifier_fact(
+                    "Expected type parameter name",
+                    self.mode == ParserMode::Compatibility,
+                )?;
                 let name = self
                     .previous()
                     .span
@@ -1521,6 +1531,7 @@ impl<'a> Parser<'a> {
                         .expect("interface type parameter source range"),
                     span: parameter_span.combine(&self.previous().span),
                     name: param,
+                    name_range: name,
                     bounds,
                 });
                 if !self.matches(&[TokenType::Comma]) {
@@ -1712,7 +1723,10 @@ impl<'a> Parser<'a> {
             loop {
                 let parameter_start = self.current;
                 let parameter_span = self.peek().span;
-                let param = self.consume_identifier("Expected type parameter name")?;
+                let param = self.consume_identifier_fact(
+                    "Expected type parameter name",
+                    self.mode == ParserMode::Compatibility,
+                )?;
                 let name = self
                     .previous()
                     .span
@@ -1734,6 +1748,7 @@ impl<'a> Parser<'a> {
                         .expect("method type parameter source range"),
                     span: parameter_span.combine(&self.previous().span),
                     name: param,
+                    name_range: name,
                     bounds: Vec::new(),
                 });
                 if !self.matches(&[TokenType::Comma]) {
@@ -1858,7 +1873,10 @@ impl<'a> Parser<'a> {
             loop {
                 let parameter_start = self.current;
                 let parameter_span = self.peek().span;
-                let param = self.consume_identifier("Expected type parameter name")?;
+                let param = self.consume_identifier_fact(
+                    "Expected type parameter name",
+                    self.mode == ParserMode::Compatibility,
+                )?;
                 let name = self
                     .previous()
                     .span
@@ -1885,6 +1903,7 @@ impl<'a> Parser<'a> {
                         .expect("enum type parameter source range"),
                     span: parameter_span.combine(&self.previous().span),
                     name: param,
+                    name_range: name,
                     bounds,
                 });
                 if !self.matches(&[TokenType::Comma]) {
@@ -2435,7 +2454,10 @@ impl<'a> Parser<'a> {
             loop {
                 let parameter_start = self.current;
                 let parameter_span = self.peek().span;
-                let param = self.consume_identifier("Expected type parameter name")?;
+                let param = self.consume_identifier_fact(
+                    "Expected type parameter name",
+                    self.mode == ParserMode::Compatibility,
+                )?;
                 let name_range = self
                     .previous()
                     .span
@@ -2462,6 +2484,7 @@ impl<'a> Parser<'a> {
                         .expect("function type parameter source range"),
                     span: parameter_span.combine(&self.previous().span),
                     name: param,
+                    name_range,
                     bounds: trait_bounds,
                 });
                 if !self.matches(&[TokenType::Comma]) {
@@ -2668,7 +2691,7 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        let is_generic_param = Self::is_field_generic_param(&field_type, type_param_names);
+        let is_generic_param = self.is_field_generic_param(&field_type, type_param_names);
         let where_start = self.syntax_events.len();
         let where_clause = if self.check(TokenType::Where) {
             // Fields are newline-separated, so only a same-line `where`
@@ -2709,14 +2732,36 @@ impl<'a> Parser<'a> {
     }
 
     fn is_field_generic_param(
+        &self,
         field_type: &TypeFact,
         type_param_names: &[TypeParameterFact],
     ) -> bool {
-        field_type.generic_parameter_name().is_some_and(|name| {
-            type_param_names
-                .iter()
-                .any(|parameter| parameter.name == name)
-        })
+        let Some(type_name_range) = field_type.generic_parameter_name_range() else {
+            return false;
+        };
+        let Some(type_name) = self.identifier_at_range(type_name_range) else {
+            return false;
+        };
+        type_param_names
+            .iter()
+            .any(|parameter| self.identifier_at_range(parameter.name_range) == Some(type_name))
+    }
+
+    fn identifier_at_range(&self, range: ByteRange) -> Option<&str> {
+        let index = self.tokens.partition_point(|token| {
+            token
+                .span
+                .byte_range
+                .is_some_and(|token_range| token_range.start < range.start)
+        });
+        let token = self.tokens.get(index)?;
+        if token.span.byte_range != Some(range) {
+            return None;
+        }
+        match &token.token_type {
+            TokenType::Id(name) => Some(name),
+            _ => None,
+        }
     }
 
     fn is_literal_expression_range(&self, range: Option<ByteRange>) -> bool {
