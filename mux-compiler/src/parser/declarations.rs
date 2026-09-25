@@ -157,6 +157,10 @@ impl FunctionParameterFact {
 
 impl FunctionDeclarationFact {
     fn into_compatibility_ast(self) -> AstNode {
+        AstNode::Function(self.into_compatibility_function())
+    }
+
+    fn into_compatibility_function(self) -> FunctionNode {
         let Self {
             range,
             span,
@@ -177,7 +181,7 @@ impl FunctionDeclarationFact {
             .into_iter()
             .map(FunctionParameterFact::into_compatibility_param)
             .collect();
-        AstNode::Function(FunctionNode {
+        FunctionNode {
             name,
             type_params,
             params,
@@ -186,7 +190,7 @@ impl FunctionDeclarationFact {
             span,
             is_common,
             where_clause,
-        })
+        }
     }
 }
 
@@ -197,7 +201,7 @@ struct ClassDeclarationFact {
     type_params: Vec<(String, Vec<TraitBound>)>,
     traits: Vec<TraitRef>,
     fields: Vec<FieldDeclarationFact>,
-    methods: Vec<FunctionNode>,
+    methods: Vec<FunctionDeclarationFact>,
     where_clause: Option<WhereClause>,
     syntax_data: SyntaxData,
 }
@@ -222,6 +226,10 @@ impl ClassDeclarationFact {
         let fields = fields
             .into_iter()
             .map(FieldDeclarationFact::into_compatibility_field)
+            .collect();
+        let methods = methods
+            .into_iter()
+            .map(FunctionDeclarationFact::into_compatibility_function)
             .collect();
         AstNode::Class {
             name,
@@ -836,7 +844,7 @@ impl<'a> Parser<'a> {
         let body_start = self.current;
         self.consume_token(TokenType::OpenBrace, "Expected '{' after class header")?;
         let members_start = self.syntax_events.len();
-        let (fields, methods) = self.parse_class_body(&type_params, start_span)?;
+        let (fields, methods) = self.parse_class_body(&type_params)?;
         let field_ranges = self.syntax_ranges_since(members_start, |data| {
             matches!(data, SyntaxData::Field { .. })
         });
@@ -1103,8 +1111,7 @@ impl<'a> Parser<'a> {
     fn parse_class_body(
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
-        start_span: Span,
-    ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<FunctionNode>)> {
+    ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<FunctionDeclarationFact>)> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
@@ -1115,9 +1122,7 @@ impl<'a> Parser<'a> {
             // method body - are consumed with their matching open and never
             // mistaken for the class terminator.
             let checkpoint = self.checkpoint();
-            if let Err(e) =
-                self.parse_class_member(type_params, start_span, &mut fields, &mut methods)
-            {
+            if let Err(e) = self.parse_class_member(type_params, &mut fields, &mut methods) {
                 self.rewind(checkpoint);
                 self.record_error(e);
                 self.recover_class_member();
@@ -1163,83 +1168,66 @@ impl<'a> Parser<'a> {
     fn parse_class_member(
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
-        start_span: Span,
         fields: &mut Vec<FieldDeclarationFact>,
-        methods: &mut Vec<FunctionNode>,
+        methods: &mut Vec<FunctionDeclarationFact>,
     ) -> ParserResult<()> {
         match self.peek().token_type {
             TokenType::Func => {
                 let member_start = self.current;
                 let function_event_start = self.syntax_events.len();
                 let name_span = self.peek_ahead(1).map(|t| t.span);
-                let func_node = self.function_declaration(false)?;
-                if let AstNode::Function(func) = func_node {
-                    if let Some(message) = reserved_class_method_error(&func.name) {
-                        self.record_error(ParserError::new(
-                            DiagnosticCode::ParseExpectedToken,
-                            &message,
-                            name_span.unwrap_or(func.span),
-                        ));
-                        return Ok(());
-                    }
-                    let function_range = self
-                        .last_syntax_range_since(function_event_start, |data| {
-                            matches!(data, SyntaxData::Function { .. })
-                        })
-                        .expect("parsed class method has a function context");
-                    methods.push(func);
-                    self.record_typed_syntax_node(
-                        SyntaxKind::ClassMethod,
-                        member_start,
-                        self.current,
-                        SyntaxData::ClassMethod {
-                            function: function_range,
-                        },
-                    );
-                } else {
-                    return Err(ParserError::new(
+                let func = self.function_declaration_fact(false)?;
+                if let Some(message) = reserved_class_method_error(&func.name) {
+                    self.record_error(ParserError::new(
                         DiagnosticCode::ParseExpectedToken,
-                        "Expected function in class",
-                        start_span,
+                        &message,
+                        name_span.unwrap_or(func.span),
                     ));
+                    return Ok(());
                 }
+                let function_range = self
+                    .last_syntax_range_since(function_event_start, |data| {
+                        matches!(data, SyntaxData::Function { .. })
+                    })
+                    .expect("parsed class method has a function context");
+                methods.push(func);
+                self.record_typed_syntax_node(
+                    SyntaxKind::ClassMethod,
+                    member_start,
+                    self.current,
+                    SyntaxData::ClassMethod {
+                        function: function_range,
+                    },
+                );
             }
             TokenType::Common => {
                 let member_start = self.current;
                 self.consume();
                 let function_event_start = self.syntax_events.len();
                 let name_span = self.peek_ahead(1).map(|t| t.span);
-                let func_node = self.function_declaration(true)?;
-                if let AstNode::Function(func) = func_node {
-                    if let Some(message) = reserved_class_method_error(&func.name) {
-                        self.record_error(ParserError::new(
-                            DiagnosticCode::ParseExpectedToken,
-                            &message,
-                            name_span.unwrap_or(func.span),
-                        ));
-                        return Ok(());
-                    }
-                    let function_range = self
-                        .last_syntax_range_since(function_event_start, |data| {
-                            matches!(data, SyntaxData::Function { .. })
-                        })
-                        .expect("parsed common class method has a function context");
-                    methods.push(func);
-                    self.record_typed_syntax_node(
-                        SyntaxKind::ClassMethod,
-                        member_start,
-                        self.current,
-                        SyntaxData::ClassMethod {
-                            function: function_range,
-                        },
-                    );
-                } else {
-                    return Err(ParserError::new(
+                let func = self.function_declaration_fact(true)?;
+                if let Some(message) = reserved_class_method_error(&func.name) {
+                    self.record_error(ParserError::new(
                         DiagnosticCode::ParseExpectedToken,
-                        "Expected function in class",
-                        start_span,
+                        &message,
+                        name_span.unwrap_or(func.span),
                     ));
+                    return Ok(());
                 }
+                let function_range = self
+                    .last_syntax_range_since(function_event_start, |data| {
+                        matches!(data, SyntaxData::Function { .. })
+                    })
+                    .expect("parsed common class method has a function context");
+                methods.push(func);
+                self.record_typed_syntax_node(
+                    SyntaxKind::ClassMethod,
+                    member_start,
+                    self.current,
+                    SyntaxData::ClassMethod {
+                        function: function_range,
+                    },
+                );
             }
             TokenType::Id(_) | TokenType::Const => {
                 let field = self.parse_field_declaration_fact(type_params)?;
