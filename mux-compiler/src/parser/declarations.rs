@@ -1,5 +1,30 @@
 use super::*;
 
+struct TestDeclarationFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    body: Vec<StatementNode>,
+    syntax_data: SyntaxData,
+}
+
+impl TestDeclarationFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            name,
+            body,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::Test { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Test { name, body, span }
+    }
+}
+
 /// Source ranges recorded by the grammar for a variable declaration. The
 /// expressions and type are retained only to materialize the legacy AST at
 /// parser call sites; syntax consumers use the recorded ranges.
@@ -133,7 +158,9 @@ impl<'a> Parser<'a> {
         } else if self.check(TokenType::Enum) {
             self.enum_declaration().map(Some)
         } else if self.check(TokenType::Test) {
-            self.test_declaration().map(Some)
+            self.test_declaration()
+                .map(TestDeclarationFact::into_compatibility_ast)
+                .map(Some)
         } else if self.check(TokenType::Import) {
             self.import_declaration().map(Some)
         } else {
@@ -517,7 +544,7 @@ impl<'a> Parser<'a> {
     /// The body deliberately reuses the ordinary block parser. This keeps test
     /// code subject to exactly the same syntax rules as application code while
     /// allowing semantic/code-generation passes to omit it from normal builds.
-    pub(super) fn test_declaration(&mut self) -> ParserResult<AstNode> {
+    fn test_declaration(&mut self) -> ParserResult<TestDeclarationFact> {
         let test_start = self.current;
         if self.is_in_block() {
             return Err(ParserError::with_help(
@@ -571,17 +598,26 @@ impl<'a> Parser<'a> {
             ));
         };
         let span = start_span.combine(&block_span);
+        let syntax_data = SyntaxData::Test {
+            name: name_range,
+            body: block_span.byte_range.expect("test block source range"),
+            ast_span: span.byte_range.expect("test declaration source range"),
+        };
         self.record_typed_syntax_node(
             SyntaxKind::TestDeclaration,
             test_start,
             self.current,
-            SyntaxData::Test {
-                name: name_range,
-                body: block_span.byte_range.expect("test block source range"),
-                ast_span: span.byte_range.expect("test declaration source range"),
-            },
+            syntax_data.clone(),
         );
-        Ok(AstNode::Test { name, body, span })
+        Ok(TestDeclarationFact {
+            range: self
+                .source_range_for_tokens(test_start, self.current)
+                .expect("test declaration source range"),
+            span,
+            name,
+            body,
+            syntax_data,
+        })
     }
 
     pub(super) fn parse_type_params_list(
