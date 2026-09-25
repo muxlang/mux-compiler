@@ -148,6 +148,20 @@ struct MatchStatementFact {
     syntax_data: SyntaxData,
 }
 
+struct ParsedPatternFact {
+    node: Option<PatternNode>,
+    kind: ParsedPatternKind,
+}
+
+#[derive(Clone, Copy)]
+enum ParsedPatternKind {
+    Literal,
+    Identifier,
+    Wildcard,
+    EnumVariant,
+    List { elements: usize, has_rest: bool },
+}
+
 impl MatchStatementFact {
     fn into_compatibility_ast(self) -> AstNode {
         let Self {
@@ -804,7 +818,9 @@ impl<'a> Parser<'a> {
         let mut arm_ranges = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let arm_events_start = self.syntax_events.len();
-            arms.push(self.parse_match_arm(start_span)?);
+            if let Some(arm) = self.parse_match_arm(start_span)? {
+                arms.push(arm);
+            }
             arm_ranges.push(
                 self.last_syntax_range_since(arm_events_start, |data| {
                     matches!(data, SyntaxData::MatchArm { .. })
@@ -849,10 +865,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Helper: Parses a single match arm, including pattern, optional guard, and arm body.
-    pub(super) fn parse_match_arm(&mut self, start_span: Span) -> ParserResult<MatchArm> {
+    pub(super) fn parse_match_arm(&mut self, start_span: Span) -> ParserResult<Option<MatchArm>> {
         let arm_start = self.current;
         let pattern_start = self.syntax_events.len();
-        let pattern = self.parse_pattern()?;
+        let pattern = self.parse_pattern_fact(self.mode == ParserMode::Compatibility)?;
         let pattern_range = self
             .last_syntax_range_since(pattern_start, |data| matches!(data, SyntaxData::Pattern(_)))
             .expect("parsed match pattern has a syntax range");
@@ -881,18 +897,34 @@ impl<'a> Parser<'a> {
                 body_is_expression: false,
             },
         );
-        Ok(MatchArm {
+        Ok(pattern.node.map(|pattern| MatchArm {
             pattern,
             guard,
-            body,
-        })
+            body: body.expect("compatibility match arm has an AST body"),
+        }))
     }
 
     /// Helper: Parses the body of a match arm, returning a vector of statement nodes.
     pub(super) fn parse_match_arm_body(
         &mut self,
         start_span: Span,
-    ) -> ParserResult<Vec<StatementNode>> {
+    ) -> ParserResult<Option<Vec<StatementNode>>> {
+        if self.mode == ParserMode::SyntaxOnly {
+            if self.check(TokenType::OpenBrace) {
+                self.block()?;
+            } else if self.matches(&[TokenType::Colon]) {
+                self.skip_newlines();
+                if self.check(TokenType::OpenBrace) {
+                    self.block()?;
+                } else {
+                    self.syntax_only_statement()?;
+                }
+            } else {
+                self.syntax_only_statement()?;
+            }
+            return Ok(None);
+        }
+
         let node = if self.check(TokenType::OpenBrace) {
             self.block()?.into_compatibility_ast()
         } else if self.matches(&[TokenType::Colon]) {
@@ -907,8 +939,8 @@ impl<'a> Parser<'a> {
         };
         match node {
             AstNode::Statement(stmt) => match stmt.kind {
-                StatementKind::Block(block) => Ok(block),
-                _ => Ok(vec![stmt]),
+                StatementKind::Block(block) => Ok(Some(block)),
+                _ => Ok(Some(vec![stmt])),
             },
             _ => Err(ParserError::new(
                 DiagnosticCode::ParseExpectedToken,
@@ -918,10 +950,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn parse_pattern(&mut self) -> ParserResult<PatternNode> {
+    pub(super) fn parse_pattern_for_mode(
+        &mut self,
+        materialize: bool,
+    ) -> ParserResult<Option<PatternNode>> {
+        Ok(self.parse_pattern_fact(materialize)?.node)
+    }
+
+    fn parse_pattern_fact(&mut self, materialize: bool) -> ParserResult<ParsedPatternFact> {
         let pattern_start = self.current;
         let events_start = self.syntax_events.len();
-        let pattern = self.parse_pattern_inner()?;
+        let ParsedPatternFact { node, kind } = self.parse_pattern_inner_fact(materialize)?;
         let mut candidates =
             self.syntax_ranges_since(events_start, |data| matches!(data, SyntaxData::Pattern(_)));
         candidates.sort_by_key(|range| (range.start, std::cmp::Reverse(range.end)));
@@ -947,27 +986,24 @@ impl<'a> Parser<'a> {
             .span
             .byte_range
             .expect("pattern token source range");
-        let syntax_pattern = match &pattern {
-            PatternNode::Literal(_) => SyntaxPattern::Literal {
+        let syntax_pattern = match kind {
+            ParsedPatternKind::Literal => SyntaxPattern::Literal {
                 token: start_token_range,
             },
-            PatternNode::Identifier(_) => SyntaxPattern::Identifier {
+            ParsedPatternKind::Identifier => SyntaxPattern::Identifier {
                 token: start_token_range,
             },
-            PatternNode::Wildcard => SyntaxPattern::Wildcard,
-            PatternNode::EnumVariant { .. } => SyntaxPattern::EnumVariant {
+            ParsedPatternKind::Wildcard => SyntaxPattern::Wildcard,
+            ParsedPatternKind::EnumVariant => SyntaxPattern::EnumVariant {
                 name: start_token_range,
                 args: child_ranges,
             },
-            PatternNode::List { elements, rest } => {
-                let element_count = elements.len();
-                SyntaxPattern::List {
-                    elements: child_ranges.iter().take(element_count).copied().collect(),
-                    rest: rest
-                        .as_ref()
-                        .and_then(|_| child_ranges.get(element_count).copied()),
-                }
-            }
+            ParsedPatternKind::List { elements, has_rest } => SyntaxPattern::List {
+                elements: child_ranges.iter().take(elements).copied().collect(),
+                rest: has_rest
+                    .then(|| child_ranges.get(elements).copied())
+                    .flatten(),
+            },
         };
         self.record_typed_syntax_node(
             SyntaxKind::Pattern,
@@ -975,30 +1011,133 @@ impl<'a> Parser<'a> {
             self.current,
             SyntaxData::Pattern(syntax_pattern),
         );
-        Ok(pattern)
+        Ok(ParsedPatternFact { node, kind })
     }
 
-    fn parse_pattern_inner(&mut self) -> ParserResult<PatternNode> {
+    fn parse_pattern_inner_fact(&mut self, materialize: bool) -> ParserResult<ParsedPatternFact> {
         match &self.peek().token_type {
             TokenType::None => {
                 self.advance(); // consume none
-                Ok(PatternNode::EnumVariant {
-                    name: "none".to_string(),
-                    args: vec![],
+                Ok(ParsedPatternFact {
+                    node: materialize.then(|| PatternNode::EnumVariant {
+                        name: "none".to_string(),
+                        args: vec![],
+                    }),
+                    kind: ParsedPatternKind::EnumVariant,
                 })
             }
             TokenType::Id(name) => {
-                let name_clone = name.clone();
+                let name_clone = materialize.then(|| name.clone());
                 self.advance(); // consume the identifier
-                self.parse_pattern_identifier_or_variant(name_clone)
+                if self.matches(&[TokenType::OpenParen]) {
+                    let mut args = Vec::new();
+                    if !self.check(TokenType::CloseParen) {
+                        loop {
+                            let arg = self.parse_pattern_fact(materialize)?;
+                            if let Some(node) = arg.node {
+                                args.push(node);
+                            }
+                            if !self.matches(&[TokenType::Comma]) {
+                                break;
+                            }
+                            self.skip_newlines();
+                        }
+                    }
+                    self.consume_token(
+                        TokenType::CloseParen,
+                        "Expected ')' after enum variant arguments",
+                    )?;
+                    Ok(ParsedPatternFact {
+                        node: materialize.then(|| PatternNode::EnumVariant {
+                            name: name_clone.expect("compatibility pattern name"),
+                            args,
+                        }),
+                        kind: ParsedPatternKind::EnumVariant,
+                    })
+                } else {
+                    Ok(ParsedPatternFact {
+                        node: name_clone.map(PatternNode::Identifier),
+                        kind: ParsedPatternKind::Identifier,
+                    })
+                }
             }
             TokenType::Underscore => {
                 self.advance(); // consume the underscore
-                Ok(PatternNode::Wildcard)
+                Ok(ParsedPatternFact {
+                    node: materialize.then(|| PatternNode::Wildcard),
+                    kind: ParsedPatternKind::Wildcard,
+                })
             }
-            TokenType::OpenBracket => self.parse_list_pattern(),
-
-            _ => self.parse_literal_pattern(),
+            TokenType::OpenBracket => {
+                self.advance();
+                self.skip_newlines();
+                let mut elements = Vec::new();
+                let mut element_count = 0;
+                let mut rest = None;
+                let mut has_rest = false;
+                if !self.check(TokenType::CloseBracket) {
+                    loop {
+                        self.skip_newlines();
+                        if self.check(TokenType::DotDot) {
+                            self.advance();
+                            has_rest = true;
+                            let parsed_rest = self.parse_pattern_fact(materialize)?;
+                            rest = parsed_rest.node.map(Box::new);
+                            self.skip_newlines();
+                            break;
+                        }
+                        let element = self.parse_pattern_fact(materialize)?;
+                        if let Some(node) = element.node {
+                            elements.push(node);
+                        }
+                        element_count += 1;
+                        self.skip_newlines();
+                        if !self.matches(&[TokenType::Comma]) {
+                            break;
+                        }
+                        self.skip_newlines();
+                    }
+                }
+                self.consume_token(TokenType::CloseBracket, "Expected ']' after list pattern")?;
+                Ok(ParsedPatternFact {
+                    node: materialize.then(|| PatternNode::List { elements, rest }),
+                    kind: ParsedPatternKind::List {
+                        elements: element_count,
+                        has_rest,
+                    },
+                })
+            }
+            _ => {
+                let token = self.consume();
+                let is_literal = matches!(
+                    &token.token_type,
+                    TokenType::Int(_)
+                        | TokenType::Float(_)
+                        | TokenType::Bool(_)
+                        | TokenType::Char(_)
+                        | TokenType::Str(_)
+                );
+                if !is_literal {
+                    return Err(ParserError::from_token(
+                        DiagnosticCode::InvalidPattern,
+                        "Expected pattern",
+                        token,
+                    ));
+                }
+                Ok(ParsedPatternFact {
+                    node: materialize.then(|| {
+                        PatternNode::Literal(match &token.token_type {
+                            TokenType::Int(n) => LiteralNode::Integer(*n),
+                            TokenType::Float(f) => LiteralNode::Float(*f),
+                            TokenType::Bool(b) => LiteralNode::Boolean(*b),
+                            TokenType::Char(c) => LiteralNode::Char(*c),
+                            TokenType::Str(s) => LiteralNode::String(s.clone()),
+                            _ => unreachable!("literal pattern token was validated"),
+                        })
+                    }),
+                    kind: ParsedPatternKind::Literal,
+                })
+            }
         }
     }
 
@@ -1471,74 +1610,5 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
-    }
-
-    pub(super) fn parse_pattern_identifier_or_variant(
-        &mut self,
-        name: String,
-    ) -> ParserResult<PatternNode> {
-        if self.matches(&[TokenType::OpenParen]) {
-            let mut args = Vec::new();
-            if !self.check(TokenType::CloseParen) {
-                loop {
-                    args.push(self.parse_pattern()?);
-                    if !self.matches(&[TokenType::Comma]) {
-                        break;
-                    }
-                    self.skip_newlines();
-                }
-            }
-            self.consume_token(
-                TokenType::CloseParen,
-                "Expected ')' after enum variant arguments",
-            )?;
-            return Ok(PatternNode::EnumVariant { name, args });
-        }
-
-        Ok(PatternNode::Identifier(name))
-    }
-
-    pub(super) fn parse_list_pattern(&mut self) -> ParserResult<PatternNode> {
-        self.advance(); // consume '['
-        self.skip_newlines();
-        let mut elements = Vec::new();
-        let mut rest = None;
-
-        if !self.check(TokenType::CloseBracket) {
-            loop {
-                self.skip_newlines();
-                if self.check(TokenType::DotDot) {
-                    self.advance(); // consume '..'
-                    rest = Some(Box::new(self.parse_pattern()?));
-                    self.skip_newlines();
-                    break;
-                }
-                elements.push(self.parse_pattern()?);
-                self.skip_newlines();
-                if !self.matches(&[TokenType::Comma]) {
-                    break;
-                }
-                self.skip_newlines();
-            }
-        }
-
-        self.consume_token(TokenType::CloseBracket, "Expected ']' after list pattern")?;
-        Ok(PatternNode::List { elements, rest })
-    }
-
-    pub(super) fn parse_literal_pattern(&mut self) -> ParserResult<PatternNode> {
-        let token = self.consume();
-        match &token.token_type {
-            TokenType::Int(n) => Ok(PatternNode::Literal(LiteralNode::Integer(*n))),
-            TokenType::Float(f) => Ok(PatternNode::Literal(LiteralNode::Float(*f))),
-            TokenType::Bool(b) => Ok(PatternNode::Literal(LiteralNode::Boolean(*b))),
-            TokenType::Char(c) => Ok(PatternNode::Literal(LiteralNode::Char(*c))),
-            TokenType::Str(s) => Ok(PatternNode::Literal(LiteralNode::String(s.clone()))),
-            _ => Err(ParserError::from_token(
-                DiagnosticCode::InvalidPattern,
-                "Expected pattern",
-                token,
-            )),
-        }
     }
 }

@@ -204,10 +204,25 @@ impl<'a> Parser<'a> {
         let start = self.token_index_for_span(start_span);
         let result = self.parse_collection_literal_inner(start_span);
         if let Ok(expression) = &result {
-            let kind = match &expression.kind {
-                ExpressionKind::MapLiteral { .. } => SyntaxKind::MapLiteral,
-                ExpressionKind::SetLiteral(_) => SyntaxKind::SetLiteral,
-                _ => SyntaxKind::Delimited,
+            let kind = if self.mode == ParserMode::SyntaxOnly {
+                let data = expression.span.byte_range.and_then(|range| {
+                    self.syntax_events.iter().rev().find_map(|event| {
+                        (event.range == range)
+                            .then_some(event.data.as_ref())
+                            .flatten()
+                    })
+                });
+                match data {
+                    Some(SyntaxData::Map { .. }) => SyntaxKind::MapLiteral,
+                    Some(SyntaxData::Set { .. }) => SyntaxKind::SetLiteral,
+                    _ => SyntaxKind::Delimited,
+                }
+            } else {
+                match &expression.kind {
+                    ExpressionKind::MapLiteral { .. } => SyntaxKind::MapLiteral,
+                    ExpressionKind::SetLiteral(_) => SyntaxKind::SetLiteral,
+                    _ => SyntaxKind::Delimited,
+                }
             };
             let end =
                 self.matching_delimiter_end(start, TokenType::OpenBrace, TokenType::CloseBrace);
@@ -247,8 +262,13 @@ impl<'a> Parser<'a> {
                 elements: Vec::new(),
             },
         );
+        let kind = if self.mode == ParserMode::SyntaxOnly {
+            ExpressionKind::None
+        } else {
+            ExpressionKind::SetLiteral(vec![])
+        };
         Ok(ExpressionNode {
-            kind: ExpressionKind::SetLiteral(vec![]),
+            kind,
             span: start_span.combine(&end_span),
         })
     }
@@ -266,8 +286,10 @@ impl<'a> Parser<'a> {
                 entries: Vec::new(),
             },
         );
-        Ok(ExpressionNode {
-            kind: ExpressionKind::MapLiteral {
+        let kind = if self.mode == ParserMode::SyntaxOnly {
+            ExpressionKind::None
+        } else {
+            ExpressionKind::MapLiteral {
                 key_type: Box::new(TypeNode {
                     kind: TypeKind::Auto,
                     span: start_span,
@@ -277,7 +299,10 @@ impl<'a> Parser<'a> {
                     span: start_span,
                 }),
                 entries: vec![],
-            },
+            }
+        };
+        Ok(ExpressionNode {
+            kind,
             span: start_span.combine(&end_span),
         })
     }
@@ -318,8 +343,10 @@ impl<'a> Parser<'a> {
                 entries: syntax_entries,
             },
         );
-        Ok(ExpressionNode {
-            kind: ExpressionKind::MapLiteral {
+        let kind = if self.mode == ParserMode::SyntaxOnly {
+            ExpressionKind::None
+        } else {
+            ExpressionKind::MapLiteral {
                 key_type: Box::new(TypeNode {
                     kind: TypeKind::Auto,
                     span: start_span,
@@ -329,7 +356,10 @@ impl<'a> Parser<'a> {
                     span: start_span,
                 }),
                 entries,
-            },
+            }
+        };
+        Ok(ExpressionNode {
+            kind,
             span: start_span.combine(&end_span),
         })
     }
@@ -368,8 +398,13 @@ impl<'a> Parser<'a> {
                 elements: syntax_elements,
             },
         );
+        let kind = if self.mode == ParserMode::SyntaxOnly {
+            ExpressionKind::None
+        } else {
+            ExpressionKind::SetLiteral(elements)
+        };
         Ok(ExpressionNode {
-            kind: ExpressionKind::SetLiteral(elements),
+            kind,
             span: start_span.combine(&end_span),
         })
     }
@@ -860,7 +895,7 @@ impl<'a> Parser<'a> {
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let arm_start = self.current;
             let pattern_events_start = self.syntax_events.len();
-            let pattern = self.parse_pattern()?;
+            let pattern = self.parse_pattern_for_mode(self.mode == ParserMode::Compatibility)?;
             let pattern_range = self
                 .last_syntax_range_since(pattern_events_start, |data| {
                     matches!(data, SyntaxData::Pattern(_))
@@ -929,7 +964,7 @@ impl<'a> Parser<'a> {
             arm_ranges.push(arm_range);
             if self.mode == ParserMode::Compatibility {
                 arms.push(MatchArm {
-                    pattern,
+                    pattern: pattern.expect("compatibility match arm has a pattern"),
                     guard,
                     body,
                 });

@@ -254,7 +254,12 @@ struct FunctionDeclarationFact {
 struct FunctionParameterFact {
     name: String,
     type_fact: TypeFact,
-    default_value: Option<ExpressionNode>,
+    default_value: ParameterDefaultFact,
+}
+
+pub(super) struct ParameterDefaultFact {
+    range: Option<ByteRange>,
+    expression: Option<ExpressionNode>,
 }
 
 impl FunctionParameterFact {
@@ -262,7 +267,7 @@ impl FunctionParameterFact {
         Param {
             name: self.name,
             type_: self.type_fact.into_compat_type_node(),
-            default_value: self.default_value,
+            default_value: self.default_value.expression,
         }
     }
 }
@@ -1801,7 +1806,10 @@ impl<'a> Parser<'a> {
                 params.push(FunctionParameterFact {
                     name: param_name,
                     type_fact,
-                    default_value: None,
+                    default_value: ParameterDefaultFact {
+                        range: None,
+                        expression: None,
+                    },
                 });
                 if !self.matches(&[TokenType::Comma]) {
                     break;
@@ -2496,9 +2504,6 @@ impl<'a> Parser<'a> {
             .byte_range
             .expect("parameter name range");
         let default_value = self.parse_param_default(has_default)?;
-        let default_value_range = default_value
-            .as_ref()
-            .and_then(|value| value.span.byte_range);
         self.record_typed_syntax_node(
             SyntaxKind::Parameter,
             parameter_start,
@@ -2506,7 +2511,7 @@ impl<'a> Parser<'a> {
             SyntaxData::Parameter {
                 name,
                 type_range,
-                default_value: default_value_range,
+                default_value: default_value.range,
             },
         );
         Ok(FunctionParameterFact {
@@ -2519,7 +2524,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_param_default(
         &mut self,
         has_default: &mut bool,
-    ) -> ParserResult<Option<ExpressionNode>> {
+    ) -> ParserResult<ParameterDefaultFact> {
         if !self.matches(&[TokenType::Eq]) {
             if *has_default {
                 return Err(ParserError::with_help(
@@ -2529,7 +2534,10 @@ impl<'a> Parser<'a> {
                     "Move all parameters with default values to the end of the parameter list",
                 ));
             }
-            return Ok(None);
+            return Ok(ParameterDefaultFact {
+                range: None,
+                expression: None,
+            });
         }
         let default_expr = self.parse_expression()?;
         if !self.is_literal_expression(&default_expr) {
@@ -2541,7 +2549,9 @@ impl<'a> Parser<'a> {
             ));
         }
         *has_default = true;
-        Ok(Some(default_expr))
+        let range = default_expr.span.byte_range;
+        let expression = (self.mode == ParserMode::Compatibility).then_some(default_expr);
+        Ok(ParameterDefaultFact { range, expression })
     }
 
     /// If the next non-newline token is `token_type`, consume the intervening
