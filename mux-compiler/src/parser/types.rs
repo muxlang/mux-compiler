@@ -9,7 +9,7 @@ use crate::syntax::{SyntaxData, SyntaxKind};
 /// Parser-owned type facts retain the source range without coupling recursive
 /// parsing to the compatibility AST consumed by existing parser clients.
 #[derive(Clone, Debug)]
-struct TypeFact {
+pub(super) struct TypeFact {
     kind: TypeFactKind,
     span: Span,
 }
@@ -31,7 +31,7 @@ enum TypeFactKind {
 }
 
 impl TypeFact {
-    fn into_compat_type_node(self) -> TypeNode {
+    pub(super) fn into_compat_type_node(self) -> TypeNode {
         let kind = match self.kind {
             TypeFactKind::Primitive(kind) => TypeKind::Primitive(kind),
             TypeFactKind::Named(name, args) => TypeKind::Named(
@@ -68,6 +68,10 @@ impl TypeFact {
             kind,
             span: self.span,
         }
+    }
+
+    pub(super) fn source_range(&self) -> Option<ByteRange> {
+        self.span.byte_range
     }
 }
 
@@ -192,7 +196,7 @@ impl<'a> Parser<'a> {
 
     /// Compatibility adapter for parser clients that still construct AST nodes.
     /// New syntax consumers should work from the fact and its recorded ranges.
-    fn parse_type_fact(&mut self) -> ParserResult<TypeFact> {
+    pub(super) fn parse_type_fact(&mut self) -> ParserResult<TypeFact> {
         let start = self.current;
         match self.parse_type_inner() {
             Ok(mut fact) => {

@@ -1,3 +1,4 @@
+use super::types::TypeFact;
 use super::*;
 
 struct TestDeclarationFact {
@@ -279,7 +280,7 @@ pub(super) struct VariableDeclarationFact {
     name_span: Span,
     name: String,
     type_range: Option<ByteRange>,
-    type_node: Option<TypeNode>,
+    type_fact: Option<TypeFact>,
     value: Option<ExpressionNode>,
 }
 
@@ -293,17 +294,18 @@ impl VariableDeclarationFact {
             name_span,
             name,
             type_range,
-            type_node,
+            type_fact,
             value,
         } = self;
         debug_assert_eq!(name_span.byte_range, Some(name_range));
         debug_assert_eq!(
             type_range,
-            type_node.as_ref().and_then(|ty| ty.span.byte_range)
+            type_fact.as_ref().and_then(TypeFact::source_range)
         );
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
+        let type_node = type_fact.map(TypeFact::into_compat_type_node);
         let statement = match kind {
             VariableDeclarationKind::Auto => StatementKind::AutoDecl(
                 name,
@@ -455,7 +457,12 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_id_start_declaration(&mut self) -> ParserResult<Option<AstNode>> {
         let checkpoint = self.checkpoint();
-        if self.parse_type().is_ok() {
+        let parsed_type = if self.mode == ParserMode::SyntaxOnly {
+            self.parse_type_fact().is_ok()
+        } else {
+            self.parse_type().is_ok()
+        };
+        if parsed_type {
             self.parse_typed_or_statement(checkpoint)
         } else {
             self.rewind(checkpoint);
@@ -598,7 +605,7 @@ impl<'a> Parser<'a> {
             name_span,
             name,
             type_range: None,
-            type_node: None,
+            type_fact: None,
             value: Some(value),
         })
     }
@@ -613,7 +620,10 @@ impl<'a> Parser<'a> {
         let start_span = self.peek().span;
         self.advance();
 
-        let type_node = self.parse_type()?;
+        let type_fact = self.parse_type_fact()?;
+        let type_range = type_fact
+            .source_range()
+            .expect("constant type source range");
         let name = self.consume_identifier("Expected constant name after type")?;
         let name_span = self.previous().span;
 
@@ -632,12 +642,7 @@ impl<'a> Parser<'a> {
                 name: name_span
                     .byte_range
                     .expect("constant name has source range"),
-                type_range: Some(
-                    type_node
-                        .span
-                        .byte_range
-                        .expect("constant type has source range"),
-                ),
+                type_range: Some(type_range),
                 value: Some(
                     value
                         .span
@@ -659,13 +664,8 @@ impl<'a> Parser<'a> {
                 .expect("constant name has source range"),
             name_span,
             name,
-            type_range: Some(
-                type_node
-                    .span
-                    .byte_range
-                    .expect("constant type has source range"),
-            ),
-            type_node: Some(type_node),
+            type_range: Some(type_range),
+            type_fact: Some(type_fact),
             value: Some(value),
         })
     }
@@ -678,7 +678,10 @@ impl<'a> Parser<'a> {
     pub(super) fn typed_declaration_fact(&mut self) -> ParserResult<VariableDeclarationFact> {
         let start = self.current;
         let start_span = self.peek().span;
-        let type_node = self.parse_type()?;
+        let type_fact = self.parse_type_fact()?;
+        let type_range = type_fact
+            .source_range()
+            .expect("typed declaration type source range");
         let name = self.consume_identifier("Expected variable name after type")?;
         let name_span = self.previous().span;
 
@@ -695,12 +698,7 @@ impl<'a> Parser<'a> {
                     name: name_span
                         .byte_range
                         .expect("uninitialized declaration name has source range"),
-                    type_range: Some(
-                        type_node
-                            .span
-                            .byte_range
-                            .expect("uninitialized declaration type has source range"),
-                    ),
+                    type_range: Some(type_range),
                     value: None,
                 },
             );
@@ -716,13 +714,8 @@ impl<'a> Parser<'a> {
                     .expect("uninitialized declaration name has source range"),
                 name_span,
                 name,
-                type_range: Some(
-                    type_node
-                        .span
-                        .byte_range
-                        .expect("uninitialized declaration type has source range"),
-                ),
-                type_node: Some(type_node),
+                type_range: Some(type_range),
+                type_fact: Some(type_fact),
                 value: None,
             });
         }
@@ -742,12 +735,7 @@ impl<'a> Parser<'a> {
                 name: name_span
                     .byte_range
                     .expect("typed declaration name has source range"),
-                type_range: Some(
-                    type_node
-                        .span
-                        .byte_range
-                        .expect("typed declaration type has source range"),
-                ),
+                type_range: Some(type_range),
                 value: Some(
                     value
                         .span
@@ -769,13 +757,8 @@ impl<'a> Parser<'a> {
                 .expect("typed declaration name has source range"),
             name_span,
             name,
-            type_range: Some(
-                type_node
-                    .span
-                    .byte_range
-                    .expect("typed declaration type has source range"),
-            ),
-            type_node: Some(type_node),
+            type_range: Some(type_range),
+            type_fact: Some(type_fact),
             value: Some(value),
         })
     }
