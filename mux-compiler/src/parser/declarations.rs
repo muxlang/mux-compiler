@@ -61,9 +61,110 @@ struct EnumDeclarationFact {
     range: ByteRange,
     span: Span,
     name: String,
-    type_params: Vec<(String, Vec<TraitBound>)>,
+    type_params: Vec<TypeParameterFact>,
     variants: Vec<EnumVariantFact>,
     syntax_data: SyntaxData,
+}
+
+struct TypeParameterFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    bounds: Vec<TraitBoundFact>,
+    syntax_data: SyntaxData,
+}
+
+impl TypeParameterFact {
+    fn into_compatibility(self) -> (String, Vec<TraitBound>) {
+        let Self {
+            range,
+            span,
+            name,
+            bounds,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(
+            syntax_data,
+            SyntaxData::TypeParameter { name: name_range, .. }
+                if range.start <= name_range.start && name_range.end <= range.end
+        ));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        (
+            name,
+            bounds
+                .into_iter()
+                .map(TraitBoundFact::into_compatibility)
+                .collect(),
+        )
+    }
+}
+
+struct TraitBoundFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    type_arguments: Vec<TypeFact>,
+    syntax_data: SyntaxData,
+}
+
+impl TraitBoundFact {
+    fn into_compatibility(self) -> TraitBound {
+        let Self {
+            range,
+            span,
+            name,
+            type_arguments,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(
+            syntax_data,
+            SyntaxData::TraitBound { name: name_range, .. }
+                if range.start <= name_range.start && name_range.end <= range.end
+        ));
+        TraitBound {
+            name,
+            type_params: type_arguments
+                .into_iter()
+                .map(TypeFact::into_compat_type_node)
+                .collect(),
+            span,
+        }
+    }
+}
+
+struct TraitReferenceFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    type_arguments: Vec<TypeFact>,
+    syntax_data: SyntaxData,
+}
+
+impl TraitReferenceFact {
+    fn into_compatibility(self) -> TraitRef {
+        let Self {
+            range,
+            span,
+            name,
+            type_arguments,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(
+            syntax_data,
+            SyntaxData::TraitReference { name: name_range, .. }
+                if range.start <= name_range.start && name_range.end <= range.end
+        ));
+        TraitRef {
+            name,
+            type_args: type_arguments
+                .into_iter()
+                .map(TypeFact::into_compat_type_node)
+                .collect(),
+            span,
+        }
+    }
 }
 
 /// Parsed facts for one enum variant. The name, payload and constraint remain
@@ -121,7 +222,10 @@ impl EnumDeclarationFact {
         }));
         AstNode::Enum {
             name,
-            type_params,
+            type_params: type_params
+                .into_iter()
+                .map(TypeParameterFact::into_compatibility)
+                .collect(),
             variants: variants
                 .into_iter()
                 .map(EnumVariantFact::into_compatibility_variant)
@@ -135,7 +239,7 @@ struct FunctionDeclarationFact {
     range: ByteRange,
     span: Span,
     name: String,
-    type_params: Vec<(String, Vec<TraitBound>)>,
+    type_params: Vec<TypeParameterFact>,
     params: Vec<FunctionParameterFact>,
     return_type: TypeFact,
     body: Vec<StatementNode>,
@@ -186,6 +290,10 @@ impl FunctionDeclarationFact {
             .into_iter()
             .map(FunctionParameterFact::into_compatibility_param)
             .collect();
+        let type_params = type_params
+            .into_iter()
+            .map(TypeParameterFact::into_compatibility)
+            .collect();
         FunctionNode {
             name,
             type_params,
@@ -203,8 +311,8 @@ struct ClassDeclarationFact {
     range: ByteRange,
     span: Span,
     name: String,
-    type_params: Vec<(String, Vec<TraitBound>)>,
-    traits: Vec<TraitRef>,
+    type_params: Vec<TypeParameterFact>,
+    traits: Vec<TraitReferenceFact>,
     fields: Vec<FieldDeclarationFact>,
     methods: Vec<FunctionDeclarationFact>,
     where_clause: Option<WhereClause>,
@@ -228,6 +336,14 @@ impl ClassDeclarationFact {
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
+        let type_params = type_params
+            .into_iter()
+            .map(TypeParameterFact::into_compatibility)
+            .collect();
+        let traits = traits
+            .into_iter()
+            .map(TraitReferenceFact::into_compatibility)
+            .collect();
         let fields = fields
             .into_iter()
             .map(FieldDeclarationFact::into_compatibility_field)
@@ -252,7 +368,7 @@ struct InterfaceDeclarationFact {
     range: ByteRange,
     span: Span,
     name: String,
-    type_params: Vec<(String, Vec<TraitBound>)>,
+    type_params: Vec<TypeParameterFact>,
     fields: Vec<FieldDeclarationFact>,
     methods: Vec<InterfaceMethodFact>,
     syntax_data: SyntaxData,
@@ -262,7 +378,7 @@ struct InterfaceMethodFact {
     range: ByteRange,
     span: Span,
     name: String,
-    type_params: Vec<(String, Vec<TraitBound>)>,
+    type_params: Vec<TypeParameterFact>,
     params: Vec<FunctionParameterFact>,
     return_type: TypeFact,
     where_clause: Option<WhereClause>,
@@ -286,6 +402,10 @@ impl InterfaceMethodFact {
             SyntaxData::Function { name: name_range, .. }
                 if range.start <= name_range.start && name_range.end <= range.end
         ));
+        let type_params = type_params
+            .into_iter()
+            .map(TypeParameterFact::into_compatibility)
+            .collect();
         FunctionNode {
             name,
             type_params,
@@ -317,6 +437,10 @@ impl InterfaceDeclarationFact {
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
+        let type_params = type_params
+            .into_iter()
+            .map(TypeParameterFact::into_compatibility)
+            .collect();
         let fields = fields
             .into_iter()
             .map(FieldDeclarationFact::into_compatibility_field)
@@ -1024,9 +1148,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn parse_type_params_list(
-        &mut self,
-    ) -> ParserResult<Vec<(String, Vec<TraitBound>)>> {
+    fn parse_type_params_list(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
             return Ok(Vec::new());
@@ -1034,6 +1156,7 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         loop {
             let parameter_start = self.current;
+            let parameter_span = self.peek().span;
             let param = self.consume_identifier("Expected type parameter name")?;
             let name = self
                 .previous()
@@ -1045,16 +1168,25 @@ impl<'a> Parser<'a> {
             let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
                 matches!(data, SyntaxData::TraitBound { .. })
             });
+            let syntax_data = SyntaxData::TypeParameter {
+                name,
+                bounds: bound_ranges,
+            };
             self.record_typed_syntax_node(
                 SyntaxKind::TypeParameter,
                 parameter_start,
                 self.current,
-                SyntaxData::TypeParameter {
-                    name,
-                    bounds: bound_ranges,
-                },
+                syntax_data.clone(),
             );
-            params.push((param, bounds));
+            params.push(TypeParameterFact {
+                range: self
+                    .source_range_for_tokens(parameter_start, self.current)
+                    .expect("class type parameter source range"),
+                span: parameter_span.combine(&self.previous().span),
+                name: param,
+                bounds,
+                syntax_data,
+            });
             if !self.matches(&[TokenType::Comma]) {
                 break;
             }
@@ -1064,7 +1196,7 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    pub(super) fn parse_trait_bounds(&mut self) -> ParserResult<Vec<TraitBound>> {
+    fn parse_trait_bounds(&mut self) -> ParserResult<Vec<TraitBoundFact>> {
         if !self.matches(&[TokenType::Is]) {
             return Ok(Vec::new());
         }
@@ -1073,30 +1205,35 @@ impl<'a> Parser<'a> {
             let bound_start = self.current;
             let bound_name = self.consume_identifier("Expected trait name in bound")?;
             let bound_span = self.previous().span;
-            let type_args = self.parse_optional_type_args()?;
+            let type_args = self.parse_optional_type_argument_facts()?;
+            let type_arguments = type_args
+                .iter()
+                .map(|argument| {
+                    argument
+                        .source_range()
+                        .expect("trait bound type argument has source range")
+                })
+                .collect();
+            let syntax_data = SyntaxData::TraitBound {
+                name: bound_span
+                    .byte_range
+                    .expect("trait bound name has source range"),
+                type_arguments,
+            };
             self.record_typed_syntax_node(
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                SyntaxData::TraitBound {
-                    name: bound_span
-                        .byte_range
-                        .expect("trait bound name has source range"),
-                    type_arguments: type_args
-                        .iter()
-                        .map(|argument| {
-                            argument
-                                .span
-                                .byte_range
-                                .expect("trait bound type argument has source range")
-                        })
-                        .collect(),
-                },
+                syntax_data.clone(),
             );
-            bounds.push(TraitBound {
-                name: bound_name,
-                type_params: type_args,
+            bounds.push(TraitBoundFact {
+                range: self
+                    .source_range_for_tokens(bound_start, self.current)
+                    .expect("trait bound source range"),
                 span: bound_span,
+                name: bound_name,
+                type_arguments: type_args,
+                syntax_data,
             });
             if !self.matches(&[TokenType::Ref]) {
                 break;
@@ -1105,7 +1242,7 @@ impl<'a> Parser<'a> {
         Ok(bounds)
     }
 
-    pub(super) fn parse_trait_list(&mut self) -> ParserResult<Vec<TraitRef>> {
+    fn parse_trait_list(&mut self) -> ParserResult<Vec<TraitReferenceFact>> {
         if !self.matches(&[TokenType::Is]) {
             return Ok(Vec::new());
         }
@@ -1118,7 +1255,7 @@ impl<'a> Parser<'a> {
                 .byte_range
                 .expect("trait reference name source range");
             let type_arguments_start = self.syntax_events.len();
-            let type_args = self.parse_optional_type_args()?;
+            let type_args = self.parse_optional_type_argument_facts()?;
             let type_arguments = self.syntax_ranges_since(type_arguments_start, |data| {
                 matches!(
                     data,
@@ -1128,19 +1265,24 @@ impl<'a> Parser<'a> {
                         | SyntaxData::FunctionType { .. }
                 )
             });
+            let syntax_data = SyntaxData::TraitReference {
+                name,
+                type_arguments,
+            };
             self.record_typed_syntax_node(
                 SyntaxKind::TraitReference,
                 trait_start,
                 self.current,
-                SyntaxData::TraitReference {
-                    name,
-                    type_arguments,
-                },
+                syntax_data.clone(),
             );
-            traits_list.push(TraitRef {
-                name: trait_name,
-                type_args,
+            traits_list.push(TraitReferenceFact {
+                range: self
+                    .source_range_for_tokens(trait_start, self.current)
+                    .expect("trait reference source range"),
                 span: trait_span,
+                name: trait_name,
+                type_arguments: type_args,
+                syntax_data,
             });
             if !self.matches(&[TokenType::Comma]) {
                 break;
@@ -1149,10 +1291,10 @@ impl<'a> Parser<'a> {
         Ok(traits_list)
     }
 
-    pub(super) fn parse_optional_type_args(&mut self) -> ParserResult<Vec<TypeNode>> {
+    fn parse_optional_type_argument_facts(&mut self) -> ParserResult<Vec<TypeFact>> {
         let start = self.current;
         if self.matches(&[TokenType::Lt]) {
-            let args = self.parse_type_arguments()?;
+            let args = self.parse_type_argument_facts()?;
             self.consume_token(TokenType::Gt, "Expected '>' after type arguments")?;
             self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
             Ok(args)
@@ -1163,7 +1305,7 @@ impl<'a> Parser<'a> {
 
     fn parse_class_body(
         &mut self,
-        type_params: &[(String, Vec<TraitBound>)],
+        type_params: &[TypeParameterFact],
     ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<FunctionDeclarationFact>)> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
@@ -1220,7 +1362,7 @@ impl<'a> Parser<'a> {
 
     fn parse_class_member(
         &mut self,
-        type_params: &[(String, Vec<TraitBound>)],
+        type_params: &[TypeParameterFact],
         fields: &mut Vec<FieldDeclarationFact>,
         methods: &mut Vec<FunctionDeclarationFact>,
     ) -> ParserResult<()> {
@@ -1364,9 +1506,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn parse_interface_type_params(
-        &mut self,
-    ) -> ParserResult<Vec<(String, Vec<TraitBound>)>> {
+    fn parse_interface_type_params(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
             return Ok(Vec::new());
@@ -1375,6 +1515,7 @@ impl<'a> Parser<'a> {
         if !self.check(TokenType::Gt) {
             loop {
                 let parameter_start = self.current;
+                let parameter_span = self.peek().span;
                 let param = self.consume_identifier("Expected type parameter name")?;
                 let name = self
                     .previous()
@@ -1386,16 +1527,25 @@ impl<'a> Parser<'a> {
                 let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
                     matches!(data, SyntaxData::TraitBound { .. })
                 });
+                let syntax_data = SyntaxData::TypeParameter {
+                    name,
+                    bounds: bound_ranges,
+                };
                 self.record_typed_syntax_node(
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    SyntaxData::TypeParameter {
-                        name,
-                        bounds: bound_ranges,
-                    },
+                    syntax_data.clone(),
                 );
-                params.push((param, bounds));
+                params.push(TypeParameterFact {
+                    range: self
+                        .source_range_for_tokens(parameter_start, self.current)
+                        .expect("interface type parameter source range"),
+                    span: parameter_span.combine(&self.previous().span),
+                    name: param,
+                    bounds,
+                    syntax_data,
+                });
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -1406,7 +1556,7 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    pub(super) fn parse_colon_trait_bounds(&mut self) -> ParserResult<Vec<TraitBound>> {
+    fn parse_colon_trait_bounds(&mut self) -> ParserResult<Vec<TraitBoundFact>> {
         if !self.matches(&[TokenType::Colon]) {
             return Ok(Vec::new());
         }
@@ -1419,7 +1569,7 @@ impl<'a> Parser<'a> {
                 .byte_range
                 .expect("trait bound name source range");
             let type_arguments_start = self.syntax_events.len();
-            let type_args = self.parse_optional_type_args()?;
+            let type_args = self.parse_optional_type_argument_facts()?;
             let type_arguments = self.syntax_ranges_since(type_arguments_start, |data| {
                 matches!(
                     data,
@@ -1429,19 +1579,24 @@ impl<'a> Parser<'a> {
                         | SyntaxData::FunctionType { .. }
                 )
             });
+            let syntax_data = SyntaxData::TraitBound {
+                name,
+                type_arguments,
+            };
             self.record_typed_syntax_node(
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                SyntaxData::TraitBound {
-                    name,
-                    type_arguments,
-                },
+                syntax_data.clone(),
             );
-            bounds.push(TraitBound {
-                name: bound_name,
-                type_params: type_args,
+            bounds.push(TraitBoundFact {
+                range: self
+                    .source_range_for_tokens(bound_start, self.current)
+                    .expect("trait bound source range"),
                 span: bound_span,
+                name: bound_name,
+                type_arguments: type_args,
+                syntax_data,
             });
             if !self.matches(&[TokenType::Plus]) {
                 break;
@@ -1452,7 +1607,7 @@ impl<'a> Parser<'a> {
 
     fn parse_interface_body(
         &mut self,
-        type_params: &[(String, Vec<TraitBound>)],
+        type_params: &[TypeParameterFact],
         start_span: Span,
     ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<InterfaceMethodFact>)> {
         let mut fields = Vec::new();
@@ -1469,7 +1624,7 @@ impl<'a> Parser<'a> {
 
     fn parse_interface_member(
         &mut self,
-        type_params: &[(String, Vec<TraitBound>)],
+        type_params: &[TypeParameterFact],
         start_span: Span,
         fields: &mut Vec<FieldDeclarationFact>,
         methods: &mut Vec<InterfaceMethodFact>,
@@ -1572,9 +1727,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn parse_simple_type_params(
-        &mut self,
-    ) -> ParserResult<Vec<(String, Vec<TraitBound>)>> {
+    fn parse_simple_type_params(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
             return Ok(Vec::new());
@@ -1583,22 +1736,32 @@ impl<'a> Parser<'a> {
         if !self.check(TokenType::Gt) {
             loop {
                 let parameter_start = self.current;
+                let parameter_span = self.peek().span;
                 let param = self.consume_identifier("Expected type parameter name")?;
                 let name = self
                     .previous()
                     .span
                     .byte_range
                     .expect("type parameter name range");
+                let syntax_data = SyntaxData::TypeParameter {
+                    name,
+                    bounds: Vec::new(),
+                };
                 self.record_typed_syntax_node(
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    SyntaxData::TypeParameter {
-                        name,
-                        bounds: Vec::new(),
-                    },
+                    syntax_data.clone(),
                 );
-                params.push((param, Vec::new()));
+                params.push(TypeParameterFact {
+                    range: self
+                        .source_range_for_tokens(parameter_start, self.current)
+                        .expect("method type parameter source range"),
+                    span: parameter_span.combine(&self.previous().span),
+                    name: param,
+                    bounds: Vec::new(),
+                    syntax_data,
+                });
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -1703,9 +1866,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn parse_colon_type_params(
-        &mut self,
-    ) -> ParserResult<Vec<(String, Vec<TraitBound>)>> {
+    fn parse_colon_type_params(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
             return Ok(Vec::new());
@@ -1714,6 +1875,7 @@ impl<'a> Parser<'a> {
         if !self.check(TokenType::Gt) {
             loop {
                 let parameter_start = self.current;
+                let parameter_span = self.peek().span;
                 let param = self.consume_identifier("Expected type parameter name")?;
                 let name = self
                     .previous()
@@ -1725,16 +1887,25 @@ impl<'a> Parser<'a> {
                 let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
                     matches!(data, SyntaxData::TraitBound { .. })
                 });
+                let syntax_data = SyntaxData::TypeParameter {
+                    name,
+                    bounds: bound_ranges,
+                };
                 self.record_typed_syntax_node(
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    SyntaxData::TypeParameter {
-                        name,
-                        bounds: bound_ranges,
-                    },
+                    syntax_data.clone(),
                 );
-                params.push((param, bounds));
+                params.push(TypeParameterFact {
+                    range: self
+                        .source_range_for_tokens(parameter_start, self.current)
+                        .expect("enum type parameter source range"),
+                    span: parameter_span.combine(&self.previous().span),
+                    name: param,
+                    bounds,
+                    syntax_data,
+                });
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -2196,7 +2367,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn parse_is_type_params(&mut self) -> ParserResult<Vec<(String, Vec<TraitBound>)>> {
+    fn parse_is_type_params(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
             return Ok(Vec::new());
@@ -2205,6 +2376,7 @@ impl<'a> Parser<'a> {
         if !self.check(TokenType::Gt) {
             loop {
                 let parameter_start = self.current;
+                let parameter_span = self.peek().span;
                 let param = self.consume_identifier("Expected type parameter name")?;
                 let name_range = self
                     .previous()
@@ -2216,16 +2388,25 @@ impl<'a> Parser<'a> {
                 let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
                     matches!(data, SyntaxData::TraitBound { .. })
                 });
+                let syntax_data = SyntaxData::TypeParameter {
+                    name: name_range,
+                    bounds: bound_ranges,
+                };
                 self.record_typed_syntax_node(
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    SyntaxData::TypeParameter {
-                        name: name_range,
-                        bounds: bound_ranges,
-                    },
+                    syntax_data.clone(),
                 );
-                params.push((param, trait_bounds));
+                params.push(TypeParameterFact {
+                    range: self
+                        .source_range_for_tokens(parameter_start, self.current)
+                        .expect("function type parameter source range"),
+                    span: parameter_span.combine(&self.previous().span),
+                    name: param,
+                    bounds: trait_bounds,
+                    syntax_data,
+                });
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -2236,7 +2417,7 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    pub(super) fn parse_ref_trait_bounds(&mut self) -> ParserResult<Vec<TraitBound>> {
+    fn parse_ref_trait_bounds(&mut self) -> ParserResult<Vec<TraitBoundFact>> {
         if !self.matches(&[TokenType::Is]) {
             return Ok(Vec::new());
         }
@@ -2247,7 +2428,7 @@ impl<'a> Parser<'a> {
             let bound_span = self.previous().span;
             let name = bound_span.byte_range.expect("trait bound name range");
             let type_arguments_start = self.syntax_events.len();
-            let type_args = self.parse_optional_type_args()?;
+            let type_args = self.parse_optional_type_argument_facts()?;
             let type_arguments = self.syntax_ranges_since(type_arguments_start, |data| {
                 matches!(
                     data,
@@ -2257,19 +2438,24 @@ impl<'a> Parser<'a> {
                         | SyntaxData::FunctionType { .. }
                 )
             });
+            let syntax_data = SyntaxData::TraitBound {
+                name,
+                type_arguments,
+            };
             self.record_typed_syntax_node(
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                SyntaxData::TraitBound {
-                    name,
-                    type_arguments,
-                },
+                syntax_data.clone(),
             );
-            bounds.push(TraitBound {
-                name: bound_name,
-                type_params: type_args,
+            bounds.push(TraitBoundFact {
+                range: self
+                    .source_range_for_tokens(bound_start, self.current)
+                    .expect("trait bound source range"),
                 span: bound_span,
+                name: bound_name,
+                type_arguments: type_args,
+                syntax_data,
             });
             if !self.matches(&[TokenType::Ref]) {
                 break;
@@ -2361,7 +2547,7 @@ impl<'a> Parser<'a> {
     /// newlines that separate declarations.
     fn parse_field_declaration_fact(
         &mut self,
-        type_param_names: &[(String, Vec<TraitBound>)],
+        type_param_names: &[TypeParameterFact],
     ) -> ParserResult<FieldDeclarationFact> {
         let field_start = self.current;
         let start_span = self.peek().span;
@@ -2449,12 +2635,12 @@ impl<'a> Parser<'a> {
 
     fn is_field_generic_param(
         field_type: &TypeFact,
-        type_param_names: &[(String, Vec<TraitBound>)],
+        type_param_names: &[TypeParameterFact],
     ) -> bool {
         field_type.generic_parameter_name().is_some_and(|name| {
             type_param_names
                 .iter()
-                .any(|(param_name, _)| param_name == name)
+                .any(|parameter| parameter.name == name)
         })
     }
 

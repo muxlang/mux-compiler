@@ -395,7 +395,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_type_argument_facts(&mut self) -> ParserResult<Vec<TypeFact>> {
+    pub(super) fn parse_type_argument_facts(&mut self) -> ParserResult<Vec<TypeFact>> {
         let start = self.current;
         let mut args = Vec::new();
         while !self.check(TokenType::Gt) && !self.is_at_end() {
