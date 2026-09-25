@@ -59,17 +59,27 @@ impl<'a> Parser<'a> {
                     },
                 );
             }
-            let left_expr = *value;
-            let new_value = ExpressionNode {
-                kind: ExpressionKind::Binary {
-                    left: Box::new(left_expr),
-                    op: op_token,
-                    op_span: operator_span,
-                    right: Box::new(right),
-                },
-                span: left_span.combine(&right_span),
-            };
-            value = Box::new(new_value);
+            let combined_span = left_span.combine(&right_span);
+            if self.mode == ParserMode::SyntaxOnly
+                && !self.contains_postfix_update(combined_span.byte_range)
+            {
+                // Binary structure is already represented by SyntaxData. Keep
+                // the left expression only as a span carrier for parser callers;
+                // syntax lowering reconstructs the binary tree from its ranges.
+                value.span = combined_span;
+            } else {
+                let left_expr = *value;
+                let new_value = ExpressionNode {
+                    kind: ExpressionKind::Binary {
+                        left: Box::new(left_expr),
+                        op: op_token,
+                        op_span: operator_span,
+                        right: Box::new(right),
+                    },
+                    span: combined_span,
+                };
+                value = Box::new(new_value);
+            }
             if value.span.byte_range.is_none() {
                 self.record_syntax_node(
                     SyntaxKind::BinaryExpression,
@@ -80,6 +90,20 @@ impl<'a> Parser<'a> {
         }
 
         Ok(*value)
+    }
+
+    fn contains_postfix_update(&self, range: Option<crate::lexer::ByteRange>) -> bool {
+        let Some(range) = range else {
+            return false;
+        };
+        self.syntax_events.iter().any(|event| {
+            event.range.start >= range.start
+                && event.range.end <= range.end
+                && matches!(
+                    event.data.as_ref(),
+                    Some(SyntaxData::Unary { postfix: true, .. })
+                )
+        })
     }
 
     pub(super) fn parse_unary(&mut self) -> ParserResult<ExpressionNode> {
@@ -1214,6 +1238,16 @@ impl<'a> Parser<'a> {
         &self,
         expr: &ExpressionNode,
     ) -> Option<(String, bool)> {
+        if self.mode == ParserMode::SyntaxOnly
+            && expr.span.byte_range.is_some_and(|range| {
+                self.syntax_events.iter().any(|event| {
+                    event.range == range
+                        && matches!(event.data.as_ref(), Some(SyntaxData::Binary { .. }))
+                })
+            })
+        {
+            return None;
+        }
         let generic_target_name = self.generic_target_name(expr)?;
 
         let gt_idx = self.find_matching_generic_gt_index()?;

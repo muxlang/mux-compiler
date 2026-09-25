@@ -24,6 +24,31 @@ pub(super) struct BlockStatementFact {
     pub(super) statements: Vec<StatementNode>,
 }
 
+/// Parsed facts for a `where` clause. Predicate expressions are retained for
+/// the compatibility parser; syntax consumers use the recorded ranges.
+pub(super) struct WhereClauseFact {
+    pub(super) range: ByteRange,
+    pub(super) span: Span,
+    predicates: Vec<ExpressionNode>,
+    syntax_data: SyntaxData,
+}
+
+impl WhereClauseFact {
+    pub(super) fn into_compatibility(self) -> WhereClause {
+        let Self {
+            range,
+            span,
+            predicates,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::WhereClause { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        WhereClause { predicates, span }
+    }
+}
+
 impl BlockStatementFact {
     pub(super) fn into_compatibility_ast(self) -> AstNode {
         let Self {
@@ -227,6 +252,11 @@ impl<'a> Parser<'a> {
     /// (`func f(a)\n    where { ... }`); if no `where` follows, any newlines
     /// looked past are left unconsumed.
     pub(super) fn parse_where_clause(&mut self) -> ParserResult<Option<WhereClause>> {
+        self.parse_where_clause_fact()
+            .map(|fact| fact.map(WhereClauseFact::into_compatibility))
+    }
+
+    pub(super) fn parse_where_clause_fact(&mut self) -> ParserResult<Option<WhereClauseFact>> {
         if !self.skip_newlines_before(TokenType::Where) {
             return Ok(None);
         }
@@ -261,23 +291,32 @@ impl<'a> Parser<'a> {
                 "A where block must contain at least one boolean predicate. Example: where { value > 0 }",
             ));
         }
+        let syntax_data = SyntaxData::WhereClause {
+            predicates: predicates
+                .iter()
+                .map(|predicate| {
+                    predicate
+                        .span
+                        .byte_range
+                        .expect("where predicate has source range")
+                })
+                .collect(),
+        };
+        let range = self
+            .source_range_for_tokens(start, self.current)
+            .expect("where clause has source range");
         self.record_typed_syntax_node(
             SyntaxKind::WhereClause,
             start,
             self.current,
-            SyntaxData::WhereClause {
-                predicates: predicates
-                    .iter()
-                    .map(|predicate| {
-                        predicate
-                            .span
-                            .byte_range
-                            .expect("where predicate has source range")
-                    })
-                    .collect(),
-            },
+            syntax_data.clone(),
         );
-        Ok(Some(WhereClause { predicates, span }))
+        Ok(Some(WhereClauseFact {
+            range,
+            span,
+            predicates,
+            syntax_data,
+        }))
     }
 
     pub(super) fn parse_required_return_type(&mut self) -> ParserResult<TypeFact> {

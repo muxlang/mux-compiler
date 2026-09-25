@@ -1,3 +1,4 @@
+use super::statements::WhereClauseFact;
 use super::types::TypeFact;
 use super::*;
 
@@ -175,7 +176,7 @@ struct EnumVariantFact {
     span: Span,
     name: String,
     data: Option<Vec<(Option<String>, TypeFact)>>,
-    where_clause: Option<WhereClause>,
+    where_clause: Option<WhereClauseFact>,
     syntax_data: SyntaxData,
 }
 
@@ -201,7 +202,7 @@ impl EnumVariantFact {
                     .map(|(name, type_fact)| (name, type_fact.into_compat_type_node()))
                     .collect()
             }),
-            where_clause,
+            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
         }
     }
 }
@@ -244,7 +245,7 @@ struct FunctionDeclarationFact {
     return_type: TypeFact,
     body: Vec<StatementNode>,
     is_common: bool,
-    where_clause: Option<WhereClause>,
+    where_clause: Option<WhereClauseFact>,
     syntax_data: SyntaxData,
 }
 
@@ -302,7 +303,7 @@ impl FunctionDeclarationFact {
             body,
             span,
             is_common,
-            where_clause,
+            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
         }
     }
 }
@@ -315,7 +316,7 @@ struct ClassDeclarationFact {
     traits: Vec<TraitReferenceFact>,
     fields: Vec<FieldDeclarationFact>,
     methods: Vec<FunctionDeclarationFact>,
-    where_clause: Option<WhereClause>,
+    where_clause: Option<WhereClauseFact>,
     syntax_data: SyntaxData,
 }
 
@@ -358,7 +359,7 @@ impl ClassDeclarationFact {
             traits,
             fields,
             methods,
-            where_clause,
+            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
             span,
         }
     }
@@ -381,7 +382,7 @@ struct InterfaceMethodFact {
     type_params: Vec<TypeParameterFact>,
     params: Vec<FunctionParameterFact>,
     return_type: TypeFact,
-    where_clause: Option<WhereClause>,
+    where_clause: Option<WhereClauseFact>,
     syntax_data: SyntaxData,
 }
 
@@ -417,7 +418,7 @@ impl InterfaceMethodFact {
             body: Vec::new(),
             span,
             is_common: false,
-            where_clause,
+            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
         }
     }
 }
@@ -467,7 +468,7 @@ struct FieldDeclarationFact {
     is_generic_param: bool,
     is_const: bool,
     default_value: Option<ExpressionNode>,
-    where_clause: Option<WhereClause>,
+    where_clause: Option<WhereClauseFact>,
     syntax_data: SyntaxData,
 }
 
@@ -494,7 +495,7 @@ impl FieldDeclarationFact {
             is_generic_param,
             is_const,
             default_value,
-            where_clause,
+            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
         }
     }
 }
@@ -1032,7 +1033,7 @@ impl<'a> Parser<'a> {
             self.consume_token(TokenType::CloseBrace, "Expected '}' after class body")?;
         self.record_syntax_node(SyntaxKind::ClassBody, body_start, self.current);
         let where_start = self.syntax_events.len();
-        let where_clause = self.parse_where_clause()?;
+        let where_clause = self.parse_where_clause_fact()?;
         let where_range = self.last_syntax_range_since(where_start, |data| {
             matches!(data, SyntaxData::WhereClause { .. })
         });
@@ -1672,7 +1673,7 @@ impl<'a> Parser<'a> {
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
         self.record_syntax_node(SyntaxKind::ParameterList, params_start, self.current);
         let where_event_start = self.syntax_events.len();
-        let where_clause = self.parse_where_clause()?;
+        let where_clause = self.parse_where_clause_fact()?;
         let where_range = self.last_syntax_range_since(where_event_start, |data| {
             matches!(data, SyntaxData::WhereClause { .. })
         });
@@ -1952,7 +1953,7 @@ impl<'a> Parser<'a> {
         });
         let where_start = self.syntax_events.len();
         let where_clause = if self.check(TokenType::Where) {
-            self.parse_where_clause()?
+            self.parse_where_clause_fact()?
         } else {
             // Variants are newline-separated, so only a same-line `where`
             // belongs to this variant.
@@ -2305,7 +2306,7 @@ impl<'a> Parser<'a> {
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
         self.record_syntax_node(SyntaxKind::ParameterList, params_start, self.current);
         let where_event_start = self.syntax_events.len();
-        let where_clause = self.parse_where_clause()?;
+        let where_clause = self.parse_where_clause_fact()?;
         let where_range = self.last_syntax_range_since(where_event_start, |data| {
             matches!(data, SyntaxData::WhereClause { .. })
         });
@@ -2597,7 +2598,7 @@ impl<'a> Parser<'a> {
         let where_clause = if self.check(TokenType::Where) {
             // Fields are newline-separated, so only a same-line `where`
             // belongs to this field.
-            self.parse_where_clause()?
+            self.parse_where_clause_fact()?
         } else {
             None
         };
