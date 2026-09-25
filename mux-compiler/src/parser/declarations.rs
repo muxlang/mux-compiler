@@ -211,7 +211,7 @@ impl EnumDeclarationFact {
 struct FunctionDeclarationFact {
     range: ByteRange,
     span: Span,
-    name: String,
+    name: Option<String>,
     type_params: Vec<TypeParameterFact>,
     params: Vec<FunctionParameterFact>,
     return_type: TypeFact,
@@ -221,7 +221,7 @@ struct FunctionDeclarationFact {
 }
 
 struct FunctionParameterFact {
-    name: String,
+    name: Option<String>,
     type_fact: TypeFact,
     default_value: ParameterDefaultFact,
 }
@@ -234,7 +234,9 @@ pub(super) struct ParameterDefaultFact {
 impl FunctionParameterFact {
     fn into_compatibility_param(self) -> Param {
         Param {
-            name: self.name,
+            name: self
+                .name
+                .expect("compatibility parameter fact must retain its name"),
             type_: self.type_fact.into_compat_type_node(),
             default_value: self.default_value.expression,
         }
@@ -270,7 +272,7 @@ impl FunctionDeclarationFact {
             .map(TypeParameterFact::into_compatibility)
             .collect();
         FunctionNode {
-            name,
+            name: name.expect("compatibility function fact must retain its name"),
             type_params,
             params,
             return_type: return_type.into_compat_type_node(),
@@ -347,7 +349,7 @@ struct InterfaceDeclarationFact {
 
 struct InterfaceMethodFact {
     span: Span,
-    name: String,
+    name: Option<String>,
     type_params: Vec<TypeParameterFact>,
     params: Vec<FunctionParameterFact>,
     return_type: TypeFact,
@@ -369,7 +371,7 @@ impl InterfaceMethodFact {
             .map(TypeParameterFact::into_compatibility)
             .collect();
         FunctionNode {
-            name,
+            name: name.expect("compatibility interface method fact must retain its name"),
             type_params,
             params: params
                 .into_iter()
@@ -587,13 +589,13 @@ impl<'a> Parser<'a> {
         } else if self.check(TokenType::Common) {
             self.consume();
             if self.mode == ParserMode::SyntaxOnly {
-                self.function_declaration_fact(true).map(|_| None)
+                self.function_declaration_fact(true, false).map(|_| None)
             } else {
                 self.function_declaration(true).map(Some)
             }
         } else if self.check(TokenType::Func) {
             if self.mode == ParserMode::SyntaxOnly {
-                self.function_declaration_fact(false).map(|_| None)
+                self.function_declaration_fact(false, false).map(|_| None)
             } else {
                 self.function_declaration(false).map(Some)
             }
@@ -1319,8 +1321,12 @@ impl<'a> Parser<'a> {
                 let member_start = self.current;
                 let function_event_start = self.syntax_events.len();
                 let name_span = self.peek_ahead(1).map(|t| t.span);
-                let func = self.function_declaration_fact(false)?;
-                if let Some(message) = reserved_class_method_error(&func.name) {
+                let func = self.function_declaration_fact(false, true)?;
+                if let Some(message) = reserved_class_method_error(
+                    func.name
+                        .as_deref()
+                        .expect("class method facts retain names for reserved-name checks"),
+                ) {
                     self.record_error(ParserError::new(
                         DiagnosticCode::ParseExpectedToken,
                         &message,
@@ -1348,8 +1354,12 @@ impl<'a> Parser<'a> {
                 self.consume();
                 let function_event_start = self.syntax_events.len();
                 let name_span = self.peek_ahead(1).map(|t| t.span);
-                let func = self.function_declaration_fact(true)?;
-                if let Some(message) = reserved_class_method_error(&func.name) {
+                let func = self.function_declaration_fact(true, true)?;
+                if let Some(message) = reserved_class_method_error(
+                    func.name
+                        .as_deref()
+                        .expect("class method facts retain names for reserved-name checks"),
+                ) {
                     self.record_error(ParserError::new(
                         DiagnosticCode::ParseExpectedToken,
                         &message,
@@ -1597,7 +1607,10 @@ impl<'a> Parser<'a> {
     fn parse_interface_method(&mut self, start_span: Span) -> ParserResult<InterfaceMethodFact> {
         let function_start = self.current;
         self.consume();
-        let name = self.consume_identifier("Expected method name")?;
+        let name = self.consume_identifier_fact(
+            "Expected method name",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name_range = self.previous().span.byte_range.expect("method name range");
         let type_params_start = self.syntax_events.len();
         let type_params = self.parse_simple_type_params()?;
@@ -1716,7 +1729,10 @@ impl<'a> Parser<'a> {
                 let parameter_start = self.current;
                 let type_fact = self.parse_type_fact()?;
                 let type_range = type_fact.source_range().expect("parameter type range");
-                let param_name = self.consume_identifier("Expected parameter name")?;
+                let param_name = self.consume_identifier_fact(
+                    "Expected parameter name",
+                    self.mode == ParserMode::Compatibility,
+                )?;
                 let name = self
                     .previous()
                     .span
@@ -2279,22 +2295,26 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn function_declaration(&mut self, is_common: bool) -> ParserResult<AstNode> {
-        self.function_declaration_fact(is_common)
+        self.function_declaration_fact(is_common, true)
             .map(FunctionDeclarationFact::into_compatibility_ast)
     }
 
     pub(super) fn syntax_only_function_declaration(&mut self, is_common: bool) -> ParserResult<()> {
-        self.function_declaration_fact(is_common).map(drop)
+        self.function_declaration_fact(is_common, false).map(drop)
     }
 
     fn function_declaration_fact(
         &mut self,
         is_common: bool,
+        retain_name_for_validation: bool,
     ) -> ParserResult<FunctionDeclarationFact> {
         let function_start = self.current;
         let start_span = self.peek().span;
         self.consume_token(TokenType::Func, "Expected 'func' keyword")?;
-        let name = self.consume_identifier("Expected function name")?;
+        let name = self.consume_identifier_fact(
+            "Expected function name",
+            retain_name_for_validation || self.mode == ParserMode::Compatibility,
+        )?;
         let name_range = self
             .previous()
             .span
@@ -2490,7 +2510,10 @@ impl<'a> Parser<'a> {
         let parameter_start = self.current;
         let type_fact = self.parse_type_fact()?;
         let type_range = type_fact.source_range().expect("parameter type range");
-        let param_name = self.consume_identifier("Expected parameter name")?;
+        let param_name = self.consume_identifier_fact(
+            "Expected parameter name",
+            self.mode == ParserMode::Compatibility,
+        )?;
         let name = self
             .previous()
             .span
