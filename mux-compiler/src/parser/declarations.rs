@@ -446,6 +446,8 @@ impl<'a> Parser<'a> {
                     .map(ImportDeclarationFact::into_compatibility_ast)
                     .map(Some)
             }
+        } else if self.mode == ParserMode::SyntaxOnly {
+            self.syntax_only_statement().map(|()| None)
         } else {
             self.statement().map(Some)
         }
@@ -457,7 +459,11 @@ impl<'a> Parser<'a> {
             self.parse_typed_or_statement(checkpoint)
         } else {
             self.rewind(checkpoint);
-            self.statement().map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.syntax_only_statement().map(|()| None)
+            } else {
+                self.statement().map(Some)
+            }
         }
     }
 
@@ -472,11 +478,19 @@ impl<'a> Parser<'a> {
                 self.parse_typed_declaration_with_recovery()
             } else {
                 self.rewind(checkpoint);
-                self.statement().map(Some)
+                if self.mode == ParserMode::SyntaxOnly {
+                    self.syntax_only_statement().map(|()| None)
+                } else {
+                    self.statement().map(Some)
+                }
             }
         } else {
             self.rewind(checkpoint);
-            self.statement().map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.syntax_only_statement().map(|()| None)
+            } else {
+                self.statement().map(Some)
+            }
         }
     }
 
@@ -661,7 +675,7 @@ impl<'a> Parser<'a> {
             .map(VariableDeclarationFact::into_compatibility_ast)
     }
 
-    fn typed_declaration_fact(&mut self) -> ParserResult<VariableDeclarationFact> {
+    pub(super) fn typed_declaration_fact(&mut self) -> ParserResult<VariableDeclarationFact> {
         let start = self.current;
         let start_span = self.peek().span;
         let type_node = self.parse_type()?;
@@ -2024,6 +2038,10 @@ impl<'a> Parser<'a> {
     pub(super) fn function_declaration(&mut self, is_common: bool) -> ParserResult<AstNode> {
         self.function_declaration_fact(is_common)
             .map(FunctionDeclarationFact::into_compatibility_ast)
+    }
+
+    pub(super) fn syntax_only_function_declaration(&mut self, is_common: bool) -> ParserResult<()> {
+        self.function_declaration_fact(is_common).map(drop)
     }
 
     fn function_declaration_fact(

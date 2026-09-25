@@ -454,6 +454,10 @@ impl<'a> Parser<'a> {
                                         Some(
                                             SyntaxData::Import { .. }
                                                 | SyntaxData::VariableDeclaration { .. }
+                                                | SyntaxData::ExpressionStatement { .. }
+                                                | SyntaxData::ReturnStatement { .. }
+                                                | SyntaxData::BreakStatement
+                                                | SyntaxData::ContinueStatement
                                         )
                                     )
                             })

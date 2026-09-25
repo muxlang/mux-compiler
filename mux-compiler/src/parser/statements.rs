@@ -372,6 +372,54 @@ impl<'a> Parser<'a> {
         Ok(result)
     }
 
+    /// Parse a statement for syntax consumers without assembling its root
+    /// compatibility AST node.
+    pub(super) fn syntax_only_statement(&mut self) -> ParserResult<()> {
+        let checkpoint = self.checkpoint();
+        let result = self.syntax_only_statement_inner();
+        let kind = if self
+            .tokens
+            .get(checkpoint.current)
+            .is_some_and(|token| token.token_type == TokenType::OpenBrace)
+        {
+            SyntaxKind::Block
+        } else {
+            SyntaxKind::Statement
+        };
+        if result.is_ok() {
+            self.record_syntax_node(kind, checkpoint.current, self.current);
+        } else if self.current > checkpoint.current {
+            self.record_syntax_node(SyntaxKind::Error, checkpoint.current, self.current);
+        }
+        result
+    }
+
+    fn syntax_only_statement_inner(&mut self) -> ParserResult<()> {
+        if self.matches(&[TokenType::If]) {
+            self.if_statement().map(drop)
+        } else if self.matches(&[TokenType::While]) {
+            self.while_statement().map(drop)
+        } else if self.matches(&[TokenType::For]) {
+            self.for_statement().map(drop)
+        } else if self.matches(&[TokenType::Match]) {
+            self.match_statement().map(drop)
+        } else if self.matches(&[TokenType::Return]) {
+            self.return_statement().map(drop)
+        } else if self.matches(&[TokenType::Break]) {
+            self.break_statement().map(drop)
+        } else if self.matches(&[TokenType::Continue]) {
+            self.continue_statement().map(drop)
+        } else if self.matches(&[TokenType::Func]) {
+            self.syntax_only_function_declaration(false)
+        } else if self.check(TokenType::OpenBrace) {
+            self.block().map(drop)
+        } else if self.looks_like_typed_decl() {
+            self.typed_declaration_fact().map(drop)
+        } else {
+            self.expression_statement().map(drop)
+        }
+    }
+
     pub(super) fn looks_like_typed_decl(&self) -> bool {
         let n = self.tokens.len();
         let i = self.current;
