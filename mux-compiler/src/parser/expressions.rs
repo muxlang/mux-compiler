@@ -60,10 +60,12 @@ impl<'a> Parser<'a> {
             }
             let combined_span = left_span.combine(&right_span);
             if self.mode == ParserMode::SyntaxOnly {
-                // Binary structure is already represented by SyntaxData. Keep
-                // the left expression only as a span carrier for parser callers;
-                // syntax lowering reconstructs the binary tree from its ranges.
-                value.span = combined_span;
+                // Binary structure is already represented by SyntaxData, so
+                // retain only an opaque shape and source span here.
+                value = ExpressionNode {
+                    kind: ExpressionKind::None,
+                    span: combined_span,
+                };
             } else {
                 let new_value = ExpressionNode {
                     kind: ExpressionKind::Binary {
@@ -167,12 +169,12 @@ impl<'a> Parser<'a> {
             let span = op_token.span.combine(&expr_span);
             let op = UnaryOp::parse(&op_token)?;
             let expression = if self.mode == ParserMode::SyntaxOnly {
-                // The unary syntax event already records the operator and
-                // operand ranges. Keep the operand only as a span carrier;
-                // syntax lowering reconstructs the unary AST from the event.
-                let mut expression = expr;
-                expression.span = span;
-                expression
+                // The unary syntax event records the operator and operand
+                // ranges, so only an opaque shape and source span are needed.
+                ExpressionNode {
+                    kind: ExpressionKind::None,
+                    span,
+                }
             } else {
                 ExpressionNode {
                     kind: ExpressionKind::Unary {
@@ -1158,9 +1160,19 @@ impl<'a> Parser<'a> {
                 arguments: argument_ranges,
             },
         );
+        let callee = if self.mode == ParserMode::SyntaxOnly {
+            // Calls cannot be generic targets. Keep only a non-target shape
+            // carrier; the syntax event records the callee range and tree.
+            ExpressionNode {
+                kind: ExpressionKind::None,
+                span: expr_span,
+            }
+        } else {
+            expr
+        };
         Ok(ExpressionNode {
             kind: ExpressionKind::Call {
-                func: Box::new(expr),
+                func: Box::new(callee),
                 args,
             },
             span: expr_span.combine(&end_span),
@@ -1240,9 +1252,25 @@ impl<'a> Parser<'a> {
                 },
             );
         }
+        let base = if self.mode == ParserMode::SyntaxOnly {
+            ExpressionNode {
+                kind: ExpressionKind::None,
+                span: expr_span,
+            }
+        } else {
+            expr
+        };
+        let index = if self.mode == ParserMode::SyntaxOnly {
+            ExpressionNode {
+                kind: ExpressionKind::None,
+                span: index.span,
+            }
+        } else {
+            index
+        };
         Ok(ExpressionNode {
             kind: ExpressionKind::ListAccess {
-                expr: Box::new(expr),
+                expr: Box::new(base),
                 index: Box::new(index),
             },
             span: expr_span.combine(&end_span),
@@ -1270,10 +1298,28 @@ impl<'a> Parser<'a> {
             .as_ref()
             .and_then(|expression| expression.span.byte_range);
         let expr_span = *expr.span();
+        let base = if self.mode == ParserMode::SyntaxOnly {
+            ExpressionNode {
+                kind: ExpressionKind::None,
+                span: expr_span,
+            }
+        } else {
+            expr
+        };
+        let start = if self.mode == ParserMode::SyntaxOnly {
+            None
+        } else {
+            start.map(Box::new)
+        };
+        let end = if self.mode == ParserMode::SyntaxOnly {
+            None
+        } else {
+            end
+        };
         let expression = ExpressionNode {
             kind: ExpressionKind::Slice {
-                expr: Box::new(expr),
-                start: start.map(Box::new),
+                expr: Box::new(base),
+                start,
                 end,
             },
             span: expr_span.combine(&end_span),
@@ -1376,7 +1422,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_generic_postfix(
         &mut self,
-        expr: ExpressionNode,
+        expr: &ExpressionNode,
     ) -> ParserResult<Option<ExpressionNode>> {
         let start = self.current;
         let result = self.parse_generic_postfix_inner(expr);
@@ -1388,7 +1434,7 @@ impl<'a> Parser<'a> {
 
     fn parse_generic_postfix_inner(
         &mut self,
-        expr: ExpressionNode,
+        expr: &ExpressionNode,
     ) -> ParserResult<Option<ExpressionNode>> {
         let Some((name, should_consume_generics)) = self.should_consume_generic_type_args(&expr)
         else {
@@ -1451,7 +1497,7 @@ impl<'a> Parser<'a> {
         let span = expr_span.combine(&op_span);
         if self.mode == ParserMode::SyntaxOnly {
             ExpressionNode {
-                kind: expr.kind,
+                kind: ExpressionKind::None,
                 span,
             }
         } else {
@@ -1492,51 +1538,42 @@ impl<'a> Parser<'a> {
         false
     }
 
-    pub(super) fn try_parse_postfix_operator(
-        &mut self,
-        expr: ExpressionNode,
-    ) -> ParserResult<Option<ExpressionNode>> {
-        if self.matches(&[TokenType::OpenParen]) {
-            return self.parse_call_postfix(expr).map(Some);
-        }
-
-        if self.matches(&[TokenType::Dot]) {
-            return self.parse_field_access_postfix(expr).map(Some);
-        }
-
-        if self.matches(&[TokenType::OpenBracket]) {
-            return self.parse_index_postfix(expr).map(Some);
-        }
-
-        if self.check(TokenType::Lt) {
-            return self
-                .parse_generic_postfix(expr)
-                .map(|maybe_expr| maybe_expr.or(None));
-        }
-
-        if self.matches(&[TokenType::Incr]) {
-            return Ok(Some(self.parse_postfix_update(expr, UnaryOp::Incr)));
-        }
-
-        if self.matches(&[TokenType::Decr]) {
-            return Ok(Some(self.parse_postfix_update(expr, UnaryOp::Decr)));
-        }
-
-        Ok(None)
-    }
-
     pub(super) fn parse_postfix_operators(
         &mut self,
         mut expr: ExpressionNode,
     ) -> ParserResult<ExpressionNode> {
         loop {
-            if let Some(next_expr) = self.try_parse_postfix_operator(expr.clone())? {
-                expr = next_expr;
+            if self.matches(&[TokenType::OpenParen]) {
+                expr = self.parse_call_postfix(expr)?;
+                continue;
+            }
+
+            if self.matches(&[TokenType::Dot]) {
+                expr = self.parse_field_access_postfix(expr)?;
+                continue;
+            }
+
+            if self.matches(&[TokenType::OpenBracket]) {
+                expr = self.parse_index_postfix(expr)?;
                 continue;
             }
 
             if self.check(TokenType::Lt) {
+                if let Some(next_expr) = self.parse_generic_postfix(&expr)? {
+                    expr = next_expr;
+                    continue;
+                }
                 break;
+            }
+
+            if self.matches(&[TokenType::Incr]) {
+                expr = self.parse_postfix_update(expr, UnaryOp::Incr);
+                continue;
+            }
+
+            if self.matches(&[TokenType::Decr]) {
+                expr = self.parse_postfix_update(expr, UnaryOp::Decr);
+                continue;
             }
 
             if self.skip_newline_gap_for_postfix() {
