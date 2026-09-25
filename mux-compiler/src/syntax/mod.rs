@@ -553,7 +553,7 @@ pub fn parse_source(input: &str) -> ParseOutput {
     let lexed = crate::lexer::Lexer::new(&mut source).lex_all_lossless();
     let tree_source: Arc<str> = Arc::from(input);
     let mut parser = Parser::new(&lexed.tokens);
-    let parser_errors = match parser.parse() {
+    let parser_errors = match parser.parse_for_syntax() {
         Ok(_) => Vec::new(),
         Err((_partial_ast, errors)) => errors,
     };

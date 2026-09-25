@@ -33,6 +33,7 @@ pub struct Parser<'a> {
     loop_depth: usize,
     stopped: bool,
     syntax_events: Vec<SyntaxNodeEvent>,
+    syntax_only_enums: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -101,6 +102,7 @@ impl<'a> Parser<'a> {
             loop_depth: 0,
             stopped: false,
             syntax_events: Vec::new(),
+            syntax_only_enums: false,
         }
     }
 
@@ -449,6 +451,16 @@ impl<'a> Parser<'a> {
         } else {
             Err((nodes, all_errors))
         }
+    }
+
+    /// Parse declarations for lossless syntax consumers. Enum declarations
+    /// retain their syntax facts without materializing enum compatibility AST
+    /// nodes; other declarations keep the ordinary parser path.
+    pub(crate) fn parse_for_syntax(
+        &mut self,
+    ) -> Result<Vec<AstNode>, (Vec<AstNode>, Vec<ParserError>)> {
+        self.syntax_only_enums = true;
+        self.parse()
     }
 
     /// Spans consumed while skipping malformed input during recovery.

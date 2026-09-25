@@ -61,7 +61,7 @@ struct EnumDeclarationFact {
     span: Span,
     name: String,
     type_params: Vec<(String, Vec<TraitBound>)>,
-    variants: Vec<EnumVariant>,
+    variants: Vec<EnumVariantFact>,
     syntax_data: SyntaxData,
 }
 
@@ -116,7 +116,10 @@ impl EnumDeclarationFact {
         AstNode::Enum {
             name,
             type_params,
-            variants,
+            variants: variants
+                .into_iter()
+                .map(EnumVariantFact::into_compatibility_variant)
+                .collect(),
             span,
         }
     }
@@ -396,9 +399,13 @@ impl<'a> Parser<'a> {
         } else if self.check(TokenType::Interface) {
             self.interface_declaration().map(Some)
         } else if self.check(TokenType::Enum) {
-            self.enum_declaration()
-                .map(EnumDeclarationFact::into_compatibility_ast)
-                .map(Some)
+            if self.syntax_only_enums {
+                self.enum_declaration().map(|_| None)
+            } else {
+                self.enum_declaration()
+                    .map(EnumDeclarationFact::into_compatibility_ast)
+                    .map(Some)
+            }
         } else if self.check(TokenType::Test) {
             self.test_declaration()
                 .map(TestDeclarationFact::into_compatibility_ast)
@@ -1610,12 +1617,12 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    pub(super) fn parse_enum_variants(&mut self) -> ParserResult<Vec<EnumVariant>> {
+    fn parse_enum_variants(&mut self) -> ParserResult<Vec<EnumVariantFact>> {
         let mut variants = Vec::new();
         self.skip_newlines();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let variant = self.parse_single_enum_variant()?;
-            variants.push(variant.into_compatibility_variant());
+            variants.push(variant);
             if !self.matches(&[TokenType::Comma]) {
                 self.skip_newlines();
                 break;
