@@ -73,6 +73,13 @@ impl TypeFact {
     pub(super) fn source_range(&self) -> Option<ByteRange> {
         self.span.byte_range
     }
+
+    pub(super) fn generic_parameter_name(&self) -> Option<&str> {
+        match &self.kind {
+            TypeFactKind::Named(name, args) if args.is_empty() => Some(name),
+            _ => None,
+        }
+    }
 }
 
 impl<'a> Parser<'a> {

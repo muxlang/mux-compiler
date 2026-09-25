@@ -196,7 +196,7 @@ struct ClassDeclarationFact {
     name: String,
     type_params: Vec<(String, Vec<TraitBound>)>,
     traits: Vec<TraitRef>,
-    fields: Vec<Field>,
+    fields: Vec<FieldDeclarationFact>,
     methods: Vec<FunctionNode>,
     where_clause: Option<WhereClause>,
     syntax_data: SyntaxData,
@@ -219,6 +219,10 @@ impl ClassDeclarationFact {
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
+        let fields = fields
+            .into_iter()
+            .map(FieldDeclarationFact::into_compatibility_field)
+            .collect();
         AstNode::Class {
             name,
             type_params,
@@ -236,7 +240,7 @@ struct InterfaceDeclarationFact {
     span: Span,
     name: String,
     type_params: Vec<(String, Vec<TraitBound>)>,
-    fields: Vec<Field>,
+    fields: Vec<FieldDeclarationFact>,
     methods: Vec<FunctionNode>,
     syntax_data: SyntaxData,
 }
@@ -256,6 +260,10 @@ impl InterfaceDeclarationFact {
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
+        let fields = fields
+            .into_iter()
+            .map(FieldDeclarationFact::into_compatibility_field)
+            .collect();
         AstNode::Interface {
             name,
             type_params,
@@ -269,7 +277,12 @@ impl InterfaceDeclarationFact {
 struct FieldDeclarationFact {
     range: ByteRange,
     span: Span,
-    field: Field,
+    name: String,
+    type_fact: TypeFact,
+    is_generic_param: bool,
+    is_const: bool,
+    default_value: Option<ExpressionNode>,
+    where_clause: Option<WhereClause>,
     syntax_data: SyntaxData,
 }
 
@@ -278,14 +291,26 @@ impl FieldDeclarationFact {
         let Self {
             range,
             span,
-            field,
+            name,
+            type_fact,
+            is_generic_param,
+            is_const,
+            default_value,
+            where_clause,
             syntax_data,
         } = self;
         debug_assert!(matches!(syntax_data, SyntaxData::Field { .. }));
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
-        field
+        Field {
+            name,
+            type_: type_fact.into_compat_type_node(),
+            is_generic_param,
+            is_const,
+            default_value,
+            where_clause,
+        }
     }
 }
 
@@ -1075,11 +1100,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn parse_class_body(
+    fn parse_class_body(
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         start_span: Span,
-    ) -> ParserResult<(Vec<Field>, Vec<FunctionNode>)> {
+    ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<FunctionNode>)> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
@@ -1135,11 +1160,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn parse_class_member(
+    fn parse_class_member(
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         start_span: Span,
-        fields: &mut Vec<Field>,
+        fields: &mut Vec<FieldDeclarationFact>,
         methods: &mut Vec<FunctionNode>,
     ) -> ParserResult<()> {
         match self.peek().token_type {
@@ -1217,7 +1242,7 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenType::Id(_) | TokenType::Const => {
-                let field = self.parse_field_declaration(type_params)?;
+                let field = self.parse_field_declaration_fact(type_params)?;
                 fields.push(field);
             }
             TokenType::NewLine => {
@@ -1384,11 +1409,11 @@ impl<'a> Parser<'a> {
         Ok(bounds)
     }
 
-    pub(super) fn parse_interface_body(
+    fn parse_interface_body(
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         start_span: Span,
-    ) -> ParserResult<(Vec<Field>, Vec<FunctionNode>)> {
+    ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<FunctionNode>)> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.is_at_end() {
@@ -1401,11 +1426,11 @@ impl<'a> Parser<'a> {
         Ok((fields, methods))
     }
 
-    pub(super) fn parse_interface_member(
+    fn parse_interface_member(
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         start_span: Span,
-        fields: &mut Vec<Field>,
+        fields: &mut Vec<FieldDeclarationFact>,
         methods: &mut Vec<FunctionNode>,
     ) -> ParserResult<()> {
         match self.peek().token_type {
@@ -1414,7 +1439,7 @@ impl<'a> Parser<'a> {
                 methods.push(method);
             }
             TokenType::Id(_) | TokenType::Const => {
-                let field = self.parse_field_declaration(type_params)?;
+                let field = self.parse_field_declaration_fact(type_params)?;
                 fields.push(field);
             }
             TokenType::NewLine => {
@@ -2300,14 +2325,6 @@ impl<'a> Parser<'a> {
     /// newlines and return true; otherwise leave them unconsumed and return
     /// false. Lets a clause continue on a following line without eating
     /// newlines that separate declarations.
-    pub(super) fn parse_field_declaration(
-        &mut self,
-        type_param_names: &[(String, Vec<TraitBound>)],
-    ) -> ParserResult<Field> {
-        self.parse_field_declaration_fact(type_param_names)
-            .map(FieldDeclarationFact::into_compatibility_field)
-    }
-
     fn parse_field_declaration_fact(
         &mut self,
         type_param_names: &[(String, Vec<TraitBound>)],
@@ -2322,10 +2339,9 @@ impl<'a> Parser<'a> {
             false
         };
 
-        let field_type = self.parse_type()?;
+        let field_type = self.parse_type_fact()?;
         let type_range = field_type
-            .span
-            .byte_range
+            .source_range()
             .expect("class field type source range");
         let field_name = self.consume_identifier("Expected field name")?;
         let name = self
@@ -2387,34 +2403,25 @@ impl<'a> Parser<'a> {
                 .source_range_for_tokens(field_start, self.current)
                 .expect("field declaration source range"),
             span: start_span.combine(&self.previous().span),
-            field: Field {
-                name: field_name,
-                type_: field_type,
-                is_generic_param,
-                is_const,
-                default_value,
-                where_clause,
-            },
+            name: field_name,
+            type_fact: field_type,
+            is_generic_param,
+            is_const,
+            default_value,
+            where_clause,
             syntax_data,
         })
     }
 
-    pub(super) fn is_field_generic_param(
-        field_type: &TypeNode,
+    fn is_field_generic_param(
+        field_type: &TypeFact,
         type_param_names: &[(String, Vec<TraitBound>)],
     ) -> bool {
-        match &field_type.kind {
-            TypeKind::Named(name, type_args) => {
-                // A field is a generic parameter if:
-                // 1. It has no type arguments (e.g., T not T<int>)
-                // 2. Its name matches a type parameter (e.g., T or U)
-                type_args.is_empty()
-                    && type_param_names
-                        .iter()
-                        .any(|(param_name, _)| param_name == name)
-            }
-            _ => false,
-        }
+        field_type.generic_parameter_name().is_some_and(|name| {
+            type_param_names
+                .iter()
+                .any(|(param_name, _)| param_name == name)
+        })
     }
 
     pub(super) fn is_literal_expression(expr: &ExpressionNode) -> bool {
