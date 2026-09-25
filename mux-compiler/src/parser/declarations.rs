@@ -7,7 +7,7 @@ type EnumVariantDataFact = Vec<(Option<String>, TypeFact)>;
 struct TestDeclarationFact {
     range: ByteRange,
     span: Span,
-    name: String,
+    name: Option<String>,
     body: Vec<StatementNode>,
 }
 
@@ -22,7 +22,11 @@ impl TestDeclarationFact {
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
-        AstNode::Test { name, body, span }
+        AstNode::Test {
+            name: name.expect("compatibility test declaration name"),
+            body,
+            span,
+        }
     }
 }
 
@@ -1044,10 +1048,20 @@ impl<'a> Parser<'a> {
             ));
         }
         let start_span = self.consume_token(TokenType::Test, "Expected 'test' keyword")?;
-        let (name, name_span, name_range) = {
+        let compatibility = self.mode == ParserMode::Compatibility;
+        let (name, name_range) = {
             let name_token = self.consume();
             let name = match &name_token.token_type {
-                TokenType::Str(name) => name.clone(),
+                TokenType::Str(name) => {
+                    if name.is_empty() {
+                        return Err(ParserError::new(
+                            DiagnosticCode::ParseExpectedToken,
+                            "Test name must not be empty".to_string(),
+                            name_token.span,
+                        ));
+                    }
+                    compatibility.then(|| name.clone())
+                }
                 _ => {
                     return Err(ParserError::with_help(
                         DiagnosticCode::ParseExpectedToken,
@@ -1059,20 +1073,12 @@ impl<'a> Parser<'a> {
             };
             (
                 name,
-                name_token.span,
                 name_token
                     .span
                     .byte_range
                     .expect("test name token source range"),
             )
         };
-        if name.is_empty() {
-            return Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                "Test name must not be empty".to_string(),
-                name_span,
-            ));
-        }
         self.skip_newlines();
         let block = self.block()?;
         let body = block.statements;

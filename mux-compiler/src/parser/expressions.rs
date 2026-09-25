@@ -10,7 +10,15 @@ use ordered_float::OrderedFloat;
 pub(super) struct ParsedExpression {
     pub(super) span: Span,
     pub(super) node: Option<ExpressionNode>,
-    generic_target: Option<String>,
+    generic_target: Option<GenericTarget>,
+}
+
+/// Token range and the case bit needed to disambiguate a generic call.
+/// The target's text is materialized only when Compatibility mode builds its AST.
+struct GenericTarget {
+    start_token: usize,
+    end_token: usize,
+    starts_uppercase: bool,
 }
 
 enum PrimaryToken {
@@ -27,7 +35,7 @@ enum PrimaryToken {
     Func,
     If,
     Match,
-    Id(String),
+    Id(Option<String>),
     Other,
 }
 
@@ -36,7 +44,7 @@ impl ParsedExpression {
         parser: &Parser<'_>,
         span: Span,
         make_kind: F,
-        generic_target: Option<String>,
+        generic_target: Option<GenericTarget>,
     ) -> Self
     where
         F: FnOnce() -> ExpressionKind,
@@ -1119,7 +1127,7 @@ impl<'a> Parser<'a> {
             TokenType::Func => PrimaryToken::Func,
             TokenType::If => PrimaryToken::If,
             TokenType::Match => PrimaryToken::Match,
-            TokenType::Id(value) => PrimaryToken::Id(value.clone()),
+            TokenType::Id(value) => PrimaryToken::Id(compatibility.then(|| value.clone())),
             _ => PrimaryToken::Other,
         };
 
@@ -1157,9 +1165,19 @@ impl<'a> Parser<'a> {
             PrimaryToken::Func => self.parse_lambda_expression_parsed(token_span),
             PrimaryToken::If => self.parse_if_expression_parsed(token_span),
             PrimaryToken::Match => self.parse_match_expression_parsed(token_span),
-            PrimaryToken::Id(id) => self.parse_scalar_primary(token_span, Some(id.clone()), || {
-                ExpressionKind::Identifier(id)
-            }),
+            PrimaryToken::Id(id) => {
+                let TokenType::Id(name) = &self.tokens[token_index].token_type else {
+                    unreachable!("primary identifier token changed during parsing")
+                };
+                let generic_target = Some(GenericTarget {
+                    start_token: token_index,
+                    end_token: token_index + 1,
+                    starts_uppercase: name.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
+                });
+                self.parse_scalar_primary(token_span, generic_target, || {
+                    ExpressionKind::Identifier(id.expect("compatibility identifier has a payload"))
+                })
+            }
             PrimaryToken::Other => Err(self
                 .unexpected_primary_error(self.tokens[token_index].token_type.clone(), token_span)),
         };
@@ -1192,7 +1210,7 @@ impl<'a> Parser<'a> {
     fn parse_scalar_primary(
         &mut self,
         span: Span,
-        generic_target: Option<String>,
+        generic_target: Option<GenericTarget>,
         make_kind: impl FnOnce() -> ExpressionKind,
     ) -> ParserResult<ParsedExpression> {
         Ok(ParsedExpression::scalar(
@@ -1201,6 +1219,58 @@ impl<'a> Parser<'a> {
             make_kind,
             generic_target,
         ))
+    }
+
+    fn consume_identifier_for_expression(
+        &mut self,
+        error_msg: &str,
+    ) -> ParserResult<Option<String>> {
+        if self.is_at_end() {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                format!("{error_msg}, but reached end of file"),
+                self.peek().span,
+            ));
+        }
+
+        match &self.peek().token_type {
+            TokenType::Id(name) => {
+                let name = (self.mode == ParserMode::Compatibility).then(|| name.clone());
+                self.current += 1;
+                Ok(name)
+            }
+            TokenType::Underscore => {
+                let name = (self.mode == ParserMode::Compatibility).then(|| "_".to_string());
+                self.current += 1;
+                Ok(name)
+            }
+            _ => {
+                let found_desc = Self::describe_token(&self.peek().token_type);
+                Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
+                    format!("{error_msg}, found {found_desc}"),
+                    self.peek().span,
+                ))
+            }
+        }
+    }
+
+    fn generic_target_name(&self, target: &GenericTarget) -> String {
+        let mut name = String::new();
+        for token in &self.tokens[target.start_token..target.end_token] {
+            let segment = match &token.token_type {
+                TokenType::Id(segment) => Some(segment.as_str()),
+                TokenType::Underscore => Some("_"),
+                _ => None,
+            };
+            if let Some(segment) = segment {
+                if !name.is_empty() {
+                    name.push('.');
+                }
+                name.push_str(segment);
+            }
+        }
+        name
     }
 
     fn parse_parenthesized_or_tuple_expression_parsed(
@@ -1318,7 +1388,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn should_consume_generics_for_target(
         &self,
-        generic_target_name: &str,
+        target_starts_uppercase: bool,
         gt_idx: usize,
     ) -> bool {
         if let Some(next) = self.tokens.get(gt_idx + 1) {
@@ -1330,10 +1400,7 @@ impl<'a> Parser<'a> {
                     | TokenType::Eq
                     | TokenType::NewLine
                     | TokenType::Eof
-            ) || generic_target_name
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_uppercase())
+            ) || target_starts_uppercase
         } else {
             true
         }
@@ -1343,13 +1410,13 @@ impl<'a> Parser<'a> {
         &mut self,
         expr: &ParsedExpression,
     ) -> ParserResult<Option<ParsedExpression>> {
-        let Some(name) = expr.generic_target.as_ref() else {
+        let Some(target_fact) = expr.generic_target.as_ref() else {
             return Ok(None);
         };
         let Some(gt_idx) = self.find_matching_generic_gt_index() else {
             return Ok(None);
         };
-        if !self.should_consume_generics_for_target(name, gt_idx) {
+        if !self.should_consume_generics_for_target(target_fact.starts_uppercase, gt_idx) {
             return Ok(None);
         }
 
@@ -1379,12 +1446,13 @@ impl<'a> Parser<'a> {
         self.record_syntax_node(SyntaxKind::TypeArguments, arguments_start, self.current);
         let span = expr.span.combine(&end_span);
         let node = if self.mode == ParserMode::Compatibility {
+            let name = self.generic_target_name(target_fact);
             let type_args = type_arg_facts
                 .into_iter()
                 .map(TypeFact::into_compat_type_node)
                 .collect();
             Some(ExpressionNode {
-                kind: ExpressionKind::GenericType(name.clone(), type_args),
+                kind: ExpressionKind::GenericType(name, type_args),
                 span,
             })
         } else {
@@ -1466,7 +1534,8 @@ impl<'a> Parser<'a> {
             if self.matches(&[TokenType::Dot]) {
                 let base_range = expr.span.byte_range.expect("field base has source range");
                 let start = self.token_index_for_span(expr.span);
-                let field = self.consume_identifier("Expected field name after '.'")?;
+                let field =
+                    self.consume_identifier_for_expression("Expected field name after '.'")?;
                 let field_span = self.tokens[self.current - 1].span;
                 if let Some(field_range) = field_span.byte_range {
                     self.record_typed_syntax_node(
@@ -1480,15 +1549,15 @@ impl<'a> Parser<'a> {
                     );
                 }
                 let span = expr.span.combine(&field_span);
-                let generic_target = expr
-                    .generic_target
-                    .take()
-                    .map(|target| format!("{target}.{field}"));
+                let generic_target = expr.generic_target.take().map(|mut target| {
+                    target.end_token = self.current;
+                    target
+                });
                 let node = if self.mode == ParserMode::Compatibility {
                     Some(ExpressionNode {
                         kind: ExpressionKind::FieldAccess {
                             expr: Box::new(expr.node.expect("compatibility field base has an AST")),
-                            field,
+                            field: field.expect("compatibility field has a payload"),
                         },
                         span,
                     })

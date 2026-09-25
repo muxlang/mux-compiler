@@ -111,9 +111,7 @@ impl<'a> Parser<'a> {
             name.push_str(&segment);
         }
 
-        if let Ok(prim_type) =
-            PrimitiveType::parse(&Token::new(TokenType::Id(name.clone()), start_span))
-        {
+        if let Some(prim_type) = primitive_type(name.as_str()) {
             return Ok(TypeFact {
                 kind: TypeFactKind::Primitive(prim_type),
                 span: start_span,
@@ -124,7 +122,7 @@ impl<'a> Parser<'a> {
             return Ok(node);
         }
 
-        let type_args = if self.matches(&[TokenType::Lt]) {
+        let mut type_args = if self.matches(&[TokenType::Lt]) {
             let args = self.parse_type_argument_facts()?;
             self.consume_token(TokenType::Gt, "Expected '>' after type arguments")?;
             args
@@ -133,8 +131,9 @@ impl<'a> Parser<'a> {
         };
 
         if name == "dyn" && !type_args.is_empty() {
+            let trait_object = type_args.remove(0);
             return Ok(TypeFact {
-                kind: TypeFactKind::TraitObject(Box::new(type_args[0].clone())),
+                kind: TypeFactKind::TraitObject(Box::new(trait_object)),
                 span: start_span,
             });
         }
@@ -342,10 +341,8 @@ impl<'a> Parser<'a> {
         let start_span = self.tokens[self.current].span;
         self.advance();
 
-        match &token_type {
-            TokenType::Id(name) => {
-                self.parse_named_type_with_builtin_support(name.clone(), start_span)
-            }
+        match token_type {
+            TokenType::Id(name) => self.parse_named_type_with_builtin_support(name, start_span),
 
             TokenType::Func => {
                 self.consume_token(
@@ -382,7 +379,7 @@ impl<'a> Parser<'a> {
             _ => Err(ParserError::from_token(
                 DiagnosticCode::ParseExpectedType,
                 "Expected type",
-                &Token::new(token_type.clone(), start_span),
+                &Token::new(token_type, start_span),
             )),
         }
     }
@@ -402,6 +399,21 @@ impl<'a> Parser<'a> {
         self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
         Ok(args)
     }
+}
+
+fn primitive_type(name: &str) -> Option<PrimitiveType> {
+    Some(match name {
+        "int" => PrimitiveType::Int,
+        "float" => PrimitiveType::Float,
+        "bool" => PrimitiveType::Bool,
+        "char" => PrimitiveType::Char,
+        "byte" => PrimitiveType::Byte,
+        "bytes" => PrimitiveType::Bytes,
+        "string" => PrimitiveType::Str,
+        "void" => PrimitiveType::Void,
+        "auto" => PrimitiveType::Auto,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
