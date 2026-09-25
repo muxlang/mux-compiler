@@ -33,7 +33,13 @@ pub struct Parser<'a> {
     loop_depth: usize,
     stopped: bool,
     syntax_events: Vec<SyntaxNodeEvent>,
-    syntax_only_enums: bool,
+    mode: ParserMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParserMode {
+    Compatibility,
+    SyntaxOnly,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,7 +108,7 @@ impl<'a> Parser<'a> {
             loop_depth: 0,
             stopped: false,
             syntax_events: Vec::new(),
-            syntax_only_enums: false,
+            mode: ParserMode::Compatibility,
         }
     }
 
@@ -459,7 +465,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_for_syntax(
         &mut self,
     ) -> Result<Vec<AstNode>, (Vec<AstNode>, Vec<ParserError>)> {
-        self.syntax_only_enums = true;
+        self.mode = ParserMode::SyntaxOnly;
         self.parse()
     }
 

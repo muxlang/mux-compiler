@@ -1094,17 +1094,20 @@ impl<'a> Parser<'a> {
         &mut self,
         statements: &mut Vec<AstNode>,
     ) -> ParserResult<()> {
+        let start_position = self.current;
         match self.declaration() {
             Ok(Some(decl)) => {
                 statements.push(decl);
                 self.skip_newlines();
             }
             Ok(None) => {
-                // `declaration` parsed nothing (e.g. it recovered from an error and
-                // stopped at the block's closing brace). Advance only when there is
-                // a real token to skip, so the block loop can see '}' and finish
-                // rather than consuming it and running past the block (issue #288).
-                if !self.check(TokenType::CloseBrace) && !self.is_at_end() {
+                // Syntax-only declarations can consume a full construct without
+                // producing a compatibility AST node. Advance only when parsing
+                // made no progress, so recovered input cannot stall the block loop.
+                if self.current == start_position
+                    && !self.check(TokenType::CloseBrace)
+                    && !self.is_at_end()
+                {
                     self.advance();
                 }
             }

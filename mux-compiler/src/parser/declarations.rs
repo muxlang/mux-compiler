@@ -389,17 +389,33 @@ impl<'a> Parser<'a> {
             self.const_declaration().map(Some)
         } else if self.check(TokenType::Common) {
             self.consume();
-            self.function_declaration(true).map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.function_declaration_fact(true).map(|_| None)
+            } else {
+                self.function_declaration(true).map(Some)
+            }
         } else if self.check(TokenType::Func) {
-            self.function_declaration(false).map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.function_declaration_fact(false).map(|_| None)
+            } else {
+                self.function_declaration(false).map(Some)
+            }
         } else if let TokenType::Id(_) = &self.peek().token_type {
             self.parse_id_start_declaration()
         } else if self.check(TokenType::Class) {
-            self.class_declaration().map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.class_declaration_fact().map(|_| None)
+            } else {
+                self.class_declaration().map(Some)
+            }
         } else if self.check(TokenType::Interface) {
-            self.interface_declaration().map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.interface_declaration_fact().map(|_| None)
+            } else {
+                self.interface_declaration().map(Some)
+            }
         } else if self.check(TokenType::Enum) {
-            if self.syntax_only_enums {
+            if self.mode == ParserMode::SyntaxOnly {
                 self.enum_declaration().map(|_| None)
             } else {
                 self.enum_declaration()
@@ -407,13 +423,21 @@ impl<'a> Parser<'a> {
                     .map(Some)
             }
         } else if self.check(TokenType::Test) {
-            self.test_declaration()
-                .map(TestDeclarationFact::into_compatibility_ast)
-                .map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.test_declaration().map(|_| None)
+            } else {
+                self.test_declaration()
+                    .map(TestDeclarationFact::into_compatibility_ast)
+                    .map(Some)
+            }
         } else if self.check(TokenType::Import) {
-            self.import_declaration()
-                .map(ImportDeclarationFact::into_compatibility_ast)
-                .map(Some)
+            if self.mode == ParserMode::SyntaxOnly {
+                self.import_declaration().map(|_| None)
+            } else {
+                self.import_declaration()
+                    .map(ImportDeclarationFact::into_compatibility_ast)
+                    .map(Some)
+            }
         } else {
             self.statement().map(Some)
         }
