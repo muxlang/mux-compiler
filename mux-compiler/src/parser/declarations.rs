@@ -249,8 +249,52 @@ struct InterfaceDeclarationFact {
     name: String,
     type_params: Vec<(String, Vec<TraitBound>)>,
     fields: Vec<FieldDeclarationFact>,
-    methods: Vec<FunctionNode>,
+    methods: Vec<InterfaceMethodFact>,
     syntax_data: SyntaxData,
+}
+
+struct InterfaceMethodFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    type_params: Vec<(String, Vec<TraitBound>)>,
+    params: Vec<FunctionParameterFact>,
+    return_type: TypeFact,
+    where_clause: Option<WhereClause>,
+    syntax_data: SyntaxData,
+}
+
+impl InterfaceMethodFact {
+    fn into_compatibility_function(self) -> FunctionNode {
+        let Self {
+            range,
+            span,
+            name,
+            type_params,
+            params,
+            return_type,
+            where_clause,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(
+            syntax_data,
+            SyntaxData::Function { name: name_range, .. }
+                if range.start <= name_range.start && name_range.end <= range.end
+        ));
+        FunctionNode {
+            name,
+            type_params,
+            params: params
+                .into_iter()
+                .map(FunctionParameterFact::into_compatibility_param)
+                .collect(),
+            return_type: return_type.into_compat_type_node(),
+            body: Vec::new(),
+            span,
+            is_common: false,
+            where_clause,
+        }
+    }
 }
 
 impl InterfaceDeclarationFact {
@@ -271,6 +315,10 @@ impl InterfaceDeclarationFact {
         let fields = fields
             .into_iter()
             .map(FieldDeclarationFact::into_compatibility_field)
+            .collect();
+        let methods = methods
+            .into_iter()
+            .map(InterfaceMethodFact::into_compatibility_function)
             .collect();
         AstNode::Interface {
             name,
@@ -1401,7 +1449,7 @@ impl<'a> Parser<'a> {
         &mut self,
         type_params: &[(String, Vec<TraitBound>)],
         start_span: Span,
-    ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<FunctionNode>)> {
+    ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<InterfaceMethodFact>)> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.is_at_end() {
@@ -1419,7 +1467,7 @@ impl<'a> Parser<'a> {
         type_params: &[(String, Vec<TraitBound>)],
         start_span: Span,
         fields: &mut Vec<FieldDeclarationFact>,
-        methods: &mut Vec<FunctionNode>,
+        methods: &mut Vec<InterfaceMethodFact>,
     ) -> ParserResult<()> {
         match self.peek().token_type {
             TokenType::Func => {
@@ -1444,10 +1492,7 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    pub(super) fn parse_interface_method(
-        &mut self,
-        start_span: Span,
-    ) -> ParserResult<FunctionNode> {
+    fn parse_interface_method(&mut self, start_span: Span) -> ParserResult<InterfaceMethodFact> {
         let function_start = self.current;
         self.consume();
         let name = self.consume_identifier("Expected method name")?;
@@ -1488,35 +1533,37 @@ impl<'a> Parser<'a> {
             )
         });
         let return_type_span = return_type
-            .span
-            .byte_range
+            .source_range()
             .expect("method return type span range");
         let end = self.current;
+        let syntax_data = SyntaxData::Function {
+            name: name_range,
+            ast_span: start_span.byte_range.expect("interface method span range"),
+            type_parameters,
+            parameters,
+            return_type: return_type_range,
+            return_type_span,
+            where_clause: where_range,
+            body: None,
+            is_common: false,
+        };
         self.record_typed_syntax_node(
             SyntaxKind::FunctionDeclaration,
             function_start,
             end,
-            SyntaxData::Function {
-                name: name_range,
-                ast_span: start_span.byte_range.expect("interface method span range"),
-                type_parameters,
-                parameters,
-                return_type: return_type_range,
-                return_type_span,
-                where_clause: where_range,
-                body: None,
-                is_common: false,
-            },
+            syntax_data.clone(),
         );
-        Ok(FunctionNode {
+        Ok(InterfaceMethodFact {
+            range: self
+                .source_range_for_tokens(function_start, end)
+                .expect("interface method source range"),
+            span: start_span,
             name,
             type_params,
             params,
             return_type,
-            body: vec![],
-            span: start_span,
-            is_common: false,
             where_clause,
+            syntax_data,
         })
     }
 
@@ -1557,13 +1604,13 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    pub(super) fn parse_param_list(&mut self) -> ParserResult<Vec<Param>> {
+    fn parse_param_list(&mut self) -> ParserResult<Vec<FunctionParameterFact>> {
         let mut params = Vec::new();
         if !self.check(TokenType::CloseParen) {
             loop {
                 let parameter_start = self.current;
-                let param_type = self.parse_type()?;
-                let type_range = param_type.span.byte_range.expect("parameter type range");
+                let type_fact = self.parse_type_fact()?;
+                let type_range = type_fact.source_range().expect("parameter type range");
                 let param_name = self.consume_identifier("Expected parameter name")?;
                 let name = self
                     .previous()
@@ -1580,9 +1627,9 @@ impl<'a> Parser<'a> {
                         default_value: None,
                     },
                 );
-                params.push(Param {
+                params.push(FunctionParameterFact {
                     name: param_name,
-                    type_: param_type,
+                    type_fact,
                     default_value: None,
                 });
                 if !self.matches(&[TokenType::Comma]) {
@@ -1593,14 +1640,11 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    pub(super) fn parse_optional_return_type(&mut self) -> ParserResult<TypeNode> {
+    fn parse_optional_return_type(&mut self) -> ParserResult<TypeFact> {
         if self.matches(&[TokenType::Minus, TokenType::Gt]) || self.matches(&[TokenType::Returns]) {
-            self.parse_type()
+            self.parse_type_fact()
         } else {
-            Ok(TypeNode {
-                kind: TypeKind::Primitive(PrimitiveType::Void),
-                span: self.peek().span,
-            })
+            Ok(TypeFact::void(self.peek().span))
         }
     }
 

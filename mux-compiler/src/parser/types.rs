@@ -31,6 +31,13 @@ enum TypeFactKind {
 }
 
 impl TypeFact {
+    pub(super) fn void(span: Span) -> Self {
+        Self {
+            kind: TypeFactKind::Primitive(PrimitiveType::Void),
+            span,
+        }
+    }
+
     pub(super) fn into_compat_type_node(self) -> TypeNode {
         let kind = match self.kind {
             TypeFactKind::Primitive(kind) => TypeKind::Primitive(kind),

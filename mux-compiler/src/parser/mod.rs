@@ -13,9 +13,9 @@ pub use error::{ParserError, ParserResult};
 
 use crate::ast::{
     AstNode, BinaryOp, EnumVariant, EnumVariantField, ExpressionKind, ExpressionNode, Field,
-    FunctionNode, ImportSpec, LiteralNode, MatchArm, Param, PatternNode, Precedence, PrimitiveType,
-    SpanExt, Spanned, StatementKind, StatementNode, TraitBound, TraitRef, TypeKind, TypeNode,
-    UnaryOp, WhereClause,
+    FunctionNode, ImportSpec, LiteralNode, MatchArm, Param, PatternNode, Precedence, SpanExt,
+    Spanned, StatementKind, StatementNode, TraitBound, TraitRef, TypeKind, TypeNode, UnaryOp,
+    WhereClause,
 };
 use crate::diagnostic::DiagnosticCode;
 use crate::lexer::{ByteRange, Span, Token, TokenType};
@@ -555,6 +555,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::PrimitiveType;
     use crate::lexer::{Lexer, Token};
     use crate::source::Source;
     use std::rc::Rc;
