@@ -2077,7 +2077,9 @@ impl<'a> Parser<'a> {
                         type_range,
                     },
                 );
-                fields.push((field_name, field_type));
+                if self.mode == ParserMode::Compatibility {
+                    fields.push((field_name, field_type));
+                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
