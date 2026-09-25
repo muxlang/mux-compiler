@@ -1251,7 +1251,10 @@ impl<'a> Parser<'a> {
             && expr.span.byte_range.is_some_and(|range| {
                 self.syntax_events.iter().any(|event| {
                     event.range == range
-                        && matches!(event.data.as_ref(), Some(SyntaxData::Binary { .. }))
+                        && matches!(
+                            event.data.as_ref(),
+                            Some(SyntaxData::Binary { .. } | SyntaxData::Unary { .. })
+                        )
                 })
             })
         {

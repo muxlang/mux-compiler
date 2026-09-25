@@ -44,6 +44,17 @@ fn validate_tree(node: &syntax::SyntaxNode, tree: &syntax::SyntaxTree, indices: 
     }
 }
 
+fn contains_syntax_data(
+    node: &syntax::SyntaxNode,
+    predicate: fn(&syntax::SyntaxData) -> bool,
+) -> bool {
+    node.data().is_some_and(predicate)
+        || node.children().iter().any(|child| match child {
+            syntax::SyntaxElement::Node(child) => contains_syntax_data(child, predicate),
+            syntax::SyntaxElement::Token(_) => false,
+        })
+}
+
 #[test]
 fn corpus_syntax_trees_reconstruct_the_original_source() {
     for path in fixtures() {
@@ -109,6 +120,17 @@ fn syntax_lowering_preserves_unary_binary_and_postfix_validation() {
         nested_postfix.has_errors(),
         "postfix updates inside binary expressions must remain rejected"
     );
+
+    let comparison = syntax::parse_source("auto result = (-value)<int>(value)\n");
+    assert!(comparison.errors.is_empty(), "{:?}", comparison.errors);
+    assert!(contains_syntax_data(
+        comparison.tree.root(),
+        |data| matches!(data, syntax::SyntaxData::Binary { .. })
+    ));
+    assert!(!contains_syntax_data(
+        comparison.tree.root(),
+        |data| matches!(data, syntax::SyntaxData::Generic { .. })
+    ));
 }
 
 #[test]
