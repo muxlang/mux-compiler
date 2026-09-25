@@ -25,6 +25,37 @@ impl TestDeclarationFact {
     }
 }
 
+struct ImportDeclarationFact {
+    range: ByteRange,
+    span: Span,
+    module_path_range: ByteRange,
+    module_path: String,
+    spec: ImportSpec,
+    syntax_data: SyntaxData,
+}
+
+impl ImportDeclarationFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            module_path_range,
+            module_path,
+            spec,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::Import { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        debug_assert!(range.start <= module_path_range.start && module_path_range.end <= range.end);
+        AstNode::Statement(StatementNode {
+            kind: StatementKind::Import { module_path, spec },
+            span,
+        })
+    }
+}
+
 /// Source ranges recorded by the grammar for a variable declaration. The
 /// expressions and type are retained only to materialize the legacy AST at
 /// parser call sites; syntax consumers use the recorded ranges.
@@ -162,7 +193,9 @@ impl<'a> Parser<'a> {
                 .map(TestDeclarationFact::into_compatibility_ast)
                 .map(Some)
         } else if self.check(TokenType::Import) {
-            self.import_declaration().map(Some)
+            self.import_declaration()
+                .map(ImportDeclarationFact::into_compatibility_ast)
+                .map(Some)
         } else {
             self.statement().map(Some)
         }
@@ -1456,7 +1489,7 @@ impl<'a> Parser<'a> {
         Ok(Some(fields))
     }
 
-    pub(super) fn import_declaration(&mut self) -> ParserResult<AstNode> {
+    fn import_declaration(&mut self) -> ParserResult<ImportDeclarationFact> {
         let import_start = self.current;
         let start_span = self.consume_token(TokenType::Import, "Expected 'import' keyword")?;
         let path_start = self.current;
@@ -1470,20 +1503,27 @@ impl<'a> Parser<'a> {
             .source_range_for_tokens(path_start, path_end)
             .expect("import module path source range");
         let syntax_spec = self.import_syntax_spec(spec_start, self.current);
+        let syntax_data = SyntaxData::Import {
+            module_path: module_path_range,
+            spec: syntax_spec,
+            ast_span: span.byte_range.expect("import span range"),
+        };
         self.record_typed_syntax_node(
             SyntaxKind::ImportDeclaration,
             import_start,
             self.current,
-            SyntaxData::Import {
-                module_path: module_path_range,
-                spec: syntax_spec,
-                ast_span: span.byte_range.expect("import span range"),
-            },
+            syntax_data.clone(),
         );
-        Ok(AstNode::Statement(StatementNode {
-            kind: StatementKind::Import { module_path, spec },
+        Ok(ImportDeclarationFact {
+            range: self
+                .source_range_for_tokens(import_start, self.current)
+                .expect("import declaration source range"),
             span,
-        }))
+            module_path_range,
+            module_path,
+            spec,
+            syntax_data,
+        })
     }
 
     fn import_syntax_spec(&self, start: usize, end: usize) -> SyntaxImportSpec {
