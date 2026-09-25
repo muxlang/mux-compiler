@@ -554,8 +554,8 @@ pub fn parse_source(input: &str) -> ParseOutput {
     let tree_source: Arc<str> = Arc::from(input);
     let mut parser = Parser::new(&lexed.tokens);
     let parser_errors = match parser.parse_for_syntax() {
-        Ok(_) => Vec::new(),
-        Err((_partial_ast, errors)) => errors,
+        Ok(()) => Vec::new(),
+        Err(errors) => errors,
     };
     let syntax_events = parser.syntax_events().to_vec();
     let recovery_spans = parser.recovery_spans().to_vec();

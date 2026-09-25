@@ -486,14 +486,26 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse declarations for lossless syntax consumers. Enum declarations
-    /// retain their syntax facts without materializing enum compatibility AST
-    /// nodes; other declarations keep the ordinary parser path.
-    pub(crate) fn parse_for_syntax(
-        &mut self,
-    ) -> Result<Vec<AstNode>, (Vec<AstNode>, Vec<ParserError>)> {
+    /// Parse declarations for lossless syntax consumers without exposing the
+    /// compatibility AST collected by the shared parser loop.
+    pub(crate) fn parse_for_syntax(&mut self) -> Result<(), Vec<ParserError>> {
         self.mode = ParserMode::SyntaxOnly;
-        self.parse()
+        match self.parse() {
+            Ok(nodes) => {
+                assert!(
+                    nodes.is_empty(),
+                    "syntax-only parser emitted compatibility AST nodes"
+                );
+                Ok(())
+            }
+            Err((nodes, errors)) => {
+                assert!(
+                    nodes.is_empty(),
+                    "syntax-only parser emitted compatibility AST nodes"
+                );
+                Err(errors)
+            }
+        }
     }
 
     /// Spans consumed while skipping malformed input during recovery.
