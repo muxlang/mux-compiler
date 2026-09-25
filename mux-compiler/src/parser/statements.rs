@@ -15,6 +15,42 @@ enum LeafStatementKind {
     Continue,
 }
 
+/// Syntax facts for an `if` statement. Child expressions and blocks remain
+/// parser values until the compatibility adapter assembles the AST node.
+struct IfStatementFact {
+    range: ByteRange,
+    span: Span,
+    condition: ExpressionNode,
+    then_block: Vec<StatementNode>,
+    else_block: Option<Vec<StatementNode>>,
+    syntax_data: SyntaxData,
+}
+
+impl IfStatementFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            condition,
+            then_block,
+            else_block,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::IfStatement { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Statement(StatementNode {
+            kind: StatementKind::If {
+                cond: condition,
+                then_block,
+                else_block,
+            },
+            span,
+        })
+    }
+}
+
 impl LeafStatement {
     pub(super) fn into_compatibility_ast(self) -> AstNode {
         let LeafStatement { range, span, kind } = self;
@@ -170,6 +206,7 @@ impl<'a> Parser<'a> {
     pub(super) fn statement_inner(&mut self) -> ParserResult<AstNode> {
         let result = if self.matches(&[TokenType::If]) {
             self.if_statement()
+                .map(IfStatementFact::into_compatibility_ast)
         } else if self.matches(&[TokenType::While]) {
             self.while_statement()
         } else if self.matches(&[TokenType::For]) {
@@ -291,7 +328,7 @@ impl<'a> Parser<'a> {
         Some(i)
     }
 
-    pub(super) fn if_statement(&mut self) -> ParserResult<AstNode> {
+    fn if_statement(&mut self) -> ParserResult<IfStatementFact> {
         let start = self.current.saturating_sub(1);
         let start_span = self.tokens[start].span;
         let condition = self.parse_expression()?;
@@ -345,25 +382,29 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let range = self
+            .source_range_for_tokens(start, self.current)
+            .expect("parsed if statement has a syntax range");
+        let syntax_data = SyntaxData::IfStatement {
+            condition: condition_range,
+            then_block: then_range,
+            else_branch: else_range,
+        };
         self.record_typed_syntax_node(
             SyntaxKind::IfStatement,
             start,
             self.current,
-            SyntaxData::IfStatement {
-                condition: condition_range,
-                then_block: then_range,
-                else_branch: else_range,
-            },
+            syntax_data.clone(),
         );
         let span = start_span.combine(&end_span);
-        Ok(AstNode::Statement(StatementNode {
-            kind: StatementKind::If {
-                cond: condition,
-                then_block,
-                else_block,
-            },
+        Ok(IfStatementFact {
+            range,
             span,
-        }))
+            condition,
+            then_block,
+            else_block,
+            syntax_data,
+        })
     }
 
     pub(super) fn parse_else_branch(
@@ -386,7 +427,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_else_if_branch(
         &mut self,
     ) -> ParserResult<(Option<Vec<StatementNode>>, Span)> {
-        let nested = self.if_statement()?;
+        let nested = self.if_statement()?.into_compatibility_ast();
         match nested {
             AstNode::Statement(stmt) => {
                 let end_span = stmt.span;
