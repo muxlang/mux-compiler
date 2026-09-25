@@ -59,9 +59,7 @@ impl<'a> Parser<'a> {
                 );
             }
             let combined_span = left_span.combine(&right_span);
-            if self.mode == ParserMode::SyntaxOnly
-                && !self.contains_postfix_update(combined_span.byte_range)
-            {
+            if self.mode == ParserMode::SyntaxOnly {
                 // Binary structure is already represented by SyntaxData. Keep
                 // the left expression only as a span carrier for parser callers;
                 // syntax lowering reconstructs the binary tree from its ranges.
@@ -90,18 +88,52 @@ impl<'a> Parser<'a> {
         Ok(value)
     }
 
-    fn contains_postfix_update(&self, range: Option<crate::lexer::ByteRange>) -> bool {
-        let Some(range) = range else {
-            return false;
-        };
-        self.syntax_events.iter().any(|event| {
-            event.range.start >= range.start
-                && event.range.end <= range.end
-                && matches!(
-                    event.data.as_ref(),
-                    Some(SyntaxData::Unary { postfix: true, .. })
-                )
-        })
+    pub(super) fn first_postfix_update_in(
+        &self,
+        range: Option<crate::lexer::ByteRange>,
+    ) -> Option<crate::lexer::ByteRange> {
+        let range = range?;
+        self.syntax_events
+            .iter()
+            .filter(|event| {
+                event.range.start >= range.start
+                    && event.range.end <= range.end
+                    && matches!(
+                        event.data.as_ref(),
+                        Some(SyntaxData::Unary { postfix: true, .. })
+                    )
+                    && !self.syntax_events.iter().any(|statement| {
+                        matches!(
+                            statement.data.as_ref(),
+                            Some(SyntaxData::ExpressionStatement { expression })
+                                if *expression == event.range
+                        )
+                    })
+            })
+            .map(|event| event.range)
+            .min_by_key(|update| (update.start, update.end))
+    }
+
+    pub(super) fn span_for_byte_range(&self, range: crate::lexer::ByteRange) -> Span {
+        let start = self.tokens.iter().find_map(|token| {
+            token
+                .span
+                .byte_range
+                .is_some_and(|token_range| token_range.start == range.start)
+                .then_some(token.span)
+        });
+        let end = self.tokens.iter().find_map(|token| {
+            token
+                .span
+                .byte_range
+                .is_some_and(|token_range| token_range.end == range.end)
+                .then_some(token.span)
+        });
+        match (start, end) {
+            (Some(start), Some(end)) => start.combine(&end),
+            (Some(span), None) | (None, Some(span)) => span.with_byte_range(range.start, range.end),
+            (None, None) => Span::new(0, 0).with_byte_range(range.start, range.end),
+        }
     }
 
     pub(super) fn parse_unary(&mut self) -> ParserResult<ExpressionNode> {
@@ -134,9 +166,7 @@ impl<'a> Parser<'a> {
             }
             let span = op_token.span.combine(&expr_span);
             let op = UnaryOp::parse(&op_token)?;
-            let expression = if self.mode == ParserMode::SyntaxOnly
-                && !self.contains_postfix_update(span.byte_range)
-            {
+            let expression = if self.mode == ParserMode::SyntaxOnly {
                 // The unary syntax event already records the operator and
                 // operand ranges. Keep the operand only as a span carrier;
                 // syntax lowering reconstructs the unary AST from the event.
@@ -1400,14 +1430,22 @@ impl<'a> Parser<'a> {
                 },
             );
         }
-        ExpressionNode {
-            kind: ExpressionKind::Unary {
-                op,
-                op_span,
-                expr: Box::new(expr),
-                postfix: true,
-            },
-            span: expr_span.combine(&op_span),
+        let span = expr_span.combine(&op_span);
+        if self.mode == ParserMode::SyntaxOnly {
+            ExpressionNode {
+                kind: expr.kind,
+                span,
+            }
+        } else {
+            ExpressionNode {
+                kind: ExpressionKind::Unary {
+                    op,
+                    op_span,
+                    expr: Box::new(expr),
+                    postfix: true,
+                },
+                span,
+            }
         }
     }
 

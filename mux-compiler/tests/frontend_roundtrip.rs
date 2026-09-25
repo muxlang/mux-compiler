@@ -121,6 +121,16 @@ fn syntax_lowering_preserves_unary_binary_and_postfix_validation() {
         "postfix updates inside binary expressions must remain rejected"
     );
 
+    for source in [
+        "func invalid() returns int {\n    auto value = 0\n    return value++\n}\n",
+        "func invalid() returns void {\n    auto value = 0\n    if value++ {\n        return\n    }\n}\n",
+    ] {
+        assert!(
+            syntax::parse_source(source).has_errors(),
+            "postfix updates in return values and conditions must remain rejected"
+        );
+    }
+
     let comparison = syntax::parse_source("auto result = (-value)<int>(value)\n");
     assert!(comparison.errors.is_empty(), "{:?}", comparison.errors);
     assert!(contains_syntax_data(

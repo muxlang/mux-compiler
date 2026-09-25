@@ -1309,6 +1309,21 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn validate_postfix_in_statement(&self, expr: &ExpressionNode) -> ParserResult<()> {
+        if self.mode == ParserMode::SyntaxOnly {
+            let range = expr.span.byte_range;
+            let has_top_level_update = self.syntax_events.iter().any(|event| {
+                Some(event.range) == range
+                    && matches!(
+                        event.data.as_ref(),
+                        Some(SyntaxData::Unary { postfix: true, .. })
+                    )
+            });
+            if has_top_level_update {
+                return Ok(());
+            }
+            return self.check_no_postfix_increment_decrement(expr);
+        }
+
         // If this is a postfix ++ or -- at the top level, it's valid
         if let ExpressionKind::Unary { op, postfix, .. } = &expr.kind
             && *postfix
@@ -1325,6 +1340,17 @@ impl<'a> Parser<'a> {
         &self,
         expr: &ExpressionNode,
     ) -> ParserResult<()> {
+        if self.mode == ParserMode::SyntaxOnly {
+            if let Some(range) = self.first_postfix_update_in(expr.span.byte_range) {
+                return Err(ParserError::with_help(
+                    DiagnosticCode::ParseExpectedToken,
+                    "Increment/Decrement operator can only be used as a standalone statement",
+                    self.span_for_byte_range(range),
+                    "Expressions like 'x + y++' are not supported. Use 'y++' as a separate statement before the expression.",
+                ));
+            }
+            return Ok(());
+        }
         self.check_no_postfix_increment_decrement_kind(&expr.kind, expr.span)
     }
 
