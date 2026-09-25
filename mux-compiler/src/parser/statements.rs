@@ -15,6 +15,111 @@ enum LeafStatementKind {
     Continue,
 }
 
+/// Parsed facts for a `while` statement. Syntax data is authoritative; the
+/// remaining parser values are retained for the compatibility AST adapter.
+struct WhileStatementFact {
+    range: ByteRange,
+    span: Span,
+    condition: ExpressionNode,
+    body: Vec<StatementNode>,
+    syntax_data: SyntaxData,
+}
+
+impl WhileStatementFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            condition,
+            body,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::WhileStatement { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Statement(StatementNode {
+            kind: StatementKind::While {
+                cond: condition,
+                body,
+            },
+            span,
+        })
+    }
+}
+
+/// Parsed facts for a `for` statement, materialized into the legacy AST only
+/// at the statement dispatch boundary.
+struct ForStatementFact {
+    range: ByteRange,
+    span: Span,
+    variable: String,
+    variable_type: TypeNode,
+    iterator: ExpressionNode,
+    body: Vec<StatementNode>,
+    syntax_data: SyntaxData,
+}
+
+impl ForStatementFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            variable,
+            variable_type,
+            iterator,
+            body,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::ForStatement { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Statement(StatementNode {
+            kind: StatementKind::For {
+                var: variable,
+                var_type: variable_type,
+                iter: iterator,
+                body,
+            },
+            span,
+        })
+    }
+}
+
+/// Parsed facts for a `match` statement, kept separate from the compatibility
+/// AST assembled at statement dispatch.
+struct MatchStatementFact {
+    range: ByteRange,
+    span: Span,
+    expression: ExpressionNode,
+    arms: Vec<MatchArm>,
+    syntax_data: SyntaxData,
+}
+
+impl MatchStatementFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            expression,
+            arms,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::MatchStatement { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Statement(StatementNode {
+            kind: StatementKind::Match {
+                expr: expression,
+                arms,
+            },
+            span,
+        })
+    }
+}
+
 /// Syntax facts for an `if` statement. Child expressions and blocks remain
 /// parser values until the compatibility adapter assembles the AST node.
 struct IfStatementFact {
@@ -209,10 +314,13 @@ impl<'a> Parser<'a> {
                 .map(IfStatementFact::into_compatibility_ast)
         } else if self.matches(&[TokenType::While]) {
             self.while_statement()
+                .map(WhileStatementFact::into_compatibility_ast)
         } else if self.matches(&[TokenType::For]) {
             self.for_statement()
+                .map(ForStatementFact::into_compatibility_ast)
         } else if self.matches(&[TokenType::Match]) {
             self.match_statement()
+                .map(MatchStatementFact::into_compatibility_ast)
         } else if self.matches(&[TokenType::Break]) {
             self.break_statement()
                 .map(LeafStatement::into_compatibility_ast)
@@ -468,7 +576,7 @@ impl<'a> Parser<'a> {
         Ok((Some(else_block), end_span))
     }
 
-    pub(super) fn while_statement(&mut self) -> ParserResult<AstNode> {
+    fn while_statement(&mut self) -> ParserResult<WhileStatementFact> {
         let start = self.current.saturating_sub(1);
         let start_span = self.tokens[start].span;
         let condition = self.parse_expression()?;
@@ -508,26 +616,30 @@ impl<'a> Parser<'a> {
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
 
+        let syntax_data = SyntaxData::WhileStatement {
+            condition: condition_range,
+            body: body_range,
+        };
+        let range = self
+            .source_range_for_tokens(start, self.current)
+            .expect("while statement has source range");
         self.record_typed_syntax_node(
             SyntaxKind::WhileStatement,
             start,
             self.current,
-            SyntaxData::WhileStatement {
-                condition: condition_range,
-                body: body_range,
-            },
+            syntax_data.clone(),
         );
 
-        Ok(AstNode::Statement(StatementNode {
-            kind: StatementKind::While {
-                cond: condition,
-                body: body_statements,
-            },
+        Ok(WhileStatementFact {
+            range,
             span,
-        }))
+            condition,
+            body: body_statements,
+            syntax_data,
+        })
     }
 
-    pub(super) fn for_statement(&mut self) -> ParserResult<AstNode> {
+    fn for_statement(&mut self) -> ParserResult<ForStatementFact> {
         let start = self.current.saturating_sub(1);
         let start_span = self.tokens[start].span;
 
@@ -583,30 +695,34 @@ impl<'a> Parser<'a> {
 
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
+        let syntax_data = SyntaxData::ForStatement {
+            variable: variable_range,
+            variable_type: variable_type_range,
+            iterator: iterator_range,
+            body: body_range,
+            body_is_block,
+        };
+        let range = self
+            .source_range_for_tokens(start, self.current)
+            .expect("for statement has source range");
         self.record_typed_syntax_node(
             SyntaxKind::ForStatement,
             start,
             self.current,
-            SyntaxData::ForStatement {
-                variable: variable_range,
-                variable_type: variable_type_range,
-                iterator: iterator_range,
-                body: body_range,
-                body_is_block,
-            },
+            syntax_data.clone(),
         );
-        Ok(AstNode::Statement(StatementNode {
-            kind: StatementKind::For {
-                var,
-                var_type,
-                iter,
-                body: body_statements,
-            },
+        Ok(ForStatementFact {
+            range,
             span,
-        }))
+            variable: var,
+            variable_type: var_type,
+            iterator: iter,
+            body: body_statements,
+            syntax_data,
+        })
     }
 
-    pub(super) fn match_statement(&mut self) -> ParserResult<AstNode> {
+    fn match_statement(&mut self) -> ParserResult<MatchStatementFact> {
         let statement_start = self.current.saturating_sub(1);
         let start_span = self.tokens[self.current].span;
         let expr = self.parse_expression()?;
@@ -642,21 +758,28 @@ impl<'a> Parser<'a> {
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after match arms")?;
         let span = start_span.combine(&end_span);
+        let syntax_data = SyntaxData::MatchStatement {
+            expression: expression_range,
+            arms: arm_ranges,
+            ast_span: span.byte_range.expect("match statement span range"),
+        };
+        let range = self
+            .source_range_for_tokens(statement_start, self.current)
+            .expect("match statement has source range");
         self.record_typed_syntax_node(
             SyntaxKind::MatchStatement,
             statement_start,
             self.current,
-            SyntaxData::MatchStatement {
-                expression: expression_range,
-                arms: arm_ranges,
-                ast_span: span.byte_range.expect("match statement span range"),
-            },
+            syntax_data.clone(),
         );
 
-        Ok(AstNode::Statement(StatementNode {
-            kind: StatementKind::Match { expr, arms },
+        Ok(MatchStatementFact {
+            range,
             span,
-        }))
+            expression: expr,
+            arms,
+            syntax_data,
+        })
     }
 
     /// Helper: Parses a single match arm, including pattern, optional guard, and arm body.
