@@ -132,6 +132,47 @@ impl FunctionDeclarationFact {
     }
 }
 
+struct ClassDeclarationFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    type_params: Vec<(String, Vec<TraitBound>)>,
+    traits: Vec<TraitRef>,
+    fields: Vec<Field>,
+    methods: Vec<FunctionNode>,
+    where_clause: Option<WhereClause>,
+    syntax_data: SyntaxData,
+}
+
+impl ClassDeclarationFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            name,
+            type_params,
+            traits,
+            fields,
+            methods,
+            where_clause,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::Class { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Class {
+            name,
+            type_params,
+            traits,
+            fields,
+            methods,
+            where_clause,
+            span,
+        }
+    }
+}
+
 /// Source ranges recorded by the grammar for a variable declaration. The
 /// expressions and type are retained only to materialize the legacy AST at
 /// parser call sites; syntax consumers use the recorded ranges.
@@ -578,6 +619,11 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn class_declaration(&mut self) -> ParserResult<AstNode> {
+        self.class_declaration_fact()
+            .map(ClassDeclarationFact::into_compatibility_ast)
+    }
+
+    fn class_declaration_fact(&mut self) -> ParserResult<ClassDeclarationFact> {
         let class_start = self.current;
         let start_span = self.tokens[self.current].span;
         self.consume_token(TokenType::Class, "Expected 'class' keyword")?;
@@ -619,28 +665,33 @@ impl<'a> Parser<'a> {
             Some(clause) => start_span.combine(&clause.span),
             None => start_span.combine(&end_span),
         };
+        let syntax_data = SyntaxData::Class {
+            name: name_range,
+            type_parameters,
+            traits: trait_ranges,
+            fields: field_ranges,
+            methods: method_ranges,
+            where_clause: where_range,
+            ast_span: full_span.byte_range.expect("class span source range"),
+        };
         self.record_typed_syntax_node(
             SyntaxKind::ClassDeclaration,
             class_start,
             self.current,
-            SyntaxData::Class {
-                name: name_range,
-                type_parameters,
-                traits: trait_ranges,
-                fields: field_ranges,
-                methods: method_ranges,
-                where_clause: where_range,
-                ast_span: full_span.byte_range.expect("class span source range"),
-            },
+            syntax_data.clone(),
         );
-        Ok(AstNode::Class {
+        Ok(ClassDeclarationFact {
+            range: self
+                .source_range_for_tokens(class_start, self.current)
+                .expect("class declaration source range"),
+            span: full_span,
             name,
             type_params,
             traits,
             fields,
             methods,
             where_clause,
-            span: full_span,
+            syntax_data,
         })
     }
 
