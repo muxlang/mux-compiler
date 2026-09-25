@@ -251,11 +251,6 @@ impl<'a> Parser<'a> {
     /// trailing comma tolerated. The clause may start on a following line
     /// (`func f(a)\n    where { ... }`); if no `where` follows, any newlines
     /// looked past are left unconsumed.
-    pub(super) fn parse_where_clause(&mut self) -> ParserResult<Option<WhereClause>> {
-        self.parse_where_clause_fact()
-            .map(|fact| fact.map(WhereClauseFact::into_compatibility))
-    }
-
     pub(super) fn parse_where_clause_fact(&mut self) -> ParserResult<Option<WhereClauseFact>> {
         if !self.skip_newlines_before(TokenType::Where) {
             return Ok(None);

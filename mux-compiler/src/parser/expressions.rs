@@ -1,3 +1,4 @@
+use super::statements::WhereClauseFact;
 use super::*;
 use crate::syntax::SyntaxData;
 
@@ -670,10 +671,9 @@ impl<'a> Parser<'a> {
         if !self.check(TokenType::CloseParen) {
             loop {
                 let parameter_start = self.current;
-                let param_type = self.parse_type()?;
+                let param_type = self.parse_type_fact()?;
                 let type_range = param_type
-                    .span
-                    .byte_range
+                    .source_range()
                     .expect("lambda parameter type source range");
                 let param_name = self.consume_identifier("Expected parameter name")?;
                 let name_range = self
@@ -699,11 +699,13 @@ impl<'a> Parser<'a> {
                         default_value: None,
                     },
                 );
-                params.push(Param {
-                    name: param_name,
-                    type_: param_type,
-                    default_value: None,
-                });
+                if self.mode == ParserMode::Compatibility {
+                    params.push(Param {
+                        name: param_name,
+                        type_: param_type.into_compat_type_node(),
+                        default_value: None,
+                    });
+                }
 
                 if !self.matches(&[TokenType::Comma]) {
                     break;
@@ -718,16 +720,16 @@ impl<'a> Parser<'a> {
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
 
         let where_start = self.syntax_events.len();
-        let where_clause = self.parse_where_clause()?;
+        let where_clause_fact = self.parse_where_clause_fact()?;
         let where_range = self.last_syntax_range_since(where_start, |data| {
             matches!(data, SyntaxData::WhereClause { .. })
         });
-        if where_clause.is_some() {
+        if where_clause_fact.is_some() {
             self.skip_newlines();
         }
 
-        let return_type = if self.matches(&[TokenType::Returns]) {
-            self.parse_type()?
+        let return_type_fact = if self.matches(&[TokenType::Returns]) {
+            self.parse_type_fact()?
         } else {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
@@ -739,9 +741,8 @@ impl<'a> Parser<'a> {
                 "Lambda expressions require an explicit return type. Example: func(int x) returns int { return x + 1 }",
             ));
         };
-        let return_type_range = return_type
-            .span
-            .byte_range
+        let return_type_range = return_type_fact
+            .source_range()
             .expect("lambda return type source range");
 
         let body = self.block()?;
@@ -749,15 +750,21 @@ impl<'a> Parser<'a> {
         let body_statements = body.statements;
 
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
-        let expr = ExpressionNode {
-            kind: ExpressionKind::Lambda {
+        let span = start_span.combine(&end_span);
+        let kind = if self.mode == ParserMode::SyntaxOnly {
+            // Lambda ranges, parameter types, where predicates, and body
+            // statements are all recorded by syntax events. No compatibility
+            // lambda tree is needed during syntax parsing.
+            ExpressionKind::None
+        } else {
+            ExpressionKind::Lambda {
                 params,
-                return_type,
+                return_type: return_type_fact.into_compat_type_node(),
                 body: body_statements,
-                where_clause,
-            },
-            span: start_span.combine(&end_span),
+                where_clause: where_clause_fact.map(WhereClauseFact::into_compatibility),
+            }
         };
+        let expr = ExpressionNode { kind, span };
         self.record_typed_syntax_node(
             SyntaxKind::LambdaExpression,
             lambda_start,
@@ -806,14 +813,18 @@ impl<'a> Parser<'a> {
             .byte_range
             .expect("if expression else branch source range");
         let span = token_span.combine(&self.previous().span);
-        let expression = ExpressionNode {
-            kind: ExpressionKind::If {
+        let kind = if self.mode == ParserMode::SyntaxOnly {
+            // The syntax event already records all three child ranges. Keep
+            // only a non-target carrier for the remaining parser decisions.
+            ExpressionKind::None
+        } else {
+            ExpressionKind::If {
                 cond: Box::new(cond),
                 then_expr: Box::new(then_expr),
                 else_expr: Box::new(else_expr),
-            },
-            span,
+            }
         };
+        let expression = ExpressionNode { kind, span };
         self.record_typed_syntax_node(
             SyntaxKind::IfExpression,
             expression_start,
@@ -866,30 +877,38 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
             let (body, body_range, body_is_expression) = if self.matches(&[TokenType::Return]) {
                 let body_events_start = self.syntax_events.len();
-                let AstNode::Statement(statement) =
-                    self.return_statement()?.into_compatibility_ast()
-                else {
-                    return Err(ParserError::new(
-                        DiagnosticCode::ParseExpectedToken,
-                        "Expected return statement in match arm",
-                        token_span,
-                    ));
-                };
+                let statement = self.return_statement()?;
                 let body_range = self
                     .last_statement_range_since(body_events_start)
                     .expect("match expression return body range");
-                (vec![statement], body_range, false)
+                let body = if self.mode == ParserMode::Compatibility {
+                    let AstNode::Statement(statement) = statement.into_compatibility_ast() else {
+                        return Err(ParserError::new(
+                            DiagnosticCode::ParseExpectedToken,
+                            "Expected return statement in match arm",
+                            token_span,
+                        ));
+                    };
+                    vec![statement]
+                } else {
+                    Vec::new()
+                };
+                (body, body_range, false)
             } else {
                 let value = self.parse_expression()?;
                 let body_range = value
                     .span
                     .byte_range
                     .expect("match expression arm value range");
-                let statement = StatementNode {
-                    span: value.span,
-                    kind: StatementKind::Expression(value),
+                let body = if self.mode == ParserMode::Compatibility {
+                    vec![StatementNode {
+                        span: value.span,
+                        kind: StatementKind::Expression(value),
+                    }]
+                } else {
+                    Vec::new()
                 };
-                (vec![statement], body_range, true)
+                (body, body_range, true)
             };
             self.skip_newlines();
             self.consume_token(TokenType::CloseBrace, "Expected '}' after match arm value")?;
@@ -908,11 +927,13 @@ impl<'a> Parser<'a> {
                 },
             );
             arm_ranges.push(arm_range);
-            arms.push(MatchArm {
-                pattern,
-                guard,
-                body,
-            });
+            if self.mode == ParserMode::Compatibility {
+                arms.push(MatchArm {
+                    pattern,
+                    guard,
+                    body,
+                });
+            }
             self.skip_newlines();
             if self.matches(&[TokenType::Comma]) {
                 self.skip_newlines();
@@ -920,13 +941,17 @@ impl<'a> Parser<'a> {
         }
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after match arms")?;
-        let expression = ExpressionNode {
-            kind: ExpressionKind::Match {
+        let span = token_span.combine(&end_span);
+        let kind = if self.mode == ParserMode::SyntaxOnly {
+            // The match expression and arm events retain the complete tree.
+            ExpressionKind::None
+        } else {
+            ExpressionKind::Match {
                 expr: Box::new(expr),
                 arms,
-            },
-            span: token_span.combine(&end_span),
+            }
         };
+        let expression = ExpressionNode { kind, span };
         self.record_typed_syntax_node(
             SyntaxKind::MatchExpression,
             match_start,
