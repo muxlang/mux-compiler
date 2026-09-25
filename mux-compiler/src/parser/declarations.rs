@@ -131,12 +131,28 @@ struct FunctionDeclarationFact {
     span: Span,
     name: String,
     type_params: Vec<(String, Vec<TraitBound>)>,
-    params: Vec<Param>,
-    return_type: TypeNode,
+    params: Vec<FunctionParameterFact>,
+    return_type: TypeFact,
     body: Vec<StatementNode>,
     is_common: bool,
     where_clause: Option<WhereClause>,
     syntax_data: SyntaxData,
+}
+
+struct FunctionParameterFact {
+    name: String,
+    type_fact: TypeFact,
+    default_value: Option<ExpressionNode>,
+}
+
+impl FunctionParameterFact {
+    fn into_compatibility_param(self) -> Param {
+        Param {
+            name: self.name,
+            type_: self.type_fact.into_compat_type_node(),
+            default_value: self.default_value,
+        }
+    }
 }
 
 impl FunctionDeclarationFact {
@@ -157,11 +173,15 @@ impl FunctionDeclarationFact {
         debug_assert!(span.byte_range.is_some_and(|span_range| {
             range.start <= span_range.start && span_range.end <= range.end
         }));
+        let params = params
+            .into_iter()
+            .map(FunctionParameterFact::into_compatibility_param)
+            .collect();
         AstNode::Function(FunctionNode {
             name,
             type_params,
             params,
-            return_type,
+            return_type: return_type.into_compat_type_node(),
             body,
             span,
             is_common,
@@ -2074,8 +2094,7 @@ impl<'a> Parser<'a> {
             )
         });
         let return_type_span = return_type
-            .span
-            .byte_range
+            .source_range()
             .expect("function return type span range");
         self.skip_newlines();
         let body_event_start = self.syntax_events.len();
@@ -2200,7 +2219,7 @@ impl<'a> Parser<'a> {
         Ok(bounds)
     }
 
-    pub(super) fn parse_function_params(&mut self) -> ParserResult<Vec<Param>> {
+    fn parse_function_params(&mut self) -> ParserResult<Vec<FunctionParameterFact>> {
         let mut params = Vec::new();
         if !self.check(TokenType::CloseParen) {
             let mut has_default = false;
@@ -2215,10 +2234,13 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    pub(super) fn parse_single_param(&mut self, has_default: &mut bool) -> ParserResult<Param> {
+    fn parse_single_param(
+        &mut self,
+        has_default: &mut bool,
+    ) -> ParserResult<FunctionParameterFact> {
         let parameter_start = self.current;
-        let param_type = self.parse_type()?;
-        let type_range = param_type.span.byte_range.expect("parameter type range");
+        let type_fact = self.parse_type_fact()?;
+        let type_range = type_fact.source_range().expect("parameter type range");
         let param_name = self.consume_identifier("Expected parameter name")?;
         let name = self
             .previous()
@@ -2239,9 +2261,9 @@ impl<'a> Parser<'a> {
                 default_value: default_value_range,
             },
         );
-        Ok(Param {
+        Ok(FunctionParameterFact {
             name: param_name,
-            type_: param_type,
+            type_fact,
             default_value,
         })
     }

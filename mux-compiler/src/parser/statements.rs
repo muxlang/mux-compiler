@@ -1,3 +1,4 @@
+use super::types::TypeFact;
 use super::*;
 
 /// Parsed facts for leaf statements. The syntax event is authoritative; this
@@ -279,9 +280,9 @@ impl<'a> Parser<'a> {
         Ok(Some(WhereClause { predicates, span }))
     }
 
-    pub(super) fn parse_required_return_type(&mut self) -> ParserResult<TypeNode> {
+    pub(super) fn parse_required_return_type(&mut self) -> ParserResult<TypeFact> {
         if self.matches(&[TokenType::Returns]) {
-            self.parse_type()
+            self.parse_type_fact()
         } else {
             Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
