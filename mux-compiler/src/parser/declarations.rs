@@ -77,6 +77,11 @@ struct TypeParameterFact {
     bounds: Vec<TraitBoundFact>,
 }
 
+struct TypeParameterListFact {
+    names: Vec<ByteRange>,
+    compatibility: Vec<TypeParameterFact>,
+}
+
 impl TypeParameterFact {
     fn into_compatibility(self) -> (String, Vec<TraitBound>) {
         let Self {
@@ -995,7 +1000,7 @@ impl<'a> Parser<'a> {
         let body_start = self.current;
         self.consume_token(TokenType::OpenBrace, "Expected '{' after class header")?;
         let members_start = self.syntax_events.len();
-        let (fields, methods) = self.parse_class_body(&type_params)?;
+        let (fields, methods) = self.parse_class_body(&type_params.names)?;
         let field_ranges = self.syntax_ranges_since(members_start, |data| {
             matches!(data, SyntaxData::Field { .. })
         });
@@ -1035,7 +1040,7 @@ impl<'a> Parser<'a> {
                 .expect("class declaration source range"),
             span: full_span,
             name,
-            type_params,
+            type_params: type_params.compatibility,
             traits,
             fields,
             methods,
@@ -1122,12 +1127,16 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_type_params_list(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
+    fn parse_type_params_list(&mut self) -> ParserResult<TypeParameterListFact> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
-            return Ok(Vec::new());
+            return Ok(TypeParameterListFact {
+                names: Vec::new(),
+                compatibility: Vec::new(),
+            });
         }
-        let mut params = Vec::new();
+        let mut names = Vec::new();
+        let mut compatibility = Vec::new();
         loop {
             let parameter_start = self.current;
             let parameter_span = self.peek().span;
@@ -1155,22 +1164,28 @@ impl<'a> Parser<'a> {
                 self.current,
                 syntax_data,
             );
-            params.push(TypeParameterFact {
-                range: self
-                    .source_range_for_tokens(parameter_start, self.current)
-                    .expect("class type parameter source range"),
-                span: parameter_span.combine(&self.previous().span),
-                name: param,
-                name_range: name,
-                bounds,
-            });
+            names.push(name);
+            if self.mode == ParserMode::Compatibility {
+                compatibility.push(TypeParameterFact {
+                    range: self
+                        .source_range_for_tokens(parameter_start, self.current)
+                        .expect("class type parameter source range"),
+                    span: parameter_span.combine(&self.previous().span),
+                    name: param,
+                    name_range: name,
+                    bounds,
+                });
+            }
             if !self.matches(&[TokenType::Comma]) {
                 break;
             }
         }
         self.consume_token(TokenType::Gt, "Expected '>' after type parameters")?;
         self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
-        Ok(params)
+        Ok(TypeParameterListFact {
+            names,
+            compatibility,
+        })
     }
 
     fn parse_trait_bounds(&mut self) -> ParserResult<Vec<TraitBoundFact>> {
@@ -1284,7 +1299,7 @@ impl<'a> Parser<'a> {
 
     fn parse_class_body(
         &mut self,
-        type_params: &[TypeParameterFact],
+        type_params: &[ByteRange],
     ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<FunctionDeclarationFact>)> {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
@@ -1341,7 +1356,7 @@ impl<'a> Parser<'a> {
 
     fn parse_class_member(
         &mut self,
-        type_params: &[TypeParameterFact],
+        type_params: &[ByteRange],
         fields: &mut Vec<FieldDeclarationFact>,
         methods: &mut Vec<FunctionDeclarationFact>,
     ) -> ParserResult<()> {
@@ -1473,7 +1488,7 @@ impl<'a> Parser<'a> {
         let body_start = self.current;
         self.consume_token(TokenType::OpenBrace, "Expected '{' after interface header")?;
         let members_start = self.syntax_events.len();
-        let (fields, methods) = self.parse_interface_body(&type_params, start_span)?;
+        let (fields, methods) = self.parse_interface_body(&type_params.names, start_span)?;
         let field_ranges = self.syntax_ranges_since(members_start, |data| {
             matches!(data, SyntaxData::Field { .. })
         });
@@ -1503,18 +1518,22 @@ impl<'a> Parser<'a> {
                 .expect("interface declaration source range"),
             span: full_span,
             name,
-            type_params,
+            type_params: type_params.compatibility,
             fields,
             methods,
         })
     }
 
-    fn parse_interface_type_params(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
+    fn parse_interface_type_params(&mut self) -> ParserResult<TypeParameterListFact> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
-            return Ok(Vec::new());
+            return Ok(TypeParameterListFact {
+                names: Vec::new(),
+                compatibility: Vec::new(),
+            });
         }
-        let mut params = Vec::new();
+        let mut names = Vec::new();
+        let mut compatibility = Vec::new();
         if !self.check(TokenType::Gt) {
             loop {
                 let parameter_start = self.current;
@@ -1543,15 +1562,18 @@ impl<'a> Parser<'a> {
                     self.current,
                     syntax_data,
                 );
-                params.push(TypeParameterFact {
-                    range: self
-                        .source_range_for_tokens(parameter_start, self.current)
-                        .expect("interface type parameter source range"),
-                    span: parameter_span.combine(&self.previous().span),
-                    name: param,
-                    name_range: name,
-                    bounds,
-                });
+                names.push(name);
+                if self.mode == ParserMode::Compatibility {
+                    compatibility.push(TypeParameterFact {
+                        range: self
+                            .source_range_for_tokens(parameter_start, self.current)
+                            .expect("interface type parameter source range"),
+                        span: parameter_span.combine(&self.previous().span),
+                        name: param,
+                        name_range: name,
+                        bounds,
+                    });
+                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -1559,7 +1581,10 @@ impl<'a> Parser<'a> {
         }
         self.consume_token(TokenType::Gt, "Expected '>' after type parameters")?;
         self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
-        Ok(params)
+        Ok(TypeParameterListFact {
+            names,
+            compatibility,
+        })
     }
 
     fn parse_colon_trait_bounds(&mut self) -> ParserResult<Vec<TraitBoundFact>> {
@@ -1614,7 +1639,7 @@ impl<'a> Parser<'a> {
 
     fn parse_interface_body(
         &mut self,
-        type_params: &[TypeParameterFact],
+        type_params: &[ByteRange],
         start_span: Span,
     ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<InterfaceMethodFact>)> {
         let mut fields = Vec::new();
@@ -1631,7 +1656,7 @@ impl<'a> Parser<'a> {
 
     fn parse_interface_member(
         &mut self,
-        type_params: &[TypeParameterFact],
+        type_params: &[ByteRange],
         start_span: Span,
         fields: &mut Vec<FieldDeclarationFact>,
         methods: &mut Vec<InterfaceMethodFact>,
@@ -2678,7 +2703,7 @@ impl<'a> Parser<'a> {
     /// newlines that separate declarations.
     fn parse_field_declaration_fact(
         &mut self,
-        type_param_names: &[TypeParameterFact],
+        type_param_names: &[ByteRange],
     ) -> ParserResult<FieldDeclarationFact> {
         let field_start = self.current;
         let start_span = self.peek().span;
@@ -2772,7 +2797,7 @@ impl<'a> Parser<'a> {
     fn is_field_generic_param(
         &self,
         field_type: &TypeFact,
-        type_param_names: &[TypeParameterFact],
+        type_param_names: &[ByteRange],
     ) -> bool {
         let Some(type_name_range) = field_type.generic_parameter_name_range() else {
             return false;
@@ -2782,7 +2807,7 @@ impl<'a> Parser<'a> {
         };
         type_param_names
             .iter()
-            .any(|parameter| self.identifier_at_range(parameter.name_range) == Some(type_name))
+            .any(|parameter| self.identifier_at_range(*parameter) == Some(type_name))
     }
 
     fn identifier_at_range(&self, range: ByteRange) -> Option<&str> {
