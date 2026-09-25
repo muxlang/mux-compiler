@@ -173,6 +173,64 @@ impl ClassDeclarationFact {
     }
 }
 
+struct InterfaceDeclarationFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    type_params: Vec<(String, Vec<TraitBound>)>,
+    fields: Vec<Field>,
+    methods: Vec<FunctionNode>,
+    syntax_data: SyntaxData,
+}
+
+impl InterfaceDeclarationFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            name,
+            type_params,
+            fields,
+            methods,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::Interface { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Interface {
+            name,
+            type_params,
+            fields,
+            methods,
+            span,
+        }
+    }
+}
+
+struct FieldDeclarationFact {
+    range: ByteRange,
+    span: Span,
+    field: Field,
+    syntax_data: SyntaxData,
+}
+
+impl FieldDeclarationFact {
+    fn into_compatibility_field(self) -> Field {
+        let Self {
+            range,
+            span,
+            field,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::Field { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        field
+    }
+}
+
 /// Source ranges recorded by the grammar for a variable declaration. The
 /// expressions and type are retained only to materialize the legacy AST at
 /// parser call sites; syntax consumers use the recorded ranges.
@@ -748,17 +806,8 @@ impl<'a> Parser<'a> {
         }
         self.skip_newlines();
         let block = self.block()?;
-        let AstNode::Statement(StatementNode {
-            kind: StatementKind::Block(body),
-            span: block_span,
-        }) = block
-        else {
-            return Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                "Expected a block after test name".to_string(),
-                name_span,
-            ));
-        };
+        let body = block.statements;
+        let block_span = block.span;
         let span = start_span.combine(&block_span);
         let syntax_data = SyntaxData::Test {
             name: name_range,
@@ -1083,6 +1132,11 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn interface_declaration(&mut self) -> ParserResult<AstNode> {
+        self.interface_declaration_fact()
+            .map(InterfaceDeclarationFact::into_compatibility_ast)
+    }
+
+    fn interface_declaration_fact(&mut self) -> ParserResult<InterfaceDeclarationFact> {
         let interface_start = self.current;
         let start_span = self.tokens[self.current].span;
         self.consume_token(TokenType::Interface, "Expected 'interface' keyword")?;
@@ -1111,24 +1165,29 @@ impl<'a> Parser<'a> {
             self.consume_token(TokenType::CloseBrace, "Expected '}' after interface body")?;
         self.record_syntax_node(SyntaxKind::InterfaceBody, body_start, self.current);
         let full_span = start_span.combine(&end_span);
+        let syntax_data = SyntaxData::Interface {
+            name: name_range,
+            type_parameters,
+            fields: field_ranges,
+            methods: method_ranges,
+            ast_span: full_span.byte_range.expect("interface span source range"),
+        };
         self.record_typed_syntax_node(
             SyntaxKind::InterfaceDeclaration,
             interface_start,
             self.current,
-            SyntaxData::Interface {
-                name: name_range,
-                type_parameters,
-                fields: field_ranges,
-                methods: method_ranges,
-                ast_span: full_span.byte_range.expect("interface span source range"),
-            },
+            syntax_data.clone(),
         );
-        Ok(AstNode::Interface {
+        Ok(InterfaceDeclarationFact {
+            range: self
+                .source_range_for_tokens(interface_start, self.current)
+                .expect("interface declaration source range"),
+            span: full_span,
             name,
             type_params,
             fields,
             methods,
-            span: full_span,
+            syntax_data,
         })
     }
 
@@ -2122,7 +2181,16 @@ impl<'a> Parser<'a> {
         &mut self,
         type_param_names: &[(String, Vec<TraitBound>)],
     ) -> ParserResult<Field> {
+        self.parse_field_declaration_fact(type_param_names)
+            .map(FieldDeclarationFact::into_compatibility_field)
+    }
+
+    fn parse_field_declaration_fact(
+        &mut self,
+        type_param_names: &[(String, Vec<TraitBound>)],
+    ) -> ParserResult<FieldDeclarationFact> {
         let field_start = self.current;
+        let start_span = self.peek().span;
         // Check if this is a const field
         let is_const = if self.check(TokenType::Const) {
             self.consume();
@@ -2177,26 +2245,34 @@ impl<'a> Parser<'a> {
         let where_range = self.last_syntax_range_since(where_start, |data| {
             matches!(data, SyntaxData::WhereClause { .. })
         });
+        let syntax_data = SyntaxData::Field {
+            name,
+            type_range,
+            is_generic_param,
+            is_const,
+            default_value: default_value_range,
+            where_clause: where_range,
+        };
         self.record_typed_syntax_node(
             SyntaxKind::FieldDeclaration,
             field_start,
             self.current,
-            SyntaxData::Field {
-                name,
-                type_range,
+            syntax_data.clone(),
+        );
+        Ok(FieldDeclarationFact {
+            range: self
+                .source_range_for_tokens(field_start, self.current)
+                .expect("field declaration source range"),
+            span: start_span.combine(&self.previous().span),
+            field: Field {
+                name: field_name,
+                type_: field_type,
                 is_generic_param,
                 is_const,
-                default_value: default_value_range,
-                where_clause: where_range,
+                default_value,
+                where_clause,
             },
-        );
-        Ok(Field {
-            name: field_name,
-            type_: field_type,
-            is_generic_param,
-            is_const,
-            default_value,
-            where_clause,
+            syntax_data,
         })
     }
 

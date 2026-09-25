@@ -15,6 +15,31 @@ enum LeafStatementKind {
     Continue,
 }
 
+/// Parsed facts for a block. The syntax event records its structural range;
+/// child statements remain available here for compatibility parser callers.
+pub(super) struct BlockStatementFact {
+    pub(super) range: ByteRange,
+    pub(super) span: Span,
+    pub(super) statements: Vec<StatementNode>,
+}
+
+impl BlockStatementFact {
+    pub(super) fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            statements,
+        } = self;
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Statement(StatementNode {
+            kind: StatementKind::Block(statements),
+            span,
+        })
+    }
+}
+
 /// Parsed facts for a `while` statement. Syntax data is authoritative; the
 /// remaining parser values are retained for the compatibility AST adapter.
 struct WhileStatementFact {
@@ -272,20 +297,9 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_function_body(
         &mut self,
-        start_span: Span,
+        _start_span: Span,
     ) -> ParserResult<Vec<StatementNode>> {
-        let body = self.block()?;
-        match body {
-            AstNode::Statement(StatementNode {
-                kind: StatementKind::Block(block),
-                ..
-            }) => Ok(block),
-            _ => Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                "Expected block statement for function body",
-                start_span,
-            )),
-        }
+        Ok(self.block()?.statements)
     }
 
     pub(super) fn statement(&mut self) -> ParserResult<AstNode> {
@@ -335,7 +349,7 @@ impl<'a> Parser<'a> {
         } else if self.looks_like_typed_decl() {
             self.typed_declaration()
         } else if self.check(TokenType::OpenBrace) {
-            self.block()
+            self.block().map(BlockStatementFact::into_compatibility_ast)
         } else {
             self.expression_statement()
                 .map(LeafStatement::into_compatibility_ast)
@@ -448,21 +462,9 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
 
         // Parse then block using the block() function directly
-        let then_event_start = self.syntax_events.len();
-        let AstNode::Statement(StatementNode {
-            kind: StatementKind::Block(then_block),
-            ..
-        }) = self.block()?
-        else {
-            return Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                "Expected block after if condition",
-                self.peek().span,
-            ));
-        };
-        let then_range = self
-            .last_statement_range_since(then_event_start)
-            .expect("parsed if body has a syntax range");
+        let then_fact = self.block()?;
+        let then_range = then_fact.range;
+        let then_block = then_fact.statements;
 
         self.skip_newlines();
         let else_body_start = if self.check(TokenType::Else) {
@@ -559,17 +561,7 @@ impl<'a> Parser<'a> {
             ));
         }
         // Parse the else block using block() which handles the opening brace
-        let AstNode::Statement(StatementNode {
-            kind: StatementKind::Block(else_block),
-            ..
-        }) = self.block()?
-        else {
-            return Err(ParserError::new(
-                DiagnosticCode::ParseExpectedToken,
-                "Expected block after else",
-                self.peek().span,
-            ));
-        };
+        let else_block = self.block()?.statements;
         let end_span = else_block
             .last()
             .map_or_else(|| self.tokens[self.current - 1].span, |s| s.span);
@@ -591,27 +583,11 @@ impl<'a> Parser<'a> {
         // allow newline(s) before body.
         self.skip_newlines();
         self.loop_depth += 1;
-        let body_event_start = self.syntax_events.len();
         let body_result = self.block();
         self.loop_depth -= 1;
-        let body = body_result?;
-        let body_range = self
-            .last_statement_range_since(body_event_start)
-            .expect("parsed while body has a syntax range");
-
-        let body_statements = match body {
-            AstNode::Statement(stmt) => match stmt.kind {
-                StatementKind::Block(block) => block,
-                _ => vec![stmt],
-            },
-            _ => {
-                return Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    "Expected statement after while condition",
-                    start_span,
-                ));
-            }
-        };
+        let body_fact = body_result?;
+        let body_range = body_fact.range;
+        let body_statements = body_fact.statements;
 
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
@@ -669,7 +645,7 @@ impl<'a> Parser<'a> {
         let body_is_block = self.check(TokenType::OpenBrace);
         let body_event_start = self.syntax_events.len();
         let body_result = if self.check(TokenType::OpenBrace) {
-            self.block()
+            self.block().map(BlockStatementFact::into_compatibility_ast)
         } else {
             self.statement()
         };
@@ -828,11 +804,11 @@ impl<'a> Parser<'a> {
         start_span: Span,
     ) -> ParserResult<Vec<StatementNode>> {
         let node = if self.check(TokenType::OpenBrace) {
-            self.block()?
+            self.block()?.into_compatibility_ast()
         } else if self.matches(&[TokenType::Colon]) {
             self.skip_newlines();
             if self.check(TokenType::OpenBrace) {
-                self.block()?
+                self.block()?.into_compatibility_ast()
             } else {
                 self.statement()?
             }
@@ -1046,7 +1022,7 @@ impl<'a> Parser<'a> {
         count
     }
 
-    pub(super) fn block(&mut self) -> ParserResult<AstNode> {
+    pub(super) fn block(&mut self) -> ParserResult<BlockStatementFact> {
         let start = self.current;
         let result = self.block_inner();
         if result.is_ok() {
@@ -1062,15 +1038,19 @@ impl<'a> Parser<'a> {
         result
     }
 
-    fn block_inner(&mut self) -> ParserResult<AstNode> {
+    fn block_inner(&mut self) -> ParserResult<BlockStatementFact> {
+        let block_start = self.current;
         let start_span = self.consume_token(TokenType::OpenBrace, "Expected '{' before block")?;
         self.skip_newlines();
 
         if self.matches(&[TokenType::CloseBrace]) {
-            return Ok(AstNode::Statement(StatementNode {
-                kind: StatementKind::Block(Vec::new()),
+            return Ok(BlockStatementFact {
+                range: self
+                    .source_range_for_tokens(block_start, self.current)
+                    .expect("empty block has source range"),
                 span: start_span.combine(&self.previous().span),
-            }));
+                statements: Vec::new(),
+            });
         }
 
         let statements = self.parse_block_statements_loop()?;
@@ -1089,10 +1069,13 @@ impl<'a> Parser<'a> {
             .filter_map(AstNode::into_statement)
             .collect();
 
-        Ok(AstNode::Statement(StatementNode {
-            kind: StatementKind::Block(stmts),
+        Ok(BlockStatementFact {
+            range: self
+                .source_range_for_tokens(block_start, self.current)
+                .expect("block has source range"),
             span: start_span.combine(&end_span),
-        }))
+            statements: stmts,
+        })
     }
 
     pub(super) fn parse_block_statements_loop(&mut self) -> ParserResult<Vec<AstNode>> {

@@ -662,24 +662,9 @@ impl<'a> Parser<'a> {
             .byte_range
             .expect("lambda return type source range");
 
-        let body_start = self.syntax_events.len();
         let body = self.block()?;
-        let body_range = self
-            .last_statement_range_since(body_start)
-            .expect("lambda body has a syntax range");
-        let body_statements = match body {
-            AstNode::Statement(stmt) => match stmt.kind {
-                StatementKind::Block(block) => block,
-                _ => vec![stmt],
-            },
-            _ => {
-                return Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    "Expected block statement for lambda body",
-                    start_span,
-                ));
-            }
-        };
+        let body_range = body.range;
+        let body_statements = body.statements;
 
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let expr = ExpressionNode {
