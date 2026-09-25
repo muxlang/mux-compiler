@@ -2,9 +2,21 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 1 error found
+error: 3 errors found
+
+error[E0201]: Expected expression, found Invalid("1")
+--> test_scripts/error_cases/lexer_missing_digit.mux:2:10
+   |
+ 2 | auto f = 1.
+   |          ^
 
 error[E0104]: Expected digit after decimal point
+--> test_scripts/error_cases/lexer_missing_digit.mux:2:11
+   |
+ 2 | auto f = 1.
+   |           ^
+
+error[E0201]: Expected expression, found '.'
 --> test_scripts/error_cases/lexer_missing_digit.mux:2:11
    |
  2 | auto f = 1.

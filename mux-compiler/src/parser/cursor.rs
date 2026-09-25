@@ -5,10 +5,15 @@ use crate::diagnostic::DiagnosticCode;
 use crate::lexer::{Span, Token, TokenType};
 
 impl<'a> Parser<'a> {
+    pub(super) fn set_position(&mut self, position: usize) {
+        self.current = position.min(self.tokens.len());
+    }
+
     pub(super) fn advance(&mut self) -> &Token {
-        if !self.is_at_end() {
-            self.current += 1;
+        if self.is_at_end() {
+            return self.peek();
         }
+        self.current += 1;
         self.previous()
     }
 
@@ -22,34 +27,31 @@ impl<'a> Parser<'a> {
     #[must_use]
     pub(super) fn is_at_end(&self) -> bool {
         self.current >= self.tokens.len()
+            || self
+                .tokens
+                .get(self.current)
+                .is_some_and(|token| token.token_type == TokenType::Eof)
     }
 
     pub(super) fn peek(&self) -> &Token {
-        if self.is_at_end() {
-            // Return the last token if available, otherwise use a default EOF token.
-            // This prevents "line 0" errors.
-            if let Some(last_token) = self.tokens.last() {
-                last_token
-            } else {
-                static EOF_TOKEN: Token = Token {
-                    token_type: TokenType::Eof,
-                    span: Span {
-                        row_start: 1,
-                        row_end: None,
-                        col_start: 1,
-                        col_end: None,
-                    },
-                };
-                &EOF_TOKEN
-            }
-        } else {
-            self.tokens[self.current]
-        }
+        static EOF_TOKEN: Token = Token {
+            token_type: TokenType::Eof,
+            span: Span {
+                row_start: 1,
+                row_end: None,
+                col_start: 1,
+                col_end: None,
+                byte_range: Some(crate::lexer::ByteRange::empty(0)),
+            },
+        };
+        self.tokens.get(self.current).copied().unwrap_or(&EOF_TOKEN)
     }
 
     pub(super) fn consume(&mut self) -> &Token {
         if let Some(token) = self.tokens.get(self.current).copied() {
-            self.current += 1;
+            if token.token_type != TokenType::Eof {
+                self.current += 1;
+            }
             token
         } else {
             self.peek()
@@ -101,6 +103,7 @@ impl<'a> Parser<'a> {
                         row_end: None,
                         col_start: 1,
                         col_end: None,
+                        byte_range: Some(crate::lexer::ByteRange::empty(0)),
                     },
                     |t| t.span,
                 ),

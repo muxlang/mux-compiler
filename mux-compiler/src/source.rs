@@ -1,11 +1,25 @@
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 
+fn line_starts(input: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    starts.extend(input.match_indices('\n').map(|(index, _)| index + 1));
+    starts
+}
+
+fn floor_char_boundary(input: &str, mut byte: usize) -> usize {
+    while !input.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    byte
+}
+
 pub struct Source {
-    pub input: String,
+    input: String,
     pub pos: usize,
     pub line: usize,
     pub col: usize,
+    line_starts: Vec<usize>,
 }
 
 impl Source {
@@ -14,6 +28,7 @@ impl Source {
         if Path::new(file_path).exists() {
             let input = std::fs::read_to_string(file_path)?;
             return Ok(Self {
+                line_starts: line_starts(&input),
                 input,
                 pos: 0,
                 line: 1,
@@ -26,6 +41,7 @@ impl Source {
     #[must_use]
     pub fn from_string(input: String) -> Self {
         Self {
+            line_starts: line_starts(&input),
             input,
             pos: 0,
             line: 1,
@@ -37,6 +53,12 @@ impl Source {
     #[must_use]
     pub fn from_test_str(string: &str) -> Source {
         Source::from_string(string.to_string())
+    }
+
+    /// Read the immutable source text.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.input
     }
 
     pub fn next_char(&mut self) -> Option<char> {
@@ -73,6 +95,77 @@ impl Source {
             return None;
         }
         self.input[self.pos..].chars().nth(n)
+    }
+
+    /// Return the one-based line and display column for a UTF-8 byte offset.
+    /// Offsets are clamped to the source and rounded down to a character boundary.
+    #[must_use]
+    pub fn line_col(&self, byte: usize) -> (usize, usize) {
+        let byte = floor_char_boundary(&self.input, byte.min(self.input.len()));
+        let line_index = self
+            .line_starts
+            .partition_point(|&start| start <= byte)
+            .saturating_sub(1);
+        let line_start = self.line_starts.get(line_index).copied().unwrap_or(0);
+        let col = self.input[line_start..byte]
+            .chars()
+            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1))
+            .sum::<usize>()
+            + 1;
+        (line_index + 1, col)
+    }
+
+    /// Resolve legacy one-based line/display-column coordinates to a byte offset.
+    /// When a display column falls inside a wide character, its starting byte is used.
+    #[must_use]
+    pub fn byte_offset(&self, line: usize, col: usize) -> usize {
+        let line_index = line
+            .saturating_sub(1)
+            .min(self.line_starts.len().saturating_sub(1));
+        let start = self.line_starts.get(line_index).copied().unwrap_or(0);
+        let mut display_col = 1;
+        for (relative, ch) in self.input[start..].char_indices() {
+            if ch == '\n' || display_col >= col {
+                return start + relative;
+            }
+            display_col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+        }
+        self.input.len()
+    }
+
+    #[must_use]
+    pub fn slice(&self, range: crate::lexer::ByteRange) -> &str {
+        &self.input[range.start..range.end]
+    }
+
+    /// Return the byte range for a one-based source line, excluding its line ending.
+    #[must_use]
+    pub fn line_range(&self, line: usize) -> Option<crate::lexer::ByteRange> {
+        let index = line.checked_sub(1)?;
+        let start = *self.line_starts.get(index)?;
+        let mut end = self
+            .line_starts
+            .get(index + 1)
+            .copied()
+            .unwrap_or(self.input.len());
+        if end > start && self.input.as_bytes().get(end - 1) == Some(&b'\n') {
+            end -= 1;
+            if end > start && self.input.as_bytes().get(end - 1) == Some(&b'\r') {
+                end -= 1;
+            }
+        }
+        Some(crate::lexer::ByteRange::new(start, end))
+    }
+
+    #[must_use]
+    pub fn line_count(&self) -> usize {
+        self.line_starts.len()
+    }
+
+    #[must_use]
+    pub fn line_text(&self, line: usize) -> Option<&str> {
+        let range = self.line_range(line)?;
+        Some(self.slice(range))
     }
 
     // consumes characters until the specified stop character is found. the stop
@@ -122,6 +215,7 @@ mod tests {
             pos: 0,
             line: 1,
             col: 1,
+            line_starts: vec![0, 4],
         };
 
         assert_eq!(src.next_char(), Some('a'));
@@ -150,6 +244,7 @@ mod tests {
             pos: 0,
             line: 1,
             col: 1,
+            line_starts: vec![0],
         };
 
         assert_eq!(src.peek(), Some('x')); // peek doesn't advance pos
@@ -268,5 +363,22 @@ mod tests {
     fn test_from_test_str_type_consistency() {
         let src = Source::from_test_str("test");
         assert_eq!(src.input, "test".to_string());
+    }
+
+    #[test]
+    fn line_index_resolves_utf8_and_crlf_offsets() {
+        let source = Source::from_test_str("λ\r\nwide界\n");
+        assert_eq!(source.line_col(0), (1, 1));
+        assert_eq!(source.line_col("λ\r\n".len()), (2, 1));
+        assert_eq!(source.line_col("λ\r\nwide".len()), (2, 5));
+        assert_eq!(source.byte_offset(2, 5), "λ\r\nwide".len());
+        assert_eq!(
+            source.slice(crate::lexer::ByteRange::new(0, "λ".len())),
+            "λ"
+        );
+        assert_eq!(source.line_count(), 3);
+        assert_eq!(source.line_text(1), Some("λ"));
+        assert_eq!(source.line_text(2), Some("wide界"));
+        assert_eq!(source.line_text(3), Some(""));
     }
 }

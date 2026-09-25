@@ -1,6 +1,5 @@
 ---
 source: mux-compiler/tests/lexer_integration.rs
-assertion_line: 95
 expression: tokens
 ---
 [
@@ -359,9 +358,13 @@ expression: tokens
         ),
         span: Span {
             row_start: 6,
-            row_end: None,
+            row_end: Some(
+                6,
+            ),
             col_start: 5,
-            col_end: None,
+            col_end: Some(
+                76,
+            ),
         },
     },
     Token {
@@ -379,9 +382,13 @@ expression: tokens
         ),
         span: Span {
             row_start: 7,
-            row_end: None,
+            row_end: Some(
+                7,
+            ),
             col_start: 5,
-            col_end: None,
+            col_end: Some(
+                81,
+            ),
         },
     },
     Token {

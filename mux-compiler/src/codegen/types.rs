@@ -12,6 +12,7 @@ use std::collections::HashSet;
 
 /// Placeholder span for synthetically-constructed `TypeNodes` in codegen.
 const SYNTHETIC_SPAN: Span = Span {
+    byte_range: None,
     row_start: 0,
     col_start: 0,
     row_end: None,

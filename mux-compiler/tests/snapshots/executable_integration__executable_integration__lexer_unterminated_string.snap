@@ -2,12 +2,18 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 1 error found
+error: 2 errors found
 
 error[E0101]: Unterminated string
 --> test_scripts/error_cases/lexer_unterminated_string.mux:2:1
    |
  2 | "hello
-   | ^^^^^
+   | ^^^^^^
    |
 = help: Make sure to close the string with a matching quote
+
+error[E0201]: Expected expression, found Invalid("\"hello")
+--> test_scripts/error_cases/lexer_unterminated_string.mux:2:1
+   |
+ 2 | "hello
+   | ^^^^^^

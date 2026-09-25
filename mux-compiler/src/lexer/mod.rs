@@ -7,12 +7,19 @@ mod span;
 mod token;
 
 pub use error::LexerError;
-pub use span::Span;
+pub use span::{ByteRange, Span};
 pub use token::{Token, TokenType};
 
 use crate::diagnostic::DiagnosticCode;
 use crate::source::Source;
 use ordered_float::OrderedFloat;
+
+/// Output from lossless tokenization. The final token is always a zero-width EOF.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LosslessLexResult {
+    pub tokens: Vec<Token>,
+    pub errors: Vec<LexerError>,
+}
 
 /// The lexer for the Mux language.
 pub struct Lexer<'a> {
@@ -39,6 +46,8 @@ pub struct Lexer<'a> {
     /// expression itself and stops at the boundary of any block written inside
     /// it, which is the rule the two constructs actually need.
     brace_depths: Vec<usize>,
+    lossless: bool,
+    pending_token_start: Option<usize>,
 }
 
 /// A character that may appear in an identifier after its first character.
@@ -56,19 +65,70 @@ impl<'a> Lexer<'a> {
             source,
             bracket_depth: 0,
             brace_depths: Vec::new(),
+            lossless: false,
+            pending_token_start: None,
         }
     }
 
     pub fn lex_all(&mut self) -> Result<Vec<Token>, LexerError> {
+        let result = self.scan_all(false)?;
+        Ok(result
+            .tokens
+            .into_iter()
+            .filter(|token| !matches!(token.token_type, TokenType::Eof))
+            .collect())
+    }
+
+    /// Tokenize every source byte, retaining horizontal whitespace, comments,
+    /// newlines, and invalid text. Errors are collected up to the diagnostic
+    /// limit while scanning continues through EOF.
+    pub fn lex_all_lossless(&mut self) -> LosslessLexResult {
+        self.scan_all(true)
+            .expect("lossless scanning recovers from every lexical error")
+    }
+
+    fn scan_all(&mut self, lossless: bool) -> Result<LosslessLexResult, LexerError> {
+        self.lossless = lossless;
         let mut tokens = Vec::new();
+        let mut errors = Vec::new();
         loop {
-            let tok = self.next_token()?;
-            if matches!(tok.token_type, TokenType::Eof) {
-                break;
+            let before = self.source.pos;
+            match self.next_token() {
+                Ok(token) => {
+                    let eof = matches!(token.token_type, TokenType::Eof);
+                    tokens.push(token);
+                    if eof {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    if !lossless {
+                        self.lossless = false;
+                        return Err(error);
+                    }
+                    if errors.len() < crate::diagnostic::MAX_DIAGNOSTICS {
+                        errors.push(error.clone());
+                    }
+                    if before == self.source.pos {
+                        // Lexical errors that are diagnosed before consuming the
+                        // offending byte must still make progress in lossless mode.
+                        let start = self.source.pos;
+                        let ch = self.source.next_char().expect("source is not at EOF");
+                        let (row, col) = self.source.line_col(start);
+                        let span = Span::new(row, col).with_byte_range(start, self.source.pos);
+                        tokens.push(Token::new(TokenType::Invalid(ch.to_string()), span));
+                    } else {
+                        let range = ByteRange::new(before, self.source.pos);
+                        let text = self.source.slice(range).to_owned();
+                        let (row, col) = self.source.line_col(before);
+                        let span = Span::new(row, col).with_byte_range(before, self.source.pos);
+                        tokens.push(Token::new(TokenType::Invalid(text), span));
+                    }
+                }
             }
-            tokens.push(tok);
         }
-        Ok(tokens)
+        self.lossless = false;
+        Ok(LosslessLexResult { tokens, errors })
     }
 
     /// Consume the next character after a successful peek.
@@ -77,6 +137,15 @@ impl<'a> Lexer<'a> {
         self.source
             .next_char()
             .expect("peek confirmed a character exists")
+    }
+
+    fn span_at_byte(&self, start: usize, end: usize) -> Span {
+        let (row, col) = self.source.line_col(start);
+        Span::new(row, col).with_byte_range(start, end)
+    }
+
+    fn span_at_cursor(&self) -> Span {
+        self.span_at_byte(self.source.pos, self.source.pos)
     }
 
     /// Consume remaining alphanumeric/underscore/dot/digit characters into `buf`
@@ -106,14 +175,61 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn next_token(&mut self) -> Result<Token, LexerError> {
-        self.skip_space()?;
+        self.pending_token_start = None;
+        let result = self.next_token_inner();
+        match result {
+            Ok(mut token) => {
+                if token.span.byte_range.is_none() {
+                    let start = self.pending_token_start.unwrap_or(self.source.pos);
+                    token.span.byte_range = Some(if matches!(token.token_type, TokenType::Eof) {
+                        ByteRange::empty(self.source.pos)
+                    } else {
+                        ByteRange::new(start, self.source.pos)
+                    });
+                }
+                Ok(token)
+            }
+            Err(mut error) => {
+                if error.span.byte_range.is_none() {
+                    let start = self.pending_token_start.unwrap_or(self.source.pos);
+                    error.span.byte_range = Some(ByteRange::new(start, self.source.pos.max(start)));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn next_token_inner(&mut self) -> Result<Token, LexerError> {
+        if self.lossless {
+            if self
+                .source
+                .peek()
+                .is_some_and(|ch| matches!(ch, ' ' | '\t' | '\r'))
+            {
+                let start = self.source.pos;
+                let (row, col) = self.source.line_col(start);
+                while self
+                    .source
+                    .peek()
+                    .is_some_and(|ch| matches!(ch, ' ' | '\t' | '\r'))
+                {
+                    self.source.next_char();
+                }
+                let span = Span::new(row, col).with_byte_range(start, self.source.pos);
+                return Ok(Token::new(TokenType::Whitespace, span));
+            }
+        } else {
+            self.skip_space()?;
+        }
 
         // Newlines inside `(` or `[` continue the expression. Consume a run
         // iteratively so deeply wrapped expressions cannot overflow the stack.
-        while self.bracket_depth > 0 && self.source.peek() == Some('\n') {
+        while !self.lossless && self.bracket_depth > 0 && self.source.peek() == Some('\n') {
             self.source.next_char();
             self.skip_space()?;
         }
+
+        self.pending_token_start = Some(self.source.pos);
 
         match self.source.peek() {
             None => {
@@ -126,37 +242,6 @@ impl<'a> Lexer<'a> {
                 let start_span = Span::new(self.source.line, self.source.col);
                 self.source.next_char(); // consume '\n'
                 return Ok(Token::new(TokenType::NewLine, start_span));
-            }
-            // handle comments and division operator starting with slash
-            Some('/') => {
-                let start_span = Span::new(self.source.line, self.source.col);
-                self.source.next_char(); // consume '/'
-
-                match self.source.peek() {
-                    Some('/') => {
-                        self.source.next_char(); // consume second '/'
-                        let comment = self.source.consume_until('\n');
-                        return Ok(Token::new(
-                            TokenType::LineComment(comment.trim().to_string()),
-                            start_span,
-                        ));
-                    }
-                    Some('*') => {
-                        self.source.next_char(); // consume '*'
-                        let comment = self.read_multiline_comment(start_span)?;
-                        return Ok(Token::new(
-                            TokenType::MultilineComment(comment.trim().to_string()),
-                            start_span,
-                        ));
-                    }
-                    Some('=') => {
-                        self.source.next_char(); // consume '='
-                        return Ok(Token::new(TokenType::SlashEq, start_span));
-                    }
-                    _ => {
-                        return Ok(Token::new(TokenType::Slash, start_span));
-                    }
-                }
             }
             _ => {}
         }
@@ -232,20 +317,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn read_multiline_comment(&mut self, start_span: Span) -> Result<String, LexerError> {
-        let (comment, found) = self.source.consume_multiline_comment();
-        if found {
-            Ok(comment)
-        } else {
-            Err(LexerError::with_help(
-                DiagnosticCode::LexUnterminatedComment,
-                "Unterminated block comment",
-                start_span,
-                "Add a closing '*/' to end the block comment",
-            ))
-        }
-    }
-
     fn consume_identifier_tail(&mut self, ident: &mut String) {
         while let Some(ch) = self.source.peek() {
             if is_identifier_char(ch) {
@@ -296,73 +367,52 @@ impl<'a> Lexer<'a> {
         Token::new(Self::keyword_or_identifier_token_type(ident), start_span)
     }
 
-    fn read_nested_multiline_comment_body(
-        &mut self,
-        start_span: Span,
-    ) -> Result<String, LexerError> {
-        let mut comment = String::new();
-        let mut depth = 1;
-        while depth > 0 {
-            match self.source.next_char() {
-                Some('*') => {
-                    if self.source.peek() == Some('/') {
-                        self.source.next_char();
-                        depth -= 1;
-                        if depth > 0 {
-                            comment.push('*');
-                        }
-                    } else {
-                        comment.push('*');
-                    }
-                }
-                Some('/') => {
-                    if self.source.peek() == Some('*') {
-                        self.source.next_char();
-                        depth += 1;
-                        comment.push_str("/*");
-                    } else {
-                        comment.push('/');
-                    }
-                }
-                Some(ch) => comment.push(ch),
-                None => {
-                    return Err(LexerError::with_help(
-                        DiagnosticCode::LexUnterminatedComment,
-                        "Unterminated block comment",
-                        start_span,
-                        "Add a closing '*/' to end the block comment",
-                    ));
-                }
-            }
-        }
-        Ok(comment)
-    }
-
     fn read_slash_token(&mut self, mut start_span: Span) -> Result<Token, LexerError> {
         if self.source.peek() == Some('/') {
             self.source.next_char();
             let mut comment = String::new();
-            while let Some(ch) = self.source.next_char() {
-                if ch == '\n' || ch == '\r' {
+            while let Some(ch) = self.source.peek() {
+                if ch == '\n' || (self.lossless && ch == '\r') {
                     break;
                 }
-                comment.push(ch);
+                comment.push(self.consume_char());
             }
             start_span.complete(self.source.line, self.source.col);
-            return Ok(Token::new(
-                TokenType::LineComment(comment.trim().to_string()),
-                start_span,
-            ));
+            let comment = if self.lossless {
+                comment
+            } else {
+                comment.trim().to_string()
+            };
+            return Ok(Token::new(TokenType::LineComment(comment), start_span));
         }
 
         if self.source.peek() == Some('*') {
             self.source.next_char();
-            let comment = self.read_nested_multiline_comment_body(start_span)?;
+            let mut comment = String::new();
+            let mut found_terminator = false;
+            while let Some(ch) = self.source.next_char() {
+                if ch == '*' && self.source.peek() == Some('/') {
+                    self.source.next_char();
+                    found_terminator = true;
+                    break;
+                }
+                comment.push(ch);
+            }
+            if !found_terminator {
+                return Err(LexerError::with_help(
+                    DiagnosticCode::LexUnterminatedComment,
+                    "Unterminated block comment",
+                    start_span,
+                    "Add a closing '*/' to end the block comment",
+                ));
+            }
             start_span.complete(self.source.line, self.source.col);
-            return Ok(Token::new(
-                TokenType::MultilineComment(comment.trim().to_string()),
-                start_span,
-            ));
+            let comment = if self.lossless {
+                comment
+            } else {
+                comment.trim().to_string()
+            };
+            return Ok(Token::new(TokenType::MultilineComment(comment), start_span));
         }
 
         if self.source.peek() == Some('=') {
@@ -420,14 +470,14 @@ impl<'a> Lexer<'a> {
             return Err(LexerError::with_help(
                 DiagnosticCode::LexRangeLiteral,
                 "Mux does not have range literal syntax",
-                Span::new(self.source.line, self.source.col),
+                self.span_at_cursor(),
                 "Use range(a, b) to iterate over a numeric range, e.g. for int i in range(0, 10)",
             ));
         } else {
             return Err(LexerError::new(
                 DiagnosticCode::LexInvalidNumber,
                 "Expected digit after decimal point",
-                Span::new(self.source.line, self.source.col),
+                self.span_at_cursor(),
             ));
         }
 
@@ -436,7 +486,7 @@ impl<'a> Lexer<'a> {
             return Err(LexerError::new(
                 DiagnosticCode::LexInvalidNumber,
                 "Expected digit after decimal point",
-                Span::new(self.source.line, self.source.col),
+                self.span_at_cursor(),
             ));
         }
 
@@ -463,7 +513,7 @@ impl<'a> Lexer<'a> {
             return Err(LexerError::with_help(
                 DiagnosticCode::LexInvalidNumber,
                 "Missing exponent in scientific notation",
-                Span::new(self.source.line, self.source.col),
+                self.span_at_cursor(),
                 "The 'e' notation requires digits after it, e.g. 1e10, 2.5e-3",
             ));
         }
@@ -702,13 +752,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn handle_string_start(&mut self, start_span: Span) -> Result<Token, LexerError> {
-        if self.source.peek() == Some('"') && self.source.peek_nth(1) == Some('"') {
-            self.source.next_char();
-            self.source.next_char();
-            self.read_string(start_span)
-        } else {
-            self.read_string(start_span)
-        }
+        self.read_string(start_span)
     }
 
     // Helper function to check for triple quotes
@@ -866,7 +910,7 @@ impl<'a> Lexer<'a> {
                 return Err(LexerError::with_help(
                     DiagnosticCode::LexUnknownEscape,
                     format!("Unknown escape sequence: \\{c}"),
-                    Span::new(self.source.line, self.source.col - 1),
+                    self.span_at_byte(self.source.pos - c.len_utf8(), self.source.pos),
                     "Valid escape sequences: \\n, \\t, \\r, \\0, \\\\, \\', \\\"",
                 ));
             }
@@ -883,9 +927,8 @@ impl<'a> Lexer<'a> {
         start_col: usize,
         mut start_span: Span,
     ) -> Result<Token, LexerError> {
-        let first_newline = string_content.find('\n').unwrap_or(string_content.len());
-        let error_col = start_col + first_newline;
-        start_span.complete(self.source.line, error_col);
+        let _ = (string_content, start_col);
+        start_span.complete(self.source.line, self.source.col);
         Err(LexerError::with_help(
             DiagnosticCode::LexUnterminatedString,
             "Unterminated string",
@@ -962,7 +1005,7 @@ impl<'a> Lexer<'a> {
                 return Err(LexerError::with_help(
                     DiagnosticCode::LexUnknownEscape,
                     format!("Unknown escape sequence: \\{c}"),
-                    Span::new(self.source.line, self.source.col - 1),
+                    self.span_at_byte(self.source.pos - c.len_utf8(), self.source.pos),
                     "Valid escape sequences: \\n, \\t, \\r, \\0, \\\\, \\'",
                 ));
             }
@@ -987,7 +1030,7 @@ impl<'a> Lexer<'a> {
                 return Err(LexerError::with_help(
                     DiagnosticCode::LexInvalidNumber,
                     "Expected digit after decimal point",
-                    Span::new(self.source.line, self.source.col),
+                    self.span_at_cursor(),
                     "A decimal point must be followed by at least one digit, e.g. 1.0",
                 ));
             }
@@ -1104,6 +1147,100 @@ mod tests {
         assert_eq!(tokens[0].token_type, TokenType::OpenParen);
         assert_eq!(tokens[1].token_type, TokenType::Int(1));
         assert_eq!(tokens[2].token_type, TokenType::CloseParen);
+    }
+
+    #[test]
+    fn lossless_tokens_cover_unicode_crlf_comments_and_whitespace() {
+        let input = "auto  x = \"café\"\r\n// keep  this\r\n/* keep  this */";
+        let mut source = Source::from_test_str(input);
+        let result = Lexer::new(&mut source).lex_all_lossless();
+
+        assert!(result.errors.is_empty());
+        let eof = result.tokens.last().expect("EOF is always emitted");
+        assert_eq!(eof.token_type, TokenType::Eof);
+        assert_eq!(eof.span.byte_range, Some(ByteRange::empty(input.len())));
+
+        let mut reconstructed = String::new();
+        let mut previous_end = 0;
+        for token in &result.tokens[..result.tokens.len() - 1] {
+            let range = token.span.byte_range.expect("lexer token has byte range");
+            assert_eq!(range.start, previous_end);
+            assert!(input.is_char_boundary(range.start));
+            assert!(input.is_char_boundary(range.end));
+            reconstructed.push_str(&input[range.start..range.end]);
+            previous_end = range.end;
+        }
+        assert_eq!(previous_end, input.len());
+        assert_eq!(reconstructed, input);
+        assert!(result.tokens.iter().any(|token| {
+            matches!(&token.token_type, TokenType::LineComment(_))
+                && source.slice(token.span.byte_range.unwrap()) == "// keep  this"
+        }));
+        assert!(result.tokens.iter().any(|token| {
+            token.token_type == TokenType::Whitespace
+                && source.slice(token.span.byte_range.unwrap()) == "\r"
+        }));
+    }
+
+    #[test]
+    fn lossless_lexing_retains_invalid_text_and_continues_to_eof() {
+        let input = "auto x = @\n\"unterminated";
+        let mut source = Source::from_test_str(input);
+        let result = Lexer::new(&mut source).lex_all_lossless();
+
+        assert_eq!(result.errors.len(), 2);
+        assert!(
+            result.tokens.iter().any(|token| {
+                matches!(&token.token_type, TokenType::Invalid(raw) if raw == "@")
+            })
+        );
+        assert_eq!(result.tokens.last().unwrap().token_type, TokenType::Eof);
+
+        let reconstructed = result.tokens[..result.tokens.len() - 1]
+            .iter()
+            .map(|token| source.slice(token.span.byte_range.unwrap()))
+            .collect::<String>();
+        assert_eq!(reconstructed, input);
+    }
+
+    #[test]
+    fn lossless_empty_file_has_one_zero_width_eof() {
+        let mut source = Source::from_test_str("");
+        let result = Lexer::new(&mut source).lex_all_lossless();
+
+        assert!(result.errors.is_empty());
+        assert_eq!(result.tokens.len(), 1);
+        assert_eq!(result.tokens[0].token_type, TokenType::Eof);
+        assert_eq!(result.tokens[0].span.byte_range, Some(ByteRange::empty(0)));
+    }
+
+    #[test]
+    fn lexical_error_ranges_survive_combining_characters() {
+        let input = "\"a\u{301}\\z\"";
+        let mut source = Source::from_test_str(input);
+        let result = Lexer::new(&mut source).lex_all_lossless();
+
+        let error_range = result.errors[0]
+            .span
+            .byte_range
+            .expect("lexer errors have byte ranges");
+        assert_eq!(source.slice(error_range), "z");
+        assert_eq!(error_range.start, input.find('z').unwrap());
+    }
+
+    #[test]
+    fn lossless_lexing_caps_errors_without_stopping_token_coverage() {
+        let input = "@".repeat(crate::diagnostic::MAX_DIAGNOSTICS + 7);
+        let mut source = Source::from_test_str(&input);
+        let result = Lexer::new(&mut source).lex_all_lossless();
+
+        assert_eq!(result.errors.len(), crate::diagnostic::MAX_DIAGNOSTICS);
+        assert_eq!(result.tokens.len(), input.len() + 1);
+        let reconstructed = result.tokens[..result.tokens.len() - 1]
+            .iter()
+            .map(|token| source.slice(token.span.byte_range.unwrap()))
+            .collect::<String>();
+        assert_eq!(reconstructed, input);
     }
 
     #[test]
@@ -1776,7 +1913,8 @@ world"
         let eof = lexer.next_token().expect("empty input must lex to EOF");
 
         assert_eq!(eof.token_type, TokenType::Eof);
-        assert_eq!(eof.span, Span::new(1, 1));
+        assert_eq!((eof.span.row_start, eof.span.col_start), (1, 1));
+        assert_eq!(eof.span.byte_range, Some(ByteRange::empty(0)));
     }
 
     #[test]
@@ -1856,10 +1994,19 @@ world"
         // The column should be the start of the triple quotes (after the indentation)
         assert_eq!(string_token.span.row_start, 2);
         assert_eq!(string_token.span.col_start, 23);
-        // The string ends at column 16 on the last line (after "string" and before the closing triple quotes)
-        assert_eq!(string_token.span.col_end, Some(16));
+        // The string span includes all three closing quotes.
+        assert_eq!(string_token.span.col_end, Some(18));
         // The string should span 3 lines (from row 2 to row 4)
         assert_eq!(string_token.span.row_end, Some(4));
+        assert!(matches!(
+            &string_token.token_type,
+            TokenType::Str(value) if value.contains("multi-line") && value.contains("string")
+        ));
+        let range = string_token.span.byte_range.expect("token byte range");
+        assert_eq!(
+            &input[range.start..range.end],
+            "\"\"\"This is a \n        multi-line \n        string\"\"\""
+        );
     }
 
     #[test]

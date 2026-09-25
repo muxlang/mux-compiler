@@ -5,9 +5,9 @@ expression: normalized
 error: 1 error found
 
 error[E0308]: Operator '!=' is not supported between types void and void
---> test_scripts/error_cases/semantic_equality_void.mux:5:29
+--> test_scripts/error_cases/semantic_equality_void.mux:5:18
    |
  5 | print((nothing() != nothing()).to_string())
-   |                             ^
+   |                  ^^
    |
 = help: A call that returns void produces no value, so there is nothing for '!=' to compare.

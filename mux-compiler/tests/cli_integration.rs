@@ -158,6 +158,15 @@ fn version_subcommand_prints_versions() {
 fn help_flag_succeeds() {
     let out = mux().arg("--help").output().expect("spawn mux --help");
     assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("CLI for the Mux Programming Language"),
+        "unexpected help output: {stdout}"
+    );
+    assert!(
+        stdout.contains("-d, --deny-warnings"),
+        "missing deny-warnings option: {stdout}"
+    );
 }
 
 #[test]
@@ -168,14 +177,58 @@ fn no_arguments_is_a_usage_error() {
 }
 
 #[test]
-fn format_subcommand_reports_not_implemented() {
+fn format_rejects_missing_input() {
+    let dir = unique_tmp_dir("format_missing");
     let out = mux()
+        .current_dir(&dir)
         .args(["format", "whatever.mux"])
         .output()
         .expect("spawn mux format");
-    assert!(!out.status.success(), "format stub must exit non-zero");
+    assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("formatting is not yet implemented"));
+    assert!(stderr.contains("whatever.mux"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn format_check_and_default_discovery_share_the_same_output() {
+    let dir = unique_tmp_dir("format_check");
+    std::fs::create_dir(dir.join("nested")).unwrap();
+    let original = "func main() returns void {\nprint(1+2)\n}\n";
+    let path = write_file(&dir.join("nested"), "app.mux", original);
+    let checked = mux()
+        .current_dir(&dir)
+        .args(["format", "-c"])
+        .output()
+        .unwrap();
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+    let formatted = mux().current_dir(&dir).arg("format").output().unwrap();
+    assert!(formatted.status.success(), "{formatted:?}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "func main() returns void {\n    print(1 + 2)\n}\n"
+    );
+    let clean = mux()
+        .current_dir(&dir)
+        .args(["format", "--check"])
+        .output()
+        .unwrap();
+    assert!(clean.status.success(), "{clean:?}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn format_parse_failure_leaves_all_inputs_untouched() {
+    let dir = unique_tmp_dir("format_invalid");
+    let original = "auto x=1\n";
+    let path = write_file(&dir, "a.mux", original);
+    write_file(&dir, "z.mux", "func broken(\n");
+    let output = mux().current_dir(&dir).arg("format").output().unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

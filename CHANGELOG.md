@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Add source formatting and `mux format --check` with four-space indentation
+  and an 80-column target.
+- Preserve source text and byte ranges in the shared syntax frontend for
+  formatting, diagnostics, and test discovery.
+- Correct triple quoted string recognition and operator diagnostic locations.
+- Share the compiler library with the CLI instead of compiling the frontend
+  into both targets.
+
 ## [0.11.0] - 2026-09-14
 
 - `WebSocketFrame.reassemble(fragments)` now combines a bounded sequence of

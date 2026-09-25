@@ -6,6 +6,42 @@ use super::{
 use crate::lexer::Span;
 use anstream::eprintln;
 use std::cmp::{max, min};
+use unicode_width::UnicodeWidthChar;
+
+struct SourceLine<'a> {
+    content: &'a str,
+    start_byte: usize,
+    end_byte: usize,
+}
+
+fn source_lines(source: &str) -> Vec<SourceLine<'_>> {
+    let mut lines = Vec::new();
+    let mut start_byte = 0;
+    for (newline, _) in source.match_indices('\n') {
+        let mut end_byte = newline;
+        if end_byte > start_byte && source.as_bytes()[end_byte - 1] == b'\r' {
+            end_byte -= 1;
+        }
+        lines.push(SourceLine {
+            content: &source[start_byte..end_byte],
+            start_byte,
+            end_byte,
+        });
+        start_byte = newline + 1;
+    }
+    lines.push(SourceLine {
+        content: &source[start_byte..],
+        start_byte,
+        end_byte: source.len(),
+    });
+    lines
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars()
+        .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(1))
+        .sum()
+}
 
 /// Keep noisy recovery output useful without hiding the fact that more
 /// diagnostics existed.
@@ -36,7 +72,12 @@ impl StandardEmitter {
     /// Render a single line of source with line number.
     fn render_source_line(&self, line_number: usize, line_content: &str, width: usize) -> String {
         let line_num_str = self.styles.line_number(&format!("{line_number:width$}"));
-        format!("{} | {}", line_num_str, line_content.trim_end())
+        let line_content = line_content.trim_end();
+        if line_content.is_empty() {
+            format!("{line_num_str} |")
+        } else {
+            format!("{line_num_str} | {line_content}")
+        }
     }
 
     /// Render the gutter (line number column) without source.
@@ -49,28 +90,37 @@ impl StandardEmitter {
         &self,
         span: &Span,
         line_number: usize,
-        line_content: &str,
+        line: &SourceLine<'_>,
         style: LabelStyle,
         width: usize,
     ) -> String {
         let gutter = Self::render_gutter(width);
 
-        // Calculate column positions
-        let start_col = if span.row_start == line_number {
-            span.col_start.saturating_sub(1)
+        let (start_col, end_col) = if let Some(range) = span.byte_range {
+            let start_byte = range.start.max(line.start_byte).min(line.end_byte);
+            let end_byte = range.end.max(line.start_byte).min(line.end_byte);
+            let start = start_byte.saturating_sub(line.start_byte);
+            let end = end_byte.saturating_sub(line.start_byte);
+            (
+                display_width(&line.content[..start]),
+                display_width(&line.content[..end]),
+            )
         } else {
-            0
-        };
-
-        let end_col = if let Some(end_line) = span.row_end {
-            if end_line == line_number {
-                span.col_end.unwrap_or(span.col_start).saturating_sub(1)
+            let start = if span.row_start == line_number {
+                span.col_start.saturating_sub(1)
             } else {
-                line_content.len()
-            }
-        } else {
-            // Single position span - just show caret
-            start_col
+                0
+            };
+            let end = if let Some(end_line) = span.row_end {
+                if end_line == line_number {
+                    span.col_end.unwrap_or(span.col_start).saturating_sub(1)
+                } else {
+                    display_width(line.content)
+                }
+            } else {
+                start
+            };
+            (start, end)
         };
 
         let underline_len = (end_col.saturating_sub(start_col)).max(1);
@@ -92,7 +142,7 @@ impl StandardEmitter {
             return;
         }
 
-        let lines: Vec<&str> = source.lines().collect();
+        let lines = source_lines(source);
         let (min_line, max_line) = Self::label_line_range(diagnostic);
         let width = Self::line_number_width(max_line);
 
@@ -169,7 +219,7 @@ impl StandardEmitter {
     fn emit_source_context_line(
         &self,
         diagnostic: &Diagnostic,
-        lines: &[&str],
+        lines: &[SourceLine<'_>],
         line_num: usize,
         width: usize,
     ) {
@@ -178,7 +228,8 @@ impl StandardEmitter {
             return;
         }
 
-        let line_content = lines[line_idx];
+        let line = &lines[line_idx];
+        let line_content = line.content;
         eprintln!("{}", self.render_source_line(line_num, line_content, width));
 
         for label in &diagnostic.labels {
@@ -188,13 +239,7 @@ impl StandardEmitter {
 
             eprintln!(
                 "{}",
-                self.render_label_underline(
-                    &label.span,
-                    line_num,
-                    line_content,
-                    label.style,
-                    width
-                )
+                self.render_label_underline(&label.span, line_num, line, label.style, width)
             );
             self.emit_label_message(label, width);
         }
@@ -366,5 +411,33 @@ mod tests {
             emitter.render_source_line(3, "  let answer = 42;  ", 2),
             "\u{1b}[1m\u{1b}[38;2;96;165;250m 3\u{1b}[0m |   let answer = 42;"
         );
+        assert_eq!(
+            emitter.render_source_line(4, "   ", 2),
+            "\u{1b}[1m\u{1b}[38;2;96;165;250m 4\u{1b}[0m |"
+        );
+    }
+
+    #[test]
+    fn byte_range_underlines_use_display_width_not_utf8_length() {
+        let emitter = StandardEmitter::new(super::ColorConfig::Auto);
+        let text = "界x\nrest";
+        let lines = super::source_lines(text);
+        let span = Span {
+            row_start: 1,
+            row_end: Some(2),
+            col_start: 1,
+            col_end: Some(5),
+            byte_range: Some(crate::lexer::ByteRange::new(0, text.len())),
+        };
+
+        let rendered = emitter.render_label_underline(
+            &span,
+            1,
+            &lines[0],
+            crate::diagnostic::LabelStyle::Primary,
+            2,
+        );
+
+        assert_eq!(rendered.matches('^').count(), 3);
     }
 }

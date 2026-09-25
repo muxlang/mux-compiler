@@ -2,7 +2,7 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 1 error found
+error: 2 errors found
 
 error[E0104]: Invalid integer literal: 0b102
 --> test_scripts/error_cases/lexer_binary_literal.mux:2:10
@@ -11,3 +11,9 @@ error[E0104]: Invalid integer literal: 0b102
    |          ^^^^^
    |
 = help: Integer literals cannot contain letters. Variable names must not start with a digit.
+
+error[E0201]: Expected expression, found Invalid("0b102")
+--> test_scripts/error_cases/lexer_binary_literal.mux:2:10
+   |
+ 2 | auto x = 0b102
+   |          ^^^^^

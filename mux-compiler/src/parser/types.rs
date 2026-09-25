@@ -3,7 +3,8 @@
 use super::{Parser, ParserError, ParserResult};
 use crate::ast::{PrimitiveType, TypeKind, TypeNode};
 use crate::diagnostic::DiagnosticCode;
-use crate::lexer::{Span, Token, TokenType};
+use crate::lexer::{ByteRange, Span, Token, TokenType};
+use crate::syntax::{SyntaxData, SyntaxKind};
 
 impl<'a> Parser<'a> {
     fn parse_named_type_with_builtin_support(
@@ -21,7 +22,7 @@ impl<'a> Parser<'a> {
         // kept in the name and resolved by the analyzer, which is the only
         // place that knows which module namespaces are in scope.
         while self.check(TokenType::Dot) {
-            self.current += 1;
+            self.advance();
             let segment = self.consume_identifier("Expected a type name after '.'")?;
             name.push('.');
             name.push_str(&segment);
@@ -121,6 +122,110 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_type(&mut self) -> ParserResult<TypeNode> {
+        let start = self.current;
+        match self.parse_type_inner() {
+            Ok(mut node) => {
+                if let Some(range) = self.source_range(start, self.current) {
+                    if let (Some(first), Some(last)) = (
+                        self.tokens.get(start),
+                        self.tokens.get(self.current.saturating_sub(1)),
+                    ) {
+                        node.span.row_start = first.span.row_start;
+                        node.span.col_start = first.span.col_start;
+                        node.span.row_end = last.span.row_end;
+                        node.span.col_end = last.span.col_end;
+                        node.span.byte_range = Some(range);
+                    }
+                }
+                if let Some(data) = self.syntax_data_for_type(start, self.current, &node.kind) {
+                    self.record_typed_syntax_node(SyntaxKind::Type, start, self.current, data);
+                } else {
+                    self.record_syntax_node(SyntaxKind::Type, start, self.current);
+                }
+                Ok(node)
+            }
+            Err(error) => {
+                if self.current > start {
+                    self.record_syntax_node(SyntaxKind::Error, start, self.current);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn source_range(&self, start: usize, end: usize) -> Option<ByteRange> {
+        let first = self.tokens.get(start)?.span.byte_range?;
+        let last = self.tokens.get(end.checked_sub(1)?)?.span.byte_range?;
+        Some(ByteRange::new(first.start, last.end))
+    }
+
+    fn type_name_range(&self, start: usize, end: usize) -> Option<ByteRange> {
+        let mut cursor = start;
+        if !matches!(self.tokens.get(cursor)?.token_type, TokenType::Id(_)) {
+            return None;
+        }
+        cursor += 1;
+        while cursor + 1 < end
+            && self.tokens.get(cursor)?.token_type == TokenType::Dot
+            && matches!(self.tokens.get(cursor + 1)?.token_type, TokenType::Id(_))
+        {
+            cursor += 2;
+        }
+        self.source_range(start, cursor)
+    }
+
+    fn syntax_data_for_type(
+        &self,
+        start: usize,
+        end: usize,
+        kind: &TypeKind,
+    ) -> Option<SyntaxData> {
+        let name = || self.type_name_range(start, end);
+        let ranges = |types: &[TypeNode]| {
+            types
+                .iter()
+                .map(|node| node.span.byte_range)
+                .collect::<Option<Vec<_>>>()
+        };
+        Some(match kind {
+            TypeKind::Primitive(_) | TypeKind::Named(_, _) => SyntaxData::TypeName {
+                name: name()?,
+                arguments: match kind {
+                    TypeKind::Named(_, args) => ranges(args)?,
+                    _ => Vec::new(),
+                },
+            },
+            TypeKind::TraitObject(inner) => SyntaxData::TypeName {
+                name: name()?,
+                arguments: vec![inner.span.byte_range?],
+            },
+            TypeKind::Reference(reference) => SyntaxData::TypeReference {
+                reference: reference.span.byte_range?,
+            },
+            TypeKind::List(element) | TypeKind::Set(element) => SyntaxData::TypeContainer {
+                name: name()?,
+                arguments: vec![element.span.byte_range?],
+            },
+            TypeKind::Map(key, value) | TypeKind::Tuple(key, value) => SyntaxData::TypeContainer {
+                name: name()?,
+                arguments: vec![key.span.byte_range?, value.span.byte_range?],
+            },
+            TypeKind::Function { params, returns } => SyntaxData::FunctionType {
+                parameters: ranges(params)?,
+                returns: returns.span.byte_range?,
+            },
+            TypeKind::Auto => return None,
+        })
+    }
+
+    fn parse_type_inner(&mut self) -> ParserResult<TypeNode> {
+        if self.is_at_end() {
+            return Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                "Expected a type, but reached end of input",
+                self.peek().span,
+            ));
+        }
         if self.matches(&[TokenType::Ref]) {
             let start_span = self.previous().span;
             let referenced_type = self.parse_type()?;
@@ -131,18 +236,24 @@ impl<'a> Parser<'a> {
                     col_start: start_span.col_start,
                     row_end: self.previous().span.row_end,
                     col_end: self.previous().span.col_end,
+                    byte_range: match (start_span.byte_range, self.previous().span.byte_range) {
+                        (Some(start), Some(end)) => {
+                            Some(crate::lexer::ByteRange::new(start.start, end.end))
+                        }
+                        _ => None,
+                    },
                 },
             });
         }
 
         // We are essentially doing a consume here, but without borrowing the
         // parser again so we do not have to clone it.
-        let token = &self.tokens[self.current];
-        let start_span = token.span;
-        self.current += 1;
+        let token_type = self.tokens[self.current].token_type.clone();
+        let start_span = self.tokens[self.current].span;
+        self.advance();
 
-        match token.token_type {
-            TokenType::Id(ref name) => {
+        match &token_type {
+            TokenType::Id(name) => {
                 self.parse_named_type_with_builtin_support(name.clone(), start_span)
             }
 
@@ -181,12 +292,13 @@ impl<'a> Parser<'a> {
             _ => Err(ParserError::from_token(
                 DiagnosticCode::ParseExpectedType,
                 "Expected type",
-                token,
+                &Token::new(token_type.clone(), start_span),
             )),
         }
     }
 
     pub(super) fn parse_type_arguments(&mut self) -> ParserResult<Vec<TypeNode>> {
+        let start = self.current;
         let mut args = Vec::new();
         while !self.check(TokenType::Gt) && !self.is_at_end() {
             let arg = self.parse_type()?;
@@ -197,6 +309,7 @@ impl<'a> Parser<'a> {
             }
             self.skip_newlines();
         }
+        self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
         Ok(args)
     }
 }

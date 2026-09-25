@@ -2,7 +2,7 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 1 error found
+error: 2 errors found
 
 error[E0100]: Unexpected character '|'
 --> test_scripts/error_cases/parser_missing_pipe.mux:2:16
@@ -11,3 +11,9 @@ error[E0100]: Unexpected character '|'
    |                ^
    |
 = help: Single '|' is not a valid operator. Use '||' for logical OR
+
+error[E0201]: Expected expression, found Invalid("|")
+--> test_scripts/error_cases/parser_missing_pipe.mux:2:16
+   |
+ 2 | auto opt = int |
+   |                ^

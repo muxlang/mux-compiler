@@ -2,7 +2,13 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 1 error found
+error: 4 errors found
+
+error[E0201]: Expected expression, found Invalid("0")
+--> test_scripts/error_cases/lexer_range_literal.mux:2:14
+   |
+ 2 | for int i in 0..10 {
+   |              ^
 
 error[E0105]: Mux does not have range literal syntax
 --> test_scripts/error_cases/lexer_range_literal.mux:2:15
@@ -11,3 +17,15 @@ error[E0105]: Mux does not have range literal syntax
    |               ^
    |
 = help: Use range(a, b) to iterate over a numeric range, e.g. for int i in range(0, 10)
+
+error[E0201]: Expected expression, found '..'
+--> test_scripts/error_cases/lexer_range_literal.mux:2:15
+   |
+ 2 | for int i in 0..10 {
+   |               ^^
+
+error[E0200]: Expected newline before statement
+--> test_scripts/error_cases/lexer_range_literal.mux:2:20
+   |
+ 2 | for int i in 0..10 {
+   |                    ^

@@ -2,7 +2,25 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 1 error found
+error: 6 errors found
+
+error[E0200]: Expected variable name after 'auto', found '='
+--> test_scripts/error_cases/lexer_unknown_escape.mux:2:6
+   |
+ 2 | auto = "hi\z"
+   |      ^
+
+error[E0201]: Expected expression, found '='
+--> test_scripts/error_cases/lexer_unknown_escape.mux:2:6
+   |
+ 2 | auto = "hi\z"
+   |      ^
+
+error[E0201]: Expected expression, found Invalid("\"hi\\z")
+--> test_scripts/error_cases/lexer_unknown_escape.mux:2:8
+   |
+ 2 | auto = "hi\z"
+   |        ^^^^^
 
 error[E0102]: Unknown escape sequence: \z
 --> test_scripts/error_cases/lexer_unknown_escape.mux:2:12
@@ -11,3 +29,19 @@ error[E0102]: Unknown escape sequence: \z
    |            ^
    |
 = help: Valid escape sequences: \n, \t, \r, \0, \\, \', \"
+
+error[E0101]: Unterminated string
+--> test_scripts/error_cases/lexer_unknown_escape.mux:2:13
+   |
+ 2 | auto = "hi\z"
+   |             ^
+ 3 |
+   | ^
+   |
+= help: Make sure to close the string with a matching quote
+
+error[E0201]: Expected expression, found Invalid("\"\n")
+--> test_scripts/error_cases/lexer_unknown_escape.mux:2:13
+   |
+ 2 | auto = "hi\z"
+   |             ^

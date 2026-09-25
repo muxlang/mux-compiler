@@ -135,6 +135,19 @@ impl From<std::io::Error> for FixError {
 /// the middle of a wide character is rejected instead of risking a corrupted
 /// source file. This mapping is deliberately performed only by fix handling.
 pub fn source_range_for_span(source: &str, span: Span) -> Result<SourceRange, FixError> {
+    if let Some(range) = span.byte_range {
+        if range.start > range.end
+            || range.end > source.len()
+            || !source.is_char_boundary(range.start)
+            || !source.is_char_boundary(range.end)
+        {
+            return Err(FixError::InvalidLocation {
+                span,
+                reason: "byte range is outside source or splits a UTF-8 character",
+            });
+        }
+        return Ok(SourceRange::new(range.start, range.end));
+    }
     let start = byte_offset_for_position(source, span.row_start, span.col_start, span)?;
     let end = match (span.row_end, span.col_end) {
         (Some(row), Some(column)) => byte_offset_for_position(source, row, column, span)?,
@@ -638,12 +651,12 @@ fn abort_stale_transaction(
 }
 
 #[cfg(unix)]
-fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
     fs::rename(replacement, target)
 }
 
 #[cfg(windows)]
-fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
 
@@ -730,6 +743,7 @@ mod tests {
     fn maps_ascii_and_unicode_spans_to_utf8_bytes() {
         let source = "auto x = \u{3053}\u{3093}\u{306B}\u{3061}\u{306F}\nvalue\n";
         let span = Span {
+            byte_range: None,
             row_start: 1,
             row_end: Some(1),
             col_start: 10,
@@ -742,6 +756,7 @@ mod tests {
         );
 
         let second_line = Span {
+            byte_range: None,
             row_start: 2,
             row_end: None,
             col_start: 1,

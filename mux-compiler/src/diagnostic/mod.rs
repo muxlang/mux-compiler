@@ -93,6 +93,11 @@ pub(crate) fn sort_key(diagnostic: &Diagnostic, files: &Files) -> DiagnosticSort
     )
 }
 
+/// Sort diagnostics consistently for terminal and structured output.
+pub fn sort_diagnostics(diagnostics: &mut [Diagnostic], files: &Files) {
+    diagnostics.sort_by_key(|diagnostic| sort_key(diagnostic, files));
+}
+
 /// A diagnostic message with associated labels and help text.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {

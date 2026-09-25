@@ -40,6 +40,13 @@ impl SpanExt for Span {
         if let (Some(end_row), Some(end_col)) = (other.row_end, other.col_end) {
             span.complete(end_row, end_col);
         }
+        span.byte_range = match (self.byte_range, other.byte_range) {
+            (Some(start), Some(end)) => Some(crate::lexer::ByteRange {
+                start: start.start,
+                end: end.end,
+            }),
+            _ => None,
+        };
         span
     }
 }

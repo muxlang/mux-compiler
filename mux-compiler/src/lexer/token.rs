@@ -103,6 +103,10 @@ pub enum TokenType {
     // Special
     Eof,
     NewLine,
+    /// Horizontal whitespace retained by the lossless lexer.
+    Whitespace,
+    /// Source text that could not be recognized as a token.
+    Invalid(String),
 
     // Comments
     LineComment(String),

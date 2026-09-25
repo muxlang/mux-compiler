@@ -2,7 +2,7 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 1 error found
+error: 4 errors found
 
 error[E0100]: Unexpected character: 'é'
 --> test_scripts/error_cases/lexer_unicode_identifier.mux:2:9
@@ -11,3 +11,21 @@ error[E0100]: Unexpected character: 'é'
    |         ^
    |
 = help: This character is not recognized as valid Mux syntax. Check for accidental special characters or encoding issues.
+
+error[E0200]: Expected '=' after variable name, found Invalid("é")
+--> test_scripts/error_cases/lexer_unicode_identifier.mux:2:9
+   |
+ 2 | auto café = 5
+   |         ^
+
+error[E0201]: Expected expression, found Invalid("é")
+--> test_scripts/error_cases/lexer_unicode_identifier.mux:2:9
+   |
+ 2 | auto café = 5
+   |         ^
+
+error[E0201]: Expected expression, found '='
+--> test_scripts/error_cases/lexer_unicode_identifier.mux:2:11
+   |
+ 2 | auto café = 5
+   |           ^
