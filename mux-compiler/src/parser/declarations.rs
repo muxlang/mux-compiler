@@ -1254,11 +1254,13 @@ impl<'a> Parser<'a> {
                 self.current,
                 syntax_data,
             );
-            traits_list.push(TraitReferenceFact {
-                span: trait_span,
-                name: trait_name,
-                type_arguments: type_args,
-            });
+            if self.mode == ParserMode::Compatibility {
+                traits_list.push(TraitReferenceFact {
+                    span: trait_span,
+                    name: trait_name,
+                    type_arguments: type_args,
+                });
+            }
             if !self.matches(&[TokenType::Comma]) {
                 break;
             }
@@ -1346,12 +1348,16 @@ impl<'a> Parser<'a> {
                 let member_start = self.current;
                 let function_event_start = self.syntax_events.len();
                 let name_span = self.peek_ahead(1).map(|t| t.span);
-                let func = self.function_declaration_fact(false, true)?;
-                if let Some(message) = reserved_class_method_error(
-                    func.name
-                        .as_deref()
-                        .expect("class method facts retain names for reserved-name checks"),
-                ) {
+                let func =
+                    self.function_declaration_fact(false, self.mode == ParserMode::Compatibility)?;
+                if let Some(message) = self
+                    .identifier_at_range(
+                        name_span
+                            .and_then(|span| span.byte_range)
+                            .expect("class method name source range"),
+                    )
+                    .and_then(reserved_class_method_error)
+                {
                     self.record_error(ParserError::new(
                         DiagnosticCode::ParseExpectedToken,
                         &message,
@@ -1364,7 +1370,9 @@ impl<'a> Parser<'a> {
                         matches!(data, SyntaxData::Function { .. })
                     })
                     .expect("parsed class method has a function context");
-                methods.push(func);
+                if self.mode == ParserMode::Compatibility {
+                    methods.push(func);
+                }
                 self.record_typed_syntax_node(
                     SyntaxKind::ClassMethod,
                     member_start,
@@ -1379,12 +1387,16 @@ impl<'a> Parser<'a> {
                 self.consume();
                 let function_event_start = self.syntax_events.len();
                 let name_span = self.peek_ahead(1).map(|t| t.span);
-                let func = self.function_declaration_fact(true, true)?;
-                if let Some(message) = reserved_class_method_error(
-                    func.name
-                        .as_deref()
-                        .expect("class method facts retain names for reserved-name checks"),
-                ) {
+                let func =
+                    self.function_declaration_fact(true, self.mode == ParserMode::Compatibility)?;
+                if let Some(message) = self
+                    .identifier_at_range(
+                        name_span
+                            .and_then(|span| span.byte_range)
+                            .expect("class method name source range"),
+                    )
+                    .and_then(reserved_class_method_error)
+                {
                     self.record_error(ParserError::new(
                         DiagnosticCode::ParseExpectedToken,
                         &message,
@@ -1397,7 +1409,9 @@ impl<'a> Parser<'a> {
                         matches!(data, SyntaxData::Function { .. })
                     })
                     .expect("parsed common class method has a function context");
-                methods.push(func);
+                if self.mode == ParserMode::Compatibility {
+                    methods.push(func);
+                }
                 self.record_typed_syntax_node(
                     SyntaxKind::ClassMethod,
                     member_start,
@@ -1409,7 +1423,9 @@ impl<'a> Parser<'a> {
             }
             TokenType::Id(_) | TokenType::Const => {
                 let field = self.parse_field_declaration_fact(type_params)?;
-                fields.push(field);
+                if self.mode == ParserMode::Compatibility {
+                    fields.push(field);
+                }
             }
             TokenType::NewLine => {
                 self.consume_token(TokenType::NewLine, "Expected newline")?;
@@ -1619,11 +1635,15 @@ impl<'a> Parser<'a> {
         match self.peek().token_type {
             TokenType::Func => {
                 let method = self.parse_interface_method(start_span)?;
-                methods.push(method);
+                if self.mode == ParserMode::Compatibility {
+                    methods.push(method);
+                }
             }
             TokenType::Id(_) | TokenType::Const => {
                 let field = self.parse_field_declaration_fact(type_params)?;
-                fields.push(field);
+                if self.mode == ParserMode::Compatibility {
+                    fields.push(field);
+                }
             }
             TokenType::NewLine => {
                 self.consume_token(TokenType::NewLine, "Expected newline")?;
@@ -1921,7 +1941,9 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let variant = self.parse_single_enum_variant()?;
-            variants.push(variant);
+            if self.mode == ParserMode::Compatibility {
+                variants.push(variant);
+            }
             if !self.matches(&[TokenType::Comma]) {
                 self.skip_newlines();
                 break;
