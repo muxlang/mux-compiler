@@ -56,6 +56,38 @@ impl ImportDeclarationFact {
     }
 }
 
+struct EnumDeclarationFact {
+    range: ByteRange,
+    span: Span,
+    name: String,
+    type_params: Vec<(String, Vec<TraitBound>)>,
+    variants: Vec<EnumVariant>,
+    syntax_data: SyntaxData,
+}
+
+impl EnumDeclarationFact {
+    fn into_compatibility_ast(self) -> AstNode {
+        let Self {
+            range,
+            span,
+            name,
+            type_params,
+            variants,
+            syntax_data,
+        } = self;
+        debug_assert!(matches!(syntax_data, SyntaxData::Enum { .. }));
+        debug_assert!(span.byte_range.is_some_and(|span_range| {
+            range.start <= span_range.start && span_range.end <= range.end
+        }));
+        AstNode::Enum {
+            name,
+            type_params,
+            variants,
+            span,
+        }
+    }
+}
+
 /// Source ranges recorded by the grammar for a variable declaration. The
 /// expressions and type are retained only to materialize the legacy AST at
 /// parser call sites; syntax consumers use the recorded ranges.
@@ -187,7 +219,9 @@ impl<'a> Parser<'a> {
         } else if self.check(TokenType::Interface) {
             self.interface_declaration().map(Some)
         } else if self.check(TokenType::Enum) {
-            self.enum_declaration().map(Some)
+            self.enum_declaration()
+                .map(EnumDeclarationFact::into_compatibility_ast)
+                .map(Some)
         } else if self.check(TokenType::Test) {
             self.test_declaration()
                 .map(TestDeclarationFact::into_compatibility_ast)
@@ -1296,7 +1330,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn enum_declaration(&mut self) -> ParserResult<AstNode> {
+    fn enum_declaration(&mut self) -> ParserResult<EnumDeclarationFact> {
         let enum_start = self.current;
         let start_span = self.tokens[self.current].span;
         self.consume_token(TokenType::Enum, "Expected 'enum' keyword")?;
@@ -1322,22 +1356,27 @@ impl<'a> Parser<'a> {
             self.consume_token(TokenType::CloseBrace, "Expected '}' after enum variants")?;
         self.record_syntax_node(SyntaxKind::EnumBody, body_start, self.current);
         let full_span = start_span.combine(&end_span);
+        let syntax_data = SyntaxData::Enum {
+            name: name_range,
+            type_parameters,
+            variants: variant_ranges,
+            ast_span: full_span.byte_range.expect("enum span source range"),
+        };
         self.record_typed_syntax_node(
             SyntaxKind::EnumDeclaration,
             enum_start,
             self.current,
-            SyntaxData::Enum {
-                name: name_range,
-                type_parameters,
-                variants: variant_ranges,
-                ast_span: full_span.byte_range.expect("enum span source range"),
-            },
+            syntax_data.clone(),
         );
-        Ok(AstNode::Enum {
+        Ok(EnumDeclarationFact {
+            range: self
+                .source_range_for_tokens(enum_start, self.current)
+                .expect("enum declaration source range"),
+            span: full_span,
             name,
             type_params,
             variants,
-            span: full_span,
+            syntax_data,
         })
     }
 
