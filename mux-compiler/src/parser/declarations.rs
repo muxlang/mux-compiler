@@ -73,7 +73,7 @@ struct EnumVariantFact {
     range: ByteRange,
     span: Span,
     name: String,
-    data: Option<Vec<EnumVariantField>>,
+    data: Option<Vec<(Option<String>, TypeFact)>>,
     where_clause: Option<WhereClause>,
     syntax_data: SyntaxData,
 }
@@ -94,7 +94,12 @@ impl EnumVariantFact {
         }));
         EnumVariant {
             name,
-            data,
+            data: data.map(|fields| {
+                fields
+                    .into_iter()
+                    .map(|(name, type_fact)| (name, type_fact.into_compat_type_node()))
+                    .collect()
+            }),
             where_clause,
         }
     }
@@ -1811,9 +1816,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn parse_enum_variant_data(
-        &mut self,
-    ) -> ParserResult<Option<Vec<EnumVariantField>>> {
+    fn parse_enum_variant_data(&mut self) -> ParserResult<Option<Vec<(Option<String>, TypeFact)>>> {
         if !self.matches(&[TokenType::OpenParen]) {
             return Ok(None);
         }
@@ -1821,10 +1824,9 @@ impl<'a> Parser<'a> {
         if !self.check(TokenType::CloseParen) {
             loop {
                 let field_start = self.current;
-                let field_type = self.parse_type()?;
+                let field_type = self.parse_type_fact()?;
                 let type_range = field_type
-                    .span
-                    .byte_range
+                    .source_range()
                     .expect("enum payload field type range");
                 let field_name = if let TokenType::Id(name) = self.peek().token_type.clone() {
                     self.advance();
