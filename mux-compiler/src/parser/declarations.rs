@@ -2,6 +2,8 @@ use super::statements::WhereClauseFact;
 use super::types::TypeFact;
 use super::*;
 
+type EnumVariantDataFact = Vec<(Option<String>, TypeFact)>;
+
 struct TestDeclarationFact {
     range: ByteRange,
     span: Span,
@@ -175,7 +177,7 @@ struct EnumVariantFact {
     range: ByteRange,
     span: Span,
     name: String,
-    data: Option<Vec<(Option<String>, TypeFact)>>,
+    data: Option<EnumVariantDataFact>,
     where_clause: Option<WhereClauseFact>,
     syntax_data: SyntaxData,
 }
@@ -1988,7 +1990,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_enum_variant_data(&mut self) -> ParserResult<Option<Vec<(Option<String>, TypeFact)>>> {
+    fn parse_enum_variant_data(&mut self) -> ParserResult<Option<EnumVariantDataFact>> {
         if !self.matches(&[TokenType::OpenParen]) {
             return Ok(None);
         }
@@ -2530,7 +2532,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
         let default_expr = self.parse_expression()?;
-        if !Self::is_literal_expression(&default_expr) {
+        if !self.is_literal_expression(&default_expr) {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
                 "Default parameter values must be literals",
@@ -2645,7 +2647,15 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn is_literal_expression(expr: &ExpressionNode) -> bool {
+    pub(super) fn is_literal_expression(&self, expr: &ExpressionNode) -> bool {
+        if self.mode == ParserMode::SyntaxOnly {
+            return expr.span.byte_range.is_some_and(|range| {
+                self.syntax_events.iter().any(|event| {
+                    event.range == range
+                        && matches!(event.data.as_ref(), Some(SyntaxData::Literal { .. }))
+                })
+            });
+        }
         matches!(expr.kind, ExpressionKind::Literal(_))
     }
 }

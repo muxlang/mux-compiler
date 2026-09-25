@@ -214,17 +214,17 @@ impl<'a> Parser<'a> {
         let start = self.current;
         match self.parse_type_inner() {
             Ok(mut fact) => {
-                if let Some(range) = self.source_range(start, self.current) {
-                    if let (Some(first), Some(last)) = (
+                if let Some(range) = self.source_range(start, self.current)
+                    && let (Some(first), Some(last)) = (
                         self.tokens.get(start),
                         self.tokens.get(self.current.saturating_sub(1)),
-                    ) {
-                        fact.span.row_start = first.span.row_start;
-                        fact.span.col_start = first.span.col_start;
-                        fact.span.row_end = last.span.row_end;
-                        fact.span.col_end = last.span.col_end;
-                        fact.span.byte_range = Some(range);
-                    }
+                    )
+                {
+                    fact.span.row_start = first.span.row_start;
+                    fact.span.col_start = first.span.col_start;
+                    fact.span.row_end = last.span.row_end;
+                    fact.span.col_end = last.span.col_end;
+                    fact.span.byte_range = Some(range);
                 }
                 if let Some(data) = self.syntax_data_for_type(start, self.current, &fact.kind) {
                     self.record_typed_syntax_node(SyntaxKind::Type, start, self.current, data);

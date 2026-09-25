@@ -444,11 +444,11 @@ impl<'a> Parser<'a> {
         } else if self.matches(&[TokenType::Match]) {
             self.match_statement().map(drop)
         } else if self.matches(&[TokenType::Return]) {
-            self.return_statement().map(drop)
+            self.syntax_only_return_statement()
         } else if self.matches(&[TokenType::Break]) {
-            self.break_statement().map(drop)
+            self.syntax_only_break_statement()
         } else if self.matches(&[TokenType::Continue]) {
-            self.continue_statement().map(drop)
+            self.syntax_only_continue_statement()
         } else if self.matches(&[TokenType::Func]) {
             self.syntax_only_function_declaration(false)
         } else if self.check(TokenType::OpenBrace) {
@@ -1001,6 +1001,23 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn return_statement(&mut self) -> ParserResult<LeafStatement> {
+        let (start, start_span, value, end_span) = self.parse_return_statement()?;
+        Ok(LeafStatement {
+            range: self
+                .source_range_for_tokens(start, self.current)
+                .expect("return statement has source range"),
+            kind: LeafStatementKind::Return(value),
+            span: start_span.combine(&end_span),
+        })
+    }
+
+    fn syntax_only_return_statement(&mut self) -> ParserResult<()> {
+        self.parse_return_statement().map(drop)
+    }
+
+    fn parse_return_statement(
+        &mut self,
+    ) -> ParserResult<(usize, Span, Option<ExpressionNode>, Span)> {
         let start = self.current.saturating_sub(1);
         let start_span = self.tokens[start].span;
 
@@ -1035,16 +1052,25 @@ impl<'a> Parser<'a> {
             },
         );
 
-        Ok(LeafStatement {
-            range: self
-                .source_range_for_tokens(start, self.current)
-                .expect("return statement has source range"),
-            kind: LeafStatementKind::Return(value),
-            span: start_span.combine(&end_span),
-        })
+        Ok((start, start_span, value, end_span))
     }
 
     pub(super) fn break_statement(&mut self) -> ParserResult<LeafStatement> {
+        let (start, start_span) = self.parse_break_statement()?;
+        Ok(LeafStatement {
+            range: self
+                .source_range_for_tokens(start, self.current)
+                .expect("break statement has source range"),
+            kind: LeafStatementKind::Break,
+            span: start_span,
+        })
+    }
+
+    fn syntax_only_break_statement(&mut self) -> ParserResult<()> {
+        self.parse_break_statement().map(drop)
+    }
+
+    fn parse_break_statement(&mut self) -> ParserResult<(usize, Span)> {
         let start = self.current.saturating_sub(1);
         let start_span = self.tokens[start].span;
 
@@ -1064,16 +1090,25 @@ impl<'a> Parser<'a> {
             SyntaxData::BreakStatement,
         );
 
+        Ok((start, start_span))
+    }
+
+    pub(super) fn continue_statement(&mut self) -> ParserResult<LeafStatement> {
+        let (start, start_span) = self.parse_continue_statement()?;
         Ok(LeafStatement {
             range: self
                 .source_range_for_tokens(start, self.current)
-                .expect("break statement has source range"),
-            kind: LeafStatementKind::Break,
+                .expect("continue statement has source range"),
+            kind: LeafStatementKind::Continue,
             span: start_span,
         })
     }
 
-    pub(super) fn continue_statement(&mut self) -> ParserResult<LeafStatement> {
+    fn syntax_only_continue_statement(&mut self) -> ParserResult<()> {
+        self.parse_continue_statement().map(drop)
+    }
+
+    fn parse_continue_statement(&mut self) -> ParserResult<(usize, Span)> {
         let start = self.current.saturating_sub(1);
         let start_span = self.tokens[start].span;
 
@@ -1093,13 +1128,7 @@ impl<'a> Parser<'a> {
             SyntaxData::ContinueStatement,
         );
 
-        Ok(LeafStatement {
-            range: self
-                .source_range_for_tokens(start, self.current)
-                .expect("continue statement has source range"),
-            kind: LeafStatementKind::Continue,
-            span: start_span,
-        })
+        Ok((start, start_span))
     }
 
     pub(super) fn skip_newlines(&mut self) -> usize {

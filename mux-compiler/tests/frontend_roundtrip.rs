@@ -87,6 +87,31 @@ fn corpus_syntax_lowering_succeeds_for_every_fixture() {
 }
 
 #[test]
+fn syntax_lowering_preserves_unary_binary_and_postfix_validation() {
+    let source = "func valid(int seed = 1) returns void {\n    auto value = -seed + 2\n    value++\n    return\n}\n";
+    let parsed = syntax::parse_source(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    parsed
+        .lower()
+        .expect("unary and binary expressions should lower");
+
+    let negative_default =
+        syntax::parse_source("func invalid(int seed = -other) returns void {\n    return\n}\n");
+    assert!(
+        negative_default.has_errors(),
+        "a unary expression must not be accepted as a literal default"
+    );
+
+    let nested_postfix = syntax::parse_source(
+        "func invalid() returns void {\n    auto value = 0\n    value + value++\n}\n",
+    );
+    assert!(
+        nested_postfix.has_errors(),
+        "postfix updates inside binary expressions must remain rejected"
+    );
+}
+
+#[test]
 fn corpus_formatting_preserves_ast_and_is_idempotent() {
     let spans = regex::Regex::new(r"Span \{[^}]*\}").unwrap();
     for path in fixtures() {

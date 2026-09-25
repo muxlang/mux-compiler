@@ -18,8 +18,7 @@ impl<'a> Parser<'a> {
         min_precedence: Precedence,
     ) -> ParserResult<ExpressionNode> {
         let expression_start = self.current;
-        let left = self.parse_unary()?;
-        let mut value = Box::new(left);
+        let mut value = self.parse_unary()?;
 
         // important, do not consume the operator until after checking precedence.
         // otherwise we may consume a lower-precedence operator in a recursive call and lose it.
@@ -68,17 +67,16 @@ impl<'a> Parser<'a> {
                 // syntax lowering reconstructs the binary tree from its ranges.
                 value.span = combined_span;
             } else {
-                let left_expr = *value;
                 let new_value = ExpressionNode {
                     kind: ExpressionKind::Binary {
-                        left: Box::new(left_expr),
+                        left: Box::new(value),
                         op: op_token,
                         op_span: operator_span,
                         right: Box::new(right),
                     },
                     span: combined_span,
                 };
-                value = Box::new(new_value);
+                value = new_value;
             }
             if value.span.byte_range.is_none() {
                 self.record_syntax_node(
@@ -89,7 +87,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(*value)
+        Ok(value)
     }
 
     fn contains_postfix_update(&self, range: Option<crate::lexer::ByteRange>) -> bool {
@@ -134,14 +132,27 @@ impl<'a> Parser<'a> {
                     },
                 );
             }
-            let expression = ExpressionNode {
-                kind: ExpressionKind::Unary {
-                    op: UnaryOp::parse(&op_token)?,
-                    op_span: op_token.span,
-                    expr: Box::new(expr),
-                    postfix: false,
-                },
-                span: op_token.span.combine(&expr_span),
+            let span = op_token.span.combine(&expr_span);
+            let op = UnaryOp::parse(&op_token)?;
+            let expression = if self.mode == ParserMode::SyntaxOnly
+                && !self.contains_postfix_update(span.byte_range)
+            {
+                // The unary syntax event already records the operator and
+                // operand ranges. Keep the operand only as a span carrier;
+                // syntax lowering reconstructs the unary AST from the event.
+                let mut expression = expr;
+                expression.span = span;
+                expression
+            } else {
+                ExpressionNode {
+                    kind: ExpressionKind::Unary {
+                        op,
+                        op_span: op_token.span,
+                        expr: Box::new(expr),
+                        postfix: false,
+                    },
+                    span,
+                }
             };
             if expression.span.byte_range.is_none() {
                 self.record_syntax_node(SyntaxKind::UnaryExpression, start, self.current);
@@ -243,8 +254,7 @@ impl<'a> Parser<'a> {
         start_span: Span,
         first_key: ExpressionNode,
     ) -> ParserResult<ExpressionNode> {
-        let result = self.parse_map_literal_inner(start_span, first_key);
-        result
+        self.parse_map_literal_inner(start_span, first_key)
     }
 
     fn parse_map_literal_inner(
@@ -295,8 +305,7 @@ impl<'a> Parser<'a> {
         start_span: Span,
         first_elem: ExpressionNode,
     ) -> ParserResult<ExpressionNode> {
-        let result = self.parse_set_literal_inner(start_span, first_elem);
-        result
+        self.parse_set_literal_inner(start_span, first_elem)
     }
 
     fn parse_set_literal_inner(
@@ -1020,27 +1029,27 @@ impl<'a> Parser<'a> {
 
             _ => Err(self.unexpected_primary_error(token_type, token_span)),
         };
-        if result.is_ok() {
-            if let Some(range) = token_span.byte_range {
-                let data = match syntax_token_type {
-                    TokenType::Id(_) => Some(SyntaxData::Name { token: range }),
-                    TokenType::Int(_)
-                    | TokenType::Float(_)
-                    | TokenType::Bool(_)
-                    | TokenType::Char(_)
-                    | TokenType::Str(_)
-                    | TokenType::Bytes(_)
-                    | TokenType::None => Some(SyntaxData::Literal { token: range }),
-                    _ => None,
-                };
-                if let Some(data) = data {
-                    self.record_typed_syntax_node(
-                        SyntaxKind::Expression,
-                        token_index,
-                        token_index + 1,
-                        data,
-                    );
-                }
+        if result.is_ok()
+            && let Some(range) = token_span.byte_range
+        {
+            let data = match syntax_token_type {
+                TokenType::Id(_) => Some(SyntaxData::Name { token: range }),
+                TokenType::Int(_)
+                | TokenType::Float(_)
+                | TokenType::Bool(_)
+                | TokenType::Char(_)
+                | TokenType::Str(_)
+                | TokenType::Bytes(_)
+                | TokenType::None => Some(SyntaxData::Literal { token: range }),
+                _ => None,
+            };
+            if let Some(data) = data {
+                self.record_typed_syntax_node(
+                    SyntaxKind::Expression,
+                    token_index,
+                    token_index + 1,
+                    data,
+                );
             }
         }
         result

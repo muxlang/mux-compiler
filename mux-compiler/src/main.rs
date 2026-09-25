@@ -854,7 +854,7 @@ fn top_level_syntax_nodes(node: &syntax::SyntaxNode) -> Vec<&syntax::SyntaxNode>
             .children()
             .iter()
             .filter_map(|child| match child {
-                syntax::SyntaxElement::Node(child) => Some(child),
+                syntax::SyntaxElement::Node(child) => Some(child.as_ref()),
                 _ => None,
             })
             .flat_map(top_level_syntax_nodes)

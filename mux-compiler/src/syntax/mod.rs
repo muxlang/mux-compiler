@@ -450,7 +450,7 @@ impl SyntaxToken {
 /// An ordered token or nested context node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyntaxElement {
-    Node(SyntaxNode),
+    Node(Box<SyntaxNode>),
     Token(usize),
 }
 
@@ -884,10 +884,10 @@ impl SyntaxTree {
             }
         }
         for child in node.children() {
-            if let SyntaxElement::Node(child) = child {
-                if let Some(declaration) = self.find_top_level_ast_node(child)? {
-                    return Ok(Some(declaration));
-                }
+            if let SyntaxElement::Node(child) = child
+                && let Some(declaration) = self.find_top_level_ast_node(child)?
+            {
+                return Ok(Some(declaration));
             }
         }
         Ok(None)
@@ -1770,16 +1770,13 @@ impl SyntaxTree {
             },
             SyntaxImportSpec::Item { item, alias } => ImportSpec::Item {
                 item: identifier(*item)?,
-                alias: (*alias).map(|range| identifier(range)).transpose()?,
+                alias: (*alias).map(&identifier).transpose()?,
             },
             SyntaxImportSpec::Items { items } => ImportSpec::Items {
                 items: items
                     .iter()
                     .map(|(item, alias)| {
-                        Ok((
-                            identifier(*item)?,
-                            (*alias).map(|range| identifier(range)).transpose()?,
-                        ))
+                        Ok((identifier(*item)?, (*alias).map(&identifier).transpose()?))
                     })
                     .collect::<Result<_, SyntaxLowerError>>()?,
             },
@@ -2284,7 +2281,7 @@ fn build_tree(
             .iter()
             .map(|child| match child {
                 PendingElement::Node(child_index) => {
-                    SyntaxElement::Node(finish(*child_index, nodes))
+                    SyntaxElement::Node(Box::new(finish(*child_index, nodes)))
                 }
                 PendingElement::Token(token_index) => SyntaxElement::Token(*token_index),
             })
