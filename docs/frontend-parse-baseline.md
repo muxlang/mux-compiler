@@ -28,9 +28,9 @@ remaining syntax path with:
 ```
 
 The measurements below use Criterion's median estimate from the optimized
-profile. The corpus contained 171 compiling programs; each filtered run measured
-three fixtures. Syntax-only timing includes lossless lexing and recording syntax
-events and facts.
+profile. The corpus contained 171 programs, of which 22 do not compile; each
+filtered run measured three fixtures. Syntax-only timing includes lossless
+lexing and recording syntax events and facts.
 
 | Fixture | Before moving syntax events | After moving syntax events | After byte-only spans | Change from prior |
 | --- | ---: | ---: | ---: | ---: |
