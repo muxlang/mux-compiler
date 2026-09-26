@@ -4,19 +4,19 @@ expression: normalized
 ---
 error: 4 errors found
 
-error[E0201]: Expected expression, found Invalid("'ab")
---> test_scripts/error_cases/lexer_char_too_long.mux:2:10
-   |
- 2 | auto c = 'ab'
-   |          ^^^
-
 error[E0106]: Char literal must be exactly one character
---> test_scripts/error_cases/lexer_char_too_long.mux:2:11
+--> test_scripts/error_cases/lexer_char_too_long.mux:2:10
    |
  2 | auto c = 'ab'
    |          ^^^
    |
 = help: Example: 'a', '\n', '\''
+
+error[E0201]: Expected expression, found Invalid("'ab")
+--> test_scripts/error_cases/lexer_char_too_long.mux:2:10
+   |
+ 2 | auto c = 'ab'
+   |          ^^^
 
 error[E0106]: Unterminated character literal
 --> test_scripts/error_cases/lexer_char_too_long.mux:2:13

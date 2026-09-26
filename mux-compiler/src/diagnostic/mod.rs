@@ -75,7 +75,12 @@ pub(crate) fn sort_key(diagnostic: &Diagnostic, files: &Files) -> DiagnosticSort
         .labels
         .first()
         .map_or((usize::MAX, usize::MAX), |label| {
-            (label.span.row_start, label.span.col_start)
+            label
+                .span
+                .byte_range
+                .map_or((label.span.row_start, label.span.col_start), |range| {
+                    (range.start, 0)
+                })
         });
     let labels = diagnostic
         .labels
