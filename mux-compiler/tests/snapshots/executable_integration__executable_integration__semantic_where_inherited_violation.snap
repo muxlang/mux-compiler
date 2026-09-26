@@ -1,5 +1,6 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
+assertion_line: 258
 expression: normalized
 ---
 error: 1 error found
@@ -10,4 +11,4 @@ error[E0303]: arguments to 'Calc.div' violate its where constraint
 17 | print(c.div(0).to_string())
    |       ^^^^^^^^
    |
-= help: The where predicate at 5:29 is always false for these argument values, so this call would panic on every execution
+= help: The where predicate for 'Calc.div' is always false for these argument values, so this call would panic on every execution

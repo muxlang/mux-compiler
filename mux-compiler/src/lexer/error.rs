@@ -51,11 +51,7 @@ impl ToDiagnostic for LexerError {
 
 impl std::fmt::Display for LexerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Lexer error at {}:{} - {}",
-            self.span.row_start, self.span.col_start, self.message
-        )
+        write!(f, "Lexer error: {}", self.message)
     }
 }
 

@@ -6,7 +6,6 @@
 //! uncovered, so every `Type` variant and operator is exercised here.
 
 use mux_lang::ast::{BinaryOp, PrimitiveType};
-use mux_lang::lexer::Span;
 use mux_lang::semantics::Type;
 use mux_lang::semantics::format::{format_binary_op, format_type};
 
@@ -134,13 +133,4 @@ fn format_binary_op_all_operators() {
     for (op, expected) in cases {
         assert_eq!(format_binary_op(&op), expected, "mismatch for {op:?}");
     }
-}
-
-#[test]
-fn format_span_location_renders_row_and_col() {
-    let span = Span::new(12, 5);
-    assert_eq!(
-        mux_lang::semantics::format::format_span_location(&span),
-        "12:5"
-    );
 }

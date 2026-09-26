@@ -212,11 +212,18 @@ fn bench_codegen(c: &mut Criterion) {
                     let (mut analyzer, mut files) = fresh(prog);
                     let errors = analyzer.analyze(&nodes, Some(&mut files));
                     assert!(errors.is_empty(), "corpus program should pass semantics");
-                    analyzer
+                    (analyzer, files)
                 },
-                |mut analyzer| {
+                |(mut analyzer, files)| {
                     let context = Context::create();
-                    let mut codegen = CodeGenerator::new(&context, &mut analyzer, &prog.name);
+                    let root_file_id = files.id_for_path(&prog.path).expect("benchmark root file");
+                    let mut codegen = CodeGenerator::new(
+                        &context,
+                        &mut analyzer,
+                        &files,
+                        root_file_id,
+                        &prog.name,
+                    );
                     codegen
                         .generate(black_box(&nodes))
                         .expect("corpus program should codegen");
@@ -238,7 +245,9 @@ fn bench_pipeline(c: &mut Criterion) {
                 let errors = analyzer.analyze(&nodes, Some(&mut files));
                 assert!(errors.is_empty(), "corpus program should pass semantics");
                 let context = Context::create();
-                let mut codegen = CodeGenerator::new(&context, &mut analyzer, &prog.name);
+                let root_file_id = files.id_for_path(&prog.path).expect("benchmark root file");
+                let mut codegen =
+                    CodeGenerator::new(&context, &mut analyzer, &files, root_file_id, &prog.name);
                 codegen
                     .generate(&nodes)
                     .expect("corpus program should codegen");

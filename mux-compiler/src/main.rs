@@ -867,7 +867,7 @@ fn extract_test_cases(path: &Path, source: &str, start_id: usize) -> Result<Vec<
             parsed
                 .errors
                 .iter()
-                .map(ToString::to_string)
+                .map(|error| error.display_with_source(source))
                 .collect::<Vec<_>>()
                 .join("; ")
         ));
@@ -3028,7 +3028,8 @@ fn main() {
             |name| name.to_string_lossy().into_owned(),
         )
     };
-    let mut codegen = codegen::CodeGenerator::new(&context, &mut analyzer, &source_name);
+    let mut codegen =
+        codegen::CodeGenerator::new(&context, &mut analyzer, &files, file_id, &source_name);
 
     let stem = file_path
         .to_string_lossy()

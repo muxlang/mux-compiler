@@ -1,6 +1,5 @@
 use crate::diagnostic::{self, Diagnostic, DiagnosticCode, FileId, SpanEdit, ToDiagnostic};
 use crate::lexer::Span;
-use crate::semantics::format::format_span_location;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticError {
@@ -70,12 +69,7 @@ impl ToDiagnostic for SemanticError {
 
 impl std::fmt::Display for SemanticError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Semantic error at {}: {}",
-            format_span_location(&self.span),
-            self.message
-        )
+        write!(f, "Semantic error: {}", self.message)
     }
 }
 

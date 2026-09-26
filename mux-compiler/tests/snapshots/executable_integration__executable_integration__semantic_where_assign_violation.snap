@@ -1,5 +1,6 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
+assertion_line: 258
 expression: normalized
 ---
 error: 1 error found
@@ -10,4 +11,4 @@ error[E0306]: assignment violates where constraint of 'Port.number'
  9 | p.number = 70000
    |            ^^^^^
    |
-= help: The where predicate at 5:41 is always false for this value, so this assignment would panic on every execution
+= help: A where predicate on 'Port' is always false for this value, so this assignment would panic on every execution

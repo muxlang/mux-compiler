@@ -17,7 +17,7 @@ pub(super) fn format_source(source: &str, options: FormatOptions) -> Result<Stri
         let errors = parsed
             .errors
             .iter()
-            .map(display_frontend_error)
+            .map(|error| display_frontend_error(error, source))
             .collect::<Vec<_>>()
             .join("\n");
         return Err(FormatError::parse(errors));
@@ -28,7 +28,7 @@ pub(super) fn format_source(source: &str, options: FormatOptions) -> Result<Stri
         let errors = reparsed
             .errors
             .iter()
-            .map(display_frontend_error)
+            .map(|error| display_frontend_error(error, &formatted))
             .collect::<Vec<_>>()
             .join("\n");
         return Err(FormatError::parse(format!(
@@ -56,11 +56,8 @@ fn significant_token_texts(tree: &SyntaxTree) -> Vec<&str> {
         .collect()
 }
 
-fn display_frontend_error(error: &FrontendError) -> String {
-    match error {
-        FrontendError::Lexer(error) => error.to_string(),
-        FrontendError::Parser(error) => error.to_string(),
-    }
+fn display_frontend_error(error: &FrontendError, source: &str) -> String {
+    error.display_with_source(source)
 }
 
 struct Printer<'a> {

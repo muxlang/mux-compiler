@@ -642,6 +642,21 @@ impl FrontendError {
     pub fn byte_range(&self) -> Option<ByteRange> {
         self.span().byte_range
     }
+
+    /// Format an error with its location derived from the supplied source.
+    #[must_use]
+    pub fn display_with_source(&self, source: &str) -> String {
+        let Some(range) = self.byte_range() else {
+            return self.to_string();
+        };
+        let source = SourceText::new(source.to_owned());
+        let (line, column) = source.line_col(range.start);
+        let (kind, message) = match self {
+            Self::Lexer(error) => ("Lexer", error.message.as_ref()),
+            Self::Parser(error) => ("Parser", error.message.as_ref()),
+        };
+        format!("{kind} error at {line}:{column} - {message}")
+    }
 }
 
 impl std::fmt::Display for FrontendError {

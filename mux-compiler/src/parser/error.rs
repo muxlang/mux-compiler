@@ -64,11 +64,7 @@ impl ToDiagnostic for ParserError {
 
 impl std::fmt::Display for ParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Parser error at {}:{} - {}",
-            self.span.row_start, self.span.col_start, self.message
-        )
+        write!(f, "Parser error: {}", self.message)
     }
 }
 

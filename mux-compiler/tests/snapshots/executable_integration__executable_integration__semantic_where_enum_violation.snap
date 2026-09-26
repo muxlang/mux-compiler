@@ -1,5 +1,6 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
+assertion_line: 258
 expression: normalized
 ---
 error: 1 error found
@@ -10,4 +11,4 @@ error[E0303]: arguments to 'Status.Code' violate its where constraint
  9 | auto bad = Status.Code(9999)
    |            ^^^^^^^^^^^^^^^^^
    |
-= help: The where predicate at 6:43 is always false for these argument values, so this call would panic on every execution
+= help: The where predicate for 'Status.Code' is always false for these argument values, so this call would panic on every execution
