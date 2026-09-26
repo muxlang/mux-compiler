@@ -9,5 +9,17 @@ error[E0307]: Class 'K' does not implement method 'eq' required by interface 'Ha
    |
  5 | class K is Hashable {
    | ^^^^^^^^^^^^^^^^^^^^^
+ 6 |     int n
+   | ^^^^^^^^^
+ 7 |
+   | ^
+ 8 |     func hash() returns int {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 9 |         return self.n
+   | ^^^^^^^^^^^^^^^^^^^^^
+10 |     }
+   | ^^^^^
+11 | }
+   | ^
    |
 = help: Add a method 'eq' to class 'K' with the signature required by interface 'Hashable'

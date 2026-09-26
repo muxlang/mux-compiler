@@ -156,6 +156,7 @@ pub enum SyntaxData {
     },
     Map {
         entries: Vec<(ByteRange, ByteRange)>,
+        inferred_type_span: ByteRange,
     },
     Set {
         elements: Vec<ByteRange>,
@@ -196,24 +197,33 @@ pub enum SyntaxData {
         name: ByteRange,
         type_range: Option<ByteRange>,
         value: Option<ByteRange>,
+        ast_span: ByteRange,
     },
     ExpressionStatement {
         expression: ByteRange,
+        ast_span: ByteRange,
     },
     ReturnStatement {
         value: Option<ByteRange>,
+        ast_span: ByteRange,
     },
-    BreakStatement,
-    ContinueStatement,
+    BreakStatement {
+        ast_span: ByteRange,
+    },
+    ContinueStatement {
+        ast_span: ByteRange,
+    },
     Block,
     IfStatement {
         condition: ByteRange,
         then_block: ByteRange,
         else_branch: Option<ByteRange>,
+        ast_span: ByteRange,
     },
     WhileStatement {
         condition: ByteRange,
         body: ByteRange,
+        ast_span: ByteRange,
     },
     ForStatement {
         variable: ByteRange,
@@ -221,6 +231,7 @@ pub enum SyntaxData {
         iterator: ByteRange,
         body: ByteRange,
         body_is_block: bool,
+        ast_span: ByteRange,
     },
     MatchStatement {
         expression: ByteRange,
@@ -581,6 +592,14 @@ impl ParseOutput {
     pub fn lower_recovered(&self) -> Vec<AstNode> {
         self.tree.lower_compilation_unit_recovered()
     }
+
+    /// Byte ranges skipped or recovered by the parser, preserving source
+    /// coordinates without routing edit consumers through display spans.
+    pub fn recovery_byte_ranges(&self) -> impl Iterator<Item = ByteRange> + '_ {
+        self.recovery_spans
+            .iter()
+            .filter_map(|span| span.byte_range)
+    }
 }
 
 /// Lex and parse source into a lossless tree.
@@ -616,6 +635,12 @@ impl FrontendError {
             Self::Lexer(error) => error.span,
             Self::Parser(error) => error.span,
         }
+    }
+
+    /// Authoritative source bytes associated with this error, if available.
+    #[must_use]
+    pub fn byte_range(&self) -> Option<ByteRange> {
+        self.span().byte_range
     }
 }
 
@@ -1015,6 +1040,21 @@ impl SyntaxTree {
             SyntaxData::Lambda { ast_span, .. }
             | SyntaxData::IfExpression { ast_span, .. }
             | SyntaxData::MatchExpression { ast_span, .. } => self.span_for_range(*ast_span)?,
+            SyntaxData::Unary {
+                operator,
+                operand,
+                postfix,
+            } => {
+                let range = if *postfix {
+                    ByteRange::new(operand.start, operator.end)
+                } else {
+                    ByteRange::new(operator.start, operand.end)
+                };
+                self.span_for_range(range)?
+            }
+            SyntaxData::Binary { left, right, .. } => {
+                self.span_for_range(ByteRange::new(left.start, right.end))?
+            }
             _ => self.span_for_range(node.range)?,
         };
         match data {
@@ -1052,13 +1092,14 @@ impl SyntaxTree {
                 postfix,
             } => {
                 let op_token = self.token_for_range(*operator)?.token();
+                let op_span = self.span_for_range(*operator)?;
                 let expr = self.lower_expression_at(*operand)?;
                 let op = UnaryOp::parse(op_token)
                     .map_err(|_| SyntaxLowerError::MissingToken(*operator))?;
                 Ok(ExpressionNode {
                     kind: ExpressionKind::Unary {
                         op,
-                        op_span: op_token.span,
+                        op_span,
                         expr: Box::new(expr),
                         postfix: *postfix,
                     },
@@ -1071,13 +1112,14 @@ impl SyntaxTree {
                 right,
             } => {
                 let op_token = self.token_for_range(*operator)?.token();
+                let op_span = self.span_for_range(*operator)?;
                 let op = binary_operator(&op_token.token_type)
                     .ok_or(SyntaxLowerError::MissingToken(*operator))?;
                 Ok(ExpressionNode {
                     kind: ExpressionKind::Binary {
                         left: Box::new(self.lower_expression_at(*left)?),
                         op,
-                        op_span: op_token.span,
+                        op_span,
                         right: Box::new(self.lower_expression_at(*right)?),
                     },
                     span,
@@ -1167,28 +1209,34 @@ impl SyntaxTree {
                 ),
                 span,
             }),
-            SyntaxData::Map { entries } => Ok(ExpressionNode {
-                kind: ExpressionKind::MapLiteral {
-                    key_type: Box::new(TypeNode {
-                        kind: TypeKind::Auto,
-                        span,
-                    }),
-                    value_type: Box::new(TypeNode {
-                        kind: TypeKind::Auto,
-                        span,
-                    }),
-                    entries: entries
-                        .iter()
-                        .map(|(key, value)| {
-                            Ok((
-                                self.lower_expression_at(*key)?,
-                                self.lower_expression_at(*value)?,
-                            ))
-                        })
-                        .collect::<Result<_, SyntaxLowerError>>()?,
-                },
-                span,
-            }),
+            SyntaxData::Map {
+                entries,
+                inferred_type_span,
+            } => {
+                let inferred_type_span = self.span_for_range(*inferred_type_span)?;
+                Ok(ExpressionNode {
+                    kind: ExpressionKind::MapLiteral {
+                        key_type: Box::new(TypeNode {
+                            kind: TypeKind::Auto,
+                            span: inferred_type_span,
+                        }),
+                        value_type: Box::new(TypeNode {
+                            kind: TypeKind::Auto,
+                            span: inferred_type_span,
+                        }),
+                        entries: entries
+                            .iter()
+                            .map(|(key, value)| {
+                                Ok((
+                                    self.lower_expression_at(*key)?,
+                                    self.lower_expression_at(*value)?,
+                                ))
+                            })
+                            .collect::<Result<_, SyntaxLowerError>>()?,
+                    },
+                    span,
+                })
+            }
             SyntaxData::Set { elements } => Ok(ExpressionNode {
                 kind: ExpressionKind::SetLiteral(
                     elements
@@ -1344,6 +1392,14 @@ impl SyntaxTree {
             SyntaxData::Import { ast_span, .. } => self.span_for_range(*ast_span)?,
             SyntaxData::MatchStatement { ast_span, .. } => self.span_for_range(*ast_span)?,
             SyntaxData::Function { ast_span, .. } => self.span_for_range(*ast_span)?,
+            SyntaxData::IfStatement { ast_span, .. }
+            | SyntaxData::WhileStatement { ast_span, .. }
+            | SyntaxData::ForStatement { ast_span, .. }
+            | SyntaxData::VariableDeclaration { ast_span, .. }
+            | SyntaxData::ExpressionStatement { ast_span, .. }
+            | SyntaxData::ReturnStatement { ast_span, .. }
+            | SyntaxData::BreakStatement { ast_span }
+            | SyntaxData::ContinueStatement { ast_span } => self.span_for_range(*ast_span)?,
             _ => self.span_for_range(node.range)?,
         };
         let kind = match data {
@@ -1352,14 +1408,15 @@ impl SyntaxTree {
                 name,
                 type_range,
                 value,
+                ..
             } => {
-                let name_token = self.token_for_range(*name)?;
+                let name_range = *name;
                 let name = self.identifier_for_range(*name)?;
                 let type_node = match type_range {
                     Some(range) => self.lower_type_at(*range)?,
                     None => TypeNode {
                         kind: TypeKind::Auto,
-                        span: name_token.token().span,
+                        span: self.span_for_range(name_range)?,
                     },
                 };
                 let value = (*value)
@@ -1386,22 +1443,23 @@ impl SyntaxTree {
                     ),
                 }
             }
-            SyntaxData::ExpressionStatement { expression } => {
+            SyntaxData::ExpressionStatement { expression, .. } => {
                 StatementKind::Expression(self.lower_expression_at(*expression)?)
             }
             SyntaxData::Function { .. } => StatementKind::Function(self.lower_function_node(node)?),
-            SyntaxData::ReturnStatement { value } => StatementKind::Return(
+            SyntaxData::ReturnStatement { value, .. } => StatementKind::Return(
                 (*value)
                     .map(|range| self.lower_expression_at(range))
                     .transpose()?,
             ),
-            SyntaxData::BreakStatement => StatementKind::Break,
-            SyntaxData::ContinueStatement => StatementKind::Continue,
+            SyntaxData::BreakStatement { .. } => StatementKind::Break,
+            SyntaxData::ContinueStatement { .. } => StatementKind::Continue,
             SyntaxData::Block => StatementKind::Block(self.lower_statement_children(node)?),
             SyntaxData::IfStatement {
                 condition,
                 then_block,
                 else_branch,
+                ..
             } => {
                 let then_statement = self.lower_statement_at(*then_block)?;
                 let StatementKind::Block(then_block) = then_statement.kind else {
@@ -1422,7 +1480,9 @@ impl SyntaxTree {
                     else_block,
                 }
             }
-            SyntaxData::WhileStatement { condition, body } => {
+            SyntaxData::WhileStatement {
+                condition, body, ..
+            } => {
                 let statement = self.lower_statement_at(*body)?;
                 let StatementKind::Block(body) = statement.kind else {
                     return Err(SyntaxLowerError::MissingContext(*body));
@@ -1438,6 +1498,7 @@ impl SyntaxTree {
                 iterator,
                 body,
                 body_is_block,
+                ..
             } => {
                 let token = self.token_for_range(*variable)?;
                 let TokenType::Id(variable) = token.kind() else {
@@ -1775,7 +1836,7 @@ impl SyntaxTree {
                 .iter()
                 .map(|range| self.lower_type_at(*range))
                 .collect::<Result<_, _>>()?,
-            span: self.token_for_range(*name)?.token().span,
+            span: self.span_for_range(*name)?,
         })
     }
 
@@ -1999,7 +2060,7 @@ impl SyntaxTree {
         else {
             return Err(SyntaxLowerError::UnsupportedContext(node.kind));
         };
-        let span = self.token_for_range(*name)?.token().span;
+        let span = self.span_for_range(*name)?;
         let name = self.identifier_for_range(*name)?;
         Ok(TraitBound {
             name,
@@ -2123,6 +2184,11 @@ impl SyntaxTree {
         let mut span = first.token().span;
         span.row_end = last.token().span.row_end;
         span.col_end = last.token().span.col_end;
+        if span.row_end.is_none() || span.col_end.is_none() {
+            let (row_end, col_end) = self.source.line_col(range.end);
+            span.row_end.get_or_insert(row_end);
+            span.col_end.get_or_insert(col_end);
+        }
         span.byte_range = Some(range);
         Ok(span)
     }
@@ -2187,8 +2253,8 @@ fn is_statement_data(data: &SyntaxData) -> bool {
             | SyntaxData::Function { .. }
             | SyntaxData::ExpressionStatement { .. }
             | SyntaxData::ReturnStatement { .. }
-            | SyntaxData::BreakStatement
-            | SyntaxData::ContinueStatement
+            | SyntaxData::BreakStatement { .. }
+            | SyntaxData::ContinueStatement { .. }
             | SyntaxData::Block
             | SyntaxData::IfStatement { .. }
             | SyntaxData::WhileStatement { .. }
@@ -3056,12 +3122,12 @@ mod tests {
             if name == "x"));
 
         let broke = lower_statement_data("while true { break }", |data| {
-            matches!(data, SyntaxData::BreakStatement)
+            matches!(data, SyntaxData::BreakStatement { .. })
         });
         assert!(matches!(broke.kind, StatementKind::Break));
 
         let continued = lower_statement_data("while true { continue }", |data| {
-            matches!(data, SyntaxData::ContinueStatement)
+            matches!(data, SyntaxData::ContinueStatement { .. })
         });
         assert!(matches!(continued.kind, StatementKind::Continue));
     }

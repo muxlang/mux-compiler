@@ -1,7 +1,7 @@
 //! Validation, application, and transactional persistence of compiler edits.
 
 use super::{Applicability, FileId, Files, SourceRange, TextEdit};
-use crate::lexer::Span;
+use crate::lexer::{ByteRange, Span};
 use fs2::FileExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -77,6 +77,10 @@ pub enum FixError {
         span: Span,
         reason: &'static str,
     },
+    InvalidByteRange {
+        range: ByteRange,
+        reason: &'static str,
+    },
     Io(std::io::Error),
     Transaction(String),
 }
@@ -114,6 +118,11 @@ impl fmt::Display for FixError {
                 "cannot map diagnostic span at {}:{} to bytes: {reason}",
                 span.row_start, span.col_start
             ),
+            Self::InvalidByteRange { range, reason } => write!(
+                f,
+                "invalid source byte range {}..{}: {reason}",
+                range.start, range.end
+            ),
             Self::Io(error) => write!(f, "I/O error while applying fixes: {error}"),
             Self::Transaction(message) => write!(f, "fix transaction failed: {message}"),
         }
@@ -140,13 +149,24 @@ pub fn source_range_for_span(source: &str, span: Span) -> Result<SourceRange, Fi
             reason: "span has no authoritative byte range",
         });
     };
+    source_range_for_byte_range(source, range).map_err(|error| match error {
+        FixError::InvalidByteRange { reason, .. } => FixError::InvalidLocation { span, reason },
+        error => error,
+    })
+}
+
+/// Validate an authoritative byte range before using it for source edits.
+pub fn source_range_for_byte_range(
+    source: &str,
+    range: ByteRange,
+) -> Result<SourceRange, FixError> {
     if range.start > range.end
         || range.end > source.len()
         || !source.is_char_boundary(range.start)
         || !source.is_char_boundary(range.end)
     {
-        return Err(FixError::InvalidLocation {
-            span,
+        return Err(FixError::InvalidByteRange {
+            range,
             reason: "byte range is outside source or splits a UTF-8 character",
         });
     }
@@ -715,6 +735,23 @@ mod tests {
                 .start_byte,
             25
         );
+    }
+
+    #[test]
+    fn validates_byte_ranges_directly() {
+        let source = "日本語";
+        assert_eq!(
+            source_range_for_byte_range(source, ByteRange::new(3, 6)).unwrap(),
+            SourceRange::new(3, 6)
+        );
+        assert!(matches!(
+            source_range_for_byte_range(source, ByteRange::new(1, 3)),
+            Err(FixError::InvalidByteRange { .. })
+        ));
+        assert!(matches!(
+            source_range_for_byte_range(source, ByteRange::new(0, source.len() + 1)),
+            Err(FixError::InvalidByteRange { .. })
+        ));
     }
 
     #[test]

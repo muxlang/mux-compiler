@@ -772,6 +772,10 @@ impl<'a> Parser<'a> {
                         .byte_range
                         .expect("auto initializer has source range"),
                 ),
+                ast_span: start_span
+                    .combine(&value.span)
+                    .byte_range
+                    .expect("auto declaration AST range"),
             },
         );
 
@@ -852,6 +856,10 @@ impl<'a> Parser<'a> {
                         .byte_range
                         .expect("constant initializer has source range"),
                 ),
+                ast_span: start_span
+                    .combine(&value.span)
+                    .byte_range
+                    .expect("constant declaration AST range"),
             },
         );
 
@@ -906,6 +914,10 @@ impl<'a> Parser<'a> {
                         .expect("uninitialized declaration name has source range"),
                     type_range: Some(type_range),
                     value: None,
+                    ast_span: start_span
+                        .combine(&name_span)
+                        .byte_range
+                        .expect("uninitialized declaration AST range"),
                 },
             );
             let span = start_span.combine(&name_span);
@@ -948,6 +960,10 @@ impl<'a> Parser<'a> {
                         .byte_range
                         .expect("typed initializer has source range"),
                 ),
+                ast_span: start_span
+                    .combine(&value.span)
+                    .byte_range
+                    .expect("typed declaration AST range"),
             },
         );
 
@@ -2448,7 +2464,11 @@ impl<'a> Parser<'a> {
         let body_range = self.last_statement_range_since(body_event_start);
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
-        let ast_span = span.byte_range.expect("function span range");
+        let start_range = start_span.byte_range.expect("function start range");
+        let ast_end = self
+            .last_ast_statement_range_since(body_event_start, body_range)
+            .map_or(start_range.end, |range| range.end);
+        let ast_span = ByteRange::new(start_range.start, ast_end);
         let function_end = self.current;
         let syntax_data = SyntaxData::Function {
             name: name_range,

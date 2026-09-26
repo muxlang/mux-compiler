@@ -545,9 +545,12 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
 
         // Parse then block using the block() function directly
+        let then_event_start = self.syntax_events.len();
         let then_fact = self.block()?;
         let then_range = then_fact.range;
         let then_block = then_fact.statements;
+        let then_ast_range =
+            self.last_ast_statement_range_since(then_event_start, Some(then_range));
 
         self.skip_newlines();
         let else_body_start = if self.check(TokenType::Else) {
@@ -575,6 +578,14 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let start_range = start_span.byte_range.expect("if statement start range");
+        let ast_end = if else_block.is_some() {
+            self.last_ast_statement_range_since(else_event_start, else_range)
+                .or(else_range)
+                .map_or(start_range.end, |range| range.end)
+        } else {
+            then_ast_range.map_or(start_range.end, |range| range.end)
+        };
         let range = self
             .source_range_for_tokens(start, self.current)
             .expect("parsed if statement has a syntax range");
@@ -586,6 +597,7 @@ impl<'a> Parser<'a> {
                 condition: condition_range,
                 then_block: then_range,
                 else_branch: else_range,
+                ast_span: ByteRange::new(start_range.start, ast_end),
             },
         );
         let span = start_span.combine(&end_span);
@@ -670,11 +682,14 @@ impl<'a> Parser<'a> {
         // allow newline(s) before body.
         self.skip_newlines();
         self.loop_depth += 1;
+        let body_event_start = self.syntax_events.len();
         let body_result = self.block();
         self.loop_depth -= 1;
         let body_fact = body_result?;
         let body_range = body_fact.range;
         let body_statements = body_fact.statements;
+        let ast_body_range =
+            self.last_ast_statement_range_since(body_event_start, Some(body_range));
 
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
         let span = start_span.combine(&end_span);
@@ -689,6 +704,19 @@ impl<'a> Parser<'a> {
             SyntaxData::WhileStatement {
                 condition: condition_range,
                 body: body_range,
+                ast_span: ByteRange::new(
+                    start_span
+                        .byte_range
+                        .expect("while statement start range")
+                        .start,
+                    ast_body_range.map_or(
+                        start_span
+                            .byte_range
+                            .expect("while statement start range")
+                            .end,
+                        |range| range.end,
+                    ),
+                ),
             },
         );
 
@@ -781,6 +809,20 @@ impl<'a> Parser<'a> {
                 iterator: iterator_range,
                 body: body_range,
                 body_is_block,
+                ast_span: ByteRange::new(
+                    start_span
+                        .byte_range
+                        .expect("for statement start range")
+                        .start,
+                    self.last_ast_statement_range_since(body_event_start, Some(body_range))
+                        .map_or(
+                            start_span
+                                .byte_range
+                                .expect("for statement start range")
+                                .end,
+                            |range| range.end,
+                        ),
+                ),
             },
         );
         let iterator = iter.node;
@@ -1187,7 +1229,13 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::ReturnStatement { value: value_range },
+            SyntaxData::ReturnStatement {
+                value: value_range,
+                ast_span: start_span
+                    .combine(&end_span)
+                    .byte_range
+                    .expect("return statement AST range"),
+            },
         );
 
         Ok((start, start_span, value, end_span))
@@ -1225,7 +1273,9 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::BreakStatement,
+            SyntaxData::BreakStatement {
+                ast_span: start_span.byte_range.expect("break statement AST range"),
+            },
         );
 
         Ok((start, start_span))
@@ -1263,7 +1313,9 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::ContinueStatement,
+            SyntaxData::ContinueStatement {
+                ast_span: start_span.byte_range.expect("continue statement AST range"),
+            },
         );
 
         Ok((start, start_span))
@@ -1441,6 +1493,10 @@ impl<'a> Parser<'a> {
                     .span
                     .byte_range
                     .expect("parsed expression has source range"),
+                ast_span: expr
+                    .span
+                    .byte_range
+                    .expect("expression statement AST range"),
             },
         );
         let range = self

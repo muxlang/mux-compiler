@@ -180,7 +180,7 @@ impl<'a> Parser<'a> {
                     && !self.syntax_events.iter().any(|statement| {
                         matches!(
                             statement.data.as_ref(),
-                            Some(SyntaxData::ExpressionStatement { expression })
+                            Some(SyntaxData::ExpressionStatement { expression, .. })
                                 if *expression == event.range
                         )
                     })
@@ -368,6 +368,7 @@ impl<'a> Parser<'a> {
             self.current,
             SyntaxData::Map {
                 entries: Vec::new(),
+                inferred_type_span: start_span.byte_range.expect("empty map opening range"),
             },
         );
         let span = start_span.combine(&end_span);
@@ -427,6 +428,7 @@ impl<'a> Parser<'a> {
             self.current,
             SyntaxData::Map {
                 entries: syntax_entries,
+                inferred_type_span: start_span.byte_range.expect("map opening range"),
             },
         );
         let span = start_span.combine(&end_span);
@@ -799,12 +801,23 @@ impl<'a> Parser<'a> {
             .source_range()
             .expect("lambda return type source range");
 
+        let body_event_start = self.syntax_events.len();
         let body = self.block()?;
         let body_range = body.range;
         let body_statements = body.statements;
 
         let end_span = body_statements.last().map_or(start_span, |s| s.span);
-        let span = start_span.combine(&end_span);
+        let compatibility_span = start_span.combine(&end_span);
+        let start_range = start_span.byte_range.expect("lambda start source range");
+        let ast_end = self
+            .last_ast_statement_range_since(body_event_start, Some(body_range))
+            .map_or(start_range.end, |range| range.end);
+        let ast_span = ByteRange::new(start_range.start, ast_end);
+        let span = if self.mode == ParserMode::SyntaxOnly {
+            start_span.with_byte_range(ast_span.start, ast_span.end)
+        } else {
+            compatibility_span
+        };
         let node = if self.mode == ParserMode::SyntaxOnly {
             None
         } else {
@@ -827,7 +840,7 @@ impl<'a> Parser<'a> {
                 return_type: return_type_range,
                 where_clause: where_range,
                 body: body_range,
-                ast_span: span.byte_range.expect("lambda AST span range"),
+                ast_span,
             },
         );
         Ok(ParsedExpression {

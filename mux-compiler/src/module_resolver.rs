@@ -377,14 +377,16 @@ impl ModuleResolver {
             .errors
             .iter()
             .map(|error| {
-                if let Ok(range) = fix::source_range_for_span(&source_str, error.span()) {
+                if let Some(byte_range) = error.byte_range()
+                    && let Ok(range) = fix::source_range_for_byte_range(&source_str, byte_range)
+                {
                     self.recovery_intervals.add(file_id, range);
                 }
                 error.to_diagnostic(file_id)
             })
             .collect();
-        for span in parsed.recovery_spans {
-            if let Ok(range) = fix::source_range_for_span(&source_str, span) {
+        for byte_range in parsed.recovery_byte_ranges() {
+            if let Ok(range) = fix::source_range_for_byte_range(&source_str, byte_range) {
                 self.recovery_intervals.add(file_id, range);
             }
         }

@@ -9,18 +9,18 @@ use std::path::{Path, PathBuf};
 
 fn parse_file_to_ast(test_file: &Path) -> String {
     let path_str = test_file.to_string_lossy();
-    let mut src =
-        Source::new(&path_str).unwrap_or_else(|_| panic!("Failed to open source file: {path_str}"));
-
-    let mut lexer = Lexer::new(&mut src);
-    let tokens = lexer
-        .lex_all()
-        .unwrap_or_else(|e| panic!("Lexing failed: {e}"));
-
-    let mut parser = Parser::new(&tokens);
-    let result = parser.parse().unwrap_or_else(|(ast, errors)| {
-        panic!("Parsing failed with errors on file {path_str}: {errors:#?}\n\nAST: {ast:#?}")
-    });
+    let source_text = fs::read_to_string(test_file)
+        .unwrap_or_else(|error| panic!("Failed to open source file {path_str}: {error}"));
+    let parsed = syntax::parse_source(&source_text);
+    if !parsed.errors.is_empty() {
+        panic!(
+            "Parsing failed with errors on file {path_str}: {:#?}",
+            parsed.errors
+        );
+    }
+    let result = parsed
+        .lower()
+        .unwrap_or_else(|error| panic!("Lowering failed on file {path_str}: {error}"));
 
     // Convert the AST to a nicely formatted string for snapshots
     let mut output = String::new();

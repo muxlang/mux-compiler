@@ -221,8 +221,8 @@ impl<'a> Parser<'a> {
                         SyntaxData::VariableDeclaration { .. }
                             | SyntaxData::ExpressionStatement { .. }
                             | SyntaxData::ReturnStatement { .. }
-                            | SyntaxData::BreakStatement
-                            | SyntaxData::ContinueStatement
+                            | SyntaxData::BreakStatement { .. }
+                            | SyntaxData::ContinueStatement { .. }
                             | SyntaxData::Block
                             | SyntaxData::IfStatement { .. }
                             | SyntaxData::WhileStatement { .. }
@@ -232,6 +232,52 @@ impl<'a> Parser<'a> {
                 )
             })
             .map(|event| event.range)
+    }
+
+    /// Return the range the compatibility AST assigns to the last statement.
+    /// The body's containing block is syntax punctuation around its
+    /// statements; nested block statements still retain their full range.
+    fn last_ast_statement_range_since(
+        &self,
+        event_start: usize,
+        containing_block: Option<ByteRange>,
+    ) -> Option<ByteRange> {
+        self.syntax_events
+            .iter()
+            .skip(event_start)
+            .rev()
+            .find(|event| {
+                matches!(
+                    event.data.as_ref(),
+                    Some(
+                        SyntaxData::VariableDeclaration { .. }
+                            | SyntaxData::ExpressionStatement { .. }
+                            | SyntaxData::ReturnStatement { .. }
+                            | SyntaxData::BreakStatement { .. }
+                            | SyntaxData::ContinueStatement { .. }
+                            | SyntaxData::IfStatement { .. }
+                            | SyntaxData::WhileStatement { .. }
+                            | SyntaxData::ForStatement { .. }
+                            | SyntaxData::MatchStatement { .. }
+                            | SyntaxData::Block
+                    )
+                ) && !(matches!(event.data.as_ref(), Some(SyntaxData::Block))
+                    && containing_block == Some(event.range))
+            })
+            .map(|event| match event.data.as_ref() {
+                Some(
+                    SyntaxData::VariableDeclaration { ast_span, .. }
+                    | SyntaxData::ExpressionStatement { ast_span, .. }
+                    | SyntaxData::ReturnStatement { ast_span, .. }
+                    | SyntaxData::BreakStatement { ast_span }
+                    | SyntaxData::ContinueStatement { ast_span }
+                    | SyntaxData::IfStatement { ast_span, .. }
+                    | SyntaxData::WhileStatement { ast_span, .. }
+                    | SyntaxData::ForStatement { ast_span, .. }
+                    | SyntaxData::MatchStatement { ast_span, .. },
+                ) => *ast_span,
+                _ => event.range,
+            })
     }
 
     fn syntax_ranges_since(
@@ -455,8 +501,8 @@ impl<'a> Parser<'a> {
                                                 | SyntaxData::VariableDeclaration { .. }
                                                 | SyntaxData::ExpressionStatement { .. }
                                                 | SyntaxData::ReturnStatement { .. }
-                                                | SyntaxData::BreakStatement
-                                                | SyntaxData::ContinueStatement
+                                                | SyntaxData::BreakStatement { .. }
+                                                | SyntaxData::ContinueStatement { .. }
                                         )
                                     )
                             })

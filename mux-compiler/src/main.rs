@@ -2054,13 +2054,13 @@ fn parse_fix_source(
         return Err(diagnostics);
     }
     let mut recovery = RecoveryIntervals::new();
-    for span in parsed
+    for range in parsed
         .errors
         .iter()
-        .map(syntax::FrontendError::span)
-        .chain(parsed.recovery_spans.iter().copied())
+        .filter_map(syntax::FrontendError::byte_range)
+        .chain(parsed.recovery_byte_ranges())
     {
-        if let Ok(range) = fix::source_range_for_span(source, span) {
+        if let Ok(range) = fix::source_range_for_byte_range(source, range) {
             recovery.add(file_id, range);
         }
     }

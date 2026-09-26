@@ -42,6 +42,24 @@ impl SourceText {
     pub(crate) fn text(&self) -> &str {
         &self.input
     }
+
+    /// Return the one-based line and display column for a UTF-8 byte offset.
+    /// Offsets are clamped to the source and rounded down to a character boundary.
+    #[must_use]
+    pub(crate) fn line_col(&self, byte: usize) -> (usize, usize) {
+        let byte = floor_char_boundary(&self.input, byte.min(self.input.len()));
+        let line_index = self
+            .line_starts
+            .partition_point(|&start| start <= byte)
+            .saturating_sub(1);
+        let line_start = self.line_starts.get(line_index).copied().unwrap_or(0);
+        let col = self.input[line_start..byte]
+            .chars()
+            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1))
+            .sum::<usize>()
+            + 1;
+        (line_index + 1, col)
+    }
 }
 
 impl Source {
@@ -130,24 +148,7 @@ impl Source {
     /// Offsets are clamped to the source and rounded down to a character boundary.
     #[must_use]
     pub fn line_col(&self, byte: usize) -> (usize, usize) {
-        let byte = floor_char_boundary(&self.source.input, byte.min(self.source.input.len()));
-        let line_index = self
-            .source
-            .line_starts
-            .partition_point(|&start| start <= byte)
-            .saturating_sub(1);
-        let line_start = self
-            .source
-            .line_starts
-            .get(line_index)
-            .copied()
-            .unwrap_or(0);
-        let col = self.source.input[line_start..byte]
-            .chars()
-            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1))
-            .sum::<usize>()
-            + 1;
-        (line_index + 1, col)
+        self.source.line_col(byte)
     }
 
     #[must_use]
