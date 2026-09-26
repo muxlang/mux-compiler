@@ -124,11 +124,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn consume_identifier_fact(
-        &mut self,
-        error_msg: &str,
-        compatibility: bool,
-    ) -> ParserResult<Option<String>> {
+    pub(super) fn consume_identifier_fact(&mut self, error_msg: &str) -> ParserResult<()> {
         if self.is_at_end() {
             return Err(ParserError::new(
                 DiagnosticCode::ParseExpectedToken,
@@ -138,15 +134,13 @@ impl<'a> Parser<'a> {
         }
 
         match &self.peek().token_type {
-            TokenType::Id(name) => {
-                let name = compatibility.then(|| name.clone());
+            TokenType::Id(_) => {
                 self.current += 1;
-                Ok(name)
+                Ok(())
             }
             TokenType::Underscore => {
-                let name = compatibility.then(|| "_".to_string());
                 self.current += 1;
-                Ok(name)
+                Ok(())
             }
             _ => {
                 let found_desc = Self::describe_token(&self.peek().token_type);
@@ -249,10 +243,7 @@ mod tests {
             parser.peek_ahead(1).map(|token| &token.token_type),
             Some(&TokenType::NewLine)
         );
-        assert_eq!(
-            parser.consume_identifier_fact("expected name", true),
-            Ok(Some("value".to_string()))
-        );
+        assert_eq!(parser.consume_identifier_fact("expected name"), Ok(()));
         assert!(parser.matches(&[TokenType::NewLine]));
         assert!(parser.is_at_end());
     }

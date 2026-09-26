@@ -121,6 +121,25 @@ fn syntax_lowering_preserves_unary_binary_and_postfix_validation() {
         "postfix updates inside binary expressions must remain rejected"
     );
 
+    let lambda_postfix = syntax::parse_source(
+        "func main() returns void {\n    auto f = func() returns void {\n        auto value = 0\n        value++\n    }\n    return\n}\n",
+    );
+    assert!(
+        lambda_postfix.errors.is_empty(),
+        "a lambda's standalone postfix update must be checked in its own statement context: {:?}",
+        lambda_postfix.errors
+    );
+
+    let nested_lambda_postfix = syntax::parse_source(
+        "func main() returns void {\n    auto f = func(int y) returns int {\n        auto a = 1\n        return a + y++\n    }\n    return\n}\n",
+    );
+    assert_eq!(
+        nested_lambda_postfix.errors.len(),
+        1,
+        "the invalid lambda return should produce one diagnostic: {:?}",
+        nested_lambda_postfix.errors
+    );
+
     for source in [
         "func invalid() returns int {\n    auto value = 0\n    return value++\n}\n",
         "func invalid() returns void {\n    auto value = 0\n    if value++ {\n        return\n    }\n}\n",

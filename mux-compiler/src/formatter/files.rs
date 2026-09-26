@@ -151,6 +151,13 @@ struct Change {
 }
 
 fn replace_if_unchanged(change: Change) -> Result<(), FormatError> {
+    replace_if_unchanged_with(change, || {})
+}
+
+fn replace_if_unchanged_with(
+    change: Change,
+    after_staging: impl FnOnce(),
+) -> Result<(), FormatError> {
     let current = fs::read(&change.path).map_err(|error| {
         FormatError::io(format!(
             "could not re-read {}: {error}",
@@ -194,6 +201,10 @@ fn replace_if_unchanged(change: Change) -> Result<(), FormatError> {
             change.path.display()
         )));
     }
+
+    // This seam makes the last-minute concurrent-edit guard deterministic in
+    // tests; production callers leave the file untouched here.
+    after_staging();
 
     // Recheck just before replacement. A concurrent writer can still race
     // between this read and the atomic rename, so this is a best-effort guard.
@@ -290,6 +301,63 @@ mod tests {
         let other = scratch.path().join("source.txt");
         fs::write(&other, "").unwrap();
         assert!(discover_files(&[other]).is_err());
+    }
+
+    #[test]
+    fn duplicate_explicit_inputs_are_processed_once() {
+        let scratch = Scratch::new();
+        let file = scratch.path().join("source.mux");
+        fs::write(&file, "auto value=1").unwrap();
+
+        let outcome = format_paths(&[file.clone(), file.clone()], false).unwrap();
+
+        assert_eq!(outcome.changed, vec![fs::canonicalize(&file).unwrap()]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "auto value = 1\n");
+    }
+
+    #[test]
+    fn empty_directory_is_a_noop() {
+        let scratch = Scratch::new();
+
+        let outcome = format_paths(&[scratch.path().to_path_buf()], false).unwrap();
+
+        assert!(outcome.changed.is_empty());
+        assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn parse_error_in_batch_does_not_write_other_files() {
+        let scratch = Scratch::new();
+        let valid = scratch.path().join("a-valid.mux");
+        let invalid = scratch.path().join("z-invalid.mux");
+        fs::write(&valid, "auto value=1").unwrap();
+        fs::write(&invalid, "auto =\n").unwrap();
+
+        let error = format_paths(&[valid.clone(), invalid], false).unwrap_err();
+
+        assert!(error.to_string().contains("z-invalid.mux"));
+        assert_eq!(fs::read_to_string(valid).unwrap(), "auto value=1");
+    }
+
+    #[test]
+    fn replacement_refuses_to_overwrite_a_source_changed_after_staging() {
+        let scratch = Scratch::new();
+        let path = scratch.path().join("source.mux");
+        fs::write(&path, "auto value=1").unwrap();
+        let change = Change {
+            path: path.clone(),
+            original: "auto value=1".to_string(),
+            formatted: "auto value = 1\n".to_string(),
+        };
+
+        let error = replace_if_unchanged_with(change, || {
+            fs::write(&path, "auto value=2").unwrap();
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed while formatting"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "auto value=2");
+        assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 1);
     }
 
     #[cfg(unix)]

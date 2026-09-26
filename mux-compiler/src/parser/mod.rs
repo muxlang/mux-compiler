@@ -1,6 +1,7 @@
 //! Parser module for the Mux language.
 //!
-//! This module contains the parser which converts a stream of tokens into an AST.
+//! The parser records syntax events and typed source facts. `SyntaxTree::lower`
+//! is the sole layer that constructs compiler AST nodes.
 
 mod cursor;
 mod declarations;
@@ -11,10 +12,10 @@ mod types;
 
 pub use error::{ParserError, ParserResult};
 
+use crate::ast::SpanExt;
+#[cfg(test)]
 use crate::ast::{
-    AstNode, BinaryOp, EnumVariant, ExpressionKind, ExpressionNode, Field, FunctionNode,
-    ImportSpec, LiteralNode, MatchArm, Param, PatternNode, Precedence, SpanExt, Spanned,
-    StatementKind, StatementNode, TraitBound, TraitRef, TypeKind, TypeNode, UnaryOp, WhereClause,
+    AstNode, ExpressionKind, ExpressionNode, LiteralNode, StatementKind, StatementNode, TypeKind,
 };
 use crate::diagnostic::DiagnosticCode;
 use crate::lexer::{ByteRange, Span, Token, TokenType};
@@ -24,7 +25,7 @@ use crate::syntax::{
 };
 
 #[derive(Debug)]
-pub struct Parser<'a> {
+pub(crate) struct Parser<'a> {
     tokens: Vec<&'a Token>,
     current: usize,
     pub errors: Vec<ParserError>,
@@ -32,13 +33,6 @@ pub struct Parser<'a> {
     loop_depth: usize,
     stopped: bool,
     syntax_events: Vec<SyntaxNodeEvent>,
-    mode: ParserMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ParserMode {
-    Compatibility,
-    SyntaxOnly,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -69,7 +63,7 @@ fn reserved_class_method_error(name: &str) -> Option<String> {
 
 impl<'a> Parser<'a> {
     #[must_use]
-    pub fn new(tokens: &'a [Token]) -> Self {
+    pub(crate) fn new(tokens: &'a [Token]) -> Self {
         let mut grammar_tokens = Vec::with_capacity(tokens.len());
         let mut bracket_depth = 0_usize;
         let mut brace_depths = Vec::new();
@@ -107,7 +101,6 @@ impl<'a> Parser<'a> {
             loop_depth: 0,
             stopped: false,
             syntax_events: Vec::new(),
-            mode: ParserMode::Compatibility,
         }
     }
 
@@ -234,7 +227,7 @@ impl<'a> Parser<'a> {
             .map(|event| event.range)
     }
 
-    /// Return the range the compatibility AST assigns to the last statement.
+    /// Return the source range used for the last lowered statement.
     /// The body's containing block is syntax punctuation around its
     /// statements; nested block statements still retain their full range.
     fn last_ast_statement_range_since(
@@ -451,63 +444,40 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    pub fn parse(&mut self) -> Result<Vec<AstNode>, (Vec<AstNode>, Vec<ParserError>)> {
-        let mut nodes = Vec::new();
+    /// Parse tokens into syntax events and typed source facts.
+    ///
+    /// AST construction is handled by `SyntaxTree::lower` after parsing.
+    pub(crate) fn parse(&mut self) -> Result<(), Vec<ParserError>> {
         while !self.is_at_end() && !self.stopped {
             if self.is_at_end() {
                 break;
             }
 
             let start_position = self.current;
-            let error_count_before_declaration = self.errors.len();
-
             match self.declaration() {
-                Ok(Some(decl)) => {
-                    nodes.push(decl);
-
-                    // check statement termination for top-level, non-control flow statements.
-                    let should_check_termination = matches!(
-                        nodes.last().expect("nodes should not be empty after push"),
-                        AstNode::Statement(stmt) if !matches!(
-                            stmt.kind,
-                            StatementKind::If { .. } | StatementKind::While { .. } |
-                            StatementKind::For { .. } | StatementKind::Match { .. } |
-                            StatementKind::Block(_)
-                        )
-                    );
-
-                    if should_check_termination && let Err(e) = self.check_statement_termination() {
-                        self.record_error(e);
-                        self.synchronize();
-                    }
-
-                    let _ = self.skip_newlines();
-                }
-                Ok(None) => {
+                Ok(_) => {
                     let declaration_start = self
                         .tokens
                         .get(start_position)
                         .and_then(|token| token.span.byte_range)
                         .map(|range| range.start);
-                    let is_syntax_only_statement = self.mode == ParserMode::SyntaxOnly
-                        && self.errors.len() == error_count_before_declaration
-                        && declaration_start.is_some_and(|start| {
-                            self.syntax_events.iter().any(|event| {
-                                event.range.start == start
-                                    && matches!(
-                                        event.data.as_ref(),
-                                        Some(
-                                            SyntaxData::Import { .. }
-                                                | SyntaxData::VariableDeclaration { .. }
-                                                | SyntaxData::ExpressionStatement { .. }
-                                                | SyntaxData::ReturnStatement { .. }
-                                                | SyntaxData::BreakStatement { .. }
-                                                | SyntaxData::ContinueStatement { .. }
-                                        )
+                    let is_statement = declaration_start.is_some_and(|start| {
+                        self.syntax_events.iter().any(|event| {
+                            event.range.start == start
+                                && matches!(
+                                    event.data.as_ref(),
+                                    Some(
+                                        SyntaxData::Import { .. }
+                                            | SyntaxData::VariableDeclaration { .. }
+                                            | SyntaxData::ExpressionStatement { .. }
+                                            | SyntaxData::ReturnStatement { .. }
+                                            | SyntaxData::BreakStatement { .. }
+                                            | SyntaxData::ContinueStatement { .. }
                                     )
-                            })
-                        });
-                    if is_syntax_only_statement && let Err(e) = self.check_statement_termination() {
+                                )
+                        })
+                    });
+                    if is_statement && let Err(e) = self.check_statement_termination() {
                         self.record_error(e);
                         self.synchronize();
                     }
@@ -526,31 +496,9 @@ impl<'a> Parser<'a> {
 
         let all_errors = std::mem::take(&mut self.errors);
         if all_errors.is_empty() {
-            Ok(nodes)
+            Ok(())
         } else {
-            Err((nodes, all_errors))
-        }
-    }
-
-    /// Parse declarations for lossless syntax consumers without exposing the
-    /// compatibility AST collected by the shared parser loop.
-    pub(crate) fn parse_for_syntax(&mut self) -> Result<(), Vec<ParserError>> {
-        self.mode = ParserMode::SyntaxOnly;
-        match self.parse() {
-            Ok(nodes) => {
-                assert!(
-                    nodes.is_empty(),
-                    "syntax-only parser emitted compatibility AST nodes"
-                );
-                Ok(())
-            }
-            Err((nodes, errors)) => {
-                assert!(
-                    nodes.is_empty(),
-                    "syntax-only parser emitted compatibility AST nodes"
-                );
-                Err(errors)
-            }
+            Err(all_errors)
         }
     }
 

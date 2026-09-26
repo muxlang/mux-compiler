@@ -1,79 +1,39 @@
-use super::statements::WhereClauseFact;
-use super::types::TypeFact;
 use super::*;
+use crate::ast::{Precedence, SpanExt};
 use crate::syntax::SyntaxData;
-use ordered_float::OrderedFloat;
 
-/// Expression state used while parsing. Syntax-only parsing keeps source
-/// ranges and the one bit of semantic shape needed for generic-call
-/// disambiguation, without constructing an AST carrier for each Pratt step.
+/// Expression facts retained while parsing for syntax events and disambiguation.
 pub(super) struct ParsedExpression {
     pub(super) span: Span,
-    pub(super) node: Option<ExpressionNode>,
     generic_target: Option<GenericTarget>,
 }
 
 /// Token range and the case bit needed to disambiguate a generic call.
-/// The target's text is materialized only when Compatibility mode builds its AST.
 struct GenericTarget {
-    start_token: usize,
-    end_token: usize,
     starts_uppercase: bool,
 }
 
 enum PrimaryToken {
     OpenParen,
-    Int(i64),
-    Bool(bool),
+    Int,
+    Bool,
     None,
-    Char(char),
-    Str(Option<String>),
-    Bytes(Option<Vec<u8>>),
-    Float(OrderedFloat<f64>),
+    Char,
+    Str,
+    Bytes,
+    Float,
     OpenBracket,
     OpenBrace,
     Func,
     If,
     Match,
-    Id(Option<String>),
+    Id,
     Other,
 }
 
-impl ParsedExpression {
-    fn scalar<F>(
-        parser: &Parser<'_>,
-        span: Span,
-        make_kind: F,
-        generic_target: Option<GenericTarget>,
-    ) -> Self
-    where
-        F: FnOnce() -> ExpressionKind,
-    {
-        let node = (parser.mode == ParserMode::Compatibility).then(|| ExpressionNode {
-            kind: make_kind(),
-            span,
-        });
-        Self {
-            span,
-            node,
-            generic_target,
-        }
-    }
-
-    pub(super) fn into_node(self) -> ExpressionNode {
-        self.node.unwrap_or(ExpressionNode {
-            kind: ExpressionKind::None,
-            span: self.span,
-        })
-    }
-}
+impl ParsedExpression {}
 
 impl<'a> Parser<'a> {
-    pub fn parse_expression(&mut self) -> ParserResult<ExpressionNode> {
-        self.parse_expression_parsed()
-            .map(ParsedExpression::into_node)
-    }
-
     pub(super) fn parse_expression_parsed(&mut self) -> ParserResult<ParsedExpression> {
         let start = self.current;
         let result = self.parse_precedence_parsed(Precedence::Assignment);
@@ -104,7 +64,16 @@ impl<'a> Parser<'a> {
             let operator_span = self.peek().span;
             let _ = self.consume_operator();
 
-            let next_precedence = if op_token.is_right_associative() {
+            let next_precedence = if matches!(
+                op_token,
+                TokenType::Eq
+                    | TokenType::PlusEq
+                    | TokenType::MinusEq
+                    | TokenType::StarEq
+                    | TokenType::SlashEq
+                    | TokenType::PercentEq
+                    | TokenType::StarStar
+            ) {
                 op_precedence
             } else {
                 op_precedence.next_higher()
@@ -131,24 +100,8 @@ impl<'a> Parser<'a> {
                 );
             }
             let combined_span = left_span.combine(&right_span);
-            let node = if self.mode == ParserMode::Compatibility {
-                Some(ExpressionNode {
-                    kind: ExpressionKind::Binary {
-                        left: Box::new(
-                            value.node.take().expect("compatibility operand has an AST"),
-                        ),
-                        op: op_token,
-                        op_span: operator_span,
-                        right: Box::new(right.node.expect("compatibility operand has an AST")),
-                    },
-                    span: combined_span,
-                })
-            } else {
-                None
-            };
             value = ParsedExpression {
                 span: combined_span,
-                node,
                 generic_target: None,
             };
             if value.span.byte_range.is_none() {
@@ -168,6 +121,18 @@ impl<'a> Parser<'a> {
         range: Option<crate::lexer::ByteRange>,
     ) -> Option<crate::lexer::ByteRange> {
         let range = range?;
+        let lambda_bodies = self
+            .syntax_events
+            .iter()
+            .filter_map(|event| {
+                let inside_expression =
+                    event.range.start >= range.start && event.range.end <= range.end;
+                match event.data.as_ref() {
+                    Some(SyntaxData::Lambda { body, .. }) if inside_expression => Some(*body),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         self.syntax_events
             .iter()
             .filter(|event| {
@@ -184,6 +149,9 @@ impl<'a> Parser<'a> {
                                 if *expression == event.range
                         )
                     })
+                    && !lambda_bodies
+                        .iter()
+                        .any(|body| event.range.start >= body.start && event.range.end <= body.end)
             })
             .map(|event| event.range)
             .min_by_key(|update| (update.start, update.end))
@@ -240,26 +208,11 @@ impl<'a> Parser<'a> {
                 );
             }
             let span = op_token.span.combine(&expr_span);
-            let op = UnaryOp::parse(&op_token)?;
-            let node = if self.mode == ParserMode::SyntaxOnly {
-                None
-            } else {
-                Some(ExpressionNode {
-                    kind: ExpressionKind::Unary {
-                        op,
-                        op_span: op_token.span,
-                        expr: Box::new(expr.node.expect("compatibility operand has an AST")),
-                        postfix: false,
-                    },
-                    span,
-                })
-            };
             if span.byte_range.is_none() {
                 self.record_syntax_node(SyntaxKind::UnaryExpression, start, self.current);
             }
             Ok(ParsedExpression {
                 span,
-                node,
                 generic_target: None,
             })
         } else {
@@ -275,30 +228,17 @@ impl<'a> Parser<'a> {
         let start = self.token_index_for_span(start_span);
         let result = self.parse_collection_literal_inner_parsed(start_span);
         if let Ok(expression) = &result {
-            let kind = if self.mode == ParserMode::SyntaxOnly {
-                let data = expression.span.byte_range.and_then(|range| {
-                    self.syntax_events.iter().rev().find_map(|event| {
-                        (event.range == range)
-                            .then_some(event.data.as_ref())
-                            .flatten()
-                    })
-                });
-                match data {
-                    Some(SyntaxData::Map { .. }) => SyntaxKind::MapLiteral,
-                    Some(SyntaxData::Set { .. }) => SyntaxKind::SetLiteral,
-                    _ => SyntaxKind::Delimited,
-                }
-            } else {
-                match &expression
-                    .node
-                    .as_ref()
-                    .expect("compatibility collection has an AST")
-                    .kind
-                {
-                    ExpressionKind::MapLiteral { .. } => SyntaxKind::MapLiteral,
-                    ExpressionKind::SetLiteral(_) => SyntaxKind::SetLiteral,
-                    _ => SyntaxKind::Delimited,
-                }
+            let data = expression.span.byte_range.and_then(|range| {
+                self.syntax_events.iter().rev().find_map(|event| {
+                    (event.range == range)
+                        .then_some(event.data.as_ref())
+                        .flatten()
+                })
+            });
+            let kind = match data {
+                Some(SyntaxData::Map { .. }) => SyntaxKind::MapLiteral,
+                Some(SyntaxData::Set { .. }) => SyntaxKind::SetLiteral,
+                _ => SyntaxKind::Delimited,
             };
             let end =
                 self.matching_delimiter_end(start, TokenType::OpenBrace, TokenType::CloseBrace);
@@ -342,17 +282,8 @@ impl<'a> Parser<'a> {
             },
         );
         let span = start_span.combine(&end_span);
-        let node = if self.mode == ParserMode::SyntaxOnly {
-            None
-        } else {
-            Some(ExpressionNode {
-                kind: ExpressionKind::SetLiteral(vec![]),
-                span,
-            })
-        };
         Ok(ParsedExpression {
             span,
-            node,
             generic_target: None,
         })
     }
@@ -372,27 +303,8 @@ impl<'a> Parser<'a> {
             },
         );
         let span = start_span.combine(&end_span);
-        let node = if self.mode == ParserMode::SyntaxOnly {
-            None
-        } else {
-            Some(ExpressionNode {
-                kind: ExpressionKind::MapLiteral {
-                    key_type: Box::new(TypeNode {
-                        kind: TypeKind::Auto,
-                        span: start_span,
-                    }),
-                    value_type: Box::new(TypeNode {
-                        kind: TypeKind::Auto,
-                        span: start_span,
-                    }),
-                    entries: vec![],
-                },
-                span,
-            })
-        };
         Ok(ParsedExpression {
             span,
-            node,
             generic_target: None,
         })
     }
@@ -410,16 +322,7 @@ impl<'a> Parser<'a> {
                 .byte_range
                 .expect("map value has source range"),
         )];
-        let mut entries = Vec::new();
-        if self.mode == ParserMode::Compatibility {
-            entries.push((
-                first_key.node.expect("compatibility map key has an AST"),
-                first_value
-                    .node
-                    .expect("compatibility map value has an AST"),
-            ));
-        }
-        self.parse_collection_entries_parsed(&mut entries, &mut syntax_entries, true)?;
+        self.parse_collection_entries_parsed(&mut syntax_entries)?;
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after collection")?;
         self.record_typed_syntax_node(
@@ -432,27 +335,8 @@ impl<'a> Parser<'a> {
             },
         );
         let span = start_span.combine(&end_span);
-        let node = if self.mode == ParserMode::SyntaxOnly {
-            None
-        } else {
-            Some(ExpressionNode {
-                kind: ExpressionKind::MapLiteral {
-                    key_type: Box::new(TypeNode {
-                        kind: TypeKind::Auto,
-                        span: start_span,
-                    }),
-                    value_type: Box::new(TypeNode {
-                        kind: TypeKind::Auto,
-                        span: start_span,
-                    }),
-                    entries,
-                },
-                span,
-            })
-        };
         Ok(ParsedExpression {
             span,
-            node,
             generic_target: None,
         })
     }
@@ -468,15 +352,7 @@ impl<'a> Parser<'a> {
                 .byte_range
                 .expect("set element has source range"),
         ];
-        let mut elements = Vec::new();
-        if self.mode == ParserMode::Compatibility {
-            elements.push(
-                first_elem
-                    .node
-                    .expect("compatibility set element has an AST"),
-            );
-        }
-        self.parse_set_entries_parsed(&mut elements, &mut syntax_elements)?;
+        self.parse_set_entries_parsed(&mut syntax_elements)?;
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after collection")?;
         self.record_typed_syntax_node(
@@ -488,24 +364,14 @@ impl<'a> Parser<'a> {
             },
         );
         let span = start_span.combine(&end_span);
-        let node = if self.mode == ParserMode::SyntaxOnly {
-            None
-        } else {
-            Some(ExpressionNode {
-                kind: ExpressionKind::SetLiteral(elements),
-                span,
-            })
-        };
         Ok(ParsedExpression {
             span,
-            node,
             generic_target: None,
         })
     }
 
     fn parse_set_entries_parsed(
         &mut self,
-        elements: &mut Vec<ExpressionNode>,
         syntax_elements: &mut Vec<crate::lexer::ByteRange>,
     ) -> ParserResult<()> {
         loop {
@@ -515,39 +381,26 @@ impl<'a> Parser<'a> {
             }
             let elem = self.parse_expression_parsed()?;
             syntax_elements.push(elem.span.byte_range.expect("set element has source range"));
-            if self.mode == ParserMode::Compatibility {
-                elements.push(elem.node.expect("compatibility set element has an AST"));
-            }
         }
         Ok(())
     }
 
     fn parse_collection_entries_parsed(
         &mut self,
-        entries: &mut Vec<(ExpressionNode, ExpressionNode)>,
         syntax_entries: &mut Vec<(crate::lexer::ByteRange, crate::lexer::ByteRange)>,
-        is_map: bool,
     ) -> ParserResult<()> {
         loop {
             self.skip_newlines();
             if !self.has_comma_or_entry()? {
                 break;
             }
-            if is_map {
-                let key = self.parse_expression_parsed()?;
-                self.consume_token(TokenType::Colon, "Expected ':' after map key")?;
-                let value = self.parse_expression_parsed()?;
-                syntax_entries.push((
-                    key.span.byte_range.expect("map key has source range"),
-                    value.span.byte_range.expect("map value has source range"),
-                ));
-                if self.mode == ParserMode::Compatibility {
-                    entries.push((
-                        key.node.expect("compatibility map key has an AST"),
-                        value.node.expect("compatibility map value has an AST"),
-                    ));
-                }
-            }
+            let key = self.parse_expression_parsed()?;
+            self.consume_token(TokenType::Colon, "Expected ':' after map key")?;
+            let value = self.parse_expression_parsed()?;
+            syntax_entries.push((
+                key.span.byte_range.expect("map key has source range"),
+                value.span.byte_range.expect("map value has source range"),
+            ));
         }
         Ok(())
     }
@@ -613,7 +466,6 @@ impl<'a> Parser<'a> {
         &mut self,
         start_span: Span,
     ) -> ParserResult<ParsedExpression> {
-        let mut elements = Vec::new();
         let mut element_ranges = Vec::new();
 
         self.skip_newlines();
@@ -627,10 +479,6 @@ impl<'a> Parser<'a> {
                         .byte_range
                         .expect("list element has source range"),
                 );
-                if self.mode == ParserMode::Compatibility {
-                    elements.push(element.node.expect("compatibility list element has an AST"));
-                }
-
                 self.skip_newlines();
 
                 if self.matches(&[TokenType::Comma]) {
@@ -656,17 +504,8 @@ impl<'a> Parser<'a> {
             },
         );
         let span = start_span.combine(&end_span);
-        let node = if self.mode == ParserMode::Compatibility {
-            Some(ExpressionNode {
-                kind: ExpressionKind::ListLiteral(elements),
-                span,
-            })
-        } else {
-            None
-        };
         Ok(ParsedExpression {
             span,
-            node,
             generic_target: None,
         })
     }
@@ -718,7 +557,6 @@ impl<'a> Parser<'a> {
     ) -> ParserResult<ParsedExpression> {
         let lambda_start = self.token_index_for_span(start_span);
         self.consume_token(TokenType::OpenParen, "Expected '(' after 'func' in lambda")?;
-        let mut params = Vec::new();
         let parameters_start = self.syntax_events.len();
 
         if !self.check(TokenType::CloseParen) {
@@ -728,10 +566,7 @@ impl<'a> Parser<'a> {
                 let type_range = param_type
                     .source_range()
                     .expect("lambda parameter type source range");
-                let param_name = self.consume_identifier_fact(
-                    "Expected parameter name",
-                    self.mode == ParserMode::Compatibility,
-                )?;
+                self.consume_identifier_fact("Expected parameter name")?;
                 let name_range = self
                     .previous()
                     .span
@@ -755,14 +590,6 @@ impl<'a> Parser<'a> {
                         default_value: None,
                     },
                 );
-                if self.mode == ParserMode::Compatibility {
-                    params.push(Param {
-                        name: param_name.expect("compatibility lambda parameter name"),
-                        type_: param_type.into_compat_type_node(),
-                        default_value: None,
-                    });
-                }
-
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -801,36 +628,11 @@ impl<'a> Parser<'a> {
             .source_range()
             .expect("lambda return type source range");
 
-        let body_event_start = self.syntax_events.len();
         let body = self.block()?;
         let body_range = body.range;
-        let body_statements = body.statements;
-
-        let end_span = body_statements.last().map_or(start_span, |s| s.span);
-        let compatibility_span = start_span.combine(&end_span);
         let start_range = start_span.byte_range.expect("lambda start source range");
-        let ast_end = self
-            .last_ast_statement_range_since(body_event_start, Some(body_range))
-            .map_or(start_range.end, |range| range.end);
-        let ast_span = ByteRange::new(start_range.start, ast_end);
-        let span = if self.mode == ParserMode::SyntaxOnly {
-            start_span.with_byte_range(ast_span.start, ast_span.end)
-        } else {
-            compatibility_span
-        };
-        let node = if self.mode == ParserMode::SyntaxOnly {
-            None
-        } else {
-            Some(ExpressionNode {
-                kind: ExpressionKind::Lambda {
-                    params,
-                    return_type: return_type_fact.into_compat_type_node(),
-                    body: body_statements,
-                    where_clause: where_clause_fact.map(WhereClauseFact::into_compatibility),
-                },
-                span,
-            })
-        };
+        let ast_span = ByteRange::new(start_range.start, body_range.end);
+        let span = start_span.with_byte_range(ast_span.start, ast_span.end);
         self.record_typed_syntax_node(
             SyntaxKind::LambdaExpression,
             lambda_start,
@@ -845,7 +647,6 @@ impl<'a> Parser<'a> {
         );
         Ok(ParsedExpression {
             span,
-            node,
             generic_target: None,
         })
     }
@@ -882,22 +683,6 @@ impl<'a> Parser<'a> {
             .byte_range
             .expect("if expression else branch source range");
         let span = token_span.combine(&self.previous().span);
-        let node = if self.mode == ParserMode::SyntaxOnly {
-            None
-        } else {
-            Some(ExpressionNode {
-                kind: ExpressionKind::If {
-                    cond: Box::new(cond.node.expect("compatibility if condition has an AST")),
-                    then_expr: Box::new(
-                        then_expr.node.expect("compatibility if branch has an AST"),
-                    ),
-                    else_expr: Box::new(
-                        else_expr.node.expect("compatibility if branch has an AST"),
-                    ),
-                },
-                span,
-            })
-        };
         self.record_typed_syntax_node(
             SyntaxKind::IfExpression,
             expression_start,
@@ -911,7 +696,6 @@ impl<'a> Parser<'a> {
         );
         Ok(ParsedExpression {
             span,
-            node,
             generic_target: None,
         })
     }
@@ -926,13 +710,7 @@ impl<'a> Parser<'a> {
             .span
             .byte_range
             .expect("match expression value source range");
-        if self.mode == ParserMode::Compatibility {
-            self.check_no_postfix_increment_decrement(
-                expr.node
-                    .as_ref()
-                    .expect("compatibility match scrutinee has an AST"),
-            )?;
-        } else if let Some(range) = self.first_postfix_update_in(expr.span.byte_range) {
+        if let Some(range) = self.first_postfix_update_in(expr.span.byte_range) {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
                 "Increment/Decrement operator can only be used as a standalone statement",
@@ -942,12 +720,11 @@ impl<'a> Parser<'a> {
         }
         self.consume_token(TokenType::OpenBrace, "Expected '{' after match expression")?;
         self.skip_newlines();
-        let mut arms = Vec::new();
         let mut arm_ranges = Vec::new();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
             let arm_start = self.current;
             let pattern_events_start = self.syntax_events.len();
-            let pattern = self.parse_pattern_for_mode(self.mode == ParserMode::Compatibility)?;
+            self.parse_pattern_fact()?;
             let pattern_range = self
                 .last_syntax_range_since(pattern_events_start, |data| {
                     matches!(data, SyntaxData::Pattern(_))
@@ -962,43 +739,20 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
             self.consume_token(TokenType::OpenBrace, "Expected '{' before match arm value")?;
             self.skip_newlines();
-            let (body, body_range, body_is_expression) = if self.matches(&[TokenType::Return]) {
+            let (body_range, body_is_expression) = if self.matches(&[TokenType::Return]) {
                 let body_events_start = self.syntax_events.len();
-                let statement = self.return_statement()?;
+                self.return_statement()?;
                 let body_range = self
                     .last_statement_range_since(body_events_start)
                     .expect("match expression return body range");
-                let body = if self.mode == ParserMode::Compatibility {
-                    let AstNode::Statement(statement) = statement.into_compatibility_ast() else {
-                        return Err(ParserError::new(
-                            DiagnosticCode::ParseExpectedToken,
-                            "Expected return statement in match arm",
-                            token_span,
-                        ));
-                    };
-                    vec![statement]
-                } else {
-                    Vec::new()
-                };
-                (body, body_range, false)
+                (body_range, false)
             } else {
                 let value = self.parse_expression_parsed()?;
                 let body_range = value
                     .span
                     .byte_range
                     .expect("match expression arm value range");
-                let body = if self.mode == ParserMode::Compatibility {
-                    let value = value
-                        .node
-                        .expect("compatibility match arm value has an AST");
-                    vec![StatementNode {
-                        span: value.span,
-                        kind: StatementKind::Expression(value),
-                    }]
-                } else {
-                    Vec::new()
-                };
-                (body, body_range, true)
+                (body_range, true)
             };
             self.skip_newlines();
             self.consume_token(TokenType::CloseBrace, "Expected '}' after match arm value")?;
@@ -1017,14 +771,6 @@ impl<'a> Parser<'a> {
                 },
             );
             arm_ranges.push(arm_range);
-            if self.mode == ParserMode::Compatibility {
-                arms.push(MatchArm {
-                    pattern: pattern.expect("compatibility match arm has a pattern"),
-                    guard: guard
-                        .map(|guard| guard.node.expect("compatibility match guard has an AST")),
-                    body,
-                });
-            }
             self.skip_newlines();
             if self.matches(&[TokenType::Comma]) {
                 self.skip_newlines();
@@ -1033,17 +779,6 @@ impl<'a> Parser<'a> {
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after match arms")?;
         let span = token_span.combine(&end_span);
-        let node = if self.mode == ParserMode::SyntaxOnly {
-            None
-        } else {
-            Some(ExpressionNode {
-                kind: ExpressionKind::Match {
-                    expr: Box::new(expr.node.expect("compatibility match scrutinee has an AST")),
-                    arms,
-                },
-                span,
-            })
-        };
         self.record_typed_syntax_node(
             SyntaxKind::MatchExpression,
             match_start,
@@ -1056,7 +791,6 @@ impl<'a> Parser<'a> {
         );
         Ok(ParsedExpression {
             span,
-            node,
             generic_target: None,
         })
     }
@@ -1125,25 +859,24 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        let compatibility = self.mode == ParserMode::Compatibility;
         let token_index = self.current;
         let token = self.consume();
         let token_span = token.span;
         let token_type = match &token.token_type {
             TokenType::OpenParen => PrimaryToken::OpenParen,
-            TokenType::Int(value) => PrimaryToken::Int(*value),
-            TokenType::Bool(value) => PrimaryToken::Bool(*value),
+            TokenType::Int(_) => PrimaryToken::Int,
+            TokenType::Bool(_) => PrimaryToken::Bool,
             TokenType::None => PrimaryToken::None,
-            TokenType::Char(value) => PrimaryToken::Char(*value),
-            TokenType::Str(value) => PrimaryToken::Str(compatibility.then(|| value.clone())),
-            TokenType::Bytes(value) => PrimaryToken::Bytes(compatibility.then(|| value.clone())),
-            TokenType::Float(value) => PrimaryToken::Float(*value),
+            TokenType::Char(_) => PrimaryToken::Char,
+            TokenType::Str(_) => PrimaryToken::Str,
+            TokenType::Bytes(_) => PrimaryToken::Bytes,
+            TokenType::Float(_) => PrimaryToken::Float,
             TokenType::OpenBracket => PrimaryToken::OpenBracket,
             TokenType::OpenBrace => PrimaryToken::OpenBrace,
             TokenType::Func => PrimaryToken::Func,
             TokenType::If => PrimaryToken::If,
             TokenType::Match => PrimaryToken::Match,
-            TokenType::Id(value) => PrimaryToken::Id(compatibility.then(|| value.clone())),
+            TokenType::Id(_) => PrimaryToken::Id,
             _ => PrimaryToken::Other,
         };
 
@@ -1151,48 +884,26 @@ impl<'a> Parser<'a> {
             PrimaryToken::OpenParen => {
                 self.parse_parenthesized_or_tuple_expression_parsed(token_span)
             }
-            PrimaryToken::Int(n) => self.parse_scalar_primary(token_span, None, || {
-                ExpressionKind::Literal(LiteralNode::Integer(n))
-            }),
-            PrimaryToken::Bool(b) => self.parse_scalar_primary(token_span, None, || {
-                ExpressionKind::Literal(LiteralNode::Boolean(b))
-            }),
-            PrimaryToken::None => {
-                self.parse_scalar_primary(token_span, None, || ExpressionKind::None)
-            }
-            PrimaryToken::Char(c) => self.parse_scalar_primary(token_span, None, || {
-                ExpressionKind::Literal(LiteralNode::Char(c))
-            }),
-            PrimaryToken::Str(value) => self.parse_scalar_primary(token_span, None, || {
-                ExpressionKind::Literal(LiteralNode::String(
-                    value.expect("compatibility string literal has a payload"),
-                ))
-            }),
-            PrimaryToken::Bytes(value) => self.parse_scalar_primary(token_span, None, || {
-                ExpressionKind::Literal(LiteralNode::Bytes(
-                    value.expect("compatibility bytes literal has a payload"),
-                ))
-            }),
-            PrimaryToken::Float(f) => self.parse_scalar_primary(token_span, None, || {
-                ExpressionKind::Literal(LiteralNode::Float(f))
-            }),
+            PrimaryToken::Int
+            | PrimaryToken::Bool
+            | PrimaryToken::None
+            | PrimaryToken::Char
+            | PrimaryToken::Str
+            | PrimaryToken::Bytes
+            | PrimaryToken::Float => self.parse_scalar_primary(token_span, None),
             PrimaryToken::OpenBracket => self.parse_list_literal_expression_parsed(token_span),
             PrimaryToken::OpenBrace => self.parse_collection_literal_parsed(token_span),
             PrimaryToken::Func => self.parse_lambda_expression_parsed(token_span),
             PrimaryToken::If => self.parse_if_expression_parsed(token_span),
             PrimaryToken::Match => self.parse_match_expression_parsed(token_span),
-            PrimaryToken::Id(id) => {
+            PrimaryToken::Id => {
                 let TokenType::Id(name) = &self.tokens[token_index].token_type else {
                     unreachable!("primary identifier token changed during parsing")
                 };
                 let generic_target = Some(GenericTarget {
-                    start_token: token_index,
-                    end_token: token_index + 1,
                     starts_uppercase: name.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
                 });
-                self.parse_scalar_primary(token_span, generic_target, || {
-                    ExpressionKind::Identifier(id.expect("compatibility identifier has a payload"))
-                })
+                self.parse_scalar_primary(token_span, generic_target)
             }
             PrimaryToken::Other => Err(self
                 .unexpected_primary_error(self.tokens[token_index].token_type.clone(), token_span)),
@@ -1227,32 +938,11 @@ impl<'a> Parser<'a> {
         &mut self,
         span: Span,
         generic_target: Option<GenericTarget>,
-        make_kind: impl FnOnce() -> ExpressionKind,
     ) -> ParserResult<ParsedExpression> {
-        Ok(ParsedExpression::scalar(
-            self,
+        Ok(ParsedExpression {
             span,
-            make_kind,
             generic_target,
-        ))
-    }
-
-    fn generic_target_name(&self, target: &GenericTarget) -> String {
-        let mut name = String::new();
-        for token in &self.tokens[target.start_token..target.end_token] {
-            let segment = match &token.token_type {
-                TokenType::Id(segment) => Some(segment.as_str()),
-                TokenType::Underscore => Some("_"),
-                _ => None,
-            };
-            if let Some(segment) = segment {
-                if !name.is_empty() {
-                    name.push('.');
-                }
-                name.push_str(segment);
-            }
-        }
-        name
+        })
     }
 
     fn parse_parenthesized_or_tuple_expression_parsed(
@@ -1309,20 +999,8 @@ impl<'a> Parser<'a> {
                     second: second_range,
                 },
             );
-            let node = if self.mode == ParserMode::Compatibility {
-                Some(ExpressionNode {
-                    kind: ExpressionKind::TupleLiteral(vec![
-                        first.node.expect("compatibility tuple element has an AST"),
-                        second.node.expect("compatibility tuple element has an AST"),
-                    ]),
-                    span,
-                })
-            } else {
-                None
-            };
             return Ok(ParsedExpression {
                 span,
-                node,
                 generic_target: None,
             });
         }
@@ -1427,22 +1105,8 @@ impl<'a> Parser<'a> {
         );
         self.record_syntax_node(SyntaxKind::TypeArguments, arguments_start, self.current);
         let span = expr.span.combine(&end_span);
-        let node = if self.mode == ParserMode::Compatibility {
-            let name = self.generic_target_name(target_fact);
-            let type_args = type_arg_facts
-                .into_iter()
-                .map(TypeFact::into_compat_type_node)
-                .collect();
-            Some(ExpressionNode {
-                kind: ExpressionKind::GenericType(name, type_args),
-                span,
-            })
-        } else {
-            None
-        };
         Ok(Some(ParsedExpression {
             span,
-            node,
             generic_target: None,
         }))
     }
@@ -1456,7 +1120,6 @@ impl<'a> Parser<'a> {
                 let start = self.current.saturating_sub(1);
                 let callee_range = expr.span.byte_range.expect("call target has source range");
                 let callee_start = self.token_index_for_span(expr.span);
-                let mut args = Vec::new();
                 let mut argument_ranges = Vec::new();
                 if !self.check(TokenType::CloseParen) {
                     loop {
@@ -1468,9 +1131,6 @@ impl<'a> Parser<'a> {
                                 .byte_range
                                 .expect("call argument has source range"),
                         );
-                        if self.mode == ParserMode::Compatibility {
-                            args.push(argument.node.expect("compatibility argument has an AST"));
-                        }
                         self.skip_newlines();
                         if !self.matches(&[TokenType::Comma]) {
                             break;
@@ -1494,20 +1154,8 @@ impl<'a> Parser<'a> {
                 );
                 self.record_syntax_node(SyntaxKind::CallArguments, start, self.current);
                 let span = expr.span.combine(&end_span);
-                let node = if self.mode == ParserMode::Compatibility {
-                    Some(ExpressionNode {
-                        kind: ExpressionKind::Call {
-                            func: Box::new(expr.node.expect("compatibility callee has an AST")),
-                            args,
-                        },
-                        span,
-                    })
-                } else {
-                    None
-                };
                 expr = ParsedExpression {
                     span,
-                    node,
                     generic_target: None,
                 };
                 continue;
@@ -1516,10 +1164,7 @@ impl<'a> Parser<'a> {
             if self.matches(&[TokenType::Dot]) {
                 let base_range = expr.span.byte_range.expect("field base has source range");
                 let start = self.token_index_for_span(expr.span);
-                let field = self.consume_identifier_fact(
-                    "Expected field name after '.'",
-                    self.mode == ParserMode::Compatibility,
-                )?;
+                self.consume_identifier_fact("Expected field name after '.'")?;
                 let field_span = self.tokens[self.current - 1].span;
                 if let Some(field_range) = field_span.byte_range {
                     self.record_typed_syntax_node(
@@ -1533,24 +1178,9 @@ impl<'a> Parser<'a> {
                     );
                 }
                 let span = expr.span.combine(&field_span);
-                let generic_target = expr.generic_target.take().map(|mut target| {
-                    target.end_token = self.current;
-                    target
-                });
-                let node = if self.mode == ParserMode::Compatibility {
-                    Some(ExpressionNode {
-                        kind: ExpressionKind::FieldAccess {
-                            expr: Box::new(expr.node.expect("compatibility field base has an AST")),
-                            field: field.expect("compatibility field has a payload"),
-                        },
-                        span,
-                    })
-                } else {
-                    None
-                };
+                let generic_target = expr.generic_target.take();
                 expr = ParsedExpression {
                     span,
-                    node,
                     generic_target,
                 };
                 continue;
@@ -1560,14 +1190,13 @@ impl<'a> Parser<'a> {
                 let start = self.current.saturating_sub(1);
                 let base_range = expr.span.byte_range.expect("index base has source range");
                 let base_span = expr.span;
-                let base_node = expr.node;
                 let syntax_start = self.token_index_for_span(base_span);
                 if self.matches(&[TokenType::Colon]) {
-                    expr = self.finish_slice_parsed(base_span, base_node, None)?;
+                    expr = self.finish_slice_parsed(base_span, None)?;
                 } else {
                     let index = self.parse_expression_parsed()?;
                     if self.matches(&[TokenType::Colon]) {
-                        expr = self.finish_slice_parsed(base_span, base_node, Some(index))?;
+                        expr = self.finish_slice_parsed(base_span, Some(index))?;
                     } else {
                         let end_span = self
                             .consume_token(TokenType::CloseBracket, "Expected ']' after index")?;
@@ -1581,24 +1210,8 @@ impl<'a> Parser<'a> {
                                 index: index_range,
                             },
                         );
-                        let node = if self.mode == ParserMode::Compatibility {
-                            Some(ExpressionNode {
-                                kind: ExpressionKind::ListAccess {
-                                    expr: Box::new(
-                                        base_node.expect("compatibility index base has an AST"),
-                                    ),
-                                    index: Box::new(
-                                        index.node.expect("compatibility index has an AST"),
-                                    ),
-                                },
-                                span: base_span.combine(&end_span),
-                            })
-                        } else {
-                            None
-                        };
                         expr = ParsedExpression {
                             span: base_span.combine(&end_span),
-                            node,
                             generic_target: None,
                         };
                     }
@@ -1621,11 +1234,6 @@ impl<'a> Parser<'a> {
             }
 
             if self.matches(&[TokenType::Incr]) || self.matches(&[TokenType::Decr]) {
-                let op = if self.previous().token_type == TokenType::Incr {
-                    UnaryOp::Incr
-                } else {
-                    UnaryOp::Decr
-                };
                 let op_span = self.previous().span;
                 let operand = expr.span;
                 if let (Some(operand), Some(operator)) = (operand.byte_range, op_span.byte_range) {
@@ -1641,24 +1249,8 @@ impl<'a> Parser<'a> {
                     );
                 }
                 let span = expr.span.combine(&op_span);
-                let node = if self.mode == ParserMode::Compatibility {
-                    Some(ExpressionNode {
-                        kind: ExpressionKind::Unary {
-                            op,
-                            op_span,
-                            expr: Box::new(
-                                expr.node.expect("compatibility update operand has an AST"),
-                            ),
-                            postfix: true,
-                        },
-                        span,
-                    })
-                } else {
-                    None
-                };
                 expr = ParsedExpression {
                     span,
-                    node,
                     generic_target: None,
                 };
                 continue;
@@ -1675,7 +1267,6 @@ impl<'a> Parser<'a> {
     fn finish_slice_parsed(
         &mut self,
         base_span: Span,
-        base_node: Option<ExpressionNode>,
         start: Option<ParsedExpression>,
     ) -> ParserResult<ParsedExpression> {
         let base_range = base_span.byte_range.expect("slice base has source range");
@@ -1693,26 +1284,6 @@ impl<'a> Parser<'a> {
             .and_then(|expression| expression.span.byte_range);
         let end_span = self.consume_token(TokenType::CloseBracket, "Expected ']' after slice")?;
         let span = base_span.combine(&end_span);
-        let node = if self.mode == ParserMode::Compatibility {
-            Some(ExpressionNode {
-                kind: ExpressionKind::Slice {
-                    expr: Box::new(base_node.expect("compatibility slice base has an AST")),
-                    start: start.map(|expression| {
-                        Box::new(
-                            expression
-                                .node
-                                .expect("compatibility slice start has an AST"),
-                        )
-                    }),
-                    end: end.map(|expression| {
-                        Box::new(expression.node.expect("compatibility slice end has an AST"))
-                    }),
-                },
-                span,
-            })
-        } else {
-            None
-        };
         self.record_typed_syntax_node(
             SyntaxKind::SliceExpression,
             slice_start,
@@ -1725,7 +1296,6 @@ impl<'a> Parser<'a> {
         );
         Ok(ParsedExpression {
             span,
-            node,
             generic_target: None,
         })
     }
@@ -1755,70 +1325,39 @@ impl<'a> Parser<'a> {
         false
     }
 
-    pub(super) fn consume_operator(&mut self) -> Option<BinaryOp> {
-        if self.is_at_end() {
-            return None;
-        }
-
-        let token = self.peek();
-        let result = match token.token_type {
-            TokenType::Plus => Some(BinaryOp::Add),
-            TokenType::Minus => Some(BinaryOp::Subtract),
-            TokenType::Star => Some(BinaryOp::Multiply),
-            TokenType::Slash => Some(BinaryOp::Divide),
-            TokenType::Percent => Some(BinaryOp::Modulo),
-            TokenType::StarStar => Some(BinaryOp::Exponent),
-            TokenType::Eq => Some(BinaryOp::Assign),
-            TokenType::EqEq => Some(BinaryOp::Equal),
-            TokenType::NotEq => Some(BinaryOp::NotEqual),
-            TokenType::Lt => Some(BinaryOp::Less),
-            TokenType::Gt => Some(BinaryOp::Greater),
-            TokenType::Le => Some(BinaryOp::LessEqual),
-            TokenType::Ge => Some(BinaryOp::GreaterEqual),
-            TokenType::And => Some(BinaryOp::LogicalAnd),
-            TokenType::Or => Some(BinaryOp::LogicalOr),
-            TokenType::In => Some(BinaryOp::In),
-            TokenType::PlusEq => Some(BinaryOp::AddAssign),
-            TokenType::MinusEq => Some(BinaryOp::SubtractAssign),
-            TokenType::StarEq => Some(BinaryOp::MultiplyAssign),
-            TokenType::SlashEq => Some(BinaryOp::DivideAssign),
-            TokenType::PercentEq => Some(BinaryOp::ModuloAssign),
-            _ => None,
-        };
-
-        if result.is_some() {
-            self.advance();
-        }
-        result
+    pub(super) fn consume_operator(&mut self) -> Option<TokenType> {
+        let operator = self.peek_operator()?;
+        self.advance();
+        Some(operator)
     }
 
-    pub(super) fn peek_operator(&self) -> Option<BinaryOp> {
+    pub(super) fn peek_operator(&self) -> Option<TokenType> {
         if self.is_at_end() {
             return None;
         }
 
         match self.peek().token_type {
-            TokenType::Plus => Some(BinaryOp::Add),
-            TokenType::Minus => Some(BinaryOp::Subtract),
-            TokenType::Star => Some(BinaryOp::Multiply),
-            TokenType::Slash => Some(BinaryOp::Divide),
-            TokenType::Percent => Some(BinaryOp::Modulo),
-            TokenType::StarStar => Some(BinaryOp::Exponent),
-            TokenType::Eq => Some(BinaryOp::Assign),
-            TokenType::EqEq => Some(BinaryOp::Equal),
-            TokenType::NotEq => Some(BinaryOp::NotEqual),
-            TokenType::Lt => Some(BinaryOp::Less),
-            TokenType::Gt => Some(BinaryOp::Greater),
-            TokenType::Le => Some(BinaryOp::LessEqual),
-            TokenType::Ge => Some(BinaryOp::GreaterEqual),
-            TokenType::And => Some(BinaryOp::LogicalAnd),
-            TokenType::Or => Some(BinaryOp::LogicalOr),
-            TokenType::In => Some(BinaryOp::In),
-            TokenType::PlusEq => Some(BinaryOp::AddAssign),
-            TokenType::MinusEq => Some(BinaryOp::SubtractAssign),
-            TokenType::StarEq => Some(BinaryOp::MultiplyAssign),
-            TokenType::SlashEq => Some(BinaryOp::DivideAssign),
-            TokenType::PercentEq => Some(BinaryOp::ModuloAssign),
+            TokenType::Plus
+            | TokenType::Minus
+            | TokenType::Star
+            | TokenType::Slash
+            | TokenType::Percent
+            | TokenType::StarStar
+            | TokenType::Eq
+            | TokenType::EqEq
+            | TokenType::NotEq
+            | TokenType::Lt
+            | TokenType::Gt
+            | TokenType::Le
+            | TokenType::Ge
+            | TokenType::And
+            | TokenType::Or
+            | TokenType::In
+            | TokenType::PlusEq
+            | TokenType::MinusEq
+            | TokenType::StarEq
+            | TokenType::SlashEq
+            | TokenType::PercentEq => Some(self.peek().token_type.clone()),
             _ => None,
         }
     }
@@ -1845,32 +1384,37 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn get_operator_precedence(&self, op: &BinaryOp) -> ParserResult<Precedence> {
+    pub(super) fn get_operator_precedence(&self, op: &TokenType) -> ParserResult<Precedence> {
         let precedence = match op {
-            BinaryOp::Assign
-            | BinaryOp::AddAssign
-            | BinaryOp::SubtractAssign
-            | BinaryOp::MultiplyAssign
-            | BinaryOp::DivideAssign
-            | BinaryOp::ModuloAssign => Precedence::Assignment,
+            TokenType::Eq
+            | TokenType::PlusEq
+            | TokenType::MinusEq
+            | TokenType::StarEq
+            | TokenType::SlashEq
+            | TokenType::PercentEq => Precedence::Assignment,
 
-            BinaryOp::LogicalOr => Precedence::Or,
+            TokenType::Or => Precedence::Or,
 
-            BinaryOp::LogicalAnd => Precedence::And,
+            TokenType::And => Precedence::And,
 
-            BinaryOp::In => Precedence::Comparison,
+            TokenType::In => Precedence::Comparison,
 
-            BinaryOp::Equal | BinaryOp::NotEqual => Precedence::Equality,
+            TokenType::EqEq | TokenType::NotEq => Precedence::Equality,
 
-            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
-                Precedence::Comparison
+            TokenType::Lt | TokenType::Le | TokenType::Gt | TokenType::Ge => Precedence::Comparison,
+
+            TokenType::Plus | TokenType::Minus => Precedence::Term,
+
+            TokenType::Star | TokenType::Slash | TokenType::Percent => Precedence::Factor,
+
+            TokenType::StarStar => Precedence::Exponent,
+            _ => {
+                return Err(ParserError::new(
+                    DiagnosticCode::ParseExpectedToken,
+                    "Expected binary operator",
+                    self.peek().span,
+                ));
             }
-
-            BinaryOp::Add | BinaryOp::Subtract => Precedence::Term,
-
-            BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => Precedence::Factor,
-
-            BinaryOp::Exponent => Precedence::Exponent,
         };
         Ok(precedence)
     }

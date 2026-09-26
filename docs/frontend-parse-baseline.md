@@ -1,28 +1,42 @@
 # Frontend parse baseline
 
-This records the compatibility parser cost before removing its AST-building
-path. Both measurements include lexing and produce a compiler AST: the legacy
-path lexes and parses directly, while the syntax path parses losslessly and
-lowers the result.
+This compares the former AST parser with the lossless syntax frontend, including
+AST lowering. The syntax frontend retains trivia and typed source facts before
+building the compiler AST, so the comparison measures the cost of that added
+capability as well as parser throughput.
 
-Reproduce with:
+The historical comparison was measured at compiler commit `60f5254`, before
+removing the legacy AST-building path:
 
 ```sh
+git checkout 60f5254
 ./scripts/dev-cargo.sh bench --bench compile -- \
   'frontend_parse/(legacy_lex_parse|syntax_parse_lower)/(arithmetic|collections|enums_classes)' \
   --sample-size 30 --warm-up-time 1 --measurement-time 2
 ```
 
-Measurements below use Criterion's median estimate from the optimized profile.
-The corpus contained 171 compiling programs; this filtered run measured three
-fixtures.
+After the cutover, the legacy parser benchmark was removed. Re-measure the
+remaining syntax path with:
 
-| Fixture | Legacy lex + parse | Syntax parse + lower | Ratio |
-| --- | ---: | ---: | ---: |
-| `arithmetic` | 25.964 µs | 82.945 µs | 3.19× |
-| `collections` | 409.61 µs | 1.1645 ms | 2.84× |
-| `enums_classes` | 123.54 µs | 368.04 µs | 2.98× |
+```sh
+./scripts/dev-cargo.sh bench --bench compile -- \
+  'syntax_parse_lower/(arithmetic|collections|enums_classes)' \
+  --sample-size 30 --warm-up-time 1 --measurement-time 2
+```
 
-The syntax frontend takes about three times as long on these examples. This is
-a focused baseline, not an end-to-end compile comparison. Peak memory was not
-measured; investigate the cost before treating this path as complete.
+The measurements below use Criterion's median estimate from the optimized
+profile. The corpus contained 171 compiling programs; each filtered run measured
+three fixtures.
+
+| Fixture | Legacy parser (`60f5254`) | Early syntax path (`60f5254`) | Syntax path after AST cutover | Current / legacy |
+| --- | ---: | ---: | ---: | ---: |
+| `arithmetic` | 25.964 µs | 82.945 µs | 78.352 µs | 3.02× |
+| `collections` | 409.61 µs | 1.1645 ms | 1.2928 ms | 3.16× |
+| `enums_classes` | 123.54 µs | 368.04 µs | 377.42 µs | 3.06× |
+
+The syntax frontend remains about three times as slow on these examples as the
+former AST parser. Removing parser-side AST construction improved the arithmetic
+fixture by about 6%; collections regressed by about 11%, and enums/classes by
+about 3% against the early syntax path. This is a focused parser comparison,
+not an end-to-end compile measurement. Peak memory was not measured, and the
+collections regression still needs investigation.

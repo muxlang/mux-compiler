@@ -30,7 +30,6 @@ use mux_lang::codegen::CodeGenerator;
 use mux_lang::diagnostic::Files;
 use mux_lang::lexer::{Lexer, Token};
 use mux_lang::module_resolver::ModuleResolver;
-use mux_lang::parser::Parser;
 use mux_lang::semantics::SemanticAnalyzer;
 use mux_lang::source::Source;
 
@@ -60,12 +59,10 @@ fn lex(src: &str) -> Vec<Token> {
 }
 
 fn parse(src: &str) -> Vec<AstNode> {
-    let tokens = lex(src);
-    let mut parser = Parser::new(&tokens);
-    match parser.parse() {
-        Ok(nodes) => nodes,
-        Err(_) => panic!("pre-validated corpus program should parse"),
-    }
+    let parsed = mux_lang::syntax::parse_source(src);
+    parsed
+        .lower()
+        .unwrap_or_else(|_| panic!("pre-validated corpus program should syntax-parse and lower"))
 }
 
 // A fresh analyzer + diagnostics registry for a program, wired with a module
@@ -82,17 +79,20 @@ fn fresh(prog: &Program) -> (SemanticAnalyzer, Files) {
     (SemanticAnalyzer::new_with_resolver(resolver), files)
 }
 
-// True iff the program fully lexes, parses, and passes semantics. Each step is
-// checked explicitly so a lex/parse failure excludes the file rather than
+// True iff the program fully lexes, syntax-parses, lowers, and passes semantics.
+// Each step is checked explicitly so a failure excludes the file rather than
 // slipping through as an empty token stream.
 fn compiles(prog: &Program) -> bool {
     let mut source = Source::from_string(prog.src.clone());
     let mut lexer = Lexer::new(&mut source);
-    let Ok(tokens) = lexer.lex_all() else {
+    let Ok(_tokens) = lexer.lex_all() else {
         return false;
     };
-    let mut parser = Parser::new(&tokens);
-    let Ok(nodes) = parser.parse() else {
+    let parsed = mux_lang::syntax::parse_source(&prog.src);
+    if parsed.has_errors() {
+        return false;
+    }
+    let Ok(nodes) = parsed.lower() else {
         return false;
     };
     let (mut analyzer, mut files) = fresh(prog);
@@ -155,32 +155,6 @@ fn bench_lex(c: &mut Criterion) {
 }
 
 fn bench_parse(c: &mut Criterion) {
-    let mut group = c.benchmark_group("parse");
-    for prog in corpus() {
-        let tokens = lex(&prog.src);
-        group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, _| {
-            b.iter(|| {
-                let mut parser = Parser::new(black_box(&tokens));
-                parser
-                    .parse()
-                    .unwrap_or_else(|_| panic!("pre-validated corpus program should parse"))
-            });
-        });
-    }
-    group.finish();
-}
-
-fn bench_legacy_frontend(c: &mut Criterion) {
-    let mut group = c.benchmark_group("legacy_frontend");
-    for prog in corpus() {
-        group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
-            b.iter(|| black_box(parse(black_box(&prog.src))));
-        });
-    }
-    group.finish();
-}
-
-fn bench_syntax_parse(c: &mut Criterion) {
     let mut group = c.benchmark_group("syntax_parse");
     for prog in corpus() {
         group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
@@ -190,33 +164,6 @@ fn bench_syntax_parse(c: &mut Criterion) {
                 black_box(parsed);
             });
         });
-    }
-    group.finish();
-}
-
-// Compare both frontends from source text through compiler AST materialization.
-// The phase-only `parse` benchmark intentionally keeps pre-tokenized input;
-// this group includes lexing and parsing on both sides.
-fn bench_frontend_parse(c: &mut Criterion) {
-    let mut group = c.benchmark_group("frontend_parse");
-    for prog in corpus() {
-        group.bench_with_input(
-            BenchmarkId::new("legacy_lex_parse", &prog.name),
-            prog,
-            |b, prog| b.iter(|| black_box(parse(black_box(&prog.src)))),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("syntax_parse_lower", &prog.name),
-            prog,
-            |b, prog| {
-                b.iter(|| {
-                    let parsed = mux_lang::syntax::parse_source(black_box(&prog.src));
-                    parsed
-                        .lower()
-                        .unwrap_or_else(|_| panic!("corpus program should syntax-parse and lower"))
-                });
-            },
-        );
     }
     group.finish();
 }
@@ -313,8 +260,7 @@ fn configured() -> Criterion {
 criterion_group!(
     name = benches;
     config = configured();
-    targets = bench_lex, bench_parse, bench_legacy_frontend, bench_syntax_parse,
-        bench_frontend_parse,
+    targets = bench_lex, bench_parse,
         bench_syntax_parse_lower, bench_semantics, bench_codegen, bench_pipeline
 );
 criterion_main!(benches);

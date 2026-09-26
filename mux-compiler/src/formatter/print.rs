@@ -627,6 +627,33 @@ mod tests {
     }
 
     #[test]
+    fn unicode_text_and_crlf_inside_multiline_literals_are_preserved() {
+        let source = "auto greeting=\"café 🐈\"\r\nauto poem=\"first\r\nsecond\"\r\n";
+        let formatted = format_source(source, FormatOptions::default()).unwrap();
+
+        assert!(formatted.contains("\"café 🐈\""));
+        assert!(formatted.contains("\"first\r\nsecond\""));
+        // Source line endings are normalized, while the literal's token text stays exact.
+        assert_eq!(formatted.matches('\r').count(), 1);
+        assert_eq!(
+            format_source(&formatted, FormatOptions::default()).unwrap(),
+            formatted
+        );
+    }
+
+    #[test]
+    fn multiline_string_literal_spelling_is_preserved_and_idempotent() {
+        let source = "auto message=\"first\n  second\nthird\"\n";
+        let formatted = format_source(source, FormatOptions::default()).unwrap();
+
+        assert!(formatted.contains("\"first\n  second\nthird\""));
+        assert_eq!(
+            format_source(&formatted, FormatOptions::default()).unwrap(),
+            formatted
+        );
+    }
+
+    #[test]
     fn invalid_syntax_is_rejected() {
         assert!(format_source("auto =\n", FormatOptions::default()).is_err());
     }

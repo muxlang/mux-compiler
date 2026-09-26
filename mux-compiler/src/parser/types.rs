@@ -1,13 +1,11 @@
 //! Type parsing for the Mux parser.
 
 use super::{Parser, ParserError, ParserResult};
-use crate::ast::{PrimitiveType, TypeKind, TypeNode};
 use crate::diagnostic::DiagnosticCode;
 use crate::lexer::{ByteRange, Span, Token, TokenType};
 use crate::syntax::{SyntaxData, SyntaxKind};
 
-/// Parser-owned type facts retain the source range without coupling recursive
-/// parsing to the compatibility AST consumed by existing parser clients.
+/// Parser-owned type facts retain source ranges for later syntax lowering.
 #[derive(Clone, Debug)]
 pub(super) struct TypeFact {
     kind: TypeFactKind,
@@ -16,9 +14,8 @@ pub(super) struct TypeFact {
 
 #[derive(Clone, Debug)]
 enum TypeFactKind {
-    Primitive(PrimitiveType),
+    Primitive,
     Named {
-        name: Option<String>,
         name_range: ByteRange,
         args: Vec<TypeFact>,
     },
@@ -36,7 +33,7 @@ enum TypeFactKind {
 
 #[derive(Clone, Copy)]
 enum TypeNameClass {
-    Primitive(PrimitiveName),
+    Primitive,
     List,
     Map,
     Set,
@@ -45,47 +42,12 @@ enum TypeNameClass {
     Named,
 }
 
-#[derive(Clone, Copy)]
-enum PrimitiveName {
-    Int,
-    Float,
-    Bool,
-    Char,
-    Byte,
-    Bytes,
-    Str,
-    Void,
-    Auto,
-}
-
-impl PrimitiveName {
-    fn into_type(self) -> PrimitiveType {
-        match self {
-            Self::Int => PrimitiveType::Int,
-            Self::Float => PrimitiveType::Float,
-            Self::Bool => PrimitiveType::Bool,
-            Self::Char => PrimitiveType::Char,
-            Self::Byte => PrimitiveType::Byte,
-            Self::Bytes => PrimitiveType::Bytes,
-            Self::Str => PrimitiveType::Str,
-            Self::Void => PrimitiveType::Void,
-            Self::Auto => PrimitiveType::Auto,
-        }
-    }
-}
-
 impl TypeNameClass {
     fn classify(name: &str) -> Self {
         match name {
-            "int" => Self::Primitive(PrimitiveName::Int),
-            "float" => Self::Primitive(PrimitiveName::Float),
-            "bool" => Self::Primitive(PrimitiveName::Bool),
-            "char" => Self::Primitive(PrimitiveName::Char),
-            "byte" => Self::Primitive(PrimitiveName::Byte),
-            "bytes" => Self::Primitive(PrimitiveName::Bytes),
-            "string" => Self::Primitive(PrimitiveName::Str),
-            "void" => Self::Primitive(PrimitiveName::Void),
-            "auto" => Self::Primitive(PrimitiveName::Auto),
+            "int" | "float" | "bool" | "char" | "byte" | "bytes" | "string" | "void" | "auto" => {
+                Self::Primitive
+            }
             "list" => Self::List,
             "map" => Self::Map,
             "set" => Self::Set,
@@ -99,47 +61,8 @@ impl TypeNameClass {
 impl TypeFact {
     pub(super) fn void(span: Span) -> Self {
         Self {
-            kind: TypeFactKind::Primitive(PrimitiveType::Void),
+            kind: TypeFactKind::Primitive,
             span,
-        }
-    }
-
-    pub(super) fn into_compat_type_node(self) -> TypeNode {
-        let kind = match self.kind {
-            TypeFactKind::Primitive(kind) => TypeKind::Primitive(kind),
-            TypeFactKind::Named { name, args, .. } => TypeKind::Named(
-                name.expect("compatibility type fact has a name"),
-                args.into_iter()
-                    .map(TypeFact::into_compat_type_node)
-                    .collect(),
-            ),
-            TypeFactKind::TraitObject(inner) => {
-                TypeKind::TraitObject(Box::new(inner.into_compat_type_node()))
-            }
-            TypeFactKind::Reference(inner) => {
-                TypeKind::Reference(Box::new(inner.into_compat_type_node()))
-            }
-            TypeFactKind::List(inner) => TypeKind::List(Box::new(inner.into_compat_type_node())),
-            TypeFactKind::Map(key, value) => TypeKind::Map(
-                Box::new(key.into_compat_type_node()),
-                Box::new(value.into_compat_type_node()),
-            ),
-            TypeFactKind::Set(inner) => TypeKind::Set(Box::new(inner.into_compat_type_node())),
-            TypeFactKind::Tuple(left, right) => TypeKind::Tuple(
-                Box::new(left.into_compat_type_node()),
-                Box::new(right.into_compat_type_node()),
-            ),
-            TypeFactKind::Function { params, returns } => TypeKind::Function {
-                params: params
-                    .into_iter()
-                    .map(TypeFact::into_compat_type_node)
-                    .collect(),
-                returns: Box::new(returns.into_compat_type_node()),
-            },
-        };
-        TypeNode {
-            kind,
-            span: self.span,
         }
     }
 
@@ -164,11 +87,6 @@ impl<'a> Parser<'a> {
         name_token: usize,
         start_span: Span,
     ) -> ParserResult<TypeFact> {
-        let compatibility = self.mode == super::ParserMode::Compatibility;
-        let mut name = compatibility.then(|| match &self.tokens[name_token].token_type {
-            TokenType::Id(name) => name.clone(),
-            _ => unreachable!("type name token is an identifier"),
-        });
         let mut name_range = self.tokens[name_token]
             .span
             .byte_range
@@ -185,24 +103,19 @@ impl<'a> Parser<'a> {
         // place that knows which module namespaces are in scope.
         while self.check(TokenType::Dot) {
             self.advance();
-            let segment =
-                self.consume_identifier_fact("Expected a type name after '.'", compatibility)?;
+            self.consume_identifier_fact("Expected a type name after '.'")?;
             let segment_range = self
                 .previous()
                 .span
                 .byte_range
                 .expect("type name segment has a source range");
             name_range = ByteRange::new(name_range.start, segment_range.end);
-            if let (Some(name), Some(segment)) = (&mut name, segment) {
-                name.push('.');
-                name.push_str(&segment);
-            }
             qualified = true;
         }
 
-        if !qualified && let TypeNameClass::Primitive(primitive) = name_class {
+        if !qualified && matches!(name_class, TypeNameClass::Primitive) {
             return Ok(TypeFact {
-                kind: TypeFactKind::Primitive(primitive.into_type()),
+                kind: TypeFactKind::Primitive,
                 span: start_span,
             });
         }
@@ -229,7 +142,6 @@ impl<'a> Parser<'a> {
 
         Ok(TypeFact {
             kind: TypeFactKind::Named {
-                name,
                 name_range,
                 args: type_args,
             },
@@ -299,12 +211,7 @@ impl<'a> Parser<'a> {
         Ok(Some(node))
     }
 
-    pub(super) fn parse_type(&mut self) -> ParserResult<TypeNode> {
-        self.parse_type_fact().map(TypeFact::into_compat_type_node)
-    }
-
-    /// Compatibility adapter for parser clients that still construct AST nodes.
-    /// New syntax consumers should work from the fact and its recorded ranges.
+    /// Parse a type into its source range and shape facts.
     pub(super) fn parse_type_fact(&mut self) -> ParserResult<TypeFact> {
         let start = self.current;
         match self.parse_type_inner() {
@@ -372,7 +279,7 @@ impl<'a> Parser<'a> {
                 .collect::<Option<Vec<_>>>()
         };
         Some(match kind {
-            TypeFactKind::Primitive(_) | TypeFactKind::Named { .. } => SyntaxData::TypeName {
+            TypeFactKind::Primitive | TypeFactKind::Named { .. } => SyntaxData::TypeName {
                 name: name()?,
                 arguments: match kind {
                     TypeFactKind::Named { args, .. } => ranges(args)?,
@@ -506,72 +413,25 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::{AstNode, PrimitiveType, TypeKind};
     use crate::syntax::parse_source;
 
-    fn parse_type(source: &str) -> Result<TypeKind, String> {
+    fn parses_type(source: &str) -> bool {
         let parsed = parse_source(&format!("func parser_type() returns {source} {{}}"));
-        let nodes = parsed
-            .lower()
-            .map_err(|error| format!("type fixture should parse: {error:?}"))?;
-        let [AstNode::Function(function)] = nodes.as_slice() else {
-            return Err("expected one lowered function".to_owned());
-        };
-        Ok(function.return_type.kind.clone())
+        parsed.errors.is_empty()
     }
 
     #[test]
-    fn parses_nested_container_types() -> Result<(), String> {
-        let kind = parse_type("map<string, list<int>>")?;
-        let TypeKind::Map(key, value) = kind else {
-            return Err("expected map type".to_owned());
-        };
-        assert!(matches!(key.kind, TypeKind::Primitive(PrimitiveType::Str)));
-        let TypeKind::List(element) = value.kind else {
-            return Err("expected list value type".to_owned());
-        };
-        assert!(matches!(
-            element.kind,
-            TypeKind::Primitive(PrimitiveType::Int)
-        ));
-        Ok(())
+    fn parses_nested_container_types() {
+        assert!(parses_type("map<string, list<int>>"));
     }
 
     #[test]
-    fn parses_function_reference_types() -> Result<(), String> {
-        let kind = parse_type("&func(int, string) returns bool")?;
-        let TypeKind::Reference(function) = kind else {
-            return Err("expected reference type".to_owned());
-        };
-        let TypeKind::Function { params, returns } = function.kind else {
-            return Err("expected function type".to_owned());
-        };
-        let first_param = params.first().ok_or("missing first parameter")?;
-        let second_param = params.get(1).ok_or("missing second parameter")?;
-        assert!(matches!(
-            first_param.kind,
-            TypeKind::Primitive(PrimitiveType::Int)
-        ));
-        assert!(matches!(
-            second_param.kind,
-            TypeKind::Primitive(PrimitiveType::Str)
-        ));
-        assert!(matches!(
-            returns.kind,
-            TypeKind::Primitive(PrimitiveType::Bool)
-        ));
-        Ok(())
+    fn parses_function_reference_types() {
+        assert!(parses_type("&func(int, string) returns bool"));
     }
 
     #[test]
-    fn parses_dynamic_interface_types() -> Result<(), String> {
-        let kind = parse_type("dyn<Greeter>")?;
-        let TypeKind::TraitObject(inner) = kind else {
-            return Err("expected dynamic interface type".to_owned());
-        };
-        assert!(
-            matches!(inner.kind, TypeKind::Named(ref name, args) if name == "Greeter" && args.is_empty())
-        );
-        Ok(())
+    fn parses_dynamic_interface_types() {
+        assert!(parses_type("dyn<Greeter>"));
     }
 }

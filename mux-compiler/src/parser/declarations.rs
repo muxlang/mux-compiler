@@ -1,545 +1,21 @@
-use super::statements::WhereClauseFact;
 use super::types::TypeFact;
 use super::*;
-
-type EnumVariantDataFact = Vec<(Option<String>, TypeFact)>;
-
-struct TestDeclarationFact {
-    range: ByteRange,
-    span: Span,
-    name: Option<String>,
-    body: Vec<StatementNode>,
-}
-
-impl TestDeclarationFact {
-    fn into_compatibility_ast(self) -> AstNode {
-        let Self {
-            range,
-            span,
-            name,
-            body,
-        } = self;
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        AstNode::Test {
-            name: name.expect("compatibility test declaration name"),
-            body,
-            span,
-        }
-    }
-}
-
-struct ImportDeclarationFact {
-    range: ByteRange,
-    span: Span,
-    module_path_range: ByteRange,
-    module_path: Option<String>,
-    spec: Option<ImportSpec>,
-}
-
-impl ImportDeclarationFact {
-    fn into_compatibility_ast(self) -> AstNode {
-        let Self {
-            range,
-            span,
-            module_path_range,
-            module_path,
-            spec,
-        } = self;
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        debug_assert!(range.start <= module_path_range.start && module_path_range.end <= range.end);
-        AstNode::Statement(StatementNode {
-            kind: StatementKind::Import {
-                module_path: module_path.expect("compatibility import path"),
-                spec: spec.expect("compatibility import spec"),
-            },
-            span,
-        })
-    }
-}
-
-struct EnumDeclarationFact {
-    range: ByteRange,
-    span: Span,
-    name: Option<String>,
-    type_params: Vec<TypeParameterFact>,
-    variants: Vec<EnumVariantFact>,
-}
-
-struct TypeParameterFact {
-    range: ByteRange,
-    span: Span,
-    name: Option<String>,
-    name_range: ByteRange,
-    bounds: Vec<TraitBoundFact>,
-}
+use crate::ast::SpanExt;
 
 struct TypeParameterListFact {
     names: Vec<ByteRange>,
-    compatibility: Vec<TypeParameterFact>,
-}
-
-impl TypeParameterFact {
-    fn into_compatibility(self) -> (String, Vec<TraitBound>) {
-        let Self {
-            range,
-            span,
-            name,
-            name_range,
-            bounds,
-        } = self;
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        debug_assert!(range.start <= name_range.start && name_range.end <= range.end);
-        (
-            name.expect("compatibility type parameter fact has a name"),
-            bounds
-                .into_iter()
-                .map(TraitBoundFact::into_compatibility)
-                .collect(),
-        )
-    }
-}
-
-struct TraitBoundFact {
-    span: Span,
-    name: Option<String>,
-    type_arguments: Vec<TypeFact>,
-}
-
-impl TraitBoundFact {
-    fn into_compatibility(self) -> TraitBound {
-        let Self {
-            span,
-            name,
-            type_arguments,
-        } = self;
-        TraitBound {
-            name: name.expect("compatibility trait bound name"),
-            type_params: type_arguments
-                .into_iter()
-                .map(TypeFact::into_compat_type_node)
-                .collect(),
-            span,
-        }
-    }
-}
-
-struct TraitReferenceFact {
-    span: Span,
-    name: Option<String>,
-    type_arguments: Vec<TypeFact>,
-}
-
-impl TraitReferenceFact {
-    fn into_compatibility(self) -> TraitRef {
-        let Self {
-            span,
-            name,
-            type_arguments,
-        } = self;
-        TraitRef {
-            name: name.expect("compatibility trait reference name"),
-            type_args: type_arguments
-                .into_iter()
-                .map(TypeFact::into_compat_type_node)
-                .collect(),
-            span,
-        }
-    }
-}
-
-/// Parsed facts for one enum variant. The name, payload and constraint remain
-/// available for the compatibility AST, while syntax consumers use the
-/// recorded ranges.
-struct EnumVariantFact {
-    range: ByteRange,
-    span: Span,
-    name: Option<String>,
-    data: Option<EnumVariantDataFact>,
-    where_clause: Option<WhereClauseFact>,
-}
-
-impl EnumVariantFact {
-    fn into_compatibility_variant(self) -> EnumVariant {
-        let Self {
-            range,
-            span,
-            name,
-            data,
-            where_clause,
-        } = self;
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        EnumVariant {
-            name: name.expect("compatibility enum variant name"),
-            data: data.map(|fields| {
-                fields
-                    .into_iter()
-                    .map(|(name, type_fact)| (name, type_fact.into_compat_type_node()))
-                    .collect()
-            }),
-            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
-        }
-    }
-}
-
-impl EnumDeclarationFact {
-    fn into_compatibility_ast(self) -> AstNode {
-        let Self {
-            range,
-            span,
-            name,
-            type_params,
-            variants,
-        } = self;
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        AstNode::Enum {
-            name: name.expect("compatibility enum name"),
-            type_params: type_params
-                .into_iter()
-                .map(TypeParameterFact::into_compatibility)
-                .collect(),
-            variants: variants
-                .into_iter()
-                .map(EnumVariantFact::into_compatibility_variant)
-                .collect(),
-            span,
-        }
-    }
-}
-
-struct FunctionDeclarationFact {
-    range: ByteRange,
-    span: Span,
-    name: Option<String>,
-    type_params: Vec<TypeParameterFact>,
-    params: Vec<FunctionParameterFact>,
-    return_type: TypeFact,
-    body: Vec<StatementNode>,
-    is_common: bool,
-    where_clause: Option<WhereClauseFact>,
-}
-
-struct FunctionParameterFact {
-    name: Option<String>,
-    type_fact: TypeFact,
-    default_value: ParameterDefaultFact,
 }
 
 pub(super) struct ParameterDefaultFact {
     range: Option<ByteRange>,
-    expression: Option<ExpressionNode>,
-}
-
-impl FunctionParameterFact {
-    fn into_compatibility_param(self) -> Param {
-        Param {
-            name: self
-                .name
-                .expect("compatibility parameter fact must retain its name"),
-            type_: self.type_fact.into_compat_type_node(),
-            default_value: self.default_value.expression,
-        }
-    }
-}
-
-impl FunctionDeclarationFact {
-    fn into_compatibility_ast(self) -> AstNode {
-        AstNode::Function(self.into_compatibility_function())
-    }
-
-    fn into_compatibility_function(self) -> FunctionNode {
-        let Self {
-            range,
-            span,
-            name,
-            type_params,
-            params,
-            return_type,
-            body,
-            is_common,
-            where_clause,
-        } = self;
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        let params = params
-            .into_iter()
-            .map(FunctionParameterFact::into_compatibility_param)
-            .collect();
-        let type_params = type_params
-            .into_iter()
-            .map(TypeParameterFact::into_compatibility)
-            .collect();
-        FunctionNode {
-            name: name.expect("compatibility function fact must retain its name"),
-            type_params,
-            params,
-            return_type: return_type.into_compat_type_node(),
-            body,
-            span,
-            is_common,
-            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
-        }
-    }
-}
-
-struct ClassDeclarationFact {
-    range: ByteRange,
-    span: Span,
-    name: Option<String>,
-    type_params: Vec<TypeParameterFact>,
-    traits: Vec<TraitReferenceFact>,
-    fields: Vec<FieldDeclarationFact>,
-    methods: Vec<FunctionDeclarationFact>,
-    where_clause: Option<WhereClauseFact>,
-}
-
-impl ClassDeclarationFact {
-    fn into_compatibility_ast(self) -> AstNode {
-        let Self {
-            range,
-            span,
-            name,
-            type_params,
-            traits,
-            fields,
-            methods,
-            where_clause,
-        } = self;
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        let type_params = type_params
-            .into_iter()
-            .map(TypeParameterFact::into_compatibility)
-            .collect();
-        let traits = traits
-            .into_iter()
-            .map(TraitReferenceFact::into_compatibility)
-            .collect();
-        let fields = fields
-            .into_iter()
-            .map(FieldDeclarationFact::into_compatibility_field)
-            .collect();
-        let methods = methods
-            .into_iter()
-            .map(FunctionDeclarationFact::into_compatibility_function)
-            .collect();
-        AstNode::Class {
-            name: name.expect("compatibility class fact must retain its name"),
-            type_params,
-            traits,
-            fields,
-            methods,
-            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
-            span,
-        }
-    }
-}
-
-struct InterfaceDeclarationFact {
-    range: ByteRange,
-    span: Span,
-    name: Option<String>,
-    type_params: Vec<TypeParameterFact>,
-    fields: Vec<FieldDeclarationFact>,
-    methods: Vec<InterfaceMethodFact>,
-}
-
-struct InterfaceMethodFact {
-    span: Span,
-    name: Option<String>,
-    type_params: Vec<TypeParameterFact>,
-    params: Vec<FunctionParameterFact>,
-    return_type: TypeFact,
-    where_clause: Option<WhereClauseFact>,
-}
-
-impl InterfaceMethodFact {
-    fn into_compatibility_function(self) -> FunctionNode {
-        let Self {
-            span,
-            name,
-            type_params,
-            params,
-            return_type,
-            where_clause,
-        } = self;
-        let type_params = type_params
-            .into_iter()
-            .map(TypeParameterFact::into_compatibility)
-            .collect();
-        FunctionNode {
-            name: name.expect("compatibility interface method fact must retain its name"),
-            type_params,
-            params: params
-                .into_iter()
-                .map(FunctionParameterFact::into_compatibility_param)
-                .collect(),
-            return_type: return_type.into_compat_type_node(),
-            body: Vec::new(),
-            span,
-            is_common: false,
-            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
-        }
-    }
-}
-
-impl InterfaceDeclarationFact {
-    fn into_compatibility_ast(self) -> AstNode {
-        let Self {
-            range,
-            span,
-            name,
-            type_params,
-            fields,
-            methods,
-        } = self;
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        let type_params = type_params
-            .into_iter()
-            .map(TypeParameterFact::into_compatibility)
-            .collect();
-        let fields = fields
-            .into_iter()
-            .map(FieldDeclarationFact::into_compatibility_field)
-            .collect();
-        let methods = methods
-            .into_iter()
-            .map(InterfaceMethodFact::into_compatibility_function)
-            .collect();
-        AstNode::Interface {
-            name: name.expect("compatibility interface fact must retain its name"),
-            type_params,
-            fields,
-            methods,
-            span,
-        }
-    }
-}
-
-struct FieldDeclarationFact {
-    range: ByteRange,
-    span: Span,
-    name: Option<String>,
-    type_fact: TypeFact,
-    is_generic_param: bool,
-    is_const: bool,
-    default_value: Option<ExpressionNode>,
-    where_clause: Option<WhereClauseFact>,
-}
-
-impl FieldDeclarationFact {
-    fn into_compatibility_field(self) -> Field {
-        let Self {
-            range,
-            span,
-            name,
-            type_fact,
-            is_generic_param,
-            is_const,
-            default_value,
-            where_clause,
-        } = self;
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        Field {
-            name: name.expect("compatibility field fact must retain its name"),
-            type_: type_fact.into_compat_type_node(),
-            is_generic_param,
-            is_const,
-            default_value,
-            where_clause: where_clause.map(WhereClauseFact::into_compatibility),
-        }
-    }
-}
-
-/// Source ranges recorded by the grammar for a variable declaration. The
-/// expressions and type are retained only to materialize the legacy AST at
-/// parser call sites; syntax consumers use the recorded ranges.
-pub(super) struct VariableDeclarationFact {
-    range: ByteRange,
-    span: Span,
-    kind: VariableDeclarationKind,
-    name_range: ByteRange,
-    name_span: Span,
-    name: Option<String>,
-    type_range: Option<ByteRange>,
-    type_fact: Option<TypeFact>,
-    value: Option<ExpressionNode>,
-}
-
-impl VariableDeclarationFact {
-    pub(super) fn into_compatibility_ast(self) -> AstNode {
-        let VariableDeclarationFact {
-            range,
-            span,
-            kind,
-            name_range,
-            name_span,
-            name,
-            type_range,
-            type_fact,
-            value,
-        } = self;
-        debug_assert_eq!(name_span.byte_range, Some(name_range));
-        debug_assert_eq!(
-            type_range,
-            type_fact.as_ref().and_then(TypeFact::source_range)
-        );
-        debug_assert!(span.byte_range.is_some_and(|span_range| {
-            range.start <= span_range.start && span_range.end <= range.end
-        }));
-        let type_node = type_fact.map(TypeFact::into_compat_type_node);
-        let statement = match kind {
-            VariableDeclarationKind::Auto => StatementKind::AutoDecl(
-                name.expect("compatibility auto declaration name"),
-                TypeNode {
-                    kind: TypeKind::Auto,
-                    span: name_span,
-                },
-                value.expect("auto declaration has initializer"),
-            ),
-            VariableDeclarationKind::Const => StatementKind::ConstDecl(
-                name.expect("compatibility constant declaration name"),
-                type_node.expect("constant declaration has type"),
-                value.expect("constant declaration has initializer"),
-            ),
-            VariableDeclarationKind::Typed => StatementKind::TypedDecl(
-                name.expect("compatibility typed declaration name"),
-                type_node.expect("typed declaration has type"),
-                value.expect("typed declaration has initializer"),
-            ),
-            VariableDeclarationKind::Uninitialized => StatementKind::UninitDecl(
-                name.expect("compatibility uninitialized declaration name"),
-                type_node.expect("uninitialized declaration has type"),
-            ),
-        };
-        AstNode::Statement(StatementNode {
-            kind: statement,
-            span,
-        })
-    }
 }
 
 impl<'a> Parser<'a> {
-    pub(super) fn declaration(&mut self) -> ParserResult<Option<AstNode>> {
+    pub(super) fn declaration(&mut self) -> ParserResult<()> {
         loop {
             let _ = self.skip_newlines();
             if self.is_at_end() {
-                return Ok(None);
+                return Ok(());
             }
 
             let start_position = self.current;
@@ -563,7 +39,7 @@ impl<'a> Parser<'a> {
                 // in method bodies). Returning None lets the block/class loop see the
                 // '}' and finish cleanly.
                 if self.stopped || self.is_at_end() || self.check(TokenType::CloseBrace) {
-                    return Ok(None);
+                    return Ok(());
                 }
 
                 // Recovery must make progress before trying another declaration. Most
@@ -581,100 +57,48 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn parse_declaration_content(&mut self) -> ParserResult<Option<AstNode>> {
+    pub(super) fn parse_declaration_content(&mut self) -> ParserResult<()> {
         if self.check(TokenType::Auto) {
-            if self.mode == ParserMode::SyntaxOnly {
-                self.auto_declaration_fact().map(|_| None)
-            } else {
-                self.auto_declaration().map(Some)
-            }
+            self.auto_declaration_fact().map(|_| ())
         } else if self.check(TokenType::Const) {
-            if self.mode == ParserMode::SyntaxOnly {
-                self.const_declaration_fact().map(|_| None)
-            } else {
-                self.const_declaration().map(Some)
-            }
+            self.const_declaration_fact().map(|_| ())
         } else if self.check(TokenType::Common) {
             self.consume();
-            if self.mode == ParserMode::SyntaxOnly {
-                self.function_declaration_fact(true, false).map(|_| None)
-            } else {
-                self.function_declaration(true).map(Some)
-            }
+            self.function_declaration_fact(true)
         } else if self.check(TokenType::Func) {
-            if self.mode == ParserMode::SyntaxOnly {
-                self.function_declaration_fact(false, false).map(|_| None)
-            } else {
-                self.function_declaration(false).map(Some)
-            }
+            self.function_declaration_fact(false)
         } else if let TokenType::Id(_) = &self.peek().token_type {
             self.parse_id_start_declaration()
         } else if self.check(TokenType::Class) {
-            if self.mode == ParserMode::SyntaxOnly {
-                self.class_declaration_fact().map(|_| None)
-            } else {
-                self.class_declaration().map(Some)
-            }
+            self.class_declaration_fact().map(|_| ())
         } else if self.check(TokenType::Interface) {
-            if self.mode == ParserMode::SyntaxOnly {
-                self.interface_declaration_fact().map(|_| None)
-            } else {
-                self.interface_declaration().map(Some)
-            }
+            self.interface_declaration_fact().map(|_| ())
         } else if self.check(TokenType::Enum) {
-            if self.mode == ParserMode::SyntaxOnly {
-                self.enum_declaration().map(|_| None)
-            } else {
-                self.enum_declaration()
-                    .map(EnumDeclarationFact::into_compatibility_ast)
-                    .map(Some)
-            }
+            self.enum_declaration()
         } else if self.check(TokenType::Test) {
-            if self.mode == ParserMode::SyntaxOnly {
-                self.test_declaration().map(|_| None)
-            } else {
-                self.test_declaration()
-                    .map(TestDeclarationFact::into_compatibility_ast)
-                    .map(Some)
-            }
+            self.test_declaration().map(|_| ())
         } else if self.check(TokenType::Import) {
-            if self.mode == ParserMode::SyntaxOnly {
-                self.import_declaration().map(|_| None)
-            } else {
-                self.import_declaration()
-                    .map(ImportDeclarationFact::into_compatibility_ast)
-                    .map(Some)
-            }
-        } else if self.mode == ParserMode::SyntaxOnly {
-            self.syntax_only_statement().map(|()| None)
+            self.import_declaration()
         } else {
-            self.statement().map(Some)
+            self.statement()
         }
     }
 
-    pub(super) fn parse_id_start_declaration(&mut self) -> ParserResult<Option<AstNode>> {
+    pub(super) fn parse_id_start_declaration(&mut self) -> ParserResult<()> {
         let checkpoint = self.checkpoint();
-        let parsed_type = if self.mode == ParserMode::SyntaxOnly {
-            self.parse_type_fact().is_ok()
-        } else {
-            self.parse_type().is_ok()
-        };
+        let parsed_type = self.parse_type_fact().is_ok();
         if parsed_type {
             self.parse_typed_or_statement(checkpoint)
         } else {
             self.rewind(checkpoint);
-            if self.mode == ParserMode::SyntaxOnly {
-                self.syntax_only_statement().map(|()| None)
-            } else {
-                self.statement().map(Some)
-            }
+            self.statement()
         }
     }
 
     pub(super) fn parse_typed_or_statement(
         &mut self,
         checkpoint: ParserCheckpoint,
-    ) -> ParserResult<Option<AstNode>> {
+    ) -> ParserResult<()> {
         if let TokenType::Id(_) = &self.peek().token_type {
             let next = self.current + 1;
             if next < self.tokens.len() && self.tokens[next].token_type == TokenType::Eq {
@@ -682,44 +106,17 @@ impl<'a> Parser<'a> {
                 self.parse_typed_declaration_with_recovery()
             } else {
                 self.rewind(checkpoint);
-                if self.mode == ParserMode::SyntaxOnly {
-                    self.syntax_only_statement().map(|()| None)
-                } else {
-                    self.statement().map(Some)
-                }
+                self.statement()
             }
         } else {
             self.rewind(checkpoint);
-            if self.mode == ParserMode::SyntaxOnly {
-                self.syntax_only_statement().map(|()| None)
-            } else {
-                self.statement().map(Some)
-            }
+            self.statement()
         }
     }
 
-    pub(super) fn parse_typed_declaration_with_recovery(
-        &mut self,
-    ) -> ParserResult<Option<AstNode>> {
-        if self.mode == ParserMode::SyntaxOnly {
-            return match self.typed_declaration_fact() {
-                Ok(_) => Ok(None),
-                Err(e)
-                    if matches!(
-                        e.message.as_str(),
-                        "must be terminated with a newline" | "expected newline after statement"
-                    ) =>
-                {
-                    self.record_error(e);
-                    self.synchronize();
-                    Ok(None)
-                }
-                Err(e) => Err(e),
-            };
-        }
-
-        match self.typed_declaration() {
-            Ok(node) => Ok(Some(node)),
+    pub(super) fn parse_typed_declaration_with_recovery(&mut self) -> ParserResult<()> {
+        match self.typed_declaration_fact() {
+            Ok(_) => Ok(()),
             Err(e)
                 if matches!(
                     e.message.as_str(),
@@ -728,26 +125,18 @@ impl<'a> Parser<'a> {
             {
                 self.record_error(e);
                 self.synchronize();
-                Ok(None)
+                Ok(())
             }
             Err(e) => Err(e),
         }
     }
 
-    pub(super) fn auto_declaration(&mut self) -> ParserResult<AstNode> {
-        self.auto_declaration_fact()
-            .map(VariableDeclarationFact::into_compatibility_ast)
-    }
-
-    fn auto_declaration_fact(&mut self) -> ParserResult<VariableDeclarationFact> {
+    fn auto_declaration_fact(&mut self) -> ParserResult<()> {
         let start = self.current;
         let start_span = self.peek().span;
         self.advance();
 
-        let name = self.consume_identifier_fact(
-            "Expected variable name after 'auto'",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected variable name after 'auto'")?;
         let name_span = self.tokens[self.current - 1].span;
 
         self.consume_token(TokenType::Eq, "Expected '=' after variable name")?;
@@ -796,42 +185,19 @@ impl<'a> Parser<'a> {
             let _ = self.skip_newlines();
         }
 
-        let span = start_span.combine(&value.span);
-        Ok(VariableDeclarationFact {
-            range: self
-                .source_range_for_tokens(start, self.current)
-                .expect("auto declaration source range"),
-            span,
-            kind: VariableDeclarationKind::Auto,
-            name_range: name_span
-                .byte_range
-                .expect("auto declaration name source range"),
-            name_span,
-            name,
-            type_range: None,
-            type_fact: None,
-            value: value.node,
-        })
+        Ok(())
     }
 
-    pub(super) fn const_declaration(&mut self) -> ParserResult<AstNode> {
-        self.const_declaration_fact()
-            .map(VariableDeclarationFact::into_compatibility_ast)
-    }
-
-    fn const_declaration_fact(&mut self) -> ParserResult<VariableDeclarationFact> {
+    fn const_declaration_fact(&mut self) -> ParserResult<()> {
         let start = self.current;
         let start_span = self.peek().span;
         self.advance();
 
-        let type_fact = self.parse_type_fact()?;
-        let type_range = type_fact
+        let type_range = self
+            .parse_type_fact()?
             .source_range()
             .expect("constant type source range");
-        let name = self.consume_identifier_fact(
-            "Expected constant name after type",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected constant name after type")?;
         let name_span = self.previous().span;
 
         self.consume_token(TokenType::Eq, "Expected '=' after constant name")?;
@@ -863,40 +229,17 @@ impl<'a> Parser<'a> {
             },
         );
 
-        let span = start_span.combine(&value.span);
-        Ok(VariableDeclarationFact {
-            range: self
-                .source_range_for_tokens(start, self.current)
-                .expect("constant declaration source range"),
-            span,
-            kind: VariableDeclarationKind::Const,
-            name_range: name_span
-                .byte_range
-                .expect("constant name has source range"),
-            name_span,
-            name,
-            type_range: Some(type_range),
-            type_fact: Some(type_fact),
-            value: value.node,
-        })
+        Ok(())
     }
 
-    pub(super) fn typed_declaration(&mut self) -> ParserResult<AstNode> {
-        self.typed_declaration_fact()
-            .map(VariableDeclarationFact::into_compatibility_ast)
-    }
-
-    pub(super) fn typed_declaration_fact(&mut self) -> ParserResult<VariableDeclarationFact> {
+    pub(super) fn typed_declaration_fact(&mut self) -> ParserResult<()> {
         let start = self.current;
         let start_span = self.peek().span;
-        let type_fact = self.parse_type_fact()?;
-        let type_range = type_fact
+        let type_range = self
+            .parse_type_fact()?
             .source_range()
             .expect("typed declaration type source range");
-        let name = self.consume_identifier_fact(
-            "Expected variable name after type",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected variable name after type")?;
         let name_span = self.previous().span;
 
         // `Type name` with no initializer. Deciding here, after the name, is
@@ -920,22 +263,7 @@ impl<'a> Parser<'a> {
                         .expect("uninitialized declaration AST range"),
                 },
             );
-            let span = start_span.combine(&name_span);
-            return Ok(VariableDeclarationFact {
-                range: self
-                    .source_range_for_tokens(start, self.current)
-                    .expect("uninitialized declaration source range"),
-                span,
-                kind: VariableDeclarationKind::Uninitialized,
-                name_range: name_span
-                    .byte_range
-                    .expect("uninitialized declaration name has source range"),
-                name_span,
-                name,
-                type_range: Some(type_range),
-                type_fact: Some(type_fact),
-                value: None,
-            });
+            return Ok(());
         }
 
         self.consume_token(TokenType::Eq, "Expected '=' after variable name")?;
@@ -967,37 +295,14 @@ impl<'a> Parser<'a> {
             },
         );
 
-        let span = start_span.combine(&value.span);
-        Ok(VariableDeclarationFact {
-            range: self
-                .source_range_for_tokens(start, self.current)
-                .expect("typed declaration source range"),
-            span,
-            kind: VariableDeclarationKind::Typed,
-            name_range: name_span
-                .byte_range
-                .expect("typed declaration name has source range"),
-            name_span,
-            name,
-            type_range: Some(type_range),
-            type_fact: Some(type_fact),
-            value: value.node,
-        })
+        Ok(())
     }
 
-    pub(super) fn class_declaration(&mut self) -> ParserResult<AstNode> {
-        self.class_declaration_fact()
-            .map(ClassDeclarationFact::into_compatibility_ast)
-    }
-
-    fn class_declaration_fact(&mut self) -> ParserResult<ClassDeclarationFact> {
+    fn class_declaration_fact(&mut self) -> ParserResult<()> {
         let class_start = self.current;
         let start_span = self.tokens[self.current].span;
         self.consume_token(TokenType::Class, "Expected 'class' keyword")?;
-        let name = self.consume_identifier_fact(
-            "Expected class name",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected class name")?;
         let name_range = self
             .previous()
             .span
@@ -1009,14 +314,14 @@ impl<'a> Parser<'a> {
             matches!(data, SyntaxData::TypeParameter { .. })
         });
         let traits_start = self.syntax_events.len();
-        let traits = self.parse_trait_list()?;
+        self.parse_trait_list()?;
         let trait_ranges = self.syntax_ranges_since(traits_start, |data| {
             matches!(data, SyntaxData::TraitReference { .. })
         });
         let body_start = self.current;
         self.consume_token(TokenType::OpenBrace, "Expected '{' after class header")?;
         let members_start = self.syntax_events.len();
-        let (fields, methods) = self.parse_class_body(&type_params.names)?;
+        self.parse_class_body(&type_params.names)?;
         let field_ranges = self.syntax_ranges_since(members_start, |data| {
             matches!(data, SyntaxData::Field { .. })
         });
@@ -1050,18 +355,7 @@ impl<'a> Parser<'a> {
             self.current,
             syntax_data,
         );
-        Ok(ClassDeclarationFact {
-            range: self
-                .source_range_for_tokens(class_start, self.current)
-                .expect("class declaration source range"),
-            span: full_span,
-            name,
-            type_params: type_params.compatibility,
-            traits,
-            fields,
-            methods,
-            where_clause,
-        })
+        Ok(())
     }
 
     /// Parse a named top-level test block:
@@ -1075,7 +369,7 @@ impl<'a> Parser<'a> {
     /// The body deliberately reuses the ordinary block parser. This keeps test
     /// code subject to exactly the same syntax rules as application code while
     /// allowing semantic/code-generation passes to omit it from normal builds.
-    fn test_declaration(&mut self) -> ParserResult<TestDeclarationFact> {
+    fn test_declaration(&mut self) -> ParserResult<()> {
         let test_start = self.current;
         if self.is_in_block() {
             return Err(ParserError::with_help(
@@ -1086,10 +380,9 @@ impl<'a> Parser<'a> {
             ));
         }
         let start_span = self.consume_token(TokenType::Test, "Expected 'test' keyword")?;
-        let compatibility = self.mode == ParserMode::Compatibility;
-        let (name, name_range) = {
-            let name_token = self.consume();
-            let name = match &name_token.token_type {
+        let name_token = self.consume();
+        let name_range = {
+            match &name_token.token_type {
                 TokenType::Str(name) => {
                     if name.is_empty() {
                         return Err(ParserError::new(
@@ -1098,7 +391,6 @@ impl<'a> Parser<'a> {
                             name_token.span,
                         ));
                     }
-                    compatibility.then(|| name.clone())
                 }
                 _ => {
                     return Err(ParserError::with_help(
@@ -1109,19 +401,15 @@ impl<'a> Parser<'a> {
                     ));
                 }
             };
-            (
-                name,
-                name_token
-                    .span
-                    .byte_range
-                    .expect("test name token source range"),
-            )
+            name_token
+                .span
+                .byte_range
+                .expect("test name token source range")
         };
         self.skip_newlines();
         let block_start = self.current;
         let block = self.block()?;
-        let body = block.statements;
-        let block_span = block.span;
+        let block_span = self.span_for_byte_range(block.range);
         let body_contents = ByteRange::new(
             self.tokens[block_start]
                 .span
@@ -1147,40 +435,25 @@ impl<'a> Parser<'a> {
             self.current,
             syntax_data,
         );
-        Ok(TestDeclarationFact {
-            range: self
-                .source_range_for_tokens(test_start, self.current)
-                .expect("test declaration source range"),
-            span,
-            name,
-            body,
-        })
+        Ok(())
     }
 
     fn parse_type_params_list(&mut self) -> ParserResult<TypeParameterListFact> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
-            return Ok(TypeParameterListFact {
-                names: Vec::new(),
-                compatibility: Vec::new(),
-            });
+            return Ok(TypeParameterListFact { names: Vec::new() });
         }
         let mut names = Vec::new();
-        let mut compatibility = Vec::new();
         loop {
             let parameter_start = self.current;
-            let parameter_span = self.peek().span;
-            let param = self.consume_identifier_fact(
-                "Expected type parameter name",
-                self.mode == ParserMode::Compatibility,
-            )?;
+            self.consume_identifier_fact("Expected type parameter name")?;
             let name = self
                 .previous()
                 .span
                 .byte_range
                 .expect("class type parameter name source range");
             let bounds_start = self.syntax_events.len();
-            let bounds = self.parse_trait_bounds()?;
+            self.parse_trait_bounds()?;
             let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
                 matches!(data, SyntaxData::TraitBound { .. })
             });
@@ -1195,40 +468,22 @@ impl<'a> Parser<'a> {
                 syntax_data,
             );
             names.push(name);
-            if self.mode == ParserMode::Compatibility {
-                compatibility.push(TypeParameterFact {
-                    range: self
-                        .source_range_for_tokens(parameter_start, self.current)
-                        .expect("class type parameter source range"),
-                    span: parameter_span.combine(&self.previous().span),
-                    name: param,
-                    name_range: name,
-                    bounds,
-                });
-            }
             if !self.matches(&[TokenType::Comma]) {
                 break;
             }
         }
         self.consume_token(TokenType::Gt, "Expected '>' after type parameters")?;
         self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
-        Ok(TypeParameterListFact {
-            names,
-            compatibility,
-        })
+        Ok(TypeParameterListFact { names })
     }
 
-    fn parse_trait_bounds(&mut self) -> ParserResult<Vec<TraitBoundFact>> {
+    fn parse_trait_bounds(&mut self) -> ParserResult<()> {
         if !self.matches(&[TokenType::Is]) {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let mut bounds = Vec::new();
         loop {
             let bound_start = self.current;
-            let bound_name = self.consume_identifier_fact(
-                "Expected trait name in bound",
-                self.mode == ParserMode::Compatibility,
-            )?;
+            self.consume_identifier_fact("Expected trait name in bound")?;
             let bound_span = self.previous().span;
             let type_args = self.parse_optional_type_argument_facts()?;
             let type_arguments = type_args
@@ -1251,37 +506,27 @@ impl<'a> Parser<'a> {
                 self.current,
                 syntax_data,
             );
-            if self.mode == ParserMode::Compatibility {
-                bounds.push(TraitBoundFact {
-                    span: bound_span,
-                    name: bound_name,
-                    type_arguments: type_args,
-                });
-            }
             if !self.matches(&[TokenType::Ref]) {
                 break;
             }
         }
-        Ok(bounds)
+        Ok(())
     }
 
-    fn parse_trait_list(&mut self) -> ParserResult<Vec<TraitReferenceFact>> {
+    fn parse_trait_list(&mut self) -> ParserResult<Vec<ByteRange>> {
         if !self.matches(&[TokenType::Is]) {
             return Ok(Vec::new());
         }
-        let mut traits_list = Vec::new();
+        let mut trait_ranges = Vec::new();
         loop {
             let trait_start = self.current;
-            let trait_name = self.consume_identifier_fact(
-                "Expected trait name",
-                self.mode == ParserMode::Compatibility,
-            )?;
+            self.consume_identifier_fact("Expected trait name")?;
             let trait_span = self.previous().span;
             let name = trait_span
                 .byte_range
                 .expect("trait reference name source range");
             let type_arguments_start = self.syntax_events.len();
-            let type_args = self.parse_optional_type_argument_facts()?;
+            self.parse_optional_type_argument_facts()?;
             let type_arguments = self.syntax_ranges_since(type_arguments_start, |data| {
                 matches!(
                     data,
@@ -1301,18 +546,12 @@ impl<'a> Parser<'a> {
                 self.current,
                 syntax_data,
             );
-            if self.mode == ParserMode::Compatibility {
-                traits_list.push(TraitReferenceFact {
-                    span: trait_span,
-                    name: trait_name,
-                    type_arguments: type_args,
-                });
-            }
+            trait_ranges.push(name);
             if !self.matches(&[TokenType::Comma]) {
                 break;
             }
         }
-        Ok(traits_list)
+        Ok(trait_ranges)
     }
 
     fn parse_optional_type_argument_facts(&mut self) -> ParserResult<Vec<TypeFact>> {
@@ -1327,37 +566,24 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_class_body(
-        &mut self,
-        type_params: &[ByteRange],
-    ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<FunctionDeclarationFact>)> {
-        let mut fields = Vec::new();
-        let mut methods = Vec::new();
+    fn parse_class_body(&mut self, type_params: &[ByteRange]) -> ParserResult<()> {
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-            // Recover within the class body so a malformed member does not abort
-            // the whole class and leave '}' to be misparsed as a stray top-level
-            // token (issue #288). Skipping from the member start treats the member
-            // as a balanced unit, so inner braces - a collection default or a
-            // method body - are consumed with their matching open and never
-            // mistaken for the class terminator.
             let checkpoint = self.checkpoint();
-            if let Err(e) = self.parse_class_member(type_params, &mut fields, &mut methods) {
+            if let Err(error) = self.parse_class_member(type_params) {
                 self.rewind(checkpoint);
-                self.record_error(e);
+                self.record_error(error);
                 self.recover_class_member();
                 if self.current == checkpoint.current {
                     self.advance();
                 }
             }
         }
-        Ok((fields, methods))
+        Ok(())
     }
 
     /// Skip a malformed class member as a balanced unit, starting from the token
-    /// the member began at. Matched brace pairs (a collection default, a method
-    /// body) are consumed together; recovery ends at the member's terminating
-    /// newline, or at a closing brace that balances no open seen here - the
-    /// class's own terminator - which is left for the caller.
+    /// the member began at. Matched brace pairs are consumed together; recovery
+    /// ends at the member's terminating newline or the class's closing brace.
     pub(super) fn recover_class_member(&mut self) {
         let mut depth: i32 = 0;
         while !self.is_at_end() {
@@ -1384,31 +610,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_class_member(
-        &mut self,
-        type_params: &[ByteRange],
-        fields: &mut Vec<FieldDeclarationFact>,
-        methods: &mut Vec<FunctionDeclarationFact>,
-    ) -> ParserResult<()> {
+    fn parse_class_member(&mut self, type_params: &[ByteRange]) -> ParserResult<()> {
         match self.peek().token_type {
-            TokenType::Func => {
+            TokenType::Func | TokenType::Common => {
                 let member_start = self.current;
+                let is_common = self.matches(&[TokenType::Common]);
+                let name_span = self.peek_ahead(1).map(|token| token.span);
                 let function_event_start = self.syntax_events.len();
-                let name_span = self.peek_ahead(1).map(|t| t.span);
-                let func =
-                    self.function_declaration_fact(false, self.mode == ParserMode::Compatibility)?;
+                self.function_declaration_fact(is_common)?;
+                let name_range = name_span
+                    .and_then(|span| span.byte_range)
+                    .expect("class method name source range");
                 if let Some(message) = self
-                    .identifier_at_range(
-                        name_span
-                            .and_then(|span| span.byte_range)
-                            .expect("class method name source range"),
-                    )
+                    .identifier_at_range(name_range)
                     .and_then(reserved_class_method_error)
                 {
                     self.record_error(ParserError::new(
                         DiagnosticCode::ParseExpectedToken,
                         &message,
-                        name_span.unwrap_or(func.span),
+                        name_span.unwrap_or(self.previous().span),
                     ));
                     return Ok(());
                 }
@@ -1417,48 +637,6 @@ impl<'a> Parser<'a> {
                         matches!(data, SyntaxData::Function { .. })
                     })
                     .expect("parsed class method has a function context");
-                if self.mode == ParserMode::Compatibility {
-                    methods.push(func);
-                }
-                self.record_typed_syntax_node(
-                    SyntaxKind::ClassMethod,
-                    member_start,
-                    self.current,
-                    SyntaxData::ClassMethod {
-                        function: function_range,
-                    },
-                );
-            }
-            TokenType::Common => {
-                let member_start = self.current;
-                self.consume();
-                let function_event_start = self.syntax_events.len();
-                let name_span = self.peek_ahead(1).map(|t| t.span);
-                let func =
-                    self.function_declaration_fact(true, self.mode == ParserMode::Compatibility)?;
-                if let Some(message) = self
-                    .identifier_at_range(
-                        name_span
-                            .and_then(|span| span.byte_range)
-                            .expect("class method name source range"),
-                    )
-                    .and_then(reserved_class_method_error)
-                {
-                    self.record_error(ParserError::new(
-                        DiagnosticCode::ParseExpectedToken,
-                        &message,
-                        name_span.unwrap_or(func.span),
-                    ));
-                    return Ok(());
-                }
-                let function_range = self
-                    .last_syntax_range_since(function_event_start, |data| {
-                        matches!(data, SyntaxData::Function { .. })
-                    })
-                    .expect("parsed common class method has a function context");
-                if self.mode == ParserMode::Compatibility {
-                    methods.push(func);
-                }
                 self.record_typed_syntax_node(
                     SyntaxKind::ClassMethod,
                     member_start,
@@ -1469,10 +647,7 @@ impl<'a> Parser<'a> {
                 );
             }
             TokenType::Id(_) | TokenType::Const => {
-                let field = self.parse_field_declaration_fact(type_params)?;
-                if self.mode == ParserMode::Compatibility {
-                    fields.push(field);
-                }
+                self.parse_field_declaration_fact(type_params)?;
             }
             TokenType::NewLine => {
                 self.consume_token(TokenType::NewLine, "Expected newline")?;
@@ -1485,26 +660,18 @@ impl<'a> Parser<'a> {
                         "Expected field or method declaration in class body, found {token_desc}"
                     ),
                     self.peek().span,
-                    "Class bodies can only contain field declarations (e.g., 'int x = 0') and method declarations (e.g., 'func foo() returns void { ... }')",
+                    "Class bodies can only contain field declarations and method declarations",
                 ));
             }
         }
         Ok(())
     }
 
-    pub(super) fn interface_declaration(&mut self) -> ParserResult<AstNode> {
-        self.interface_declaration_fact()
-            .map(InterfaceDeclarationFact::into_compatibility_ast)
-    }
-
-    fn interface_declaration_fact(&mut self) -> ParserResult<InterfaceDeclarationFact> {
+    fn interface_declaration_fact(&mut self) -> ParserResult<()> {
         let interface_start = self.current;
         let start_span = self.tokens[self.current].span;
         self.consume_token(TokenType::Interface, "Expected 'interface' keyword")?;
-        let name = self.consume_identifier_fact(
-            "Expected interface name",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected interface name")?;
         let name_range = self
             .previous()
             .span
@@ -1518,7 +685,7 @@ impl<'a> Parser<'a> {
         let body_start = self.current;
         self.consume_token(TokenType::OpenBrace, "Expected '{' after interface header")?;
         let members_start = self.syntax_events.len();
-        let (fields, methods) = self.parse_interface_body(&type_params.names, start_span)?;
+        self.parse_interface_body(&type_params.names)?;
         let field_ranges = self.syntax_ranges_since(members_start, |data| {
             matches!(data, SyntaxData::Field { .. })
         });
@@ -1529,81 +696,51 @@ impl<'a> Parser<'a> {
             self.consume_token(TokenType::CloseBrace, "Expected '}' after interface body")?;
         self.record_syntax_node(SyntaxKind::InterfaceBody, body_start, self.current);
         let full_span = start_span.combine(&end_span);
-        let syntax_data = SyntaxData::Interface {
-            name: name_range,
-            type_parameters,
-            fields: field_ranges,
-            methods: method_ranges,
-            ast_span: full_span.byte_range.expect("interface span source range"),
-        };
         self.record_typed_syntax_node(
             SyntaxKind::InterfaceDeclaration,
             interface_start,
             self.current,
-            syntax_data,
+            SyntaxData::Interface {
+                name: name_range,
+                type_parameters,
+                fields: field_ranges,
+                methods: method_ranges,
+                ast_span: full_span.byte_range.expect("interface span source range"),
+            },
         );
-        Ok(InterfaceDeclarationFact {
-            range: self
-                .source_range_for_tokens(interface_start, self.current)
-                .expect("interface declaration source range"),
-            span: full_span,
-            name,
-            type_params: type_params.compatibility,
-            fields,
-            methods,
-        })
+        Ok(())
     }
 
     fn parse_interface_type_params(&mut self) -> ParserResult<TypeParameterListFact> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
-            return Ok(TypeParameterListFact {
-                names: Vec::new(),
-                compatibility: Vec::new(),
-            });
+            return Ok(TypeParameterListFact { names: Vec::new() });
         }
         let mut names = Vec::new();
-        let mut compatibility = Vec::new();
         if !self.check(TokenType::Gt) {
             loop {
                 let parameter_start = self.current;
-                let parameter_span = self.peek().span;
-                let param = self.consume_identifier_fact(
-                    "Expected type parameter name",
-                    self.mode == ParserMode::Compatibility,
-                )?;
+                self.consume_identifier_fact("Expected type parameter name")?;
                 let name = self
                     .previous()
                     .span
                     .byte_range
                     .expect("interface type parameter name range");
                 let bounds_start = self.syntax_events.len();
-                let bounds = self.parse_colon_trait_bounds()?;
+                self.parse_colon_trait_bounds()?;
                 let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
                     matches!(data, SyntaxData::TraitBound { .. })
                 });
-                let syntax_data = SyntaxData::TypeParameter {
-                    name,
-                    bounds: bound_ranges,
-                };
                 self.record_typed_syntax_node(
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    syntax_data,
+                    SyntaxData::TypeParameter {
+                        name,
+                        bounds: bound_ranges,
+                    },
                 );
                 names.push(name);
-                if self.mode == ParserMode::Compatibility {
-                    compatibility.push(TypeParameterFact {
-                        range: self
-                            .source_range_for_tokens(parameter_start, self.current)
-                            .expect("interface type parameter source range"),
-                        span: parameter_span.combine(&self.previous().span),
-                        name: param,
-                        name_range: name,
-                        bounds,
-                    });
-                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -1611,29 +748,23 @@ impl<'a> Parser<'a> {
         }
         self.consume_token(TokenType::Gt, "Expected '>' after type parameters")?;
         self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
-        Ok(TypeParameterListFact {
-            names,
-            compatibility,
-        })
+        Ok(TypeParameterListFact { names })
     }
 
-    fn parse_colon_trait_bounds(&mut self) -> ParserResult<Vec<TraitBoundFact>> {
+    fn parse_colon_trait_bounds(&mut self) -> ParserResult<()> {
         if !self.matches(&[TokenType::Colon]) {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let mut bounds = Vec::new();
         loop {
             let bound_start = self.current;
-            let bound_name = self.consume_identifier_fact(
-                "Expected trait name in bound",
-                self.mode == ParserMode::Compatibility,
-            )?;
-            let bound_span = self.previous().span;
-            let name = bound_span
+            self.consume_identifier_fact("Expected trait name in bound")?;
+            let name = self
+                .previous()
+                .span
                 .byte_range
                 .expect("trait bound name source range");
             let type_arguments_start = self.syntax_events.len();
-            let type_args = self.parse_optional_type_argument_facts()?;
+            self.parse_optional_type_argument_facts()?;
             let type_arguments = self.syntax_ranges_since(type_arguments_start, |data| {
                 matches!(
                     data,
@@ -1643,98 +774,63 @@ impl<'a> Parser<'a> {
                         | SyntaxData::FunctionType { .. }
                 )
             });
-            let syntax_data = SyntaxData::TraitBound {
-                name,
-                type_arguments,
-            };
             self.record_typed_syntax_node(
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                syntax_data,
+                SyntaxData::TraitBound {
+                    name,
+                    type_arguments,
+                },
             );
-            if self.mode == ParserMode::Compatibility {
-                bounds.push(TraitBoundFact {
-                    span: bound_span,
-                    name: bound_name,
-                    type_arguments: type_args,
-                });
-            }
             if !self.matches(&[TokenType::Plus]) {
                 break;
-            }
-        }
-        Ok(bounds)
-    }
-
-    fn parse_interface_body(
-        &mut self,
-        type_params: &[ByteRange],
-        start_span: Span,
-    ) -> ParserResult<(Vec<FieldDeclarationFact>, Vec<InterfaceMethodFact>)> {
-        let mut fields = Vec::new();
-        let mut methods = Vec::new();
-        while !self.is_at_end() {
-            self.skip_newlines();
-            if self.check(TokenType::CloseBrace) {
-                break;
-            }
-            self.parse_interface_member(type_params, start_span, &mut fields, &mut methods)?;
-        }
-        Ok((fields, methods))
-    }
-
-    fn parse_interface_member(
-        &mut self,
-        type_params: &[ByteRange],
-        start_span: Span,
-        fields: &mut Vec<FieldDeclarationFact>,
-        methods: &mut Vec<InterfaceMethodFact>,
-    ) -> ParserResult<()> {
-        match self.peek().token_type {
-            TokenType::Func => {
-                let method = self.parse_interface_method(start_span)?;
-                if self.mode == ParserMode::Compatibility {
-                    methods.push(method);
-                }
-            }
-            TokenType::Id(_) | TokenType::Const => {
-                let field = self.parse_field_declaration_fact(type_params)?;
-                if self.mode == ParserMode::Compatibility {
-                    fields.push(field);
-                }
-            }
-            TokenType::NewLine => {
-                self.consume_token(TokenType::NewLine, "Expected newline")?;
-            }
-            _ => {
-                return Err(ParserError::new(
-                    DiagnosticCode::ParseExpectedToken,
-                    "Expected field or function declaration in interface",
-                    self.peek().span,
-                ));
             }
         }
         Ok(())
     }
 
-    fn parse_interface_method(&mut self, start_span: Span) -> ParserResult<InterfaceMethodFact> {
+    fn parse_interface_body(&mut self, type_params: &[ByteRange]) -> ParserResult<()> {
+        while !self.is_at_end() {
+            self.skip_newlines();
+            if self.check(TokenType::CloseBrace) {
+                break;
+            }
+            self.parse_interface_member(type_params)?;
+        }
+        Ok(())
+    }
+
+    fn parse_interface_member(&mut self, type_params: &[ByteRange]) -> ParserResult<()> {
+        match self.peek().token_type {
+            TokenType::Func => self.parse_interface_method(),
+            TokenType::Id(_) | TokenType::Const => self.parse_field_declaration_fact(type_params),
+            TokenType::NewLine => self
+                .consume_token(TokenType::NewLine, "Expected newline")
+                .map(drop),
+            _ => Err(ParserError::new(
+                DiagnosticCode::ParseExpectedToken,
+                "Expected field or function declaration in interface",
+                self.peek().span,
+            )),
+        }
+    }
+
+    fn parse_interface_method(&mut self) -> ParserResult<()> {
         let function_start = self.current;
+        let function_start_span = self.peek().span;
         self.consume();
-        let name = self.consume_identifier_fact(
-            "Expected method name",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected method name")?;
         let name_range = self.previous().span.byte_range.expect("method name range");
         let type_params_start = self.syntax_events.len();
-        let type_params = self.parse_simple_type_params()?;
+        self.parse_simple_type_params()?;
         let type_parameters = self.syntax_ranges_since(type_params_start, |data| {
             matches!(data, SyntaxData::TypeParameter { .. })
         });
         self.consume_token(TokenType::OpenParen, "Expected '(' after method name")?;
         let params_start = self.current;
         let params_event_start = self.syntax_events.len();
-        let params = self.parse_param_list()?;
+        self.parse_param_list()?;
         let parameters = self.syntax_ranges_since(params_event_start, |data| {
             matches!(data, SyntaxData::Parameter { .. })
         });
@@ -1746,8 +842,6 @@ impl<'a> Parser<'a> {
             matches!(data, SyntaxData::WhereClause { .. })
         });
         if where_clause.is_some() {
-            // The return type may continue on the next line after the block,
-            // but do not eat the newline separating this member from the next.
             self.skip_newlines_before(TokenType::Returns);
         }
         let return_event_start = self.syntax_events.len();
@@ -1763,75 +857,54 @@ impl<'a> Parser<'a> {
         });
         let return_type_span = return_type
             .source_range()
-            .expect("method return type span range");
+            .expect("method return type source range");
         let end = self.current;
-        let syntax_data = SyntaxData::Function {
-            name: name_range,
-            ast_span: start_span.byte_range.expect("interface method span range"),
-            type_parameters,
-            parameters,
-            return_type: return_type_range,
-            return_type_span,
-            where_clause: where_range,
-            body: None,
-            is_common: false,
-        };
+        let ast_span = self
+            .source_range_for_tokens(function_start, end)
+            .expect("interface method source range");
+        let _ = function_start_span;
         self.record_typed_syntax_node(
             SyntaxKind::FunctionDeclaration,
             function_start,
             end,
-            syntax_data,
+            SyntaxData::Function {
+                name: name_range,
+                ast_span,
+                type_parameters,
+                parameters,
+                return_type: return_type_range,
+                return_type_span,
+                where_clause: where_range,
+                body: None,
+                is_common: false,
+            },
         );
-        Ok(InterfaceMethodFact {
-            span: start_span,
-            name,
-            type_params,
-            params,
-            return_type,
-            where_clause,
-        })
+        Ok(())
     }
 
-    fn parse_simple_type_params(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
+    fn parse_simple_type_params(&mut self) -> ParserResult<()> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let mut params = Vec::new();
         if !self.check(TokenType::Gt) {
             loop {
                 let parameter_start = self.current;
-                let parameter_span = self.peek().span;
-                let param = self.consume_identifier_fact(
-                    "Expected type parameter name",
-                    self.mode == ParserMode::Compatibility,
-                )?;
+                self.consume_identifier_fact("Expected type parameter name")?;
                 let name = self
                     .previous()
                     .span
                     .byte_range
                     .expect("type parameter name range");
-                let syntax_data = SyntaxData::TypeParameter {
-                    name,
-                    bounds: Vec::new(),
-                };
                 self.record_typed_syntax_node(
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    syntax_data,
-                );
-                if self.mode == ParserMode::Compatibility {
-                    params.push(TypeParameterFact {
-                        range: self
-                            .source_range_for_tokens(parameter_start, self.current)
-                            .expect("method type parameter source range"),
-                        span: parameter_span.combine(&self.previous().span),
-                        name: param,
-                        name_range: name,
+                    SyntaxData::TypeParameter {
+                        name,
                         bounds: Vec::new(),
-                    });
-                }
+                    },
+                );
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -1839,20 +912,18 @@ impl<'a> Parser<'a> {
         }
         self.consume_token(TokenType::Gt, "Expected '>' after type parameters")?;
         self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
-        Ok(params)
+        Ok(())
     }
 
-    fn parse_param_list(&mut self) -> ParserResult<Vec<FunctionParameterFact>> {
-        let mut params = Vec::new();
+    fn parse_param_list(&mut self) -> ParserResult<()> {
         if !self.check(TokenType::CloseParen) {
             loop {
                 let parameter_start = self.current;
-                let type_fact = self.parse_type_fact()?;
-                let type_range = type_fact.source_range().expect("parameter type range");
-                let param_name = self.consume_identifier_fact(
-                    "Expected parameter name",
-                    self.mode == ParserMode::Compatibility,
-                )?;
+                let type_range = self
+                    .parse_type_fact()?
+                    .source_range()
+                    .expect("parameter type range");
+                self.consume_identifier_fact("Expected parameter name")?;
                 let name = self
                     .previous()
                     .span
@@ -1868,22 +939,13 @@ impl<'a> Parser<'a> {
                         default_value: None,
                     },
                 );
-                if self.mode == ParserMode::Compatibility {
-                    params.push(FunctionParameterFact {
-                        name: param_name,
-                        type_fact,
-                        default_value: ParameterDefaultFact {
-                            range: None,
-                            expression: None,
-                        },
-                    });
-                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
+                self.skip_newlines();
             }
         }
-        Ok(params)
+        Ok(())
     }
 
     fn parse_optional_return_type(&mut self) -> ParserResult<TypeFact> {
@@ -1894,28 +956,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn enum_declaration(&mut self) -> ParserResult<EnumDeclarationFact> {
+    fn enum_declaration(&mut self) -> ParserResult<()> {
         let enum_start = self.current;
         let start_span = self.tokens[self.current].span;
         self.consume_token(TokenType::Enum, "Expected 'enum' keyword")?;
-        let name = self.consume_identifier_fact(
-            "Expected enum name",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected enum name")?;
         let name_range = self
             .previous()
             .span
             .byte_range
             .expect("enum name source range");
         let type_parameters_start = self.syntax_events.len();
-        let type_params = self.parse_colon_type_params()?;
+        self.parse_colon_type_params()?;
         let type_parameters = self.syntax_ranges_since(type_parameters_start, |data| {
             matches!(data, SyntaxData::TypeParameter { .. })
         });
         let body_start = self.current;
         self.consume_token(TokenType::OpenBrace, "Expected '{' after enum header")?;
         let variants_start = self.syntax_events.len();
-        let variants = self.parse_enum_variants()?;
+        self.parse_enum_variants()?;
         let variant_ranges = self.syntax_ranges_since(variants_start, |data| {
             matches!(data, SyntaxData::EnumVariant { .. })
         });
@@ -1935,38 +994,25 @@ impl<'a> Parser<'a> {
             self.current,
             syntax_data,
         );
-        Ok(EnumDeclarationFact {
-            range: self
-                .source_range_for_tokens(enum_start, self.current)
-                .expect("enum declaration source range"),
-            span: full_span,
-            name,
-            type_params,
-            variants,
-        })
+        Ok(())
     }
 
-    fn parse_colon_type_params(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
+    fn parse_colon_type_params(&mut self) -> ParserResult<()> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let mut params = Vec::new();
         if !self.check(TokenType::Gt) {
             loop {
                 let parameter_start = self.current;
-                let parameter_span = self.peek().span;
-                let param = self.consume_identifier_fact(
-                    "Expected type parameter name",
-                    self.mode == ParserMode::Compatibility,
-                )?;
+                self.consume_identifier_fact("Expected type parameter name")?;
                 let name = self
                     .previous()
                     .span
                     .byte_range
                     .expect("enum type parameter name source range");
                 let bounds_start = self.syntax_events.len();
-                let bounds = self.parse_colon_trait_bounds()?;
+                self.parse_colon_trait_bounds()?;
                 let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
                     matches!(data, SyntaxData::TraitBound { .. })
                 });
@@ -1980,17 +1026,6 @@ impl<'a> Parser<'a> {
                     self.current,
                     syntax_data,
                 );
-                if self.mode == ParserMode::Compatibility {
-                    params.push(TypeParameterFact {
-                        range: self
-                            .source_range_for_tokens(parameter_start, self.current)
-                            .expect("enum type parameter source range"),
-                        span: parameter_span.combine(&self.previous().span),
-                        name: param,
-                        name_range: name,
-                        bounds,
-                    });
-                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -1998,17 +1033,13 @@ impl<'a> Parser<'a> {
         }
         self.consume_token(TokenType::Gt, "Expected '>' after type parameters")?;
         self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
-        Ok(params)
+        Ok(())
     }
 
-    fn parse_enum_variants(&mut self) -> ParserResult<Vec<EnumVariantFact>> {
-        let mut variants = Vec::new();
+    fn parse_enum_variants(&mut self) -> ParserResult<()> {
         self.skip_newlines();
         while !self.check(TokenType::CloseBrace) && !self.is_at_end() {
-            let variant = self.parse_single_enum_variant()?;
-            if self.mode == ParserMode::Compatibility {
-                variants.push(variant);
-            }
+            self.parse_single_enum_variant()?;
             if !self.matches(&[TokenType::Comma]) {
                 self.skip_newlines();
                 break;
@@ -2018,36 +1049,32 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(variants)
+        Ok(())
     }
 
-    fn parse_single_enum_variant(&mut self) -> ParserResult<EnumVariantFact> {
+    fn parse_single_enum_variant(&mut self) -> ParserResult<()> {
         let variant_start = self.current;
-        let start_span = self.peek().span;
-        let variant_name = self.consume_identifier_fact(
-            "Expected variant name",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected variant name")?;
         let name = self
             .previous()
             .span
             .byte_range
             .expect("enum variant name source range");
         let fields_start = self.syntax_events.len();
-        let data = self.parse_enum_variant_data()?;
-        let fields = data.as_ref().map(|_| {
+        let has_fields = self.check(TokenType::OpenParen);
+        self.parse_enum_variant_data()?;
+        let fields = has_fields.then(|| {
             self.syntax_ranges_since(fields_start, |data| {
                 matches!(data, SyntaxData::EnumVariantField { .. })
             })
         });
         let where_start = self.syntax_events.len();
-        let where_clause = if self.check(TokenType::Where) {
-            self.parse_where_clause_fact()?
+        if self.check(TokenType::Where) {
+            self.parse_where_clause_fact()?;
         } else {
             // Variants are newline-separated, so only a same-line `where`
             // belongs to this variant.
-            None
-        };
+        }
         let where_range = self.last_syntax_range_since(where_start, |data| {
             matches!(data, SyntaxData::WhereClause { .. })
         });
@@ -2056,31 +1083,19 @@ impl<'a> Parser<'a> {
             fields,
             where_clause: where_range,
         };
-        let range = self
-            .source_range_for_tokens(variant_start, self.current)
-            .expect("enum variant source range");
-        let end_span = self.previous().span;
-        let span = start_span.combine(&end_span);
         self.record_typed_syntax_node(
             SyntaxKind::EnumVariant,
             variant_start,
             self.current,
             syntax_data,
         );
-        Ok(EnumVariantFact {
-            range,
-            span,
-            name: variant_name,
-            data,
-            where_clause,
-        })
+        Ok(())
     }
 
-    fn parse_enum_variant_data(&mut self) -> ParserResult<Option<EnumVariantDataFact>> {
+    fn parse_enum_variant_data(&mut self) -> ParserResult<()> {
         if !self.matches(&[TokenType::OpenParen]) {
-            return Ok(None);
+            return Ok(());
         }
-        let mut fields = Vec::new();
         if !self.check(TokenType::CloseParen) {
             loop {
                 let field_start = self.current;
@@ -2088,16 +1103,12 @@ impl<'a> Parser<'a> {
                 let type_range = field_type
                     .source_range()
                     .expect("enum payload field type range");
-                let has_field_name = matches!(&self.peek().token_type, TokenType::Id(_));
-                let field_name = if let TokenType::Id(name) = &self.peek().token_type {
-                    let compatibility_name =
-                        (self.mode == ParserMode::Compatibility).then(|| name.clone());
+                let field_name_range = if matches!(&self.peek().token_type, TokenType::Id(_)) {
                     self.advance();
-                    compatibility_name
+                    self.previous().span.byte_range
                 } else {
                     None
                 };
-                let field_name_range = self.previous().span.byte_range.filter(|_| has_field_name);
                 self.record_typed_syntax_node(
                     SyntaxKind::EnumVariantField,
                     field_start,
@@ -2107,27 +1118,23 @@ impl<'a> Parser<'a> {
                         type_range,
                     },
                 );
-                if self.mode == ParserMode::Compatibility {
-                    fields.push((field_name, field_type));
-                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
             }
         }
         self.consume_token(TokenType::CloseParen, "Expected ')' after variant data")?;
-        Ok(Some(fields))
+        Ok(())
     }
 
-    fn import_declaration(&mut self) -> ParserResult<ImportDeclarationFact> {
+    fn import_declaration(&mut self) -> ParserResult<()> {
         let import_start = self.current;
         let start_span = self.consume_token(TokenType::Import, "Expected 'import' keyword")?;
         let path_start = self.current;
-        let compatibility = self.mode == ParserMode::Compatibility;
-        let module_path = self.parse_module_path_fact(compatibility)?;
+        self.parse_module_path()?;
         let path_end = self.current;
         let spec_start = self.current;
-        let spec = self.parse_import_spec_fact(module_path.as_deref(), compatibility)?;
+        self.parse_import_spec()?;
         let end_span = self.previous().span;
         let span = start_span.combine(&end_span);
         let module_path_range = self
@@ -2145,15 +1152,7 @@ impl<'a> Parser<'a> {
             self.current,
             syntax_data,
         );
-        Ok(ImportDeclarationFact {
-            range: self
-                .source_range_for_tokens(import_start, self.current)
-                .expect("import declaration source range"),
-            span,
-            module_path_range,
-            module_path,
-            spec,
-        })
+        Ok(())
     }
 
     fn import_syntax_spec(&self, start: usize, end: usize) -> SyntaxImportSpec {
@@ -2233,137 +1232,50 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_import_spec_fact(
-        &mut self,
-        module_path: Option<&str>,
-        compatibility: bool,
-    ) -> ParserResult<Option<ImportSpec>> {
-        let spec = if self.matches(&[TokenType::Dot]) {
-            self.parse_dot_import_spec_fact(compatibility)?
+    fn parse_import_spec(&mut self) -> ParserResult<()> {
+        if self.matches(&[TokenType::Dot]) {
+            if self.matches(&[TokenType::Star]) {
+                return Ok(());
+            }
+            if self.matches(&[TokenType::OpenParen]) {
+                if !self.check(TokenType::CloseParen) {
+                    loop {
+                        self.consume_identifier_fact("Expected item name")?;
+                        if self.matches(&[TokenType::As]) {
+                            self.consume_identifier_fact("Expected alias after 'as'")?;
+                        }
+                        if !self.matches(&[TokenType::Comma]) {
+                            break;
+                        }
+                        self.skip_newlines();
+                    }
+                }
+                self.consume_token(TokenType::CloseParen, "Expected ')' after import items")?;
+            } else {
+                self.consume_identifier_fact("Expected item name after '.'")?;
+                if self.matches(&[TokenType::As]) {
+                    self.consume_identifier_fact("Expected alias after 'as'")?;
+                }
+            }
         } else {
-            self.parse_module_import_spec_fact(module_path, compatibility)?
-        };
-        Ok(spec)
-    }
-
-    fn parse_dot_import_spec_fact(
-        &mut self,
-        compatibility: bool,
-    ) -> ParserResult<Option<ImportSpec>> {
-        if self.matches(&[TokenType::Star]) {
-            Ok(if compatibility {
-                Some(ImportSpec::Wildcard)
-            } else {
-                None
-            })
-        } else if self.matches(&[TokenType::OpenParen]) {
-            self.parse_import_items_fact(compatibility)
-        } else {
-            let item =
-                self.consume_identifier_fact("Expected item name after '.'", compatibility)?;
-            let alias = if self.matches(&[TokenType::As]) {
-                self.consume_identifier_fact("Expected alias after 'as'", compatibility)?
-            } else {
-                None
-            };
-            if compatibility {
-                Ok(Some(ImportSpec::Item {
-                    item: item.expect("compatibility import item"),
-                    alias,
-                }))
-            } else {
-                Ok(None)
+            if self.matches(&[TokenType::As]) {
+                self.consume_identifier_fact("Expected alias after 'as'")?;
             }
         }
-    }
-
-    fn parse_module_import_spec_fact(
-        &mut self,
-        module_path: Option<&str>,
-        compatibility: bool,
-    ) -> ParserResult<Option<ImportSpec>> {
-        let alias = if self.matches(&[TokenType::As]) {
-            let alias_name =
-                self.consume_identifier_fact("Expected alias after 'as'", compatibility)?;
-            alias_name.filter(|name| name != "_")
-        } else if compatibility {
-            Some(
-                module_path
-                    .expect("compatibility import path")
-                    .split('.')
-                    .next_back()
-                    .unwrap_or(module_path.expect("compatibility import path"))
-                    .to_string(),
-            )
-        } else {
-            None
-        };
-        Ok(if compatibility {
-            Some(ImportSpec::Module { alias })
-        } else {
-            None
-        })
-    }
-
-    fn parse_import_items_fact(&mut self, compatibility: bool) -> ParserResult<Option<ImportSpec>> {
-        let mut items = Vec::new();
-
-        if !self.check(TokenType::CloseParen) {
-            loop {
-                let item = self.consume_identifier_fact("Expected item name", compatibility)?;
-                let alias = if self.matches(&[TokenType::As]) {
-                    self.consume_identifier_fact("Expected alias after 'as'", compatibility)?
-                } else {
-                    None
-                };
-                if compatibility {
-                    items.push((item.expect("compatibility import item"), alias));
-                }
-
-                if !self.matches(&[TokenType::Comma]) {
-                    break;
-                }
-                self.skip_newlines();
-            }
-        }
-
-        self.consume_token(TokenType::CloseParen, "Expected ')' after import items")?;
-        Ok(if compatibility {
-            Some(ImportSpec::Items { items })
-        } else {
-            None
-        })
+        Ok(())
     }
 
     // Parse module path with support for dots, relative (./, ../), and absolute (/)
-    fn parse_module_path_fact(&mut self, compatibility: bool) -> ParserResult<Option<String>> {
-        let mut module_path = compatibility.then(String::new);
-
+    fn parse_module_path(&mut self) -> ParserResult<()> {
         if self.matches(&[TokenType::Dot]) {
             self.consume_token(TokenType::Slash, "Expected '/' after '.'")?;
-            if let Some(module_path) = &mut module_path {
-                module_path.push_str("./");
-            }
         } else if self.matches(&[TokenType::DotDot]) {
             self.consume_token(TokenType::Slash, "Expected '/' after '..'")?;
-            if let Some(module_path) = &mut module_path {
-                module_path.push_str("../");
-            }
-        } else if self.matches(&[TokenType::Slash])
-            && let Some(module_path) = &mut module_path
-        {
-            module_path.push('/');
+        } else {
+            self.matches(&[TokenType::Slash]);
         }
 
-        if let Some(module_path) = &mut module_path {
-            module_path.push_str(
-                &self
-                    .consume_identifier_fact("Expected module path", true)?
-                    .expect("compatibility module path component"),
-            );
-        } else {
-            self.consume_identifier_fact("Expected module path", false)?;
-        }
+        self.consume_identifier_fact("Expected module path")?;
 
         while self.check(TokenType::Dot) {
             let next = self.peek_ahead(1);
@@ -2381,67 +1293,42 @@ impl<'a> Parser<'a> {
             }
 
             self.advance();
-            if let Some(module_path) = &mut module_path {
-                module_path.push('.');
-                module_path.push_str(
-                    &self
-                        .consume_identifier_fact("Expected module name after '.'", true)?
-                        .expect("compatibility module path component"),
-                );
-            } else {
-                self.consume_identifier_fact("Expected module name after '.'", false)?;
-            }
+            self.consume_identifier_fact("Expected module name after '.'")?;
         }
 
-        Ok(module_path)
+        Ok(())
     }
 
-    pub(super) fn function_declaration(&mut self, is_common: bool) -> ParserResult<AstNode> {
-        self.function_declaration_fact(is_common, true)
-            .map(FunctionDeclarationFact::into_compatibility_ast)
-    }
-
-    pub(super) fn syntax_only_function_declaration(&mut self, is_common: bool) -> ParserResult<()> {
-        self.function_declaration_fact(is_common, false).map(drop)
-    }
-
-    fn function_declaration_fact(
-        &mut self,
-        is_common: bool,
-        retain_name_for_validation: bool,
-    ) -> ParserResult<FunctionDeclarationFact> {
+    pub(super) fn function_declaration_fact(&mut self, is_common: bool) -> ParserResult<()> {
         let function_start = self.current;
         let start_span = self.peek().span;
         self.consume_token(TokenType::Func, "Expected 'func' keyword")?;
-        let name = self.consume_identifier_fact(
-            "Expected function name",
-            retain_name_for_validation || self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected function name")?;
         let name_range = self
             .previous()
             .span
             .byte_range
             .expect("function name range");
         let type_params_start = self.syntax_events.len();
-        let type_params = self.parse_is_type_params()?;
+        self.parse_is_type_params()?;
         let type_parameters = self.syntax_ranges_since(type_params_start, |data| {
             matches!(data, SyntaxData::TypeParameter { .. })
         });
         let params_start = self.current;
         self.consume_token(TokenType::OpenParen, "Expected '(' after function name")?;
         let params_event_start = self.syntax_events.len();
-        let params = self.parse_function_params()?;
+        self.parse_function_params()?;
         let parameters = self.syntax_ranges_since(params_event_start, |data| {
             matches!(data, SyntaxData::Parameter { .. })
         });
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
         self.record_syntax_node(SyntaxKind::ParameterList, params_start, self.current);
         let where_event_start = self.syntax_events.len();
-        let where_clause = self.parse_where_clause_fact()?;
+        self.parse_where_clause_fact()?;
         let where_range = self.last_syntax_range_since(where_event_start, |data| {
             matches!(data, SyntaxData::WhereClause { .. })
         });
-        if where_clause.is_some() {
+        if where_range.is_some() {
             self.skip_newlines();
         }
         let return_event_start = self.syntax_events.len();
@@ -2460,10 +1347,8 @@ impl<'a> Parser<'a> {
             .expect("function return type span range");
         self.skip_newlines();
         let body_event_start = self.syntax_events.len();
-        let body_statements = self.parse_function_body(start_span)?;
-        let body_range = self.last_statement_range_since(body_event_start);
-        let end_span = body_statements.last().map_or(start_span, |s| s.span);
-        let span = start_span.combine(&end_span);
+        let block = self.block()?;
+        let body_range = Some(block.range);
         let start_range = start_span.byte_range.expect("function start range");
         let ast_end = self
             .last_ast_statement_range_since(body_event_start, body_range)
@@ -2487,42 +1372,25 @@ impl<'a> Parser<'a> {
             function_end,
             syntax_data,
         );
-        Ok(FunctionDeclarationFact {
-            range: self
-                .source_range_for_tokens(function_start, function_end)
-                .expect("function declaration source range"),
-            span,
-            name,
-            type_params,
-            params,
-            return_type,
-            body: body_statements,
-            is_common,
-            where_clause,
-        })
+        Ok(())
     }
 
-    fn parse_is_type_params(&mut self) -> ParserResult<Vec<TypeParameterFact>> {
+    fn parse_is_type_params(&mut self) -> ParserResult<()> {
         let start = self.current;
         if !self.matches(&[TokenType::Lt]) {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let mut params = Vec::new();
         if !self.check(TokenType::Gt) {
             loop {
                 let parameter_start = self.current;
-                let parameter_span = self.peek().span;
-                let param = self.consume_identifier_fact(
-                    "Expected type parameter name",
-                    self.mode == ParserMode::Compatibility,
-                )?;
+                self.consume_identifier_fact("Expected type parameter name")?;
                 let name_range = self
                     .previous()
                     .span
                     .byte_range
                     .expect("type parameter name has source range");
                 let bounds_start = self.syntax_events.len();
-                let trait_bounds = self.parse_ref_trait_bounds()?;
+                self.parse_ref_trait_bounds()?;
                 let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
                     matches!(data, SyntaxData::TraitBound { .. })
                 });
@@ -2536,17 +1404,6 @@ impl<'a> Parser<'a> {
                     self.current,
                     syntax_data,
                 );
-                if self.mode == ParserMode::Compatibility {
-                    params.push(TypeParameterFact {
-                        range: self
-                            .source_range_for_tokens(parameter_start, self.current)
-                            .expect("function type parameter source range"),
-                        span: parameter_span.combine(&self.previous().span),
-                        name: param,
-                        name_range,
-                        bounds: trait_bounds,
-                    });
-                }
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
@@ -2554,24 +1411,20 @@ impl<'a> Parser<'a> {
         }
         self.consume_token(TokenType::Gt, "Expected '>' after type parameters")?;
         self.record_syntax_node(SyntaxKind::TypeArguments, start, self.current);
-        Ok(params)
+        Ok(())
     }
 
-    fn parse_ref_trait_bounds(&mut self) -> ParserResult<Vec<TraitBoundFact>> {
+    fn parse_ref_trait_bounds(&mut self) -> ParserResult<()> {
         if !self.matches(&[TokenType::Is]) {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let mut bounds = Vec::new();
         loop {
             let bound_start = self.current;
-            let bound_name = self.consume_identifier_fact(
-                "Expected trait name in bound",
-                self.mode == ParserMode::Compatibility,
-            )?;
+            self.consume_identifier_fact("Expected trait name in bound")?;
             let bound_span = self.previous().span;
             let name = bound_span.byte_range.expect("trait bound name range");
             let type_arguments_start = self.syntax_events.len();
-            let type_args = self.parse_optional_type_argument_facts()?;
+            self.parse_optional_type_argument_facts()?;
             let type_arguments = self.syntax_ranges_since(type_arguments_start, |data| {
                 matches!(
                     data,
@@ -2591,48 +1444,31 @@ impl<'a> Parser<'a> {
                 self.current,
                 syntax_data,
             );
-            if self.mode == ParserMode::Compatibility {
-                bounds.push(TraitBoundFact {
-                    span: bound_span,
-                    name: bound_name,
-                    type_arguments: type_args,
-                });
-            }
             if !self.matches(&[TokenType::Ref]) {
                 break;
             }
         }
-        Ok(bounds)
+        Ok(())
     }
 
-    fn parse_function_params(&mut self) -> ParserResult<Vec<FunctionParameterFact>> {
-        let mut params = Vec::new();
+    fn parse_function_params(&mut self) -> ParserResult<()> {
         if !self.check(TokenType::CloseParen) {
             let mut has_default = false;
             loop {
-                let param = self.parse_single_param(&mut has_default)?;
-                if self.mode == ParserMode::Compatibility {
-                    params.push(param);
-                }
+                self.parse_single_param(&mut has_default)?;
                 if !self.matches(&[TokenType::Comma]) {
                     break;
                 }
             }
         }
-        Ok(params)
+        Ok(())
     }
 
-    fn parse_single_param(
-        &mut self,
-        has_default: &mut bool,
-    ) -> ParserResult<FunctionParameterFact> {
+    fn parse_single_param(&mut self, has_default: &mut bool) -> ParserResult<()> {
         let parameter_start = self.current;
         let type_fact = self.parse_type_fact()?;
         let type_range = type_fact.source_range().expect("parameter type range");
-        let param_name = self.consume_identifier_fact(
-            "Expected parameter name",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected parameter name")?;
         let name = self
             .previous()
             .span
@@ -2649,11 +1485,7 @@ impl<'a> Parser<'a> {
                 default_value: default_value.range,
             },
         );
-        Ok(FunctionParameterFact {
-            name: param_name,
-            type_fact,
-            default_value,
-        })
+        Ok(())
     }
 
     pub(super) fn parse_param_default(
@@ -2669,21 +1501,10 @@ impl<'a> Parser<'a> {
                     "Move all parameters with default values to the end of the parameter list",
                 ));
             }
-            return Ok(ParameterDefaultFact {
-                range: None,
-                expression: None,
-            });
+            return Ok(ParameterDefaultFact { range: None });
         }
         let default_expr = self.parse_expression_parsed()?;
-        let is_literal = match self.mode {
-            ParserMode::SyntaxOnly => {
-                self.is_literal_expression_range(default_expr.span.byte_range)
-            }
-            ParserMode::Compatibility => default_expr
-                .node
-                .as_ref()
-                .is_some_and(|expr| matches!(expr.kind, ExpressionKind::Literal(_))),
-        };
+        let is_literal = self.is_literal_expression_range(default_expr.span.byte_range);
         if !is_literal {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
@@ -2694,20 +1515,15 @@ impl<'a> Parser<'a> {
         }
         *has_default = true;
         let range = default_expr.span.byte_range;
-        let expression = default_expr.node;
-        Ok(ParameterDefaultFact { range, expression })
+        Ok(ParameterDefaultFact { range })
     }
 
     /// If the next non-newline token is `token_type`, consume the intervening
     /// newlines and return true; otherwise leave them unconsumed and return
     /// false. Lets a clause continue on a following line without eating
     /// newlines that separate declarations.
-    fn parse_field_declaration_fact(
-        &mut self,
-        type_param_names: &[ByteRange],
-    ) -> ParserResult<FieldDeclarationFact> {
+    fn parse_field_declaration_fact(&mut self, type_param_names: &[ByteRange]) -> ParserResult<()> {
         let field_start = self.current;
-        let start_span = self.peek().span;
         // Check if this is a const field
         let is_const = if self.check(TokenType::Const) {
             self.consume();
@@ -2720,10 +1536,7 @@ impl<'a> Parser<'a> {
         let type_range = field_type
             .source_range()
             .expect("class field type source range");
-        let field_name = self.consume_identifier_fact(
-            "Expected field name",
-            self.mode == ParserMode::Compatibility,
-        )?;
+        self.consume_identifier_fact("Expected field name")?;
         let name = self
             .previous()
             .span
@@ -2733,19 +1546,17 @@ impl<'a> Parser<'a> {
         // Check for optional default value. Any expression is allowed; it is
         // evaluated per instance when the constructor (`.new()`) runs, and its
         // type is checked against the field in semantic analysis.
-        let (default_value, default_value_range, has_default_value) =
-            if self.matches(&[TokenType::Eq]) {
-                let value = self.parse_expression_parsed()?;
-                let value_range = value.span.byte_range;
-                let has_default_value = true;
-                let value = value.node;
-                (value, value_range, has_default_value)
-            } else {
-                (None, None, false)
-            };
+        let (default_value_range, has_default_value) = if self.matches(&[TokenType::Eq]) {
+            let value = self.parse_expression_parsed()?;
+            let value_range = value.span.byte_range;
+            let has_default_value = true;
+            (value_range, has_default_value)
+        } else {
+            (None, false)
+        };
 
         // For const fields, require a default value even when syntax parsing
-        // discards its compatibility expression node.
+        // parses the expression for syntax and validation.
         if is_const && !has_default_value {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
@@ -2757,13 +1568,11 @@ impl<'a> Parser<'a> {
 
         let is_generic_param = self.is_field_generic_param(&field_type, type_param_names);
         let where_start = self.syntax_events.len();
-        let where_clause = if self.check(TokenType::Where) {
+        if self.check(TokenType::Where) {
             // Fields are newline-separated, so only a same-line `where`
             // belongs to this field.
-            self.parse_where_clause_fact()?
-        } else {
-            None
-        };
+            self.parse_where_clause_fact()?;
+        }
         let where_range = self.last_syntax_range_since(where_start, |data| {
             matches!(data, SyntaxData::WhereClause { .. })
         });
@@ -2781,18 +1590,7 @@ impl<'a> Parser<'a> {
             self.current,
             syntax_data,
         );
-        Ok(FieldDeclarationFact {
-            range: self
-                .source_range_for_tokens(field_start, self.current)
-                .expect("field declaration source range"),
-            span: start_span.combine(&self.previous().span),
-            name: field_name,
-            type_fact: field_type,
-            is_generic_param,
-            is_const,
-            default_value,
-            where_clause,
-        })
+        Ok(())
     }
 
     fn is_field_generic_param(

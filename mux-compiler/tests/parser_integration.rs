@@ -72,6 +72,9 @@ fn parser_snapshot_inventory_matches_fixtures() {
             let stem = name
                 .strip_prefix("parser_integration__")?
                 .strip_suffix(".snap")?;
+            if stem.starts_with("legacy_ast_") {
+                return None;
+            }
             Some(stem.to_owned().into())
         })
         .collect();

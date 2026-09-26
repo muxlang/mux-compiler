@@ -612,7 +612,7 @@ pub fn parse_source(input: &str) -> ParseOutput {
     let mut source = Source::from_source_text(tree_source.clone());
     let lexed = crate::lexer::Lexer::new(&mut source).lex_all_lossless();
     let mut parser = Parser::new(&lexed.tokens);
-    let parser_errors = match parser.parse_for_syntax() {
+    let parser_errors = match parser.parse() {
         Ok(()) => Vec::new(),
         Err(errors) => errors,
     };
