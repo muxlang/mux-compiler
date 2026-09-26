@@ -115,24 +115,6 @@ impl Source {
         (line_index + 1, col)
     }
 
-    /// Resolve legacy one-based line/display-column coordinates to a byte offset.
-    /// When a display column falls inside a wide character, its starting byte is used.
-    #[must_use]
-    pub fn byte_offset(&self, line: usize, col: usize) -> usize {
-        let line_index = line
-            .saturating_sub(1)
-            .min(self.line_starts.len().saturating_sub(1));
-        let start = self.line_starts.get(line_index).copied().unwrap_or(0);
-        let mut display_col = 1;
-        for (relative, ch) in self.input[start..].char_indices() {
-            if ch == '\n' || display_col >= col {
-                return start + relative;
-            }
-            display_col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-        }
-        self.input.len()
-    }
-
     #[must_use]
     pub fn slice(&self, range: crate::lexer::ByteRange) -> &str {
         &self.input[range.start..range.end]
@@ -371,7 +353,6 @@ mod tests {
         assert_eq!(source.line_col(0), (1, 1));
         assert_eq!(source.line_col("λ\r\n".len()), (2, 1));
         assert_eq!(source.line_col("λ\r\nwide".len()), (2, 5));
-        assert_eq!(source.byte_offset(2, 5), "λ\r\nwide".len());
         assert_eq!(
             source.slice(crate::lexer::ByteRange::new(0, "λ".len())),
             "λ"
