@@ -437,8 +437,26 @@ fn canonical_width_estimate(
             _ => 0,
         })
         .sum::<usize>();
+    let significant_tokens: Vec<_> = tree
+        .tokens()
+        .iter()
+        .filter(|token| {
+            let token_range = token.range();
+            token_range.start >= range.start && token_range.end <= range.end
+        })
+        .filter(|token| {
+            !matches!(
+                token.kind(),
+                TokenType::Whitespace | TokenType::NewLine | TokenType::Eof
+            )
+        })
+        .collect();
+    let word_separators = significant_tokens
+        .windows(2)
+        .filter(|pair| is_word(pair[0].kind()) && is_word(pair[1].kind()))
+        .count();
     let indent = block_depth_at(tree.root(), range.start).saturating_mul(indent_width);
-    prefix_width + node_width + separator_spaces + indent
+    prefix_width + node_width + separator_spaces + word_separators + indent
 }
 
 fn token_width(tree: &SyntaxTree, range: ByteRange) -> usize {
@@ -672,6 +690,20 @@ mod tests {
             format_source(&formatted, FormatOptions::default()).unwrap(),
             formatted
         );
+    }
+
+    #[test]
+    fn parameter_width_estimate_includes_spaces_between_type_and_name() {
+        let source = "func f(int first, int second) returns void {\nreturn\n}\n";
+        let options = FormatOptions {
+            indent_width: 4,
+            line_width: 27,
+        };
+
+        let formatted = format_source(source, options).unwrap();
+
+        assert!(formatted.contains("func f(int first,\n"));
+        assert!(formatted.contains("int first,\n"));
     }
 
     #[test]
