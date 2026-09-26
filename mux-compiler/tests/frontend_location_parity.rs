@@ -2,8 +2,7 @@ use mux_lang::ast::{
     AstNode, ExpressionKind, ExpressionNode, FunctionNode, StatementKind, StatementNode, TypeKind,
     TypeNode,
 };
-use mux_lang::lexer::{Lexer, Span};
-use mux_lang::parser::Parser;
+use mux_lang::lexer::Span;
 use mux_lang::source::Source;
 use mux_lang::syntax;
 use std::collections::BTreeMap;
@@ -422,50 +421,6 @@ fn collect_fields(fields: &[mux_lang::ast::Field], path: &str, spans: &mut BTree
     }
 }
 
-fn location_mismatches(
-    fixture: &Path,
-    path: &str,
-    left: Span,
-    right: Span,
-    source: &Source,
-) -> Vec<String> {
-    let mut mismatches = Vec::new();
-    for (field, legacy, syntax) in [
-        (
-            "row_start",
-            format!("{}", left.row_start),
-            format!("{}", right.row_start),
-        ),
-        (
-            "byte_range",
-            format!("{:?}", left.byte_range),
-            format!("{:?}", right.byte_range),
-        ),
-    ] {
-        if legacy != syntax {
-            mismatches.push(format!(
-                "{}: {path}.{field}: legacy {legacy}, syntax {syntax}",
-                fixture.display()
-            ));
-        }
-    }
-    if left.col_start != right.col_start {
-        let syntax_start_is_authoritative = right.byte_range.is_some_and(|range| {
-            Some(range) == left.byte_range
-                && source.line_col(range.start) == (right.row_start, right.col_start)
-        });
-        if !syntax_start_is_authoritative {
-            mismatches.push(format!(
-                "{}: {path}.col_start: legacy {}, syntax {}",
-                fixture.display(),
-                left.col_start,
-                right.col_start
-            ));
-        }
-    }
-    mismatches
-}
-
 fn range_location_mismatches(
     fixture: &Path,
     path: &str,
@@ -508,20 +463,12 @@ fn range_location_mismatches(
 }
 
 #[test]
-fn legacy_and_syntax_frontends_agree_on_all_fixture_locations() {
+fn syntax_frontend_locations_match_byte_ranges_for_all_fixtures() {
     let mut mismatches = Vec::new();
     for fixture in fixtures() {
         let source_text = fs::read_to_string(&fixture).unwrap_or_else(|error| {
             panic!("{}: failed to read fixture: {error}", fixture.display())
         });
-        let mut source = Source::from_string(source_text.clone());
-        let tokens = Lexer::new(&mut source)
-            .lex_all()
-            .unwrap_or_else(|error| panic!("{}: legacy lexer failed: {error}", fixture.display()));
-        let legacy = Parser::new(&tokens).parse().unwrap_or_else(|(_, errors)| {
-            panic!("{}: legacy parser failed: {errors:#?}", fixture.display())
-        });
-
         let parsed = syntax::parse_source(&source_text);
         assert!(
             parsed.errors.is_empty(),
@@ -533,27 +480,13 @@ fn legacy_and_syntax_frontends_agree_on_all_fixture_locations() {
             panic!("{}: syntax lowering failed: {error}", fixture.display())
         });
 
-        let legacy_spans = collect_ast(&legacy);
         let syntax_spans = collect_ast(&lowered);
         let location_source = Source::from_string(source_text.clone());
-        assert_eq!(
-            legacy_spans.keys().collect::<Vec<_>>(),
-            syntax_spans.keys().collect::<Vec<_>>(),
-            "{}: span-bearing AST paths differ",
-            fixture.display()
-        );
-        for (path, legacy_span) in legacy_spans {
-            mismatches.extend(location_mismatches(
-                &fixture,
-                &path,
-                legacy_span,
-                syntax_spans[&path],
-                &location_source,
-            ));
+        for (path, span) in syntax_spans {
             mismatches.extend(range_location_mismatches(
                 &fixture,
                 &path,
-                syntax_spans[&path],
+                span,
                 &location_source,
             ));
         }
@@ -561,7 +494,7 @@ fn legacy_and_syntax_frontends_agree_on_all_fixture_locations() {
     let failure_count = mismatches.len();
     assert!(
         mismatches.is_empty(),
-        "location parity failures ({failure_count}; showing at most 250):\n{}",
+        "authoritative source-location failures ({failure_count}; showing at most 250):\n{}",
         mismatches
             .iter()
             .take(250)

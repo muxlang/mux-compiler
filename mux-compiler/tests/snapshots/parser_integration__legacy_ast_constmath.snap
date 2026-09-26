@@ -1,0 +1,139 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Statement(
+        StatementNode {
+            kind: ConstDecl(
+                "PI",
+                TypeNode {
+                    kind: Primitive(
+                        Float,
+                    ),
+                    span: Span,
+                },
+                ExpressionNode {
+                    kind: Literal(
+                        Float(
+                            3.14159,
+                        ),
+                    ),
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Statement(
+        StatementNode {
+            kind: ConstDecl(
+                "MAX_SIDES",
+                TypeNode {
+                    kind: Primitive(
+                        Int,
+                    ),
+                    span: Span,
+                },
+                ExpressionNode {
+                    kind: Literal(
+                        Integer(
+                            12,
+                        ),
+                    ),
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Statement(
+        StatementNode {
+            kind: ConstDecl(
+                "UNIT",
+                TypeNode {
+                    kind: Primitive(
+                        Str,
+                    ),
+                    span: Span,
+                },
+                ExpressionNode {
+                    kind: Literal(
+                        String(
+                            "radians",
+                        ),
+                    ),
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "circle_area",
+            type_params: [],
+            params: [
+                Param {
+                    name: "r",
+                    type_: TypeNode {
+                        kind: Primitive(
+                            Float,
+                        ),
+                        span: Span,
+                    },
+                    default_value: None,
+                },
+            ],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Float,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: Return(
+                        Some(
+                            ExpressionNode {
+                                kind: Binary {
+                                    left: ExpressionNode {
+                                        kind: Binary {
+                                            left: ExpressionNode {
+                                                kind: Identifier(
+                                                    "PI",
+                                                ),
+                                                span: Span,
+                                            },
+                                            op: Multiply,
+                                            op_span: Span,
+                                            right: ExpressionNode {
+                                                kind: Identifier(
+                                                    "r",
+                                                ),
+                                                span: Span,
+                                            },
+                                        },
+                                        span: Span,
+                                    },
+                                    op: Multiply,
+                                    op_span: Span,
+                                    right: ExpressionNode {
+                                        kind: Identifier(
+                                            "r",
+                                        ),
+                                        span: Span,
+                                    },
+                                },
+                                span: Span,
+                            },
+                        ),
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+]

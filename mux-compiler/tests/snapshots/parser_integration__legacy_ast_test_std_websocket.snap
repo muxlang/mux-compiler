@@ -1,0 +1,1429 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Statement(
+        StatementNode {
+            kind: Import {
+                module_path: "std.net",
+                spec: Item {
+                    item: "websocket",
+                    alias: None,
+                },
+            },
+            span: Span,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "check_websocket",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Named(
+                    "result",
+                    [
+                        TypeNode {
+                            kind: Primitive(
+                                Int,
+                            ),
+                            span: Span,
+                        },
+                        TypeNode {
+                            kind: Named(
+                                "HttpError",
+                                [],
+                            ),
+                            span: Span,
+                        },
+                    ],
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: AutoDecl(
+                        "handshake",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Unary {
+                                op: Use,
+                                op_span: Span,
+                                expr: ExpressionNode {
+                                    kind: Call {
+                                        func: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: FieldAccess {
+                                                        expr: ExpressionNode {
+                                                            kind: Identifier(
+                                                                "websocket",
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                        field: "WebSocketHandshake",
+                                                    },
+                                                    span: Span,
+                                                },
+                                                field: "from_config",
+                                            },
+                                            span: Span,
+                                        },
+                                        args: [
+                                            ExpressionNode {
+                                                kind: Literal(
+                                                    String(
+                                                        "dGhlIHNhbXBsZSBub25jZQ==",
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                            ExpressionNode {
+                                                kind: Literal(
+                                                    String(
+                                                        "chat",
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        ],
+                                    },
+                                    span: Span,
+                                },
+                                postfix: false,
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "accept",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Unary {
+                                op: Use,
+                                op_span: Span,
+                                expr: ExpressionNode {
+                                    kind: Call {
+                                        func: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "handshake",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "accept_key",
+                                            },
+                                            span: Span,
+                                        },
+                                        args: [],
+                                    },
+                                    span: Span,
+                                },
+                                postfix: false,
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "assert",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Binary {
+                                            left: ExpressionNode {
+                                                kind: Identifier(
+                                                    "accept",
+                                                ),
+                                                span: Span,
+                                            },
+                                            op: Equal,
+                                            op_span: Span,
+                                            right: ExpressionNode {
+                                                kind: Literal(
+                                                    String(
+                                                        "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        },
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "RFC 6455 accept key",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "response_headers",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Unary {
+                                op: Use,
+                                op_span: Span,
+                                expr: ExpressionNode {
+                                    kind: Call {
+                                        func: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "handshake",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "response_headers",
+                                            },
+                                            span: Span,
+                                        },
+                                        args: [],
+                                    },
+                                    span: Span,
+                                },
+                                postfix: false,
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "upgrade",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Unary {
+                                op: Use,
+                                op_span: Span,
+                                expr: ExpressionNode {
+                                    kind: Call {
+                                        func: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "response_headers",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "get",
+                                            },
+                                            span: Span,
+                                        },
+                                        args: [
+                                            ExpressionNode {
+                                                kind: Literal(
+                                                    String(
+                                                        "Upgrade",
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        ],
+                                    },
+                                    span: Span,
+                                },
+                                postfix: false,
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "upgrade",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_none",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Return(
+                                    Some(
+                                        ExpressionNode {
+                                            kind: Call {
+                                                func: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "err",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                args: [
+                                                    ExpressionNode {
+                                                        kind: Call {
+                                                            func: ExpressionNode {
+                                                                kind: FieldAccess {
+                                                                    expr: ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "HttpError",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                    field: "from_message",
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            args: [
+                                                                ExpressionNode {
+                                                                    kind: Literal(
+                                                                        String(
+                                                                            "missing upgrade response header",
+                                                                        ),
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                            ],
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                ],
+                                            },
+                                            span: Span,
+                                        },
+                                    ),
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "assert",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Binary {
+                                            left: ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Identifier(
+                                                                    "upgrade",
+                                                                ),
+                                                                span: Span,
+                                                            },
+                                                            field: "value",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    args: [],
+                                                },
+                                                span: Span,
+                                            },
+                                            op: Equal,
+                                            op_span: Span,
+                                            right: ExpressionNode {
+                                                kind: Literal(
+                                                    String(
+                                                        "websocket",
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        },
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "upgrade response header",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "frame",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "websocket",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "WebSocketFrame",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "new",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "frame",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "opcode",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Integer(
+                                            2,
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "frame",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "payload",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Bytes(
+                                            [
+                                                104,
+                                                101,
+                                                108,
+                                                108,
+                                                111,
+                                            ],
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "frame",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "masked",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Boolean(
+                                            true,
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "wire",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Unary {
+                                op: Use,
+                                op_span: Span,
+                                expr: ExpressionNode {
+                                    kind: Call {
+                                        func: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "frame",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "encode",
+                                            },
+                                            span: Span,
+                                        },
+                                        args: [],
+                                    },
+                                    span: Span,
+                                },
+                                postfix: false,
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "decoded",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Unary {
+                                op: Use,
+                                op_span: Span,
+                                expr: ExpressionNode {
+                                    kind: Call {
+                                        func: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: FieldAccess {
+                                                        expr: ExpressionNode {
+                                                            kind: Identifier(
+                                                                "websocket",
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                        field: "WebSocketFrame",
+                                                    },
+                                                    span: Span,
+                                                },
+                                                field: "decode",
+                                            },
+                                            span: Span,
+                                        },
+                                        args: [
+                                            ExpressionNode {
+                                                kind: Identifier(
+                                                    "wire",
+                                                ),
+                                                span: Span,
+                                            },
+                                        ],
+                                    },
+                                    span: Span,
+                                },
+                                postfix: false,
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "assert",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Binary {
+                                            left: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "decoded",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    field: "opcode",
+                                                },
+                                                span: Span,
+                                            },
+                                            op: Equal,
+                                            op_span: Span,
+                                            right: ExpressionNode {
+                                                kind: Literal(
+                                                    Integer(
+                                                        2,
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        },
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "binary frame opcode",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "assert",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Binary {
+                                            left: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "decoded",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    field: "payload",
+                                                },
+                                                span: Span,
+                                            },
+                                            op: Equal,
+                                            op_span: Span,
+                                            right: ExpressionNode {
+                                                kind: Literal(
+                                                    Bytes(
+                                                        [
+                                                            104,
+                                                            101,
+                                                            108,
+                                                            108,
+                                                            111,
+                                                        ],
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        },
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "binary frame payload",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "fragment",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "websocket",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "WebSocketFrame",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "new",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "fragment",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "fin",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Boolean(
+                                            false,
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "fragment",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "opcode",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Integer(
+                                            1,
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "fragment",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "payload",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Bytes(
+                                            [
+                                                104,
+                                                101,
+                                                108,
+                                            ],
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "continuation",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "websocket",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "WebSocketFrame",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "new",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "continuation",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "fin",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Boolean(
+                                            true,
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "continuation",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "opcode",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Integer(
+                                            0,
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "continuation",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "payload",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Bytes(
+                                            [
+                                                108,
+                                                111,
+                                            ],
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: TypedDecl(
+                        "fragments",
+                        TypeNode {
+                            kind: List(
+                                TypeNode {
+                                    kind: Named(
+                                        "WebSocketFrame",
+                                        [],
+                                    ),
+                                    span: Span,
+                                },
+                            ),
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: ListLiteral(
+                                [
+                                    ExpressionNode {
+                                        kind: Identifier(
+                                            "fragment",
+                                        ),
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Identifier(
+                                            "continuation",
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            ),
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "message",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Unary {
+                                op: Use,
+                                op_span: Span,
+                                expr: ExpressionNode {
+                                    kind: Call {
+                                        func: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: FieldAccess {
+                                                        expr: ExpressionNode {
+                                                            kind: Identifier(
+                                                                "websocket",
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                        field: "WebSocketFrame",
+                                                    },
+                                                    span: Span,
+                                                },
+                                                field: "reassemble",
+                                            },
+                                            span: Span,
+                                        },
+                                        args: [
+                                            ExpressionNode {
+                                                kind: Identifier(
+                                                    "fragments",
+                                                ),
+                                                span: Span,
+                                            },
+                                        ],
+                                    },
+                                    span: Span,
+                                },
+                                postfix: false,
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "assert",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: FieldAccess {
+                                            expr: ExpressionNode {
+                                                kind: Identifier(
+                                                    "message",
+                                                ),
+                                                span: Span,
+                                            },
+                                            field: "fin",
+                                        },
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "reassembled message is final",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "assert",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Binary {
+                                            left: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "message",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    field: "opcode",
+                                                },
+                                                span: Span,
+                                            },
+                                            op: Equal,
+                                            op_span: Span,
+                                            right: ExpressionNode {
+                                                kind: Literal(
+                                                    Integer(
+                                                        1,
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        },
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "reassembled message opcode",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "assert",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Binary {
+                                            left: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "message",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    field: "payload",
+                                                },
+                                                span: Span,
+                                            },
+                                            op: Equal,
+                                            op_span: Span,
+                                            right: ExpressionNode {
+                                                kind: Literal(
+                                                    Bytes(
+                                                        [
+                                                            104,
+                                                            101,
+                                                            108,
+                                                            108,
+                                                            111,
+                                                        ],
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        },
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "reassembled message payload",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        Some(
+                            ExpressionNode {
+                                kind: Call {
+                                    func: ExpressionNode {
+                                        kind: Identifier(
+                                            "ok",
+                                        ),
+                                        span: Span,
+                                    },
+                                    args: [
+                                        ExpressionNode {
+                                            kind: Literal(
+                                                Integer(
+                                                    1,
+                                                ),
+                                            ),
+                                            span: Span,
+                                        },
+                                    ],
+                                },
+                                span: Span,
+                            },
+                        ),
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "main",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Void,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: AutoDecl(
+                        "result",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "check_websocket",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "result",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_err",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "assert",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        Boolean(
+                                                            false,
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                ExpressionNode {
+                                                    kind: Call {
+                                                        func: ExpressionNode {
+                                                            kind: FieldAccess {
+                                                                expr: ExpressionNode {
+                                                                    kind: Call {
+                                                                        func: ExpressionNode {
+                                                                            kind: FieldAccess {
+                                                                                expr: ExpressionNode {
+                                                                                    kind: Identifier(
+                                                                                        "result",
+                                                                                    ),
+                                                                                    span: Span,
+                                                                                },
+                                                                                field: "error",
+                                                                            },
+                                                                            span: Span,
+                                                                        },
+                                                                        args: [],
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                field: "message",
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                        args: [],
+                                                    },
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                            StatementNode {
+                                kind: Return(
+                                    None,
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "websocket codec passed",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        None,
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+]

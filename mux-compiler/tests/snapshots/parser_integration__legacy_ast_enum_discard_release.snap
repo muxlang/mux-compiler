@@ -1,0 +1,792 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Enum {
+        name: "Status",
+        type_params: [],
+        variants: [
+            EnumVariant {
+                name: "Active",
+                data: Some(
+                    [
+                        (
+                            Some(
+                                "reason",
+                            ),
+                            TypeNode {
+                                kind: Primitive(
+                                    Str,
+                                ),
+                                span: Span,
+                            },
+                        ),
+                    ],
+                ),
+                where_clause: None,
+            },
+            EnumVariant {
+                name: "Inactive",
+                data: Some(
+                    [
+                        (
+                            Some(
+                                "code",
+                            ),
+                            TypeNode {
+                                kind: Primitive(
+                                    Int,
+                                ),
+                                span: Span,
+                            },
+                        ),
+                    ],
+                ),
+                where_clause: None,
+            },
+        ],
+        span: Span,
+    },
+    Function(
+        FunctionNode {
+            name: "consume",
+            type_params: [],
+            params: [
+                Param {
+                    name: "s",
+                    type_: TypeNode {
+                        kind: Named(
+                            "Status",
+                            [],
+                        ),
+                        span: Span,
+                    },
+                    default_value: None,
+                },
+            ],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Void,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: Return(
+                        None,
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "classify",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Int,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: Match {
+                        expr: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "Status",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "Active",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "subject-return",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                        arms: [
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "Active",
+                                    args: [
+                                        Identifier(
+                                            "m",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Return(
+                                            Some(
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        Integer(
+                                                            1,
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "Inactive",
+                                    args: [
+                                        Identifier(
+                                            "n",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Return(
+                                            Some(
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        Integer(
+                                                            2,
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "main",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Void,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "Status",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "Active",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "discarded",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Match {
+                        expr: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "Status",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "Active",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "subject",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                        arms: [
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "Active",
+                                    args: [
+                                        Identifier(
+                                            "m",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Binary {
+                                                                left: ExpressionNode {
+                                                                    kind: Literal(
+                                                                        String(
+                                                                            "subject: ",
+                                                                        ),
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                                op: Add,
+                                                                op_span: Span,
+                                                                right: ExpressionNode {
+                                                                    kind: Identifier(
+                                                                        "m",
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "Inactive",
+                                    args: [
+                                        Identifier(
+                                            "n",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Literal(
+                                                                String(
+                                                                    "subject: inactive",
+                                                                ),
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "other",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "Status",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "Inactive",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            Integer(
+                                                7,
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Match {
+                        expr: ExpressionNode {
+                            kind: If {
+                                cond: ExpressionNode {
+                                    kind: Literal(
+                                        Boolean(
+                                            true,
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                                then_expr: ExpressionNode {
+                                    kind: Call {
+                                        func: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "Status",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "Active",
+                                            },
+                                            span: Span,
+                                        },
+                                        args: [
+                                            ExpressionNode {
+                                                kind: Literal(
+                                                    String(
+                                                        "tern",
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        ],
+                                    },
+                                    span: Span,
+                                },
+                                else_expr: ExpressionNode {
+                                    kind: Identifier(
+                                        "other",
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                        arms: [
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "Active",
+                                    args: [
+                                        Identifier(
+                                            "m",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Binary {
+                                                                left: ExpressionNode {
+                                                                    kind: Literal(
+                                                                        String(
+                                                                            "tern: ",
+                                                                        ),
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                                op: Add,
+                                                                op_span: Span,
+                                                                right: ExpressionNode {
+                                                                    kind: Identifier(
+                                                                        "m",
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "Inactive",
+                                    args: [
+                                        Identifier(
+                                            "n",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Literal(
+                                                                String(
+                                                                    "tern: inactive",
+                                                                ),
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "consume",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "Status",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    field: "Active",
+                                                },
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "arg",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "items",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: ListLiteral(
+                                [
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "Status",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    field: "Active",
+                                                },
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "i1",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "Status",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    field: "Inactive",
+                                                },
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        Integer(
+                                                            2,
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            ),
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Binary {
+                                            left: ExpressionNode {
+                                                kind: Literal(
+                                                    String(
+                                                        "items: ",
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                            op: Add,
+                                            op_span: Span,
+                                            right: ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Call {
+                                                                    func: ExpressionNode {
+                                                                        kind: FieldAccess {
+                                                                            expr: ExpressionNode {
+                                                                                kind: Identifier(
+                                                                                    "items",
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                            field: "len",
+                                                                        },
+                                                                        span: Span,
+                                                                    },
+                                                                    args: [],
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            field: "to_string",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    args: [],
+                                                },
+                                                span: Span,
+                                            },
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Binary {
+                                            left: ExpressionNode {
+                                                kind: Literal(
+                                                    String(
+                                                        "classify: ",
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                            op: Add,
+                                            op_span: Span,
+                                            right: ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Call {
+                                                                    func: ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "classify",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                    args: [],
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            field: "to_string",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    args: [],
+                                                },
+                                                span: Span,
+                                            },
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        None,
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+]

@@ -1,0 +1,239 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Statement(
+        StatementNode {
+            kind: Import {
+                module_path: "std",
+                spec: Item {
+                    item: "log",
+                    alias: None,
+                },
+            },
+            span: Span,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "main",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Void,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: AutoDecl(
+                        "logger",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "log",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "Logger",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "new",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "invalid",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "logger",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "set_level",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "verbose",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "invalid",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_err",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "assert",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Binary {
+                                                        left: ExpressionNode {
+                                                            kind: FieldAccess {
+                                                                expr: ExpressionNode {
+                                                                    kind: Call {
+                                                                        func: ExpressionNode {
+                                                                            kind: FieldAccess {
+                                                                                expr: ExpressionNode {
+                                                                                    kind: Identifier(
+                                                                                        "invalid",
+                                                                                    ),
+                                                                                    span: Span,
+                                                                                },
+                                                                                field: "error",
+                                                                            },
+                                                                            span: Span,
+                                                                        },
+                                                                        args: [],
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                field: "kind",
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                        op: Equal,
+                                                        op_span: Span,
+                                                        right: ExpressionNode {
+                                                            kind: FieldAccess {
+                                                                expr: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "log",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "LogErrorKind",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                field: "Invalid",
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    },
+                                                    span: Span,
+                                                },
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "log error kind",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "print",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "log error kind: invalid",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        None,
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+]

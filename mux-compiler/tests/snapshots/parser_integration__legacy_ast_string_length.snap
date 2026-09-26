@@ -1,0 +1,348 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Statement(
+        StatementNode {
+            kind: TypedDecl(
+                "empty",
+                TypeNode {
+                    kind: Primitive(
+                        Str,
+                    ),
+                    span: Span,
+                },
+                ExpressionNode {
+                    kind: Literal(
+                        String(
+                            "",
+                        ),
+                    ),
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Statement(
+        StatementNode {
+            kind: Expression(
+                ExpressionNode {
+                    kind: Call {
+                        func: ExpressionNode {
+                            kind: Identifier(
+                                "print",
+                            ),
+                            span: Span,
+                        },
+                        args: [
+                            ExpressionNode {
+                                kind: Call {
+                                    func: ExpressionNode {
+                                        kind: FieldAccess {
+                                            expr: ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Identifier(
+                                                                    "empty",
+                                                                ),
+                                                                span: Span,
+                                                            },
+                                                            field: "length",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    args: [],
+                                                },
+                                                span: Span,
+                                            },
+                                            field: "to_string",
+                                        },
+                                        span: Span,
+                                    },
+                                    args: [],
+                                },
+                                span: Span,
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Statement(
+        StatementNode {
+            kind: TypedDecl(
+                "word",
+                TypeNode {
+                    kind: Primitive(
+                        Str,
+                    ),
+                    span: Span,
+                },
+                ExpressionNode {
+                    kind: Literal(
+                        String(
+                            "hello",
+                        ),
+                    ),
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Statement(
+        StatementNode {
+            kind: Expression(
+                ExpressionNode {
+                    kind: Call {
+                        func: ExpressionNode {
+                            kind: Identifier(
+                                "print",
+                            ),
+                            span: Span,
+                        },
+                        args: [
+                            ExpressionNode {
+                                kind: Call {
+                                    func: ExpressionNode {
+                                        kind: FieldAccess {
+                                            expr: ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Identifier(
+                                                                    "word",
+                                                                ),
+                                                                span: Span,
+                                                            },
+                                                            field: "length",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    args: [],
+                                                },
+                                                span: Span,
+                                            },
+                                            field: "to_string",
+                                        },
+                                        span: Span,
+                                    },
+                                    args: [],
+                                },
+                                span: Span,
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Class {
+        name: "Msg",
+        type_params: [],
+        traits: [],
+        fields: [
+            Field {
+                name: "text",
+                type_: TypeNode {
+                    kind: Primitive(
+                        Str,
+                    ),
+                    span: Span,
+                },
+                is_generic_param: false,
+                is_const: false,
+                default_value: None,
+                where_clause: None,
+            },
+        ],
+        methods: [],
+        where_clause: None,
+        span: Span,
+    },
+    Statement(
+        StatementNode {
+            kind: AutoDecl(
+                "m",
+                TypeNode {
+                    kind: Auto,
+                    span: Span,
+                },
+                ExpressionNode {
+                    kind: Call {
+                        func: ExpressionNode {
+                            kind: FieldAccess {
+                                expr: ExpressionNode {
+                                    kind: Identifier(
+                                        "Msg",
+                                    ),
+                                    span: Span,
+                                },
+                                field: "new",
+                            },
+                            span: Span,
+                        },
+                        args: [],
+                    },
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Statement(
+        StatementNode {
+            kind: Expression(
+                ExpressionNode {
+                    kind: Call {
+                        func: ExpressionNode {
+                            kind: Identifier(
+                                "print",
+                            ),
+                            span: Span,
+                        },
+                        args: [
+                            ExpressionNode {
+                                kind: Call {
+                                    func: ExpressionNode {
+                                        kind: FieldAccess {
+                                            expr: ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: FieldAccess {
+                                                                    expr: ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "m",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                    field: "text",
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            field: "length",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    args: [],
+                                                },
+                                                span: Span,
+                                            },
+                                            field: "to_string",
+                                        },
+                                        span: Span,
+                                    },
+                                    args: [],
+                                },
+                                span: Span,
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Statement(
+        StatementNode {
+            kind: Expression(
+                ExpressionNode {
+                    kind: Binary {
+                        left: ExpressionNode {
+                            kind: FieldAccess {
+                                expr: ExpressionNode {
+                                    kind: Identifier(
+                                        "m",
+                                    ),
+                                    span: Span,
+                                },
+                                field: "text",
+                            },
+                            span: Span,
+                        },
+                        op: Assign,
+                        op_span: Span,
+                        right: ExpressionNode {
+                            kind: Literal(
+                                String(
+                                    "hi there",
+                                ),
+                            ),
+                            span: Span,
+                        },
+                    },
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+    Statement(
+        StatementNode {
+            kind: Expression(
+                ExpressionNode {
+                    kind: Call {
+                        func: ExpressionNode {
+                            kind: Identifier(
+                                "print",
+                            ),
+                            span: Span,
+                        },
+                        args: [
+                            ExpressionNode {
+                                kind: Call {
+                                    func: ExpressionNode {
+                                        kind: FieldAccess {
+                                            expr: ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: FieldAccess {
+                                                                    expr: ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "m",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                    field: "text",
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            field: "length",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    args: [],
+                                                },
+                                                span: Span,
+                                            },
+                                            field: "to_string",
+                                        },
+                                        span: Span,
+                                    },
+                                    args: [],
+                                },
+                                span: Span,
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+            ),
+            span: Span,
+        },
+    ),
+]

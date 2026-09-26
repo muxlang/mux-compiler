@@ -1,0 +1,193 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Enum {
+        name: "Shape",
+        type_params: [],
+        variants: [
+            EnumVariant {
+                name: "Circ",
+                data: Some(
+                    [
+                        (
+                            Some(
+                                "radius",
+                            ),
+                            TypeNode {
+                                kind: Primitive(
+                                    Float,
+                                ),
+                                span: Span,
+                            },
+                        ),
+                    ],
+                ),
+                where_clause: None,
+            },
+            EnumVariant {
+                name: "Rect",
+                data: Some(
+                    [
+                        (
+                            Some(
+                                "width",
+                            ),
+                            TypeNode {
+                                kind: Primitive(
+                                    Float,
+                                ),
+                                span: Span,
+                            },
+                        ),
+                        (
+                            Some(
+                                "height",
+                            ),
+                            TypeNode {
+                                kind: Primitive(
+                                    Float,
+                                ),
+                                span: Span,
+                            },
+                        ),
+                    ],
+                ),
+                where_clause: None,
+            },
+        ],
+        span: Span,
+    },
+    Function(
+        FunctionNode {
+            name: "main",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Void,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: AutoDecl(
+                        "c",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "Shape",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "Circ",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            Float(
+                                                5.0,
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "r",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "Shape",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "Rect",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            Float(
+                                                10.0,
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            Float(
+                                                20.0,
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "done",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        None,
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+]

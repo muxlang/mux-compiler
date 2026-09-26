@@ -1,0 +1,208 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Statement(
+        StatementNode {
+            kind: Import {
+                module_path: "std",
+                spec: Item {
+                    item: "net",
+                    alias: None,
+                },
+            },
+            span: Span,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "main",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Void,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "Starting tcp connect failure smoke test",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Match {
+                        expr: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "net",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "TcpStream",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "connect",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "127.0.0.1:10000",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                        arms: [
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "ok",
+                                    args: [
+                                        Wildcard,
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Literal(
+                                                                String(
+                                                                    "tcp listener connected!",
+                                                                ),
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "err",
+                                    args: [
+                                        Identifier(
+                                            "e",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Binary {
+                                                                left: ExpressionNode {
+                                                                    kind: Literal(
+                                                                        String(
+                                                                            "tcp connect failed as expected: ",
+                                                                        ),
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                                op: Add,
+                                                                op_span: Span,
+                                                                right: ExpressionNode {
+                                                                    kind: Call {
+                                                                        func: ExpressionNode {
+                                                                            kind: FieldAccess {
+                                                                                expr: ExpressionNode {
+                                                                                    kind: Identifier(
+                                                                                        "e",
+                                                                                    ),
+                                                                                    span: Span,
+                                                                                },
+                                                                                field: "message",
+                                                                            },
+                                                                            span: Span,
+                                                                        },
+                                                                        args: [],
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        None,
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+]

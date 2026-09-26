@@ -1,0 +1,1008 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Enum {
+        name: "Color",
+        type_params: [],
+        variants: [
+            EnumVariant {
+                name: "Red",
+                data: None,
+                where_clause: None,
+            },
+            EnumVariant {
+                name: "Green",
+                data: None,
+                where_clause: None,
+            },
+            EnumVariant {
+                name: "Blue",
+                data: None,
+                where_clause: None,
+            },
+        ],
+        span: Span,
+    },
+    Enum {
+        name: "Tagged",
+        type_params: [],
+        variants: [
+            EnumVariant {
+                name: "None_",
+                data: None,
+                where_clause: None,
+            },
+            EnumVariant {
+                name: "Note",
+                data: Some(
+                    [
+                        (
+                            Some(
+                                "text",
+                            ),
+                            TypeNode {
+                                kind: Primitive(
+                                    Str,
+                                ),
+                                span: Span,
+                            },
+                        ),
+                    ],
+                ),
+                where_clause: None,
+            },
+        ],
+        span: Span,
+    },
+    Function(
+        FunctionNode {
+            name: "name_of",
+            type_params: [],
+            params: [
+                Param {
+                    name: "c",
+                    type_: TypeNode {
+                        kind: Named(
+                            "Color",
+                            [],
+                        ),
+                        span: Span,
+                    },
+                    default_value: None,
+                },
+            ],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Str,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: Match {
+                        expr: ExpressionNode {
+                            kind: Identifier(
+                                "c",
+                            ),
+                            span: Span,
+                        },
+                        arms: [
+                            MatchArm {
+                                pattern: Identifier(
+                                    "Red",
+                                ),
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Return(
+                                            Some(
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "red",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: Identifier(
+                                    "Green",
+                                ),
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Return(
+                                            Some(
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "green",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: Identifier(
+                                    "Blue",
+                                ),
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Return(
+                                            Some(
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "blue",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "find",
+            type_params: [],
+            params: [
+                Param {
+                    name: "k",
+                    type_: TypeNode {
+                        kind: Primitive(
+                            Int,
+                        ),
+                        span: Span,
+                    },
+                    default_value: None,
+                },
+            ],
+            return_type: TypeNode {
+                kind: Named(
+                    "optional",
+                    [
+                        TypeNode {
+                            kind: Named(
+                                "Color",
+                                [],
+                            ),
+                            span: Span,
+                        },
+                    ],
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: Identifier(
+                                        "k",
+                                    ),
+                                    span: Span,
+                                },
+                                op: Equal,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Integer(
+                                            1,
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Return(
+                                    Some(
+                                        ExpressionNode {
+                                            kind: Call {
+                                                func: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "some",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                args: [
+                                                    ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Identifier(
+                                                                    "Color",
+                                                                ),
+                                                                span: Span,
+                                                            },
+                                                            field: "Red",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                ],
+                                            },
+                                            span: Span,
+                                        },
+                                    ),
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        Some(
+                            ExpressionNode {
+                                kind: None,
+                                span: Span,
+                            },
+                        ),
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "check",
+            type_params: [],
+            params: [
+                Param {
+                    name: "k",
+                    type_: TypeNode {
+                        kind: Primitive(
+                            Int,
+                        ),
+                        span: Span,
+                    },
+                    default_value: None,
+                },
+            ],
+            return_type: TypeNode {
+                kind: Named(
+                    "result",
+                    [
+                        TypeNode {
+                            kind: Named(
+                                "Tagged",
+                                [],
+                            ),
+                            span: Span,
+                        },
+                        TypeNode {
+                            kind: Primitive(
+                                Str,
+                            ),
+                            span: Span,
+                        },
+                    ],
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: Identifier(
+                                        "k",
+                                    ),
+                                    span: Span,
+                                },
+                                op: Equal,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        Integer(
+                                            1,
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Return(
+                                    Some(
+                                        ExpressionNode {
+                                            kind: Call {
+                                                func: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "ok",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                args: [
+                                                    ExpressionNode {
+                                                        kind: Call {
+                                                            func: ExpressionNode {
+                                                                kind: FieldAccess {
+                                                                    expr: ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "Tagged",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                    field: "Note",
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            args: [
+                                                                ExpressionNode {
+                                                                    kind: Literal(
+                                                                        String(
+                                                                            "hi",
+                                                                        ),
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                            ],
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                ],
+                                            },
+                                            span: Span,
+                                        },
+                                    ),
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        Some(
+                            ExpressionNode {
+                                kind: Call {
+                                    func: ExpressionNode {
+                                        kind: Identifier(
+                                            "err",
+                                        ),
+                                        span: Span,
+                                    },
+                                    args: [
+                                        ExpressionNode {
+                                            kind: Literal(
+                                                String(
+                                                    "nope",
+                                                ),
+                                            ),
+                                            span: Span,
+                                        },
+                                    ],
+                                },
+                                span: Span,
+                            },
+                        ),
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "main",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Void,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: AutoDecl(
+                        "a",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "find",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            Integer(
+                                                1,
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Match {
+                        expr: ExpressionNode {
+                            kind: Identifier(
+                                "a",
+                            ),
+                            span: Span,
+                        },
+                        arms: [
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "some",
+                                    args: [
+                                        Identifier(
+                                            "c",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: Identifier(
+                                                                        "name_of",
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                                args: [
+                                                                    ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "c",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "none",
+                                    args: [],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Literal(
+                                                                String(
+                                                                    "none",
+                                                                ),
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "b",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "find",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            Integer(
+                                                2,
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Match {
+                        expr: ExpressionNode {
+                            kind: Identifier(
+                                "b",
+                            ),
+                            span: Span,
+                        },
+                        arms: [
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "some",
+                                    args: [
+                                        Identifier(
+                                            "c",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: Identifier(
+                                                                        "name_of",
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                                args: [
+                                                                    ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "c",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "none",
+                                    args: [],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Literal(
+                                                                String(
+                                                                    "none",
+                                                                ),
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "r",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "check",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            Integer(
+                                                1,
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Match {
+                        expr: ExpressionNode {
+                            kind: Identifier(
+                                "r",
+                            ),
+                            span: Span,
+                        },
+                        arms: [
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "ok",
+                                    args: [
+                                        Identifier(
+                                            "t",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Match {
+                                            expr: ExpressionNode {
+                                                kind: Identifier(
+                                                    "t",
+                                                ),
+                                                span: Span,
+                                            },
+                                            arms: [
+                                                MatchArm {
+                                                    pattern: Identifier(
+                                                        "None_",
+                                                    ),
+                                                    guard: None,
+                                                    body: [
+                                                        StatementNode {
+                                                            kind: Expression(
+                                                                ExpressionNode {
+                                                                    kind: Call {
+                                                                        func: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "print",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        args: [
+                                                                            ExpressionNode {
+                                                                                kind: Literal(
+                                                                                    String(
+                                                                                        "none_",
+                                                                                    ),
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                        ],
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                MatchArm {
+                                                    pattern: EnumVariant {
+                                                        name: "Note",
+                                                        args: [
+                                                            Identifier(
+                                                                "s",
+                                                            ),
+                                                        ],
+                                                    },
+                                                    guard: None,
+                                                    body: [
+                                                        StatementNode {
+                                                            kind: Expression(
+                                                                ExpressionNode {
+                                                                    kind: Call {
+                                                                        func: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "print",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        args: [
+                                                                            ExpressionNode {
+                                                                                kind: Identifier(
+                                                                                    "s",
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                        ],
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "err",
+                                    args: [
+                                        Identifier(
+                                            "e",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Identifier(
+                                                                "e",
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "r2",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "check",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            Integer(
+                                                2,
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Match {
+                        expr: ExpressionNode {
+                            kind: Identifier(
+                                "r2",
+                            ),
+                            span: Span,
+                        },
+                        arms: [
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "ok",
+                                    args: [
+                                        Identifier(
+                                            "t",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Literal(
+                                                                String(
+                                                                    "ok",
+                                                                ),
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            MatchArm {
+                                pattern: EnumVariant {
+                                    name: "err",
+                                    args: [
+                                        Identifier(
+                                            "e",
+                                        ),
+                                    ],
+                                },
+                                guard: None,
+                                body: [
+                                    StatementNode {
+                                        kind: Expression(
+                                            ExpressionNode {
+                                                kind: Call {
+                                                    func: ExpressionNode {
+                                                        kind: Identifier(
+                                                            "print",
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    args: [
+                                                        ExpressionNode {
+                                                            kind: Identifier(
+                                                                "e",
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                },
+                                                span: Span,
+                                            },
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        None,
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+]

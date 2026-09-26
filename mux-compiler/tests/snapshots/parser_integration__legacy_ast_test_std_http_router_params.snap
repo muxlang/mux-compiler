@@ -1,0 +1,2149 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Statement(
+        StatementNode {
+            kind: Import {
+                module_path: "std",
+                spec: Item {
+                    item: "net",
+                    alias: None,
+                },
+            },
+            span: Span,
+        },
+    ),
+    Function(
+        FunctionNode {
+            name: "main",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Void,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: AutoDecl(
+                        "router",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "net",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "HttpRouter",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "new",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "exact",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "router",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "route",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "GET",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "/users/me",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Lambda {
+                                            params: [
+                                                Param {
+                                                    name: "_request",
+                                                    type_: TypeNode {
+                                                        kind: Named(
+                                                            "HttpRequest",
+                                                            [],
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    default_value: None,
+                                                },
+                                            ],
+                                            return_type: TypeNode {
+                                                kind: Named(
+                                                    "result",
+                                                    [
+                                                        TypeNode {
+                                                            kind: Named(
+                                                                "HttpResponse",
+                                                                [],
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                        TypeNode {
+                                                            kind: Named(
+                                                                "HttpError",
+                                                                [],
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                ),
+                                                span: Span,
+                                            },
+                                            body: [
+                                                StatementNode {
+                                                    kind: AutoDecl(
+                                                        "response",
+                                                        TypeNode {
+                                                            kind: Auto,
+                                                            span: Span,
+                                                        },
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: FieldAccess {
+                                                                                expr: ExpressionNode {
+                                                                                    kind: Identifier(
+                                                                                        "net",
+                                                                                    ),
+                                                                                    span: Span,
+                                                                                },
+                                                                                field: "HttpResponse",
+                                                                            },
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "new",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                args: [],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: Expression(
+                                                        ExpressionNode {
+                                                            kind: Binary {
+                                                                left: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "response",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "body",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                op: Assign,
+                                                                op_span: Span,
+                                                                right: ExpressionNode {
+                                                                    kind: Literal(
+                                                                        Bytes(
+                                                                            [
+                                                                                101,
+                                                                                120,
+                                                                                97,
+                                                                                99,
+                                                                                116,
+                                                                            ],
+                                                                        ),
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: Return(
+                                                        Some(
+                                                            ExpressionNode {
+                                                                kind: Call {
+                                                                    func: ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "ok",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                    args: [
+                                                                        ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "response",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                    ],
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                            where_clause: None,
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "exact",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_err",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "print",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "exact route registration failed",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                            StatementNode {
+                                kind: Return(
+                                    None,
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "parameter",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "router",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "route",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "GET",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "/users/{id}",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Lambda {
+                                            params: [
+                                                Param {
+                                                    name: "request",
+                                                    type_: TypeNode {
+                                                        kind: Named(
+                                                            "HttpRequest",
+                                                            [],
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    default_value: None,
+                                                },
+                                            ],
+                                            return_type: TypeNode {
+                                                kind: Named(
+                                                    "result",
+                                                    [
+                                                        TypeNode {
+                                                            kind: Named(
+                                                                "HttpResponse",
+                                                                [],
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                        TypeNode {
+                                                            kind: Named(
+                                                                "HttpError",
+                                                                [],
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                ),
+                                                span: Span,
+                                            },
+                                            body: [
+                                                StatementNode {
+                                                    kind: AutoDecl(
+                                                        "response",
+                                                        TypeNode {
+                                                            kind: Auto,
+                                                            span: Span,
+                                                        },
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: FieldAccess {
+                                                                                expr: ExpressionNode {
+                                                                                    kind: Identifier(
+                                                                                        "net",
+                                                                                    ),
+                                                                                    span: Span,
+                                                                                },
+                                                                                field: "HttpResponse",
+                                                                            },
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "new",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                args: [],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: AutoDecl(
+                                                        "id_result",
+                                                        TypeNode {
+                                                            kind: Auto,
+                                                            span: Span,
+                                                        },
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "request",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "path_param",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                args: [
+                                                                    ExpressionNode {
+                                                                        kind: Literal(
+                                                                            String(
+                                                                                "id",
+                                                                            ),
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: If {
+                                                        cond: ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "id_result",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "is_none",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                args: [],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                        then_block: [
+                                                            StatementNode {
+                                                                kind: Return(
+                                                                    Some(
+                                                                        ExpressionNode {
+                                                                            kind: Call {
+                                                                                func: ExpressionNode {
+                                                                                    kind: Identifier(
+                                                                                        "err",
+                                                                                    ),
+                                                                                    span: Span,
+                                                                                },
+                                                                                args: [
+                                                                                    ExpressionNode {
+                                                                                        kind: Call {
+                                                                                            func: ExpressionNode {
+                                                                                                kind: FieldAccess {
+                                                                                                    expr: ExpressionNode {
+                                                                                                        kind: Identifier(
+                                                                                                            "HttpError",
+                                                                                                        ),
+                                                                                                        span: Span,
+                                                                                                    },
+                                                                                                    field: "from_message",
+                                                                                                },
+                                                                                                span: Span,
+                                                                                            },
+                                                                                            args: [
+                                                                                                ExpressionNode {
+                                                                                                    kind: Literal(
+                                                                                                        String(
+                                                                                                            "missing id",
+                                                                                                        ),
+                                                                                                    ),
+                                                                                                    span: Span,
+                                                                                                },
+                                                                                            ],
+                                                                                        },
+                                                                                        span: Span,
+                                                                                    },
+                                                                                ],
+                                                                            },
+                                                                            span: Span,
+                                                                        },
+                                                                    ),
+                                                                ),
+                                                                span: Span,
+                                                            },
+                                                        ],
+                                                        else_block: None,
+                                                    },
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: AutoDecl(
+                                                        "id",
+                                                        TypeNode {
+                                                            kind: Auto,
+                                                            span: Span,
+                                                        },
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "id_result",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "value",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                args: [],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: Expression(
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: Identifier(
+                                                                        "print",
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                                args: [
+                                                                    ExpressionNode {
+                                                                        kind: Binary {
+                                                                            left: ExpressionNode {
+                                                                                kind: Literal(
+                                                                                    String(
+                                                                                        "id:",
+                                                                                    ),
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                            op: Add,
+                                                                            op_span: Span,
+                                                                            right: ExpressionNode {
+                                                                                kind: Identifier(
+                                                                                    "id",
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                        },
+                                                                        span: Span,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: Expression(
+                                                        ExpressionNode {
+                                                            kind: Binary {
+                                                                left: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "response",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "body",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                op: Assign,
+                                                                op_span: Span,
+                                                                right: ExpressionNode {
+                                                                    kind: Literal(
+                                                                        Bytes(
+                                                                            [
+                                                                                112,
+                                                                                97,
+                                                                                114,
+                                                                                97,
+                                                                                109,
+                                                                                101,
+                                                                                116,
+                                                                                101,
+                                                                                114,
+                                                                            ],
+                                                                        ),
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: Return(
+                                                        Some(
+                                                            ExpressionNode {
+                                                                kind: Call {
+                                                                    func: ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "ok",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                    args: [
+                                                                        ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "response",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                    ],
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                            where_clause: None,
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "parameter",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_err",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "print",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "parameter route registration failed",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                            StatementNode {
+                                kind: Return(
+                                    None,
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "catch_all",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "router",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "route",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "GET",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "/files/{...path}",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                    ExpressionNode {
+                                        kind: Lambda {
+                                            params: [
+                                                Param {
+                                                    name: "request",
+                                                    type_: TypeNode {
+                                                        kind: Named(
+                                                            "HttpRequest",
+                                                            [],
+                                                        ),
+                                                        span: Span,
+                                                    },
+                                                    default_value: None,
+                                                },
+                                            ],
+                                            return_type: TypeNode {
+                                                kind: Named(
+                                                    "result",
+                                                    [
+                                                        TypeNode {
+                                                            kind: Named(
+                                                                "HttpResponse",
+                                                                [],
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                        TypeNode {
+                                                            kind: Named(
+                                                                "HttpError",
+                                                                [],
+                                                            ),
+                                                            span: Span,
+                                                        },
+                                                    ],
+                                                ),
+                                                span: Span,
+                                            },
+                                            body: [
+                                                StatementNode {
+                                                    kind: AutoDecl(
+                                                        "response",
+                                                        TypeNode {
+                                                            kind: Auto,
+                                                            span: Span,
+                                                        },
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: FieldAccess {
+                                                                                expr: ExpressionNode {
+                                                                                    kind: Identifier(
+                                                                                        "net",
+                                                                                    ),
+                                                                                    span: Span,
+                                                                                },
+                                                                                field: "HttpResponse",
+                                                                            },
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "new",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                args: [],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: AutoDecl(
+                                                        "path_result",
+                                                        TypeNode {
+                                                            kind: Auto,
+                                                            span: Span,
+                                                        },
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "request",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "path_param",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                args: [
+                                                                    ExpressionNode {
+                                                                        kind: Literal(
+                                                                            String(
+                                                                                "path",
+                                                                            ),
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: If {
+                                                        cond: ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "path_result",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "is_none",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                args: [],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                        then_block: [
+                                                            StatementNode {
+                                                                kind: Return(
+                                                                    Some(
+                                                                        ExpressionNode {
+                                                                            kind: Call {
+                                                                                func: ExpressionNode {
+                                                                                    kind: Identifier(
+                                                                                        "err",
+                                                                                    ),
+                                                                                    span: Span,
+                                                                                },
+                                                                                args: [
+                                                                                    ExpressionNode {
+                                                                                        kind: Call {
+                                                                                            func: ExpressionNode {
+                                                                                                kind: FieldAccess {
+                                                                                                    expr: ExpressionNode {
+                                                                                                        kind: Identifier(
+                                                                                                            "HttpError",
+                                                                                                        ),
+                                                                                                        span: Span,
+                                                                                                    },
+                                                                                                    field: "from_message",
+                                                                                                },
+                                                                                                span: Span,
+                                                                                            },
+                                                                                            args: [
+                                                                                                ExpressionNode {
+                                                                                                    kind: Literal(
+                                                                                                        String(
+                                                                                                            "missing path",
+                                                                                                        ),
+                                                                                                    ),
+                                                                                                    span: Span,
+                                                                                                },
+                                                                                            ],
+                                                                                        },
+                                                                                        span: Span,
+                                                                                    },
+                                                                                ],
+                                                                            },
+                                                                            span: Span,
+                                                                        },
+                                                                    ),
+                                                                ),
+                                                                span: Span,
+                                                            },
+                                                        ],
+                                                        else_block: None,
+                                                    },
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: AutoDecl(
+                                                        "path",
+                                                        TypeNode {
+                                                            kind: Auto,
+                                                            span: Span,
+                                                        },
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "path_result",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "value",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                args: [],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: Expression(
+                                                        ExpressionNode {
+                                                            kind: Call {
+                                                                func: ExpressionNode {
+                                                                    kind: Identifier(
+                                                                        "print",
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                                args: [
+                                                                    ExpressionNode {
+                                                                        kind: Binary {
+                                                                            left: ExpressionNode {
+                                                                                kind: Literal(
+                                                                                    String(
+                                                                                        "path:",
+                                                                                    ),
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                            op: Add,
+                                                                            op_span: Span,
+                                                                            right: ExpressionNode {
+                                                                                kind: Identifier(
+                                                                                    "path",
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                        },
+                                                                        span: Span,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: Expression(
+                                                        ExpressionNode {
+                                                            kind: Binary {
+                                                                left: ExpressionNode {
+                                                                    kind: FieldAccess {
+                                                                        expr: ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "response",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                        field: "body",
+                                                                    },
+                                                                    span: Span,
+                                                                },
+                                                                op: Assign,
+                                                                op_span: Span,
+                                                                right: ExpressionNode {
+                                                                    kind: Literal(
+                                                                        Bytes(
+                                                                            [
+                                                                                99,
+                                                                                97,
+                                                                                116,
+                                                                                99,
+                                                                                104,
+                                                                                45,
+                                                                                97,
+                                                                                108,
+                                                                                108,
+                                                                            ],
+                                                                        ),
+                                                                    ),
+                                                                    span: Span,
+                                                                },
+                                                            },
+                                                            span: Span,
+                                                        },
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                StatementNode {
+                                                    kind: Return(
+                                                        Some(
+                                                            ExpressionNode {
+                                                                kind: Call {
+                                                                    func: ExpressionNode {
+                                                                        kind: Identifier(
+                                                                            "ok",
+                                                                        ),
+                                                                        span: Span,
+                                                                    },
+                                                                    args: [
+                                                                        ExpressionNode {
+                                                                            kind: Identifier(
+                                                                                "response",
+                                                                            ),
+                                                                            span: Span,
+                                                                        },
+                                                                    ],
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                            where_clause: None,
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "catch_all",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_err",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "print",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "catch-all route registration failed",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                            StatementNode {
+                                kind: Return(
+                                    None,
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "exact_request",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "net",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "HttpRequest",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "new",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "exact_request",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "method",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        String(
+                                            "GET",
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "exact_request",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "url",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        String(
+                                            "/users/me?ignored=true",
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "exact_response",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "router",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "handle",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Identifier(
+                                            "exact_request",
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "exact_response",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_err",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "print",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "exact route dispatch failed",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                            StatementNode {
+                                kind: Return(
+                                    None,
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Call {
+                                                                    func: ExpressionNode {
+                                                                        kind: FieldAccess {
+                                                                            expr: ExpressionNode {
+                                                                                kind: Identifier(
+                                                                                    "exact_response",
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                            field: "value",
+                                                                        },
+                                                                        span: Span,
+                                                                    },
+                                                                    args: [],
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            field: "body",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    field: "to_string",
+                                                },
+                                                span: Span,
+                                            },
+                                            args: [],
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "parameter_request",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "net",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "HttpRequest",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "new",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "parameter_request",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "method",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        String(
+                                            "GET",
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "parameter_request",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "url",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        String(
+                                            "/users/a%2Fb",
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "parameter_response",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "router",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "handle",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Identifier(
+                                            "parameter_request",
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "parameter_response",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_err",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "print",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "parameter route dispatch failed",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                            StatementNode {
+                                kind: Return(
+                                    None,
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Call {
+                                                                    func: ExpressionNode {
+                                                                        kind: FieldAccess {
+                                                                            expr: ExpressionNode {
+                                                                                kind: Identifier(
+                                                                                    "parameter_response",
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                            field: "value",
+                                                                        },
+                                                                        span: Span,
+                                                                    },
+                                                                    args: [],
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            field: "body",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    field: "to_string",
+                                                },
+                                                span: Span,
+                                            },
+                                            args: [],
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "catch_request",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "net",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "HttpRequest",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "new",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "catch_request",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "method",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        String(
+                                            "GET",
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "catch_request",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "url",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        String(
+                                            "/files/one%2Ftwo/three",
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "catch_response",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "router",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "handle",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Identifier(
+                                            "catch_request",
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "catch_response",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_err",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "print",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "catch-all route dispatch failed",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                            StatementNode {
+                                kind: Return(
+                                    None,
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Call {
+                                                                    func: ExpressionNode {
+                                                                        kind: FieldAccess {
+                                                                            expr: ExpressionNode {
+                                                                                kind: Identifier(
+                                                                                    "catch_response",
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                            field: "value",
+                                                                        },
+                                                                        span: Span,
+                                                                    },
+                                                                    args: [],
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            field: "body",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    field: "to_string",
+                                                },
+                                                span: Span,
+                                            },
+                                            args: [],
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "empty_request",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: FieldAccess {
+                                                expr: ExpressionNode {
+                                                    kind: Identifier(
+                                                        "net",
+                                                    ),
+                                                    span: Span,
+                                                },
+                                                field: "HttpRequest",
+                                            },
+                                            span: Span,
+                                        },
+                                        field: "new",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "empty_request",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "method",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        String(
+                                            "GET",
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Binary {
+                                left: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "empty_request",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "url",
+                                    },
+                                    span: Span,
+                                },
+                                op: Assign,
+                                op_span: Span,
+                                right: ExpressionNode {
+                                    kind: Literal(
+                                        String(
+                                            "/files",
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: AutoDecl(
+                        "empty_response",
+                        TypeNode {
+                            kind: Auto,
+                            span: Span,
+                        },
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "router",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "handle",
+                                    },
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Identifier(
+                                            "empty_request",
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: If {
+                        cond: ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: FieldAccess {
+                                        expr: ExpressionNode {
+                                            kind: Identifier(
+                                                "empty_response",
+                                            ),
+                                            span: Span,
+                                        },
+                                        field: "is_err",
+                                    },
+                                    span: Span,
+                                },
+                                args: [],
+                            },
+                            span: Span,
+                        },
+                        then_block: [
+                            StatementNode {
+                                kind: Expression(
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: Identifier(
+                                                    "print",
+                                                ),
+                                                span: Span,
+                                            },
+                                            args: [
+                                                ExpressionNode {
+                                                    kind: Literal(
+                                                        String(
+                                                            "empty catch-all dispatch failed",
+                                                        ),
+                                                    ),
+                                                    span: Span,
+                                                },
+                                            ],
+                                        },
+                                        span: Span,
+                                    },
+                                ),
+                                span: Span,
+                            },
+                            StatementNode {
+                                kind: Return(
+                                    None,
+                                ),
+                                span: Span,
+                            },
+                        ],
+                        else_block: None,
+                    },
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Call {
+                                            func: ExpressionNode {
+                                                kind: FieldAccess {
+                                                    expr: ExpressionNode {
+                                                        kind: FieldAccess {
+                                                            expr: ExpressionNode {
+                                                                kind: Call {
+                                                                    func: ExpressionNode {
+                                                                        kind: FieldAccess {
+                                                                            expr: ExpressionNode {
+                                                                                kind: Identifier(
+                                                                                    "empty_response",
+                                                                                ),
+                                                                                span: Span,
+                                                                            },
+                                                                            field: "value",
+                                                                        },
+                                                                        span: Span,
+                                                                    },
+                                                                    args: [],
+                                                                },
+                                                                span: Span,
+                                                            },
+                                                            field: "body",
+                                                        },
+                                                        span: Span,
+                                                    },
+                                                    field: "to_string",
+                                                },
+                                                span: Span,
+                                            },
+                                            args: [],
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        None,
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+]

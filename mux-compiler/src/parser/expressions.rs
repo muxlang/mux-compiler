@@ -1878,35 +1878,42 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Parser;
-    use crate::ast::ExpressionKind;
-    use crate::lexer::{ByteRange, Lexer};
-    use crate::source::Source;
+    use crate::ast::{AstNode, ExpressionKind, StatementKind};
+    use crate::syntax::parse_source;
+
+    fn parse_test_expression(expression: &str) -> (crate::ast::ExpressionNode, String) {
+        let source = format!("test \"parser expression\" {{\n{expression}\n}}");
+        let parsed = parse_source(&source);
+        let nodes = parsed
+            .lower()
+            .unwrap_or_else(|error| panic!("expression fixture should parse: {error:?}"));
+        let [AstNode::Test { body, .. }] = nodes.as_slice() else {
+            panic!("expected one lowered test block");
+        };
+        let Some(StatementKind::Expression(expression)) =
+            body.first().map(|statement| &statement.kind)
+        else {
+            panic!("expected one expression statement");
+        };
+        (expression.clone(), source)
+    }
 
     #[test]
     fn binary_operator_span_points_to_operator_token() {
-        let mut source = Source::from_string("1 + 2".to_owned());
-        let tokens = Lexer::new(&mut source).lex_all().expect("valid expression");
-        let mut parser = Parser::new(&tokens);
-        let expression = parser.parse_expression().expect("expression parses");
+        let (expression, source) = parse_test_expression("1 + 2");
 
-        assert!(matches!(
-            expression.kind,
-            ExpressionKind::Binary { op_span, .. }
-                if op_span.byte_range == Some(ByteRange::new(2, 3))
-        ));
+        let ExpressionKind::Binary { op_span, .. } = expression.kind else {
+            panic!("expected binary expression");
+        };
+        let operator_range = op_span
+            .byte_range
+            .expect("lowered operator has a byte range");
+        assert_eq!(&source[operator_range.start..operator_range.end], "+");
     }
 
     #[test]
     fn generic_target_keeps_all_qualified_field_segments() {
-        let mut source = Source::from_string("module.factory.Builder<int>(item)".to_owned());
-        let tokens = Lexer::new(&mut source)
-            .lex_all()
-            .expect("valid generic expression");
-        let mut parser = Parser::new(&tokens);
-        let expression = parser
-            .parse_expression()
-            .expect("qualified generic expression parses");
+        let (expression, _) = parse_test_expression("module.factory.Builder<int>(item)");
 
         assert!(matches!(
             &expression.kind,

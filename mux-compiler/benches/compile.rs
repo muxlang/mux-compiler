@@ -194,6 +194,33 @@ fn bench_syntax_parse(c: &mut Criterion) {
     group.finish();
 }
 
+// Compare both frontends from source text through compiler AST materialization.
+// The phase-only `parse` benchmark intentionally keeps pre-tokenized input;
+// this group includes lexing and parsing on both sides.
+fn bench_frontend_parse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("frontend_parse");
+    for prog in corpus() {
+        group.bench_with_input(
+            BenchmarkId::new("legacy_lex_parse", &prog.name),
+            prog,
+            |b, prog| b.iter(|| black_box(parse(black_box(&prog.src)))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("syntax_parse_lower", &prog.name),
+            prog,
+            |b, prog| {
+                b.iter(|| {
+                    let parsed = mux_lang::syntax::parse_source(black_box(&prog.src));
+                    parsed
+                        .lower()
+                        .unwrap_or_else(|_| panic!("corpus program should syntax-parse and lower"))
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 fn bench_syntax_parse_lower(c: &mut Criterion) {
     let mut group = c.benchmark_group("syntax_parse_lower");
     for prog in corpus() {
@@ -287,6 +314,7 @@ criterion_group!(
     name = benches;
     config = configured();
     targets = bench_lex, bench_parse, bench_legacy_frontend, bench_syntax_parse,
+        bench_frontend_parse,
         bench_syntax_parse_lower, bench_semantics, bench_codegen, bench_pipeline
 );
 criterion_main!(benches);

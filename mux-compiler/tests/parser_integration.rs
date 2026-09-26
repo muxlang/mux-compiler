@@ -1,7 +1,4 @@
 use insta::assert_debug_snapshot;
-use mux_lang::lexer::Lexer;
-use mux_lang::parser::Parser;
-use mux_lang::source::Source;
 use mux_lang::syntax;
 use std::fmt::Write as _;
 use std::fs;
@@ -147,7 +144,7 @@ fn test_parse_all_mux_files_in_dir() {
 }
 
 #[test]
-fn syntax_frontend_lowering_matches_compatibility_parser_corpus() {
+fn syntax_frontend_lowering_matches_legacy_ast_baselines() {
     let fixture_dir = std::env::var_os("MUX_TEST_SCRIPTS_DIR").map_or_else(
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_scripts"),
         PathBuf::from,
@@ -162,13 +159,10 @@ fn syntax_frontend_lowering_matches_compatibility_parser_corpus() {
     for path in files {
         let source_text = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
-        let mut source = Source::from_string(source_text.clone());
-        let tokens = Lexer::new(&mut source)
-            .lex_all()
-            .unwrap_or_else(|error| panic!("legacy lexer failed on {}: {error}", path.display()));
-        let legacy = Parser::new(&tokens).parse().unwrap_or_else(|(_, errors)| {
-            panic!("legacy parser failed on {}: {errors:#?}", path.display())
-        });
+        let fixture_name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("fixture path has a UTF-8 file stem");
 
         let parsed = syntax::parse_source(&source_text);
         assert!(
@@ -183,12 +177,11 @@ fn syntax_frontend_lowering_matches_compatibility_parser_corpus() {
                 path.display()
             )
         });
-
-        assert_eq!(
-            ast_without_spans(&lowered),
-            ast_without_spans(&legacy),
-            "syntax-to-AST lowering differs from the compatibility parser for {}",
-            path.display()
-        );
+        insta::with_settings!({ omit_expression => true }, {
+            insta::assert_snapshot!(
+                format!("legacy_ast_{fixture_name}"),
+                ast_without_spans(&lowered)
+            );
+        });
     }
 }

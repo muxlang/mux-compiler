@@ -1,0 +1,135 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Test {
+        name: "ignored during normal builds",
+        body: [
+            StatementNode {
+                kind: Expression(
+                    ExpressionNode {
+                        kind: Call {
+                            func: ExpressionNode {
+                                kind: Identifier(
+                                    "print",
+                                ),
+                                span: Span,
+                            },
+                            args: [
+                                ExpressionNode {
+                                    kind: Literal(
+                                        String(
+                                            "this must not run",
+                                        ),
+                                    ),
+                                    span: Span,
+                                },
+                            ],
+                        },
+                        span: Span,
+                    },
+                ),
+                span: Span,
+            },
+        ],
+        span: Span,
+    },
+    Test {
+        name: "nested test statements execute",
+        body: [
+            StatementNode {
+                kind: If {
+                    cond: ExpressionNode {
+                        kind: Literal(
+                            Boolean(
+                                true,
+                            ),
+                        ),
+                        span: Span,
+                    },
+                    then_block: [
+                        StatementNode {
+                            kind: Expression(
+                                ExpressionNode {
+                                    kind: Call {
+                                        func: ExpressionNode {
+                                            kind: Identifier(
+                                                "print",
+                                            ),
+                                            span: Span,
+                                        },
+                                        args: [
+                                            ExpressionNode {
+                                                kind: Literal(
+                                                    String(
+                                                        "nested test body",
+                                                    ),
+                                                ),
+                                                span: Span,
+                                            },
+                                        ],
+                                    },
+                                    span: Span,
+                                },
+                            ),
+                            span: Span,
+                        },
+                    ],
+                    else_block: None,
+                },
+                span: Span,
+            },
+        ],
+        span: Span,
+    },
+    Function(
+        FunctionNode {
+            name: "main",
+            type_params: [],
+            params: [],
+            return_type: TypeNode {
+                kind: Primitive(
+                    Void,
+                ),
+                span: Span,
+            },
+            body: [
+                StatementNode {
+                    kind: Expression(
+                        ExpressionNode {
+                            kind: Call {
+                                func: ExpressionNode {
+                                    kind: Identifier(
+                                        "print",
+                                    ),
+                                    span: Span,
+                                },
+                                args: [
+                                    ExpressionNode {
+                                        kind: Literal(
+                                            String(
+                                                "normal main",
+                                            ),
+                                        ),
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            span: Span,
+                        },
+                    ),
+                    span: Span,
+                },
+                StatementNode {
+                    kind: Return(
+                        None,
+                    ),
+                    span: Span,
+                },
+            ],
+            span: Span,
+            is_common: false,
+            where_clause: None,
+        },
+    ),
+]

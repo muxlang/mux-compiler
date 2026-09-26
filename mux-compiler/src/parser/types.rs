@@ -506,21 +506,18 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Parser;
-    use crate::ast::{PrimitiveType, TypeKind};
-    use crate::lexer::Lexer;
-    use crate::source::Source;
+    use crate::ast::{AstNode, PrimitiveType, TypeKind};
+    use crate::syntax::parse_source;
 
     fn parse_type(source: &str) -> Result<TypeKind, String> {
-        let mut source = Source::from_test_str(source);
-        let tokens = Lexer::new(&mut source)
-            .lex_all()
-            .map_err(|error| format!("type fixture should lex: {error:?}"))?;
-        let mut parser = Parser::new(&tokens);
-        parser
-            .parse_type()
-            .map(|node| node.kind)
-            .map_err(|error| format!("type fixture should parse: {error:?}"))
+        let parsed = parse_source(&format!("func parser_type() returns {source} {{}}"));
+        let nodes = parsed
+            .lower()
+            .map_err(|error| format!("type fixture should parse: {error:?}"))?;
+        let [AstNode::Function(function)] = nodes.as_slice() else {
+            return Err("expected one lowered function".to_owned());
+        };
+        Ok(function.return_type.kind.clone())
     }
 
     #[test]

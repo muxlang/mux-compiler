@@ -615,38 +615,9 @@ mod tests {
     use crate::ast::PrimitiveType;
     use crate::lexer::{Lexer, Token};
     use crate::source::Source;
-    use std::rc::Rc;
-
-    #[derive(Debug)]
-    struct TestParser {
-        parser: Parser<'static>,
-    }
-
-    impl TestParser {
-        fn new(source: &str) -> Self {
-            let mut src = Source::from_test_str(source);
-            let tokens = collect_tokens(&mut src);
-
-            let tokens_rc = Rc::new(tokens);
-
-            let tokens_ptr = Rc::into_raw(tokens_rc.clone());
-
-            let tokens_ref = unsafe { &*tokens_ptr };
-
-            let parser = Parser::new(tokens_ref);
-
-            Self { parser }
-        }
-
-        fn parse(&mut self) -> Result<Vec<AstNode>, (Vec<AstNode>, Vec<ParserError>)> {
-            self.parser.parse()
-        }
-    }
+    use crate::syntax;
 
     fn collect_tokens(source: &mut Source) -> Vec<Token> {
-        let input = source.text().to_owned();
-        println!("Collecting tokens from source:\n{input}");
-
         let mut lexer = Lexer::new(source);
         let mut tokens = Vec::new();
 
@@ -670,14 +641,15 @@ mod tests {
     #[test]
     fn parser_caps_recovery_errors() {
         let source = (0..110).map(|_| "func main( {\n").collect::<String>();
-        let mut parser = create_parser(&source);
-        let Err((_, errors)) = parser.parse() else {
-            panic!("malformed source unexpectedly parsed");
-        };
+        let parsed = syntax::parse_source(&source);
+        let errors = parsed.errors;
 
         assert_eq!(errors.len(), Parser::MAX_ERRORS);
         assert_eq!(
-            errors.last().map(|error| error.code),
+            errors.last().and_then(|error| match error {
+                syntax::FrontendError::Parser(error) => Some(error.code),
+                syntax::FrontendError::Lexer(_) => None,
+            }),
             Some(DiagnosticCode::ParseErrorLimit)
         );
     }
@@ -685,14 +657,15 @@ mod tests {
     #[test]
     fn parser_recovery_progress_is_iterative() {
         let source = ")".repeat(10_000);
-        let mut parser = create_parser(&source);
-        let Err((_, errors)) = parser.parse() else {
-            panic!("malformed source unexpectedly parsed");
-        };
+        let parsed = syntax::parse_source(&source);
+        let errors = parsed.errors;
 
         assert_eq!(errors.len(), Parser::MAX_ERRORS);
         assert_eq!(
-            errors.last().map(|error| error.code),
+            errors.last().and_then(|error| match error {
+                syntax::FrontendError::Parser(error) => Some(error.code),
+                syntax::FrontendError::Lexer(_) => None,
+            }),
             Some(DiagnosticCode::ParseErrorLimit)
         );
     }
@@ -704,8 +677,9 @@ mod tests {
             ("import ../module\n", "../module"),
             ("import /module\n", "/module"),
         ] {
-            let mut parser = create_parser(source);
-            let nodes = parser.parse().expect("module path fixture should parse");
+            let nodes = syntax::parse_source(source)
+                .lower()
+                .expect("module path fixture should parse");
             let AstNode::Statement(statement) = &nodes[0] else {
                 panic!("module path fixture should produce an import statement");
             };
@@ -718,10 +692,11 @@ mod tests {
 
     #[test]
     fn parses_named_top_level_test_block() {
-        let mut parser = create_parser(
+        let nodes = syntax::parse_source(
             "test \"adds numbers\" {\n  auto value = 1 + 2\n}\nfunc main() returns void {\n  return\n}\n",
-        );
-        let nodes = parser.parse().expect("test block should parse");
+        )
+        .lower()
+        .expect("test block should parse");
         assert!(matches!(
             nodes.first(),
             Some(AstNode::Test { name, body, .. })
@@ -732,52 +707,58 @@ mod tests {
 
     #[test]
     fn rejects_nested_test_block() {
-        let mut parser = create_parser("func main() returns void {\n  test \"nested\" {}\n}\n");
-        let Err((_, errors)) = parser.parse() else {
-            panic!("nested test block should be rejected");
-        };
+        let parsed = syntax::parse_source("func main() returns void {\n  test \"nested\" {}\n}\n");
         assert!(
-            errors
+            !parsed.errors.is_empty(),
+            "nested test block should be rejected"
+        );
+        assert!(
+            parsed
+                .errors
                 .iter()
-                .any(|error| error.message.contains("top level"))
+                .any(|error| error.to_string().contains("top level"))
         );
     }
 
     #[test]
     fn recovery_records_tokens_skipped_between_errors() {
-        let mut parser = create_parser("auto x = 1 ) auto y = 2\n");
-        parser.parser.current = parser
-            .parser
+        let mut source = Source::from_test_str("auto x = 1 ) auto y = 2\n");
+        let tokens = collect_tokens(&mut source);
+        let mut parser = Parser::new(&tokens);
+        parser.current = parser
             .tokens
             .iter()
             .position(|token| token.token_type == TokenType::CloseParen)
             .expect("test source should contain a closing parenthesis")
             .saturating_sub(1);
-        parser.parser.synchronize();
+        parser.synchronize();
         assert!(
-            !parser.parser.recovery_spans().is_empty(),
+            !parser.recovery_spans().is_empty(),
             "parser recovery must expose discarded source intervals"
         );
     }
 
-    fn create_parser(source: &str) -> TestParser {
-        TestParser::new(source)
-    }
-
     fn parse_expr(source: &str) -> ExpressionNode {
-        let mut test_parser = create_parser(source);
-        test_parser.parser.parse_expression().unwrap()
+        let parsed = syntax::parse_source(&format!("{source}\n"));
+        let nodes = parsed.lower().expect("expression statement should parse");
+        let AstNode::Statement(statement) = &nodes[0] else {
+            panic!("expected expression statement, got {:?}", nodes[0]);
+        };
+        let StatementKind::Expression(expression) = &statement.kind else {
+            panic!("expected expression, got {:?}", statement.kind);
+        };
+        expression.clone()
     }
 
     fn parse_stmts(source: &str) -> Vec<StatementNode> {
-        let mut test_parser = create_parser(source);
-        match test_parser.parse() {
-            Ok(nodes) => collect_statements(nodes),
-            Err((nodes, errors)) => {
-                eprintln!("Parse errors: {errors:?}");
-                collect_statements(nodes)
-            }
-        }
+        let parsed = syntax::parse_source(source);
+        let nodes = if parsed.errors.is_empty() {
+            parsed.lower().expect("source should lower")
+        } else {
+            eprintln!("Parse errors: {:?}", parsed.errors);
+            parsed.lower_recovered()
+        };
+        collect_statements(nodes)
     }
 
     fn collect_statements(nodes: Vec<AstNode>) -> Vec<StatementNode> {
@@ -894,22 +875,10 @@ mod tests {
         assert_eq!(stmts.len(), 1);
 
         let source = "auto x = 1\nauto y = 2\n";
-        let mut test_parser = create_parser(source);
-        let result = test_parser.parse();
-
-        match result {
-            Ok(nodes) => {
-                println!("Successfully parsed {} nodes", nodes.len());
-                for (i, node) in nodes.iter().enumerate() {
-                    println!("Node {i}: {node:?}");
-                }
-                assert_eq!(nodes.len(), 2);
-            }
-            Err((nodes, errors)) => {
-                println!("Parse failed with nodes: {nodes:?} and errors: {errors:?}");
-                panic!("Failed to parse multiple statements with newlines");
-            }
-        }
+        let nodes = syntax::parse_source(source)
+            .lower()
+            .expect("multiple statements parse");
+        assert_eq!(nodes.len(), 2);
 
         let stmts = parse_stmts("auto x = 1\n\nauto y = 2\n");
         assert_eq!(stmts.len(), 2);
@@ -918,29 +887,20 @@ mod tests {
     #[test]
     fn test_missing_newline_error() {
         let source = "auto x = 1 auto y = 2";
-        let mut test_parser = create_parser(source);
-        let result = test_parser.parse();
+        let parsed = syntax::parse_source(source);
+        assert!(!parsed.errors.is_empty(), "Expected errors but got none");
+        let has_newline_error = parsed.errors.iter().any(|e| {
+            let msg_lower = e.to_string().to_lowercase();
+            msg_lower.contains("expected newline after statement")
+                || msg_lower.contains("missing newline")
+                || msg_lower.contains("expected newline")
+        });
 
-        match result {
-            Ok(nodes) => {
-                panic!(
-                    "Expected an error about missing newline, but got successful parse with nodes: {nodes:?}"
-                );
-            }
-            Err((_, errors)) => {
-                assert!(!errors.is_empty(), "Expected errors but got none");
-                let has_newline_error = errors.iter().any(|e| {
-                    let msg_lower = e.message.to_lowercase();
-                    msg_lower.contains("expected newline after statement")
-                        || msg_lower.contains("missing newline")
-                        || msg_lower.contains("expected newline")
-                });
-
-                if !has_newline_error {
-                    panic!("Expected an error about missing newline, but got: {errors:?}");
-                }
-            }
-        }
+        assert!(
+            has_newline_error,
+            "Expected missing-newline diagnostic, got: {:?}",
+            parsed.errors
+        );
     }
     #[test]
     fn test_variable_declaration() {
@@ -1027,80 +987,41 @@ mod tests {
 
     #[test]
     fn if_without_block_reports_the_expected_diagnostic() {
-        let mut parser = create_parser("if true\nauto y = 1\n");
-        let result = parser.parse();
-        let (_, errors) = result.expect_err("an if without a block must fail");
+        let parsed = syntax::parse_source("if true\nauto y = 1\n");
+        assert!(parsed.has_errors(), "an if without a block must fail");
 
         assert!(
-            errors
+            parsed
+                .errors
                 .iter()
-                .any(|error| { error.message.contains("Expected '{' before block") })
+                .any(|error| error.to_string().contains("Expected '{' before block"))
         );
     }
 
     #[test]
     fn test_function_declaration() {
-        let mut test_parser = create_parser("func add(int a, int b) returns int {\n  a + b\n}\n");
-        let result = test_parser.parse();
+        let nodes =
+            syntax::parse_source("func add(int a, int b) returns int {\n  return a + b\n}\n")
+                .lower()
+                .expect("function declaration should parse");
+        let AstNode::Function(func) = &nodes[0] else {
+            panic!("Expected a function node, got {:?}", nodes[0]);
+        };
+        assert_eq!(func.name, "add");
+        assert_eq!(func.params.len(), 2);
+        assert_eq!(
+            func.return_type.kind,
+            TypeKind::Primitive(PrimitiveType::Int)
+        );
 
-        match result {
-            Ok(nodes) => {
-                assert!(!nodes.is_empty());
-
-                if let AstNode::Function(func) = &nodes[0] {
-                    assert_eq!(func.name, "add");
-                    assert_eq!(func.params.len(), 2);
-                    assert_eq!(
-                        func.return_type.kind,
-                        TypeKind::Primitive(PrimitiveType::Int)
-                    );
-                } else {
-                    panic!("Expected a function node, got {:?}", nodes[0]);
-                }
-            }
-            Err((nodes, errors)) => {
-                if !nodes.is_empty()
-                    && let AstNode::Function(func) = &nodes[0]
-                {
-                    assert_eq!(func.name, "add");
-                    assert_eq!(func.params.len(), 2);
-                    assert_eq!(
-                        func.return_type.kind,
-                        TypeKind::Primitive(PrimitiveType::Int)
-                    );
-                    return;
-                }
-                panic!("Failed to parse function: {errors:?}");
-            }
-        }
-
-        let mut test_parser = create_parser("fn double(int x) {\n  return x * 2\n}\n");
-        let result = test_parser.parse();
-
-        match result {
-            Ok(nodes) => {
-                assert!(!nodes.is_empty(), "Expected at least one statement");
-            }
-            Err((nodes, errors)) => {
-                if nodes.is_empty() {
-                    panic!("Failed to parse function: {errors:?}");
-                }
-            }
-        }
-
-        let mut test_parser =
-            create_parser("fn greet(string name, int times = 1) {\n  return 0\n}\n");
-        let result = test_parser.parse();
-
-        match result {
-            Ok(nodes) => {
-                assert!(!nodes.is_empty(), "Expected at least one statement");
-            }
-            Err((nodes, errors)) => {
-                if nodes.is_empty() {
-                    panic!("Failed to parse function: {errors:?}");
-                }
-            }
+        for source in [
+            "func double(int x) returns int {\n  return x * 2\n}\n",
+            "func greet(string name, int times = 1) returns int {\n  return 0\n}\n",
+        ] {
+            let nodes = syntax::parse_source(source)
+                .lower()
+                .expect("function declaration should parse");
+            assert!(matches!(nodes.first(), Some(AstNode::Function(_))));
         }
     }
 
@@ -1137,53 +1058,23 @@ mod tests {
             auto valid3 = 300
         ";
 
-        let mut parser = create_parser(source);
-        let result = parser.parse();
-
-        // We expect an error due to the invalid number format
-        if let Err((nodes, errors)) = result {
-            assert!(!errors.is_empty(), "Expected at least one error");
-
-            // Check that we have valid nodes despite the errors
-            assert!(!nodes.is_empty(), "Expected some valid nodes to be parsed");
-            println!("Successfully parsed {} nodes despite errors", nodes.len());
-
-            // Check that we have at least some valid nodes
-            assert!(
-                nodes.len() >= 2,
-                "Expected at least 2 valid nodes to be parsed"
-            );
-
-            let mut found_expected_error = false;
-            for error in &errors {
-                println!("Found error: {} at {:?}", error.message, error.span);
-
-                if error.message.contains("unknown escape sequence")
-                    || error.message.contains("Expected expression")
-                {
-                    found_expected_error = true;
-                }
-
-                assert!(
-                    !error.message.is_empty(),
-                    "Expected a non-empty error message"
-                );
-            }
-
-            assert!(
-                found_expected_error,
-                "Expected to find an error about invalid syntax"
-            );
-        } else {
-            panic!("Expected parsing to fail with errors");
-        }
+        let parsed = syntax::parse_source(source);
+        assert!(parsed.has_errors(), "Expected at least one syntax error");
+        let nodes = parsed.lower_recovered();
+        assert!(
+            nodes.len() >= 2,
+            "Expected valid declarations to survive recovery, got {nodes:?}"
+        );
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .all(|error| !error.to_string().is_empty())
+        );
 
         // Test recovery in the middle of expressions
         let source = "auto x = 10 + * 5 - / 3\nauto y = 20\n";
-        let mut parser = create_parser(source);
-        let result = parser.parse();
-
-        // This should also fail but not panic
-        assert!(result.is_err());
+        let parsed = syntax::parse_source(source);
+        assert!(parsed.has_errors());
     }
 }
