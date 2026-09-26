@@ -1501,8 +1501,10 @@ impl SyntaxTree {
                 ..
             } => {
                 let token = self.token_for_range(*variable)?;
-                let TokenType::Id(variable) = token.kind() else {
-                    return Err(SyntaxLowerError::MissingToken(*variable));
+                let variable = match token.kind() {
+                    TokenType::Id(variable) => variable.clone(),
+                    TokenType::Underscore => "_".to_owned(),
+                    _ => return Err(SyntaxLowerError::MissingToken(*variable)),
                 };
                 let body_statement = self.lower_statement_at(*body)?;
                 let body = if *body_is_block {
@@ -1514,7 +1516,7 @@ impl SyntaxTree {
                     vec![body_statement]
                 };
                 StatementKind::For {
-                    var: variable.clone(),
+                    var: variable,
                     var_type: self.lower_type_at(*variable_type)?,
                     iter: self.lower_expression_at(*iterator)?,
                     body,
@@ -3237,6 +3239,14 @@ mod tests {
         });
         assert!(matches!(for_single.kind, StatementKind::For { body, .. }
             if matches!(body.as_slice(), [StatementNode { kind: StatementKind::Return(Some(_)), .. }])));
+    }
+
+    #[test]
+    fn for_loop_wildcard_binding_lowers_to_underscore_name() {
+        let statement = lower_statement_data("for int _ in range(0, 6) {}", |data| {
+            matches!(data, SyntaxData::ForStatement { .. })
+        });
+        assert!(matches!(statement.kind, StatementKind::For { var, .. } if var == "_"));
     }
 
     #[test]
