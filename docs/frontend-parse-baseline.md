@@ -26,7 +26,19 @@ remaining syntax path with:
 
 The measurements below use Criterion's median estimate from the optimized
 profile. The corpus contained 171 compiling programs; each filtered run measured
-three fixtures.
+three fixtures. A parse-only run after cutover separates lossless lexing and
+syntax parsing from AST lowering:
+
+| Fixture | Syntax parse only | Syntax parse + AST lowering |
+| --- | ---: | ---: |
+| `arithmetic` | 57.107 µs | 78.352 µs |
+| `collections` | 981.41 µs | 1.2928 ms |
+| `enums_classes` | 283.43 µs | 377.42 µs |
+
+The parse-only phase includes lossless lexing and recording syntax events and
+facts. The remaining time in the second column includes lowering; subtracting
+the independently measured medians gives a rough estimate, not a separately
+measured lowering benchmark.
 
 | Fixture | Legacy parser (`60f5254`) | Early syntax path (`60f5254`) | Syntax path after AST cutover | Current / legacy |
 | --- | ---: | ---: | ---: | ---: |
