@@ -104,8 +104,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn syntax_events(&self) -> &[SyntaxNodeEvent] {
-        &self.syntax_events
+    pub(crate) fn take_syntax_events(&mut self) -> Vec<SyntaxNodeEvent> {
+        std::mem::take(&mut self.syntax_events)
     }
 
     fn checkpoint(&self) -> ParserCheckpoint {

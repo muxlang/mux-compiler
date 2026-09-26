@@ -616,13 +616,13 @@ pub fn parse_source(input: &str) -> ParseOutput {
         Ok(()) => Vec::new(),
         Err(errors) => errors,
     };
-    let syntax_events = parser.syntax_events().to_vec();
+    let syntax_events = parser.take_syntax_events();
     let recovery_spans = parser.recovery_spans().to_vec();
     drop(parser);
     let mut errors: Vec<_> = lexed.errors.into_iter().map(FrontendError::Lexer).collect();
     errors.extend(parser_errors.into_iter().map(FrontendError::Parser));
     ParseOutput {
-        tree: SyntaxTree::new(tree_source, lexed.tokens, &syntax_events),
+        tree: SyntaxTree::new(tree_source, lexed.tokens, syntax_events),
         errors,
         recovery_spans,
     }
@@ -668,7 +668,7 @@ impl SyntaxTree {
     pub(crate) fn new(
         source: Arc<SourceText>,
         tokens: Vec<Token>,
-        events: &[SyntaxNodeEvent],
+        events: impl Into<Vec<SyntaxNodeEvent>>,
     ) -> Self {
         let text = source.text();
         for token in &tokens {
@@ -689,7 +689,7 @@ impl SyntaxTree {
             .map(|token| SyntaxToken { token })
             .collect();
         let root_range = ByteRange::new(0, text.len());
-        let root = build_tree(root_range, &tokens, events);
+        let root = build_tree(root_range, &tokens, events.into());
         Self {
             source,
             tokens,
@@ -2399,7 +2399,7 @@ enum PendingElement {
 fn build_tree(
     root_range: ByteRange,
     tokens: &[SyntaxToken],
-    events: &[SyntaxNodeEvent],
+    mut events: Vec<SyntaxNodeEvent>,
 ) -> SyntaxNode {
     let mut markers = Vec::with_capacity(events.len() * 2 + tokens.len());
     for (index, event) in events.iter().enumerate() {
@@ -2452,12 +2452,15 @@ fn build_tree(
     for (_, _, _, marker) in markers {
         match marker {
             TreeMarker::Open(event_index) => {
-                let event = &events[event_index];
+                let (kind, range) = {
+                    let event = &events[event_index];
+                    (event.kind, event.range)
+                };
                 // A malformed overlapping annotation is retained under the
                 // smallest active node that contains it. The grammar should
                 // normally emit properly nested ranges.
                 while stack.len() > 1
-                    && event.range.end > nodes[*stack.last().expect("root remains")].range.end
+                    && range.end > nodes[*stack.last().expect("root remains")].range.end
                 {
                     let popped = stack.pop().expect("non-root stack node");
                     if let Some(open_event) = nodes[popped].event_index {
@@ -2465,11 +2468,12 @@ fn build_tree(
                     }
                 }
                 let node_index = nodes.len();
+                let data = events[event_index].data.take();
                 nodes.push(PendingNode {
-                    kind: event.kind,
-                    range: event.range,
+                    kind,
+                    range,
                     event_index: Some(event_index),
-                    data: event.data.clone(),
+                    data,
                     children: Vec::new(),
                 });
                 nodes[*stack.last().expect("root remains")]
@@ -2509,25 +2513,28 @@ fn build_tree(
 
     // Building the public tree recursively from the node arena preserves event
     // nesting while making token traversal linear in the output size.
-    fn finish(index: usize, nodes: &[PendingNode]) -> SyntaxNode {
-        let children = nodes[index]
-            .children
-            .iter()
+    fn finish(index: usize, nodes: &mut [PendingNode]) -> SyntaxNode {
+        let kind = nodes[index].kind;
+        let range = nodes[index].range;
+        let data = nodes[index].data.take();
+        let pending_children = std::mem::take(&mut nodes[index].children);
+        let children = pending_children
+            .into_iter()
             .map(|child| match child {
                 PendingElement::Node(child_index) => {
-                    SyntaxElement::Node(Box::new(finish(*child_index, nodes)))
+                    SyntaxElement::Node(Box::new(finish(child_index, nodes)))
                 }
-                PendingElement::Token(token_index) => SyntaxElement::Token(*token_index),
+                PendingElement::Token(token_index) => SyntaxElement::Token(token_index),
             })
             .collect();
         SyntaxNode {
-            kind: nodes[index].kind,
-            range: nodes[index].range,
-            data: nodes[index].data.clone(),
+            kind,
+            range,
+            data,
             children,
         }
     }
-    finish(0, &nodes)
+    finish(0, &mut nodes)
 }
 
 #[cfg(test)]

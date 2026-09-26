@@ -20,35 +20,34 @@ remaining syntax path with:
 
 ```sh
 ./scripts/dev-cargo.sh bench --bench compile -- \
+  'syntax_parse/(arithmetic|collections|enums_classes)' \
+  --sample-size 30 --warm-up-time 1 --measurement-time 2
+./scripts/dev-cargo.sh bench --bench compile -- \
   'syntax_parse_lower/(arithmetic|collections|enums_classes)' \
   --sample-size 30 --warm-up-time 1 --measurement-time 2
 ```
 
 The measurements below use Criterion's median estimate from the optimized
 profile. The corpus contained 171 compiling programs; each filtered run measured
-three fixtures. A parse-only run after cutover separates lossless lexing and
-syntax parsing from AST lowering:
+three fixtures. Syntax-only timing includes lossless lexing and recording syntax
+events and facts.
 
-| Fixture | Lossless lex + syntax parse | Lossless lex + syntax parse + AST lowering |
-| --- | ---: | ---: |
-| `arithmetic` | 57.107 µs | 78.352 µs |
-| `collections` | 981.41 µs | 1.2928 ms |
-| `enums_classes` | 283.43 µs | 377.42 µs |
+| Fixture | Before moving syntax events | After moving syntax events | Change |
+| --- | ---: | ---: | ---: |
+| `arithmetic` | 57.107 µs | 51.904 µs | -9.1% |
+| `collections` | 981.41 µs | 821.21 µs | -16.3% |
+| `enums_classes` | 283.43 µs | 211.95 µs | -25.2% |
 
-The parse-only phase includes lossless lexing and recording syntax events and
-facts. The remaining time in the second column includes lowering; subtracting
-the independently measured medians gives a rough estimate, not a separately
-measured lowering benchmark.
+| Fixture | Legacy parser (`60f5254`) | Early syntax path (`60f5254`) | Before move | Current | Current / legacy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `arithmetic` | 25.964 µs | 82.945 µs | 78.352 µs | 69.238 µs | 2.67× |
+| `collections` | 409.61 µs | 1.1645 ms | 1.2928 ms | 1.1500 ms | 2.81× |
+| `enums_classes` | 123.54 µs | 368.04 µs | 377.42 µs | 320.34 µs | 2.59× |
 
-| Fixture | Legacy parser (`60f5254`) | Early syntax path (`60f5254`) | Syntax path after AST cutover | Current / legacy |
-| --- | ---: | ---: | ---: | ---: |
-| `arithmetic` | 25.964 µs | 82.945 µs | 78.352 µs | 3.02× |
-| `collections` | 409.61 µs | 1.1645 ms | 1.2928 ms | 3.16× |
-| `enums_classes` | 123.54 µs | 368.04 µs | 377.42 µs | 3.06× |
-
-The syntax frontend remains about three times as slow on these examples as the
-former AST parser. Removing parser-side AST construction improved the arithmetic
-fixture by about 6%; collections regressed by about 11%, and enums/classes by
-about 3% against the early syntax path. This is a focused parser comparison,
-not an end-to-end compile measurement. Peak memory was not measured, and the
-collections regression still needs investigation.
+Moving syntax events and typed facts through the tree builder instead of cloning
+them improved both syntax-only and parse-plus-lowering times. The earlier
+collections regression is resolved: the current parse-plus-lower median is
+within 2% of the early syntax-path result. The current path remains about
+2.6–2.8 times slower than the former AST parser on these examples. This is a
+focused parser comparison, not an end-to-end compile measurement. Peak memory
+was not measured.
