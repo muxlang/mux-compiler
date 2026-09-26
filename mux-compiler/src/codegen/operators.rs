@@ -567,7 +567,7 @@ impl<'a> CodeGenerator<'a> {
             .map(|(name, (_, _, ty))| {
                 (
                     name.clone(),
-                    SemanticAnalyzer::local_symbol(Span::new(0, 0), ty.clone()),
+                    SemanticAnalyzer::local_symbol(Span::default(), ty.clone()),
                 )
             })
             .collect();

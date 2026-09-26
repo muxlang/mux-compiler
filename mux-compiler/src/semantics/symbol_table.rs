@@ -111,7 +111,7 @@ impl SymbolTable {
                 code: DiagnosticCode::InternalCompiler,
                 message: "Cannot pop the global scope".into(),
                 help: None,
-                span: Box::new(Span::new(0, 0)), // Internal error, no user span available
+                span: Box::new(Span::default()), // Internal error, no user span available
                 file_id: None,
                 span_edits: None,
             });
@@ -135,7 +135,7 @@ impl SymbolTable {
                 code: DiagnosticCode::InternalCompiler,
                 message: "No active scope".into(),
                 help: None,
-                span: Box::new(Span::new(0, 0)), // Internal error, no user span available
+                span: Box::new(Span::default()), // Internal error, no user span available
                 file_id: None,
                 span_edits: None,
             });

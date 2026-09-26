@@ -36,17 +36,13 @@ pub trait SpanExt {
 
 impl SpanExt for Span {
     fn combine(&self, other: &Span) -> Span {
-        let mut span = *self;
-        if let (Some(end_row), Some(end_col)) = (other.row_end, other.col_end) {
-            span.complete(end_row, end_col);
-        }
-        span.byte_range = match (self.byte_range, other.byte_range) {
+        let byte_range = match (self.byte_range, other.byte_range) {
             (Some(start), Some(end)) => Some(crate::lexer::ByteRange {
                 start: start.start,
                 end: end.end,
             }),
             _ => None,
         };
-        span
+        Span { byte_range }
     }
 }

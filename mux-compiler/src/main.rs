@@ -3283,13 +3283,7 @@ mod tests {
         let diagnostic = Diagnostic::new(DiagnosticCode::RedundantConstruct)
             .with_file_id(file_id)
             .with_span_edit(SpanEdit::machine_applicable_text(
-                Span {
-                    byte_range: Some(crate::lexer::ByteRange::new(1, 2)),
-                    row_start: 1,
-                    row_end: Some(1),
-                    col_start: 2,
-                    col_end: Some(3),
-                },
+                Span::new(1, 2),
                 "X",
                 DiagnosticCode::RedundantConstruct,
             ));

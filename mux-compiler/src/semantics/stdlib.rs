@@ -5492,7 +5492,7 @@ mod tests {
 
     #[test]
     fn representable_interfaces_pin_the_explicit_method_contracts() {
-        let span = Span::new(1, 1);
+        let span = Span::default();
         let json = json_representable_interface_symbol(span);
         let csv = csv_representable_interface_symbol(span);
 
@@ -5521,7 +5521,7 @@ mod tests {
 
     #[test]
     fn io_error_contract_is_shared_by_io_network_and_tls_modules() {
-        let span = Span::new(1, 1);
+        let span = Span::default();
         let modules = [
             io_module_class_symbols(span),
             net_module_class_symbols(span),
@@ -5545,7 +5545,7 @@ mod tests {
 
     #[test]
     fn http_router_oauth_oidc_pins_the_runtime_call_contract() {
-        let span = Span::new(1, 1);
+        let span = Span::default();
         for symbols in [
             net_module_class_symbols(span),
             http_module_class_symbols(span),
@@ -5568,7 +5568,7 @@ mod tests {
 
     #[test]
     fn oauth_client_pins_explicit_discovery_and_token_methods() {
-        let symbols = http_module_class_symbols(Span::new(1, 1));
+        let symbols = http_module_class_symbols(Span::default());
         let client = symbols
             .get("OAuthClient")
             .expect("HTTP modules must expose OAuthClient");
@@ -5613,7 +5613,7 @@ mod tests {
 
     #[test]
     fn result_set_operations_return_typed_sql_errors() {
-        let symbols = sql_module_class_symbols(Span::new(1, 1));
+        let symbols = sql_module_class_symbols(Span::default());
         let result_set = symbols
             .get("ResultSet")
             .expect("SQL module must expose ResultSet");

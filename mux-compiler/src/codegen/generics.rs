@@ -869,7 +869,7 @@ impl<'a> CodeGenerator<'a> {
                 kind: TypeKind::List(Box::new(
                     self.substitute_types_in_type_node(inner, type_map),
                 )),
-                span: Span::new(0, 0),
+                span: Span::default(),
             },
             TypeKind::Function { params, returns } => {
                 let substituted_params = params
@@ -882,7 +882,7 @@ impl<'a> CodeGenerator<'a> {
                         params: substituted_params,
                         returns: Box::new(substituted_returns),
                     },
-                    span: Span::new(0, 0),
+                    span: Span::default(),
                 }
             }
             // for other types, return as-is (they don't contain generic parameters)

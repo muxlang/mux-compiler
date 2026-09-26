@@ -1,6 +1,6 @@
-//! Source location tracking for tokens and errors.
+//! Source ranges carried through lexing, parsing, and diagnostics.
 
-/// A half-open byte range into a source file.
+/// A half-open byte range into one source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct ByteRange {
     pub start: usize,
@@ -19,48 +19,35 @@ impl ByteRange {
     }
 }
 
-/// Represents a source location span. Byte ranges are authoritative when present;
-/// row and column fields remain for diagnostic compatibility.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// A source location represented only by its half-open byte range.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct Span {
-    pub row_start: usize,
-    pub row_end: Option<usize>,
-    pub col_start: usize,
-    pub col_end: Option<usize>,
     pub byte_range: Option<ByteRange>,
 }
 
 impl std::fmt::Debug for Span {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Span")
-            .field("row_start", &self.row_start)
-            .field("row_end", &self.row_end)
-            .field("col_start", &self.col_start)
-            .field("col_end", &self.col_end)
-            .finish()
+        f.debug_struct("Span").finish_non_exhaustive()
     }
 }
 
 impl Span {
     #[must_use]
-    pub fn new(row_start: usize, col_start: usize) -> Self {
+    pub const fn new(start: usize, end: usize) -> Self {
         Self {
-            row_start,
-            row_end: None,
-            col_start,
-            col_end: None,
-            byte_range: None,
+            byte_range: Some(ByteRange::new(start, end)),
         }
     }
 
     #[must_use]
-    pub fn with_byte_range(mut self, start: usize, end: usize) -> Self {
-        self.byte_range = Some(ByteRange::new(start, end));
-        self
+    pub const fn empty(at: usize) -> Self {
+        Self {
+            byte_range: Some(ByteRange::empty(at)),
+        }
     }
 
-    pub fn complete(&mut self, row_end: usize, col_end: usize) {
-        self.row_end = Some(row_end);
-        self.col_end = Some(col_end);
+    pub fn extend_to(&mut self, end: usize) {
+        let start = self.byte_range.map_or(end, |range| range.start);
+        self.byte_range = Some(ByteRange::new(start, end));
     }
 }

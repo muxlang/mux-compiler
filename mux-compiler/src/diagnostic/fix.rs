@@ -708,26 +708,14 @@ mod tests {
     #[test]
     fn uses_authoritative_byte_ranges_for_unicode_spans() {
         let source = "auto x = \u{3053}\u{3093}\u{306B}\u{3061}\u{306F}\nvalue\n";
-        let span = Span {
-            byte_range: Some(crate::lexer::ByteRange::new(9, 24)),
-            row_start: 1,
-            row_end: Some(1),
-            col_start: 10,
-            col_end: Some(20),
-        };
+        let span = Span::new(9, 24);
         let range = source_range_for_span(source, span).unwrap();
         assert_eq!(
             &source[range.start_byte..range.end_byte],
             "\u{3053}\u{3093}\u{306B}\u{3061}\u{306F}"
         );
 
-        let second_line = Span {
-            byte_range: Some(crate::lexer::ByteRange::new(25, 30)),
-            row_start: 2,
-            row_end: None,
-            col_start: 1,
-            col_end: None,
-        };
+        let second_line = Span::new(25, 30);
         assert_eq!(
             source_range_for_span(source, second_line)
                 .unwrap()
@@ -755,7 +743,7 @@ mod tests {
 
     #[test]
     fn rejects_spans_without_authoritative_byte_ranges() {
-        let span = Span::new(1, 1);
+        let span = Span::default();
         assert!(matches!(
             source_range_for_span("text", span),
             Err(FixError::InvalidLocation {

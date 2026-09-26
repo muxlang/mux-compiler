@@ -18,8 +18,6 @@ fn floor_char_boundary(input: &str, mut byte: usize) -> usize {
 pub struct Source {
     source: Arc<SourceText>,
     pub pos: usize,
-    pub line: usize,
-    pub col: usize,
 }
 
 /// Immutable source text and its byte-indexed line starts, shared by frontend
@@ -70,8 +68,6 @@ impl Source {
             return Ok(Self {
                 source: Arc::new(SourceText::new(input)),
                 pos: 0,
-                line: 1,
-                col: 1,
             });
         }
         Err(Error::new(ErrorKind::NotFound, "File does not exist"))
@@ -82,18 +78,11 @@ impl Source {
         Self {
             source: Arc::new(SourceText::new(input)),
             pos: 0,
-            line: 1,
-            col: 1,
         }
     }
 
     pub(crate) fn from_source_text(source: Arc<SourceText>) -> Self {
-        Self {
-            source,
-            pos: 0,
-            line: 1,
-            col: 1,
-        }
+        Self { source, pos: 0 }
     }
 
     #[allow(dead_code)]
@@ -115,16 +104,6 @@ impl Source {
         let ch = self.source.input[self.pos..].chars().next()?;
         let char_len = ch.len_utf8();
         self.pos += char_len;
-
-        if ch == '\n' {
-            self.line += 1;
-            self.col = 1;
-        } else {
-            // for multi-byte characters, we need to count the number of columns
-            // based on the character's width in the terminal
-            self.col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-        }
-
         Some(ch)
     }
 
@@ -228,30 +207,28 @@ mod tests {
     use super::{Source, SourceText};
     use std::sync::Arc;
 
+    fn assert_cursor_location(source: &Source, expected: (usize, usize)) {
+        assert_eq!(source.line_col(source.pos), expected);
+    }
+
     #[test]
     fn test_next_char_basic() {
         let mut src = Source {
             source: Arc::new(SourceText::new("abc\n".to_owned())),
             pos: 0,
-            line: 1,
-            col: 1,
         };
 
         assert_eq!(src.next_char(), Some('a'));
-        assert_eq!(src.line, 1);
-        assert_eq!(src.col, 2);
+        assert_cursor_location(&src, (1, 2));
 
         assert_eq!(src.next_char(), Some('b'));
-        assert_eq!(src.line, 1);
-        assert_eq!(src.col, 3);
+        assert_cursor_location(&src, (1, 3));
 
         assert_eq!(src.next_char(), Some('c'));
-        assert_eq!(src.line, 1);
-        assert_eq!(src.col, 4);
+        assert_cursor_location(&src, (1, 4));
 
         assert_eq!(src.next_char(), Some('\n'));
-        assert_eq!(src.line, 2);
-        assert_eq!(src.col, 1);
+        assert_cursor_location(&src, (2, 1));
 
         assert_eq!(src.next_char(), None);
     }
@@ -261,25 +238,19 @@ mod tests {
         let mut src = Source {
             source: Arc::new(SourceText::new("xy".to_owned())),
             pos: 0,
-            line: 1,
-            col: 1,
         };
 
         assert_eq!(src.peek(), Some('x')); // peek doesn't advance pos
-        assert_eq!(src.line, 1);
-        assert_eq!(src.col, 1); // position unchanged after peek
+        assert_cursor_location(&src, (1, 1));
 
         assert_eq!(src.next_char(), Some('x'));
-        assert_eq!(src.line, 1);
-        assert_eq!(src.col, 2);
+        assert_cursor_location(&src, (1, 2));
 
         assert_eq!(src.peek(), Some('y'));
-        assert_eq!(src.line, 1);
-        assert_eq!(src.col, 2); // position unchanged after peek
+        assert_cursor_location(&src, (1, 2));
 
         assert_eq!(src.next_char(), Some('y'));
-        assert_eq!(src.line, 1);
-        assert_eq!(src.col, 3);
+        assert_cursor_location(&src, (1, 3));
 
         assert_eq!(src.peek(), None);
     }
@@ -288,22 +259,18 @@ mod tests {
     fn test_multiline_positioning() {
         let mut src = Source::from_test_str("hello\nworld\n");
 
-        // test that positions track correctly across multiple lines
         for expected_char in "hello".chars() {
             assert_eq!(src.next_char(), Some(expected_char));
         }
-        assert_eq!(src.line, 1);
-        assert_eq!(src.col, 6);
+        assert_cursor_location(&src, (1, 6));
 
         assert_eq!(src.next_char(), Some('\n')); // newline
-        assert_eq!(src.line, 2);
-        assert_eq!(src.col, 1);
+        assert_cursor_location(&src, (2, 1));
 
         for expected_char in "world".chars() {
             assert_eq!(src.next_char(), Some(expected_char));
         }
-        assert_eq!(src.line, 2);
-        assert_eq!(src.col, 6);
+        assert_cursor_location(&src, (2, 6));
     }
 
     #[test]
@@ -312,8 +279,7 @@ mod tests {
 
         let result = src.consume_until(' ');
         assert_eq!(result, "hello");
-        assert_eq!(src.line, 1);
-        assert_eq!(src.col, 6); // position should be at the space
+        assert_cursor_location(&src, (1, 6));
         assert_eq!(src.next_char(), Some(' ')); // consume the space
         assert_eq!(src.next_char(), Some('w')); // next character should be 'w'
     }
@@ -325,8 +291,7 @@ mod tests {
         let (result, found) = src.consume_multiline_comment();
         assert_eq!(result, "hello\nworld");
         assert!(found);
-        assert_eq!(src.line, 2); // should be on line 2 after the newline
-        assert_eq!(src.col, 8); // after "world */"
+        assert_cursor_location(&src, (2, 8));
     }
 
     #[test]
@@ -335,33 +300,28 @@ mod tests {
 
         // First character 'こ' is a full-width character (2 columns in terminal)
         let ch = src.next_char();
-        println!("First char: {:?}, col: {}", ch, src.col);
         assert_eq!(ch, Some('こ'));
-        assert_eq!(src.col, 3); // 1 (start) + 2 (full-width char) = 3
+        assert_cursor_location(&src, (1, 3));
 
         // Second character 'ん' is also a full-width character
         let ch = src.next_char();
-        println!("Second char: {:?}, col: {}", ch, src.col);
         assert_eq!(ch, Some('ん'));
-        assert_eq!(src.col, 5); // 3 + 2 = 5
+        assert_cursor_location(&src, (1, 5));
 
         // Third character 'に' is also a full-width character
         let ch = src.next_char();
-        println!("Third char: {:?}, col: {}", ch, src.col);
         assert_eq!(ch, Some('に'));
-        assert_eq!(src.col, 7); // 5 + 2 = 7
+        assert_cursor_location(&src, (1, 7));
 
         // Fourth character 'ち' is also a full-width character
         let ch = src.next_char();
-        println!("Fourth char: {:?}, col: {}", ch, src.col);
         assert_eq!(ch, Some('ち'));
-        assert_eq!(src.col, 9); // 7 + 2 = 9
+        assert_cursor_location(&src, (1, 9));
 
         // Fifth character 'は' is also a full-width character
         let ch = src.next_char();
-        println!("Fifth char: {:?}, col: {}", ch, src.col);
         assert_eq!(ch, Some('は'));
-        assert_eq!(src.col, 11); // 9 + 2 = 11
+        assert_cursor_location(&src, (1, 11));
 
         // Test with emoji (typically 4 bytes, but displayed as one column)
         let mut src = Source::from_test_str("hello 🌟");
@@ -370,11 +330,9 @@ mod tests {
             src.next_char();
         }
 
-        // The star emoji is a double-width character
-        // We've consumed "hello " (6 characters, columns 1-6)
-        assert_eq!(src.col, 7); // After 6 characters, we're at column 7
+        assert_cursor_location(&src, (1, 7));
         assert_eq!(src.next_char(), Some('🌟'));
-        assert_eq!(src.col, 9); // Should increment by 2 for the emoji
+        assert_cursor_location(&src, (1, 9));
     }
 
     #[test]

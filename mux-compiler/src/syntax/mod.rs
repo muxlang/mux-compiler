@@ -2174,14 +2174,7 @@ impl SyntaxTree {
     }
 
     fn span_for_range(&self, range: ByteRange) -> Result<crate::lexer::Span, SyntaxLowerError> {
-        // Preserve the legacy coordinates during the AST migration, but derive
-        // them from the authoritative byte range instead of copying lexer
-        // token coordinates into every lowered node.
-        let (row_start, col_start) = self.source.line_col(range.start);
-        let (row_end, col_end) = self.source.line_col(range.end);
-        let mut span = crate::lexer::Span::new(row_start, col_start);
-        span.complete(row_end, col_end);
-        Ok(span.with_byte_range(range.start, range.end))
+        Ok(crate::lexer::Span::new(range.start, range.end))
     }
 }
 
@@ -2535,20 +2528,14 @@ mod tests {
     fn syntax_tree_keeps_raw_token_text_and_nested_context() {
         let source = Arc::new(SourceText::new("x + 2 // note\n".to_owned()));
         let tokens = vec![
-            Token::new(
-                TokenType::Id("x".into()),
-                Span::new(1, 1).with_byte_range(0, 1),
-            ),
-            Token::new(TokenType::Whitespace, Span::new(1, 2).with_byte_range(1, 2)),
-            Token::new(TokenType::Plus, Span::new(1, 3).with_byte_range(2, 3)),
-            Token::new(TokenType::Whitespace, Span::new(1, 4).with_byte_range(3, 4)),
-            Token::new(TokenType::Int(2), Span::new(1, 5).with_byte_range(4, 5)),
-            Token::new(TokenType::Whitespace, Span::new(1, 6).with_byte_range(5, 6)),
-            Token::new(
-                TokenType::LineComment("note".into()),
-                Span::new(1, 7).with_byte_range(6, 13),
-            ),
-            Token::new(TokenType::NewLine, Span::new(1, 14).with_byte_range(13, 14)),
+            Token::new(TokenType::Id("x".into()), Span::new(0, 1)),
+            Token::new(TokenType::Whitespace, Span::new(1, 2)),
+            Token::new(TokenType::Plus, Span::new(2, 3)),
+            Token::new(TokenType::Whitespace, Span::new(3, 4)),
+            Token::new(TokenType::Int(2), Span::new(4, 5)),
+            Token::new(TokenType::Whitespace, Span::new(5, 6)),
+            Token::new(TokenType::LineComment("note".into()), Span::new(6, 13)),
+            Token::new(TokenType::NewLine, Span::new(13, 14)),
         ];
         let tree = SyntaxTree::new(
             source,
@@ -2625,10 +2612,7 @@ mod tests {
     fn compilation_unit_lowering_rejects_untyped_top_level_contexts() {
         let tree = SyntaxTree::new(
             Arc::new(SourceText::new("x".to_owned())),
-            vec![Token::new(
-                TokenType::Id("x".into()),
-                Span::new(1, 1).with_byte_range(0, 1),
-            )],
+            vec![Token::new(TokenType::Id("x".into()), Span::new(0, 1))],
             &[SyntaxNodeEvent {
                 kind: SyntaxKind::Declaration,
                 range: ByteRange::new(0, 1),
@@ -3589,10 +3573,7 @@ mod tests {
 
         let insertion_tree = SyntaxTree::new(
             Arc::new(SourceText::new(")".to_owned())),
-            vec![Token::new(
-                TokenType::CloseParen,
-                Span::new(1, 1).with_byte_range(0, 1),
-            )],
+            vec![Token::new(TokenType::CloseParen, Span::new(0, 1))],
             &[SyntaxNodeEvent {
                 kind: SyntaxKind::Error,
                 range: ByteRange::empty(0),

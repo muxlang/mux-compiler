@@ -36,13 +36,7 @@ impl<'a> Parser<'a> {
     pub(super) fn peek(&self) -> &Token {
         static EOF_TOKEN: Token = Token {
             token_type: TokenType::Eof,
-            span: Span {
-                row_start: 1,
-                row_end: None,
-                col_start: 1,
-                col_end: None,
-                byte_range: Some(crate::lexer::ByteRange::empty(0)),
-            },
+            span: Span::empty(0),
         };
         self.tokens.get(self.current).copied().unwrap_or(&EOF_TOKEN)
     }
@@ -97,16 +91,9 @@ impl<'a> Parser<'a> {
             return Err(ParserError::new(
                 DiagnosticCode::ParseExpectedToken,
                 format!("{error_msg}, but reached end of file"),
-                self.tokens.last().map_or_else(
-                    || Span {
-                        row_start: 1,
-                        row_end: None,
-                        col_start: 1,
-                        col_end: None,
-                        byte_range: Some(crate::lexer::ByteRange::empty(0)),
-                    },
-                    |t| t.span,
-                ),
+                self.tokens
+                    .last()
+                    .map_or_else(|| Span::empty(0), |t| t.span),
             ));
         }
 
@@ -233,7 +220,7 @@ mod tests {
     #[test]
     fn cursor_consumes_identifiers_and_preserves_lookahead() {
         let tokens = [
-            Token::new(TokenType::Id("value".to_string()), Span::new(1, 1)),
+            Token::new(TokenType::Id("value".to_string()), Span::default()),
             Token::new(TokenType::NewLine, Span::new(1, 6)),
         ];
         let mut parser = Parser::new(&tokens);
@@ -250,7 +237,7 @@ mod tests {
 
     #[test]
     fn cursor_bounds_are_safe_at_start_and_end() {
-        let tokens = [Token::new(TokenType::Eof, Span::new(1, 1))];
+        let tokens = [Token::new(TokenType::Eof, Span::default())];
         let mut parser = Parser::new(&tokens);
 
         assert_eq!(parser.previous().token_type, TokenType::Eof);

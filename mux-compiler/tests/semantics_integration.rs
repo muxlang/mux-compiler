@@ -38,19 +38,11 @@ fn analyze_mux_file(path: &std::path::PathBuf) -> Result<(), String> {
     } else {
         println!("✗ Semantic errors in {}:", path.display());
         for error in &errors {
-            println!(
-                "  {} at {}:{}",
-                error.message, error.span.row_start, error.span.col_start
-            );
+            println!("  {}", error.message);
         }
         let details = errors
             .iter()
-            .map(|error| {
-                format!(
-                    "{} at {}:{}",
-                    error.message, error.span.row_start, error.span.col_start
-                )
-            })
+            .map(|error| error.message.to_string())
             .collect::<Vec<_>>()
             .join("; ");
         Err(details)

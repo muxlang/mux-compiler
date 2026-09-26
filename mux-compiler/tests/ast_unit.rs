@@ -14,7 +14,7 @@ use mux_lang::lexer::{Span, Token, TokenType};
 use ordered_float::OrderedFloat;
 
 fn span() -> Span {
-    Span::new(1, 1)
+    Span::default()
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn type_node_from_conversions_and_span() {
     );
 
     // Spanned is implemented for TypeNode.
-    assert_eq!(named.span().row_start, 0);
+    assert_eq!(named.span().byte_range, None);
 }
 
 #[test]
@@ -161,8 +161,10 @@ fn const_decl_node_is_spanned() {
         value: LiteralNode::Integer(100).into(),
         span: Span::new(3, 9),
     };
-    assert_eq!(node.span().row_start, 3);
-    assert_eq!(node.span().col_start, 9);
+    assert_eq!(
+        node.span().byte_range,
+        Some(mux_lang::lexer::ByteRange::new(3, 9))
+    );
 }
 
 #[test]
@@ -170,7 +172,7 @@ fn statement_node_from_expression() {
     let expr: ExpressionNode = LiteralNode::Boolean(true).into();
     let stmt: StatementNode = expr.into();
     assert!(matches!(stmt.kind, StatementKind::Expression(_)));
-    assert_eq!(stmt.span().row_start, 0);
+    assert_eq!(stmt.span().byte_range, None);
 }
 
 fn sample_function() -> FunctionNode {
@@ -180,7 +182,7 @@ fn sample_function() -> FunctionNode {
         params: Vec::new(),
         return_type: PrimitiveType::Void.into(),
         body: Vec::new(),
-        span: Span::new(4, 2),
+        span: Span::new(4, 6),
         is_common: false,
         where_clause: None,
     }
@@ -189,7 +191,10 @@ fn sample_function() -> FunctionNode {
 #[test]
 fn ast_node_span_covers_all_variants() {
     let func = AstNode::Function(sample_function());
-    assert_eq!(func.span().row_start, 4);
+    assert_eq!(
+        func.span().byte_range,
+        Some(mux_lang::lexer::ByteRange::new(4, 6))
+    );
 
     let class = AstNode::Class {
         name: "C".to_string(),
@@ -198,32 +203,44 @@ fn ast_node_span_covers_all_variants() {
         fields: Vec::new(),
         methods: Vec::new(),
         where_clause: None,
-        span: Span::new(5, 0),
+        span: Span::new(5, 6),
     };
-    assert_eq!(class.span().row_start, 5);
+    assert_eq!(
+        class.span().byte_range,
+        Some(mux_lang::lexer::ByteRange::new(5, 6))
+    );
 
     let interface = AstNode::Interface {
         name: "I".to_string(),
         type_params: Vec::new(),
         fields: Vec::new(),
         methods: Vec::new(),
-        span: Span::new(6, 0),
+        span: Span::new(6, 7),
     };
-    assert_eq!(interface.span().row_start, 6);
+    assert_eq!(
+        interface.span().byte_range,
+        Some(mux_lang::lexer::ByteRange::new(6, 7))
+    );
 
     let enum_node = AstNode::Enum {
         name: "E".to_string(),
         type_params: Vec::new(),
         variants: Vec::new(),
-        span: Span::new(7, 0),
+        span: Span::new(7, 8),
     };
-    assert_eq!(enum_node.span().row_start, 7);
+    assert_eq!(
+        enum_node.span().byte_range,
+        Some(mux_lang::lexer::ByteRange::new(7, 8))
+    );
 
     let stmt = AstNode::Statement(StatementNode {
         kind: StatementKind::Break,
-        span: Span::new(8, 0),
+        span: Span::new(8, 9),
     });
-    assert_eq!(stmt.span().row_start, 8);
+    assert_eq!(
+        stmt.span().byte_range,
+        Some(mux_lang::lexer::ByteRange::new(8, 9))
+    );
 }
 
 #[test]

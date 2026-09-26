@@ -217,7 +217,7 @@ impl<'a> Parser<'a> {
         match self.parse_type_inner() {
             Ok(mut fact) => {
                 if let Some(range) = self.source_range(start, self.current) {
-                    fact.span = Span::new(0, 0).with_byte_range(range.start, range.end);
+                    fact.span = Span::new(range.start, range.end);
                 }
                 if let Some(data) = self.syntax_data_for_type(start, self.current, &fact.kind) {
                     self.record_typed_syntax_node(SyntaxKind::Type, start, self.current, data);
@@ -313,8 +313,8 @@ impl<'a> Parser<'a> {
             let start_span = self.previous().span;
             let referenced_type = self.parse_type_fact()?;
             let span = match (start_span.byte_range, self.previous().span.byte_range) {
-                (Some(start), Some(end)) => Span::new(0, 0).with_byte_range(start.start, end.end),
-                _ => Span::new(0, 0),
+                (Some(start), Some(end)) => Span::new(start.start, end.end),
+                _ => Span::default(),
             };
             return Ok(TypeFact {
                 kind: TypeFactKind::Reference(Box::new(referenced_type)),

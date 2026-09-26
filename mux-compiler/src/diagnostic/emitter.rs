@@ -395,10 +395,7 @@ mod tests {
         row: usize,
     ) -> Diagnostic {
         Diagnostic::new(code)
-            .with_label(Label::primary(
-                Span::new(row.saturating_sub(1), row).with_byte_range(row - 1, row),
-                "",
-            ))
+            .with_label(Label::primary(Span::new(row - 1, row), ""))
             .with_file_id(file_id)
     }
 
@@ -458,7 +455,7 @@ mod tests {
         let emitter = StandardEmitter::new(super::ColorConfig::Auto);
         let text = "界x\nrest";
         let lines = super::source_lines(text);
-        let span = Span::new(0, text.len()).with_byte_range(0, text.len());
+        let span = Span::new(0, text.len());
 
         let rendered = emitter.render_label_underline(
             &span,
@@ -474,7 +471,7 @@ mod tests {
     fn byte_ranges_determine_diagnostic_lines_and_columns() {
         let text = "a\n界x\nlast";
         let lines = super::source_lines(text);
-        let span = Span::new(5, 6).with_byte_range(5, 6);
+        let span = Span::new(5, 6);
 
         assert_eq!(
             StandardEmitter::span_line_range(&span, &lines),

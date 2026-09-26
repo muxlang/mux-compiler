@@ -159,7 +159,7 @@ impl From<ExpressionNode> for StatementNode {
     fn from(expr: ExpressionNode) -> Self {
         StatementNode {
             kind: StatementKind::Expression(expr),
-            span: Span::new(0, 0),
+            span: Span::default(),
         }
     }
 }
@@ -246,7 +246,7 @@ impl From<LiteralNode> for ExpressionNode {
     fn from(lit: LiteralNode) -> Self {
         ExpressionNode {
             kind: ExpressionKind::Literal(lit),
-            span: Span::new(0, 0),
+            span: Span::default(),
         }
     }
 }
@@ -255,7 +255,7 @@ impl From<&str> for ExpressionNode {
     fn from(ident: &str) -> Self {
         ExpressionNode {
             kind: ExpressionKind::Identifier(ident.to_string()),
-            span: Span::new(0, 0),
+            span: Span::default(),
         }
     }
 }

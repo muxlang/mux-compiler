@@ -11,13 +11,7 @@ use inkwell::types::BasicTypeEnum;
 use std::collections::HashSet;
 
 /// Placeholder span for synthetically-constructed `TypeNodes` in codegen.
-const SYNTHETIC_SPAN: Span = Span {
-    byte_range: None,
-    row_start: 0,
-    col_start: 0,
-    row_end: None,
-    col_end: None,
-};
+const SYNTHETIC_SPAN: Span = Span { byte_range: None };
 
 impl<'a> CodeGenerator<'a> {
     /// Returns a pointer type, used for heap-allocated values.

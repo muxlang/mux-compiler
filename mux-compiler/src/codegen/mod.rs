@@ -1086,18 +1086,17 @@ impl<'a> CodeGenerator<'a> {
     /// Render a `file:line:col` location for runtime panic messages, matching
     /// the compiler diagnostic emitter's `--> file:line:col` locator.
     fn panic_location(&self, span: &crate::lexer::Span) -> String {
-        let (row, col) = self.source_location(span);
-        format!("{}:{row}:{col}", self.source_name)
+        self.source_location(span).map_or_else(
+            || self.source_name.clone(),
+            |(row, col)| format!("{}:{row}:{col}", self.source_name),
+        )
     }
 
-    fn source_location(&self, span: &crate::lexer::Span) -> (usize, usize) {
-        span.byte_range
-            .and_then(|range| {
-                self.source_texts
-                    .get(&self.source_name)
-                    .map(|source| source.line_col(range.start))
-            })
-            .unwrap_or((1, 1))
+    fn source_location(&self, span: &crate::lexer::Span) -> Option<(usize, usize)> {
+        let range = span.byte_range?;
+        self.source_texts
+            .get(&self.source_name)
+            .map(|source| source.line_col(range.start))
     }
 
     pub(super) fn emit_coverage_record(
@@ -1110,7 +1109,9 @@ impl<'a> CodeGenerator<'a> {
         if !self.coverage_enabled {
             return Ok(());
         }
-        let (row, _) = self.source_location(span);
+        let Some((row, _)) = self.source_location(span) else {
+            return Err("coverage site has no resolvable byte range".to_string());
+        };
         self.record_coverage_site(span, kind, branch_id)?;
         let file_name = format!("coverage_file_{}", self.string_counter);
         self.string_counter += 1;
@@ -1167,7 +1168,9 @@ impl<'a> CodeGenerator<'a> {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        let (row, _) = self.source_location(span);
+        let Some((row, _)) = self.source_location(span) else {
+            return Err("coverage site has no resolvable byte range".to_string());
+        };
         let record = if kind == 0 {
             format!("D\t{}\t{}\n", encoded, row)
         } else {

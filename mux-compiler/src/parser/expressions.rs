@@ -174,8 +174,8 @@ impl<'a> Parser<'a> {
         });
         match (start, end) {
             (Some(start), Some(end)) => start.combine(&end),
-            (Some(span), None) | (None, Some(span)) => span.with_byte_range(range.start, range.end),
-            (None, None) => Span::new(0, 0).with_byte_range(range.start, range.end),
+            (Some(_), None) | (None, Some(_)) => Span::new(range.start, range.end),
+            (None, None) => Span::new(range.start, range.end),
         }
     }
 
@@ -632,7 +632,7 @@ impl<'a> Parser<'a> {
         let body_range = body.range;
         let start_range = start_span.byte_range.expect("lambda start source range");
         let ast_span = ByteRange::new(start_range.start, body_range.end);
-        let span = start_span.with_byte_range(ast_span.start, ast_span.end);
+        let span = Span::new(ast_span.start, ast_span.end);
         self.record_typed_syntax_node(
             SyntaxKind::LambdaExpression,
             lambda_start,
@@ -842,16 +842,10 @@ impl<'a> Parser<'a> {
     fn parse_primary_parsed(&mut self) -> ParserResult<ParsedExpression> {
         if self.is_at_end() {
             // Use the last token's span to show where we expected an expression
-            let error_span = self.tokens.last().map_or_else(
-                || Span {
-                    row_start: 1,
-                    row_end: None,
-                    col_start: 1,
-                    col_end: None,
-                    byte_range: Some(crate::lexer::ByteRange::empty(0)),
-                },
-                |t| t.span,
-            );
+            let error_span = self
+                .tokens
+                .last()
+                .map_or_else(|| Span::empty(0), |t| t.span);
             return Err(ParserError::new(
                 DiagnosticCode::ParseExpectedExpression,
                 "Expected expression, found end of input",

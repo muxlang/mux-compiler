@@ -114,14 +114,12 @@ impl<'a> Lexer<'a> {
                         // offending byte must still make progress in lossless mode.
                         let start = self.source.pos;
                         let ch = self.source.next_char().expect("source is not at EOF");
-                        let (row, col) = self.source.line_col(start);
-                        let span = Span::new(row, col).with_byte_range(start, self.source.pos);
+                        let span = Span::new(start, self.source.pos);
                         tokens.push(Token::new(TokenType::Invalid(ch.to_string()), span));
                     } else {
                         let range = ByteRange::new(before, self.source.pos);
                         let text = self.source.slice(range).to_owned();
-                        let (row, col) = self.source.line_col(before);
-                        let span = Span::new(row, col).with_byte_range(before, self.source.pos);
+                        let span = Span::new(before, self.source.pos);
                         tokens.push(Token::new(TokenType::Invalid(text), span));
                     }
                 }
@@ -140,8 +138,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn span_at_byte(&self, start: usize, end: usize) -> Span {
-        let (row, col) = self.source.line_col(start);
-        Span::new(row, col).with_byte_range(start, end)
+        Span::new(start, end)
     }
 
     fn span_at_cursor(&self) -> Span {
@@ -158,7 +155,7 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        span.complete(self.source.line, self.source.col);
+        span.extend_to(self.source.pos);
     }
 
     fn skip_space(&mut self) -> Result<(), LexerError> {
@@ -179,20 +176,28 @@ impl<'a> Lexer<'a> {
         let result = self.next_token_inner();
         match result {
             Ok(mut token) => {
-                if token.span.byte_range.is_none() {
+                if token
+                    .span
+                    .byte_range
+                    .is_none_or(|range| range.start == range.end)
+                    && !matches!(token.token_type, TokenType::Eof)
+                {
                     let start = self.pending_token_start.unwrap_or(self.source.pos);
-                    token.span.byte_range = Some(if matches!(token.token_type, TokenType::Eof) {
-                        ByteRange::empty(self.source.pos)
-                    } else {
-                        ByteRange::new(start, self.source.pos)
-                    });
+                    token.span = Span::new(start, self.source.pos);
+                } else if token.span.byte_range.is_none() {
+                    token.span = Span::empty(self.source.pos);
                 }
                 Ok(token)
             }
             Err(mut error) => {
-                if error.span.byte_range.is_none() {
-                    let start = self.pending_token_start.unwrap_or(self.source.pos);
-                    error.span.byte_range = Some(ByteRange::new(start, self.source.pos.max(start)));
+                let token_start = self.pending_token_start.unwrap_or(self.source.pos);
+                let needs_token_range = error
+                    .span
+                    .byte_range
+                    .is_none_or(|range| range.start == token_start);
+                if needs_token_range {
+                    let start = token_start;
+                    error.span = Span::new(start, self.source.pos.max(start));
                 }
                 Err(error)
             }
@@ -207,7 +212,6 @@ impl<'a> Lexer<'a> {
                 .is_some_and(|ch| matches!(ch, ' ' | '\t' | '\r'))
             {
                 let start = self.source.pos;
-                let (row, col) = self.source.line_col(start);
                 while self
                     .source
                     .peek()
@@ -215,7 +219,7 @@ impl<'a> Lexer<'a> {
                 {
                     self.source.next_char();
                 }
-                let span = Span::new(row, col).with_byte_range(start, self.source.pos);
+                let span = Span::new(start, self.source.pos);
                 return Ok(Token::new(TokenType::Whitespace, span));
             }
         } else {
@@ -233,20 +237,17 @@ impl<'a> Lexer<'a> {
 
         match self.source.peek() {
             None => {
-                return Ok(Token::new(
-                    TokenType::Eof,
-                    Span::new(self.source.line, self.source.col),
-                ));
+                return Ok(Token::new(TokenType::Eof, Span::empty(self.source.pos)));
             }
             Some('\n') => {
-                let start_span = Span::new(self.source.line, self.source.col);
+                let start_span = Span::empty(self.source.pos);
                 self.source.next_char(); // consume '\n'
                 return Ok(Token::new(TokenType::NewLine, start_span));
             }
             _ => {}
         }
 
-        let start_span = Span::new(self.source.line, self.source.col);
+        let start_span = Span::empty(self.source.pos);
         let Some(c) = self.source.next_char() else {
             return Ok(Token::new(TokenType::Eof, start_span));
         };
@@ -363,7 +364,7 @@ impl<'a> Lexer<'a> {
     fn read_identifier_or_keyword(&mut self, first_char: char, mut start_span: Span) -> Token {
         let mut ident = first_char.to_string();
         self.consume_identifier_tail(&mut ident);
-        start_span.complete(self.source.line, self.source.col);
+        start_span.extend_to(self.source.pos);
         Token::new(Self::keyword_or_identifier_token_type(ident), start_span)
     }
 
@@ -377,7 +378,7 @@ impl<'a> Lexer<'a> {
                 }
                 comment.push(self.consume_char());
             }
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             let comment = if self.lossless {
                 comment
             } else {
@@ -406,7 +407,7 @@ impl<'a> Lexer<'a> {
                     "Add a closing '*/' to end the block comment",
                 ));
             }
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             let comment = if self.lossless {
                 comment
             } else {
@@ -417,7 +418,7 @@ impl<'a> Lexer<'a> {
 
         if self.source.peek() == Some('=') {
             self.source.next_char();
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             return Ok(Token::new(TokenType::SlashEq, start_span));
         }
 
@@ -604,7 +605,7 @@ impl<'a> Lexer<'a> {
         first_char: char,
         mut start_span: Span,
     ) -> Result<Token, LexerError> {
-        start_span.complete(self.source.line, self.source.col);
+        start_span.extend_to(self.source.pos);
 
         match first_char {
             '*' => self.handle_star_operator(start_span),
@@ -636,11 +637,11 @@ impl<'a> Lexer<'a> {
     fn handle_star_operator(&mut self, mut start_span: Span) -> Result<Token, LexerError> {
         if self.source.peek() == Some('*') {
             self.source.next_char();
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             Ok(Token::new(TokenType::StarStar, start_span))
         } else if self.source.peek() == Some('=') {
             self.source.next_char();
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             Ok(Token::new(TokenType::StarEq, start_span))
         } else {
             Ok(Token::new(TokenType::Star, start_span))
@@ -650,7 +651,7 @@ impl<'a> Lexer<'a> {
     fn handle_eq_operator(&mut self, mut start_span: Span) -> Result<Token, LexerError> {
         if self.source.peek() == Some('=') {
             self.source.next_char();
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             Ok(Token::new(TokenType::EqEq, start_span))
         } else {
             Ok(Token::new(TokenType::Eq, start_span))
@@ -660,7 +661,7 @@ impl<'a> Lexer<'a> {
     fn handle_bang_operator(&mut self, mut start_span: Span) -> Result<Token, LexerError> {
         if self.source.peek() == Some('=') {
             self.source.next_char();
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             Ok(Token::new(TokenType::NotEq, start_span))
         } else {
             Ok(Token::new(TokenType::Bang, start_span))
@@ -671,12 +672,12 @@ impl<'a> Lexer<'a> {
         match self.source.peek() {
             Some('+') => {
                 self.source.next_char();
-                start_span.complete(self.source.line, self.source.col);
+                start_span.extend_to(self.source.pos);
                 Ok(Token::new(TokenType::Incr, start_span))
             }
             Some('=') => {
                 self.source.next_char();
-                start_span.complete(self.source.line, self.source.col);
+                start_span.extend_to(self.source.pos);
                 Ok(Token::new(TokenType::PlusEq, start_span))
             }
             _ => Ok(Token::new(TokenType::Plus, start_span)),
@@ -691,12 +692,12 @@ impl<'a> Lexer<'a> {
         match self.source.peek() {
             Some('-') => {
                 self.source.next_char();
-                start_span.complete(self.source.line, self.source.col);
+                start_span.extend_to(self.source.pos);
                 Ok(Token::new(TokenType::Decr, start_span))
             }
             Some('=') => {
                 self.source.next_char();
-                start_span.complete(self.source.line, self.source.col);
+                start_span.extend_to(self.source.pos);
                 Ok(Token::new(TokenType::MinusEq, start_span))
             }
             Some(c) if c.is_ascii_digit() => self.read_number(first_char, start_span),
@@ -707,7 +708,7 @@ impl<'a> Lexer<'a> {
     fn handle_lt_operator(&mut self, mut start_span: Span) -> Result<Token, LexerError> {
         if self.source.peek() == Some('=') {
             self.source.next_char();
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             Ok(Token::new(TokenType::Le, start_span))
         } else {
             Ok(Token::new(TokenType::Lt, start_span))
@@ -717,7 +718,7 @@ impl<'a> Lexer<'a> {
     fn handle_gt_operator(&mut self, mut start_span: Span) -> Result<Token, LexerError> {
         if self.source.peek() == Some('=') {
             self.source.next_char();
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             Ok(Token::new(TokenType::Ge, start_span))
         } else {
             Ok(Token::new(TokenType::Gt, start_span))
@@ -728,7 +729,7 @@ impl<'a> Lexer<'a> {
         if self.source.peek() == Some('|') {
             self.source.next_char();
             let mut span = start_span;
-            span.complete(self.source.line, self.source.col);
+            span.extend_to(self.source.pos);
             Ok(Token::new(TokenType::Or, span))
         } else {
             Err(LexerError::with_help(
@@ -743,10 +744,10 @@ impl<'a> Lexer<'a> {
     fn handle_and_operator(&mut self, mut start_span: Span) -> Result<Token, LexerError> {
         if self.source.peek() == Some('&') {
             self.source.next_char();
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             Ok(Token::new(TokenType::And, start_span))
         } else {
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             Ok(Token::new(TokenType::Ref, start_span))
         }
     }
@@ -766,7 +767,6 @@ impl<'a> Lexer<'a> {
         let mut s = String::new();
         let mut escaped = false;
         let is_triple = self.is_triple_quote();
-        let start_col = start_span.col_start;
 
         if is_triple {
             self.source.next_char(); // consume second quote
@@ -786,7 +786,7 @@ impl<'a> Lexer<'a> {
             self.process_string_char(c, &mut escaped, &mut s)?;
         }
 
-        self.handle_unterminated_string(&s, start_col, start_span)
+        self.handle_unterminated_string(&s, start_span)
     }
 
     fn read_bytes(&mut self, mut start_span: Span) -> Result<Token, LexerError> {
@@ -801,7 +801,7 @@ impl<'a> Lexer<'a> {
         let mut bytes = Vec::new();
         while let Some(c) = self.source.next_char() {
             if c == '"' {
-                start_span.complete(self.source.line, self.source.col);
+                start_span.extend_to(self.source.pos);
                 return Ok(Token::new(TokenType::Bytes(bytes), start_span));
             }
             if c == '\\' {
@@ -886,13 +886,13 @@ impl<'a> Lexer<'a> {
             if self.source.peek() == Some('"') && self.source.peek_nth(1) == Some('"') {
                 self.source.next_char();
                 self.source.next_char();
-                start_span.complete(self.source.line, self.source.col);
+                start_span.extend_to(self.source.pos);
                 Some(Ok(Token::new(TokenType::Str(s.to_string()), start_span)))
             } else {
                 None
             }
         } else {
-            start_span.complete(self.source.line, self.source.col);
+            start_span.extend_to(self.source.pos);
             Some(Ok(Token::new(TokenType::Str(s.to_string()), start_span)))
         }
     }
@@ -923,12 +923,9 @@ impl<'a> Lexer<'a> {
 
     fn handle_unterminated_string(
         &self,
-        string_content: &str,
-        start_col: usize,
-        mut start_span: Span,
+        _string_content: &str,
+        start_span: Span,
     ) -> Result<Token, LexerError> {
-        let _ = (string_content, start_col);
-        start_span.complete(self.source.line, self.source.col);
         Err(LexerError::with_help(
             DiagnosticCode::LexUnterminatedString,
             "Unterminated string",
@@ -938,7 +935,6 @@ impl<'a> Lexer<'a> {
     }
 
     fn read_char(&mut self, start_span: Span) -> Result<Token, LexerError> {
-        let start_col = self.source.col - 1;
         let mut chars = Vec::new();
         let mut escaped = false;
 
@@ -949,16 +945,16 @@ impl<'a> Lexer<'a> {
             }
 
             if c == '\'' && !escaped {
-                return self.finish_char_literal(chars, start_span, start_col);
+                return self.finish_char_literal(chars, start_span);
             }
 
-            self.process_char_literal_char(c, &mut escaped, &mut chars, start_span, start_col)?;
+            self.process_char_literal_char(c, &mut escaped, &mut chars)?;
 
             if chars.len() > 1 && !escaped {
                 return Err(LexerError::with_help(
                     DiagnosticCode::LexInvalidCharacterLiteral,
                     "Char literal must be exactly one character",
-                    Span::new(start_span.row_start, start_col + 1),
+                    self.char_literal_error_span(start_span),
                     "Example: 'a', '\\n', '\\''",
                 ));
             }
@@ -976,18 +972,25 @@ impl<'a> Lexer<'a> {
         &mut self,
         chars: Vec<char>,
         mut start_span: Span,
-        start_col: usize,
     ) -> Result<Token, LexerError> {
         if chars.len() != 1 {
             return Err(LexerError::with_help(
                 DiagnosticCode::LexInvalidCharacterLiteral,
                 "Char literal must be exactly one character",
-                Span::new(start_span.row_start, start_col + 1),
+                self.char_literal_error_span(start_span),
                 "Example: 'a', '\\n', '\\''",
             ));
         }
-        start_span.complete(self.source.line, self.source.col);
+        start_span.extend_to(self.source.pos);
         Ok(Token::new(TokenType::Char(chars[0]), start_span))
+    }
+
+    fn char_literal_error_span(&self, start_span: Span) -> Span {
+        let start = start_span
+            .byte_range
+            .expect("character literal has a source range")
+            .start;
+        self.span_at_byte(start, self.source.pos)
     }
 
     fn process_char_literal_char(
@@ -995,8 +998,6 @@ impl<'a> Lexer<'a> {
         c: char,
         escaped: &mut bool,
         chars: &mut Vec<char>,
-        _start_span: Span,
-        _start_col: usize,
     ) -> Result<(), LexerError> {
         if *escaped {
             if let Some(decoded) = Self::decode_escape(c) {
@@ -1047,7 +1048,7 @@ impl<'a> Lexer<'a> {
 
         self.consume_exponent_if_present(&mut num, &mut is_float)?;
 
-        start_span.complete(self.source.line, self.source.col);
+        start_span.extend_to(self.source.pos);
 
         if is_float {
             self.parse_float_token(num, start_span)
@@ -1063,6 +1064,7 @@ mod tests {
     use crate::source::Source;
 
     fn assert_lexer_error(
+        input: &str,
         result: Result<Vec<Token>, LexerError>,
         expected_msg: &str,
         expected_line: usize,
@@ -1077,18 +1079,16 @@ mod tests {
                     expected_msg,
                     e.message
                 );
-                assert_eq!(
-                    e.span.row_start, expected_line,
-                    "Expected error on line {} but got {}",
-                    expected_line, e.span.row_start
-                );
-                assert_eq!(
-                    e.span.col_start, expected_col,
-                    "Expected error at column {} but got {}",
-                    expected_col, e.span.col_start
-                );
+                let range = e.span.byte_range.expect("lexer errors have byte ranges");
+                let source = Source::from_string(input.to_owned());
+                assert_eq!(source.line_col(range.start), (expected_line, expected_col));
             }
         }
+    }
+
+    fn assert_span_start(source: &Source, span: Span, expected: (usize, usize)) {
+        let range = span.byte_range.expect("lexer tokens have byte ranges");
+        assert_eq!(source.line_col(range.start), expected);
     }
 
     #[test]
@@ -1257,13 +1257,13 @@ mod tests {
         let input = "auto x = \"unterminated";
         let mut source = Source::from_test_str(input);
         let result = Lexer::new(&mut source).lex_all();
-        assert_lexer_error(result, "Unterminated string", 1, 10);
+        assert_lexer_error(input, result, "Unterminated string", 1, 10);
 
         // Invalid escape sequence in string
         let input = "auto x = \"invalid \\z escape\"";
         let mut source = Source::from_test_str(input);
         let result = Lexer::new(&mut source).lex_all();
-        assert_lexer_error(result, "Unknown escape sequence", 1, 20);
+        assert_lexer_error(input, result, "Unknown escape sequence", 1, 20);
     }
 
     #[test]
@@ -1272,7 +1272,7 @@ mod tests {
 auto y = 42"#;
         let mut source = Source::from_test_str(input);
         let result = Lexer::new(&mut source).lex_all();
-        assert_lexer_error(result, "Unterminated string", 1, 10);
+        assert_lexer_error(input, result, "Unterminated string", 1, 10);
 
         let input = r#"auto x = "invalid \z escape""#;
         let mut source = Source::from_test_str(input);
@@ -1288,8 +1288,8 @@ auto y = 42"#;
                     "Expected 'Unknown escape sequence: \\z' error, got: {}",
                     e.message
                 );
-                assert_eq!(e.span.row_start, 1);
-                assert_eq!(e.span.col_start, 20);
+                let range = e.span.byte_range.expect("lexer errors have byte ranges");
+                assert_eq!(source.line_col(range.start), (1, 20));
             }
         }
     }
@@ -1347,7 +1347,13 @@ auto y = 42"#;
         let input = "for int i in 0..10 {}";
         let mut source = Source::from_test_str(input);
         let result = Lexer::new(&mut source).lex_all();
-        assert_lexer_error(result, "Mux does not have range literal syntax", 1, 15);
+        assert_lexer_error(
+            input,
+            result,
+            "Mux does not have range literal syntax",
+            1,
+            15,
+        );
     }
 
     #[test]
@@ -1371,8 +1377,8 @@ auto y = 42"#;
                     "Unexpected error: {}",
                     e.message
                 );
-                assert_eq!(e.span.row_start, 2);
-                assert_eq!(e.span.col_start, 22);
+                let range = e.span.byte_range.expect("lexer errors have byte ranges");
+                assert_eq!(source.line_col(range.start), (2, 22));
             }
         }
     }
@@ -1397,8 +1403,8 @@ auto y = 42"#;
                     "Expected 'Unterminated string' error, got: {}",
                     e.message
                 );
-                assert_eq!(e.span.row_start, 2);
-                assert_eq!(e.span.col_start, 22);
+                let range = e.span.byte_range.expect("lexer errors have byte ranges");
+                assert_eq!(source.line_col(range.start), (2, 22));
             }
         }
 
@@ -1876,34 +1882,29 @@ world"
             TokenType::Float(f) => assert!((f.into_inner() - 1.2).abs() < f64::EPSILON),
             _ => panic!("Expected Float(1.2), got {:?}", tokens[0]),
         }
-        assert_eq!(tokens[0].span.row_start, 1);
-        assert_eq!(tokens[0].span.col_start, 1);
+        assert_span_start(&source, tokens[0].span, (1, 1));
 
         // First newline
         assert_eq!(tokens[1].token_type, TokenType::NewLine);
-        assert_eq!(tokens[1].span.row_start, 1);
-        assert_eq!(tokens[1].span.col_start, 4);
+        assert_span_start(&source, tokens[1].span, (1, 4));
 
         // Second float
         match &tokens[2].token_type {
             TokenType::Float(f) => assert!((f.into_inner() - 3.4).abs() < f64::EPSILON),
             _ => panic!("Expected Float(3.4), got {:?}", tokens[2]),
         }
-        assert_eq!(tokens[2].span.row_start, 2);
-        assert_eq!(tokens[2].span.col_start, 1);
+        assert_span_start(&source, tokens[2].span, (2, 1));
 
         // Second newline
         assert_eq!(tokens[3].token_type, TokenType::NewLine);
-        assert_eq!(tokens[3].span.row_start, 2);
-        assert_eq!(tokens[3].span.col_start, 4);
+        assert_span_start(&source, tokens[3].span, (2, 4));
 
         // Third float
         match &tokens[4].token_type {
             TokenType::Float(f) => assert!((f.into_inner() - 5.6).abs() < f64::EPSILON),
             _ => panic!("Expected Float(5.6), got {:?}", tokens[4]),
         }
-        assert_eq!(tokens[4].span.row_start, 3);
-        assert_eq!(tokens[4].span.col_start, 1);
+        assert_span_start(&source, tokens[4].span, (3, 1));
     }
 
     #[test]
@@ -1913,7 +1914,7 @@ world"
         let eof = lexer.next_token().expect("empty input must lex to EOF");
 
         assert_eq!(eof.token_type, TokenType::Eof);
-        assert_eq!((eof.span.row_start, eof.span.col_start), (1, 1));
+        assert_span_start(&source, eof.span, (1, 1));
         assert_eq!(eof.span.byte_range, Some(ByteRange::empty(0)));
     }
 
@@ -1935,8 +1936,7 @@ world"
             .iter()
             .find(|t| t.token_type == TokenType::Auto)
             .expect("'auto' token not found");
-        assert_eq!(auto_token.span.row_start, 2);
-        assert_eq!(auto_token.span.col_start, 9);
+        assert_span_start(&source, auto_token.span, (2, 9));
 
         // Find the string literal
         let string_token = tokens
@@ -1945,10 +1945,9 @@ world"
             .expect("String token not found");
         if let TokenType::Str(s) = &string_token.token_type {
             assert_eq!(s, "hello");
-            assert_eq!(string_token.span.row_start, 3);
-            assert_eq!(string_token.span.col_start, 18);
-            // Check that the span includes the quotes
-            assert_eq!(string_token.span.col_end, Some(25));
+            assert_span_start(&source, string_token.span, (3, 18));
+            let range = string_token.span.byte_range.expect("string byte range");
+            assert_eq!(source.line_col(range.end), (3, 25));
         } else {
             panic!("Expected Str token");
         }
@@ -1965,8 +1964,9 @@ world"
             i += 1;
         }
         assert!(i > fn_token, "Function should have multiple tokens");
-        assert_eq!(tokens[fn_token].span.row_start, 4);
-        assert_eq!(tokens[i].span.row_start, 4);
+        assert_span_start(&source, tokens[fn_token].span, (4, 9));
+        let closing_brace = tokens[i].span.byte_range.expect("brace byte range");
+        assert_eq!(source.line_col(closing_brace.start).0, 4);
     }
 
     #[test]
@@ -1992,12 +1992,9 @@ world"
         // The string should span multiple lines
         // The first line of the input is empty, so the string starts on line 2
         // The column should be the start of the triple quotes (after the indentation)
-        assert_eq!(string_token.span.row_start, 2);
-        assert_eq!(string_token.span.col_start, 23);
-        // The string span includes all three closing quotes.
-        assert_eq!(string_token.span.col_end, Some(18));
-        // The string should span 3 lines (from row 2 to row 4)
-        assert_eq!(string_token.span.row_end, Some(4));
+        assert_span_start(&source, string_token.span, (2, 23));
+        let range = string_token.span.byte_range.expect("string byte range");
+        assert_eq!(source.line_col(range.end), (4, 18));
         assert!(matches!(
             &string_token.token_type,
             TokenType::Str(value) if value.contains("multi-line") && value.contains("string")

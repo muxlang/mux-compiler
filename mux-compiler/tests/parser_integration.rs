@@ -19,19 +19,24 @@ fn parse_file_to_ast(test_file: &Path) -> String {
         .lower()
         .unwrap_or_else(|error| panic!("Lowering failed on file {path_str}: {error}"));
 
-    // Convert the AST to a nicely formatted string for snapshots
+    // Snapshots assert AST structure, while range validity is checked
+    // independently so location representation changes do not rewrite them.
     let mut output = String::new();
     for node in result {
-        let _ = writeln!(&mut output, "{node:#?}");
+        let debug = format!("{node:#?}");
+        let _ = writeln!(&mut output, "{}", without_span_debug(&debug));
         output.push('\n');
     }
     output
 }
 
 fn ast_without_spans(nodes: &[mux_lang::ast::AstNode]) -> String {
-    let debug = format!("{nodes:#?}");
+    without_span_debug(&format!("{nodes:#?}"))
+}
+
+fn without_span_debug(debug: &str) -> String {
     let mut normalized = String::with_capacity(debug.len());
-    let mut remainder = debug.as_str();
+    let mut remainder = debug;
     while let Some(start) = remainder.find("Span {") {
         normalized.push_str(&remainder[..start]);
         normalized.push_str("Span");
