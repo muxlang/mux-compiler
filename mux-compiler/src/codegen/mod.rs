@@ -16,6 +16,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::Arc;
 
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
@@ -210,7 +211,7 @@ pub struct CodeGenerator<'a> {
     closure_scope_stack: Vec<Vec<(String, PointerValue<'a>)>>,
     loop_targets: Vec<LoopTargets<'a>>,
     source_name: String,
-    source_texts: HashMap<String, SourceText>,
+    source_texts: HashMap<String, Arc<SourceText>>,
     coverage_enabled: bool,
     /// ABI type sizing used to pick a union slot large enough for every variant
     /// at a heterogeneous enum payload position (issue #309). Built from LLVM's
@@ -1004,24 +1005,26 @@ impl<'a> CodeGenerator<'a> {
         }
 
         let mut source_texts = HashMap::new();
-        if let Some(source) = files.source(root_file_id) {
-            source_texts.insert(source_name.to_string(), SourceText::new(source.to_string()));
-        }
-        for (_, path, source) in files.iter() {
-            let source_text = SourceText::new(source.to_string());
-            source_texts.insert(path.to_string_lossy().into_owned(), source_text.clone());
+        let mut source_texts_by_id = HashMap::new();
+        for (file_id, path, source) in files.iter() {
+            let source_text = Arc::new(SourceText::new(source.to_string()));
+            source_texts_by_id.insert(file_id, Arc::clone(&source_text));
+            source_texts.insert(
+                path.to_string_lossy().into_owned(),
+                Arc::clone(&source_text),
+            );
             if let Ok(absolute) = std::fs::canonicalize(path) {
                 source_texts.insert(absolute.to_string_lossy().into_owned(), source_text);
             }
         }
+        if let Some(source_text) = source_texts_by_id.get(&root_file_id) {
+            source_texts.insert(source_name.to_string(), Arc::clone(source_text));
+        }
         for path in analyzer.module_source_paths().values() {
             if let Some(file_id) = files.id_for_path(path)
-                && let Some(source) = files.source(file_id)
+                && let Some(source_text) = source_texts_by_id.get(&file_id)
             {
-                source_texts.insert(
-                    path.to_string_lossy().into_owned(),
-                    SourceText::new(source.to_string()),
-                );
+                source_texts.insert(path.to_string_lossy().into_owned(), Arc::clone(source_text));
             }
         }
 
