@@ -113,10 +113,9 @@ impl fmt::Display for FixError {
                 "edit for {file_id:?} touches recovered source at {}..{}",
                 range.start_byte, range.end_byte
             ),
-            Self::InvalidLocation { span, reason } => write!(
+            Self::InvalidLocation { reason, .. } => write!(
                 f,
-                "cannot map diagnostic span at {}:{} to bytes: {reason}",
-                span.row_start, span.col_start
+                "cannot map diagnostic span without a valid byte range to bytes: {reason}"
             ),
             Self::InvalidByteRange { range, reason } => write!(
                 f,

@@ -73,15 +73,9 @@ pub(crate) fn sort_key(diagnostic: &Diagnostic, files: &Files) -> DiagnosticSort
         .map_or_else(String::new, |path| path.display().to_string());
     let position = diagnostic
         .labels
-        .first()
-        .map_or((usize::MAX, usize::MAX), |label| {
-            label
-                .span
-                .byte_range
-                .map_or((label.span.row_start, label.span.col_start), |range| {
-                    (range.start, 0)
-                })
-        });
+        .iter()
+        .find_map(|label| label.span.byte_range.map(|range| (range.start, 0)))
+        .unwrap_or((usize::MAX, usize::MAX));
     let labels = diagnostic
         .labels
         .iter()
