@@ -28,7 +28,7 @@ use inkwell::context::Context;
 use mux_lang::ast::AstNode;
 use mux_lang::codegen::CodeGenerator;
 use mux_lang::diagnostic::Files;
-use mux_lang::lexer::{Lexer, Token};
+use mux_lang::lexer::{Lexer, LosslessLexResult};
 use mux_lang::module_resolver::ModuleResolver;
 use mux_lang::semantics::SemanticAnalyzer;
 use mux_lang::source::Source;
@@ -49,13 +49,14 @@ fn test_scripts_dir() -> PathBuf {
 // Bench-time helpers. The corpus is pre-validated, so a failure here means a
 // regression (a corpus program stopped lexing/parsing) - panic loudly rather
 // than silently measuring an empty/short-circuited input.
-fn lex(src: &str) -> Vec<Token> {
+fn lex(src: &str) -> LosslessLexResult {
     let mut source = Source::from_string(src.to_string());
     let mut lexer = Lexer::new(&mut source);
-    match lexer.lex_all() {
-        Ok(tokens) => tokens,
-        Err(_) => panic!("pre-validated corpus program should lex"),
+    let result = lexer.lex_all_lossless();
+    if !result.errors.is_empty() {
+        panic!("pre-validated corpus program should lex");
     }
+    result
 }
 
 fn parse(src: &str) -> Vec<AstNode> {
@@ -85,9 +86,9 @@ fn fresh(prog: &Program) -> (SemanticAnalyzer, Files) {
 fn compiles(prog: &Program) -> bool {
     let mut source = Source::from_string(prog.src.clone());
     let mut lexer = Lexer::new(&mut source);
-    let Ok(_tokens) = lexer.lex_all() else {
+    if !lexer.lex_all_lossless().errors.is_empty() {
         return false;
-    };
+    }
     let parsed = mux_lang::syntax::parse_source(&prog.src);
     if parsed.has_errors() {
         return false;

@@ -24,29 +24,6 @@ pub struct LosslessLexResult {
 /// The lexer for the Mux language.
 pub struct Lexer<'a> {
     source: &'a mut Source,
-    /// How many `(` or `[` are currently open.
-    ///
-    /// A newline inside one continues the expression instead of ending the
-    /// statement, so a long call or list literal can be wrapped across lines.
-    ///
-    /// `{` is deliberately NOT counted. Braces open both blocks and map/set
-    /// literals, and the lexer cannot tell which - counting them would swallow
-    /// the newlines that separate statements inside every function body.
-    bracket_depth: usize,
-    /// `bracket_depth` as it was when each currently-open `{` was reached.
-    ///
-    /// A brace RESETS the depth rather than merely not incrementing it, because
-    /// a block can appear inside an open bracket - a lambda passed as a call
-    /// argument, `spawn(func() returns void { ... })`, is the everyday case.
-    /// Leaving the count alone there suppressed the newlines *inside the block*
-    /// too, so its statements silently ran together: `auto b = a` followed by
-    /// `-a` parsed as `auto b = a - a`, with no diagnostic.
-    ///
-    /// Saving and restoring means continuation applies to the bracketed
-    /// expression itself and stops at the boundary of any block written inside
-    /// it, which is the rule the two constructs actually need.
-    brace_depths: Vec<usize>,
-    lossless: bool,
     pending_token_start: Option<usize>,
 }
 
@@ -63,32 +40,31 @@ impl<'a> Lexer<'a> {
     pub fn new(source: &'a mut Source) -> Self {
         Lexer {
             source,
-            bracket_depth: 0,
-            brace_depths: Vec::new(),
-            lossless: false,
             pending_token_start: None,
         }
-    }
-
-    pub fn lex_all(&mut self) -> Result<Vec<Token>, LexerError> {
-        let result = self.scan_all(false)?;
-        Ok(result
-            .tokens
-            .into_iter()
-            .filter(|token| !matches!(token.token_type, TokenType::Eof))
-            .collect())
     }
 
     /// Tokenize every source byte, retaining horizontal whitespace, comments,
     /// newlines, and invalid text. Errors are collected up to the diagnostic
     /// limit while scanning continues through EOF.
     pub fn lex_all_lossless(&mut self) -> LosslessLexResult {
-        self.scan_all(true)
-            .expect("lossless scanning recovers from every lexical error")
+        self.scan_all()
     }
 
-    fn scan_all(&mut self, lossless: bool) -> Result<LosslessLexResult, LexerError> {
-        self.lossless = lossless;
+    #[cfg(test)]
+    fn lex_tokens(&mut self) -> Result<Vec<Token>, LexerError> {
+        let result = self.lex_all_lossless();
+        if let Some(error) = result.errors.into_iter().next() {
+            return Err(error);
+        }
+        Ok(result
+            .tokens
+            .into_iter()
+            .filter(|token| !matches!(token.token_type, TokenType::Whitespace | TokenType::Eof))
+            .collect())
+    }
+
+    fn scan_all(&mut self) -> LosslessLexResult {
         let mut tokens = Vec::new();
         let mut errors = Vec::new();
         loop {
@@ -102,10 +78,6 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 Err(error) => {
-                    if !lossless {
-                        self.lossless = false;
-                        return Err(error);
-                    }
                     if errors.len() < crate::diagnostic::MAX_DIAGNOSTICS {
                         errors.push(error.clone());
                     }
@@ -125,8 +97,7 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
-        self.lossless = false;
-        Ok(LosslessLexResult { tokens, errors })
+        LosslessLexResult { tokens, errors }
     }
 
     /// Consume the next character after a successful peek.
@@ -156,19 +127,6 @@ impl<'a> Lexer<'a> {
             }
         }
         span.extend_to(self.source.pos);
-    }
-
-    fn skip_space(&mut self) -> Result<(), LexerError> {
-        // skip spaces and tabs, but not newlines
-        while let Some(ch) = self.source.peek() {
-            match ch {
-                ' ' | '\t' | '\r' => {
-                    self.source.next_char();
-                }
-                _ => break,
-            }
-        }
-        Ok(())
     }
 
     pub fn next_token(&mut self) -> Result<Token, LexerError> {
@@ -205,32 +163,21 @@ impl<'a> Lexer<'a> {
     }
 
     fn next_token_inner(&mut self) -> Result<Token, LexerError> {
-        if self.lossless {
-            if self
+        if self
+            .source
+            .peek()
+            .is_some_and(|ch| matches!(ch, ' ' | '\t' | '\r'))
+        {
+            let start = self.source.pos;
+            while self
                 .source
                 .peek()
                 .is_some_and(|ch| matches!(ch, ' ' | '\t' | '\r'))
             {
-                let start = self.source.pos;
-                while self
-                    .source
-                    .peek()
-                    .is_some_and(|ch| matches!(ch, ' ' | '\t' | '\r'))
-                {
-                    self.source.next_char();
-                }
-                let span = Span::new(start, self.source.pos);
-                return Ok(Token::new(TokenType::Whitespace, span));
+                self.source.next_char();
             }
-        } else {
-            self.skip_space()?;
-        }
-
-        // Newlines inside `(` or `[` continue the expression. Consume a run
-        // iteratively so deeply wrapped expressions cannot overflow the stack.
-        while !self.lossless && self.bracket_depth > 0 && self.source.peek() == Some('\n') {
-            self.source.next_char();
-            self.skip_space()?;
+            let span = Span::new(start, self.source.pos);
+            return Ok(Token::new(TokenType::Whitespace, span));
         }
 
         self.pending_token_start = Some(self.source.pos);
@@ -253,38 +200,12 @@ impl<'a> Lexer<'a> {
         };
 
         match c {
-            '(' => {
-                self.bracket_depth += 1;
-                Ok(Token::new(TokenType::OpenParen, start_span))
-            }
-            ')' => {
-                // Saturating: an unbalanced ')' is the parser's error to report,
-                // and underflowing here would panic before it ever got the chance.
-                self.bracket_depth = self.bracket_depth.saturating_sub(1);
-                Ok(Token::new(TokenType::CloseParen, start_span))
-            }
-            '{' => {
-                // Start a fresh continuation context: statements inside a block
-                // are newline-separated even when the block sits inside an open
-                // bracket.
-                self.brace_depths.push(self.bracket_depth);
-                self.bracket_depth = 0;
-                Ok(Token::new(TokenType::OpenBrace, start_span))
-            }
-            '}' => {
-                // Back to whatever was open around the brace, so a wrapped call
-                // keeps continuing after a lambda argument closes.
-                self.bracket_depth = self.brace_depths.pop().unwrap_or(0);
-                Ok(Token::new(TokenType::CloseBrace, start_span))
-            }
-            '[' => {
-                self.bracket_depth += 1;
-                Ok(Token::new(TokenType::OpenBracket, start_span))
-            }
-            ']' => {
-                self.bracket_depth = self.bracket_depth.saturating_sub(1);
-                Ok(Token::new(TokenType::CloseBracket, start_span))
-            }
+            '(' => Ok(Token::new(TokenType::OpenParen, start_span)),
+            ')' => Ok(Token::new(TokenType::CloseParen, start_span)),
+            '{' => Ok(Token::new(TokenType::OpenBrace, start_span)),
+            '}' => Ok(Token::new(TokenType::CloseBrace, start_span)),
+            '[' => Ok(Token::new(TokenType::OpenBracket, start_span)),
+            ']' => Ok(Token::new(TokenType::CloseBracket, start_span)),
             ',' => Ok(Token::new(TokenType::Comma, start_span)),
             ':' => Ok(Token::new(TokenType::Colon, start_span)),
             '%' => {
@@ -373,17 +294,12 @@ impl<'a> Lexer<'a> {
             self.source.next_char();
             let mut comment = String::new();
             while let Some(ch) = self.source.peek() {
-                if ch == '\n' || (self.lossless && ch == '\r') {
+                if ch == '\n' || ch == '\r' {
                     break;
                 }
                 comment.push(self.consume_char());
             }
             start_span.extend_to(self.source.pos);
-            let comment = if self.lossless {
-                comment
-            } else {
-                comment.trim().to_string()
-            };
             return Ok(Token::new(TokenType::LineComment(comment), start_span));
         }
 
@@ -408,11 +324,6 @@ impl<'a> Lexer<'a> {
                 ));
             }
             start_span.extend_to(self.source.pos);
-            let comment = if self.lossless {
-                comment
-            } else {
-                comment.trim().to_string()
-            };
             return Ok(Token::new(TokenType::MultilineComment(comment), start_span));
         }
 
@@ -1097,56 +1008,58 @@ mod tests {
         let input = "auto x = 42\nfunc check() {\n  return x\n}";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
+        let tokens = lexer.lex_tokens().unwrap();
+        let mut tokens = tokens.iter().map(|token| &token.token_type);
 
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::Auto);
-        assert_eq!(
-            lexer.next_token().unwrap().token_type,
-            TokenType::Id("x".to_string())
-        );
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::Eq);
-        match lexer.next_token().unwrap().token_type {
-            TokenType::Int(42) => {}
+        assert_eq!(tokens.next(), Some(&TokenType::Auto));
+        assert_eq!(tokens.next(), Some(&TokenType::Id("x".to_string())));
+        assert_eq!(tokens.next(), Some(&TokenType::Eq));
+        match tokens.next() {
+            Some(TokenType::Int(42)) => {}
             other => panic!("Expected Int(42), got {other:?}"),
         }
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::NewLine);
+        assert_eq!(tokens.next(), Some(&TokenType::NewLine));
 
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::Func);
-        assert_eq!(
-            lexer.next_token().unwrap().token_type,
-            TokenType::Id("check".to_string())
-        );
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::OpenParen);
-        assert_eq!(
-            lexer.next_token().unwrap().token_type,
-            TokenType::CloseParen
-        );
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::OpenBrace);
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::NewLine);
+        assert_eq!(tokens.next(), Some(&TokenType::Func));
+        assert_eq!(tokens.next(), Some(&TokenType::Id("check".to_string())));
+        assert_eq!(tokens.next(), Some(&TokenType::OpenParen));
+        assert_eq!(tokens.next(), Some(&TokenType::CloseParen));
+        assert_eq!(tokens.next(), Some(&TokenType::OpenBrace));
+        assert_eq!(tokens.next(), Some(&TokenType::NewLine));
 
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::Return);
-        assert_eq!(
-            lexer.next_token().unwrap().token_type,
-            TokenType::Id("x".to_string())
-        );
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::NewLine);
+        assert_eq!(tokens.next(), Some(&TokenType::Return));
+        assert_eq!(tokens.next(), Some(&TokenType::Id("x".to_string())));
+        assert_eq!(tokens.next(), Some(&TokenType::NewLine));
 
-        assert_eq!(
-            lexer.next_token().unwrap().token_type,
-            TokenType::CloseBrace
-        );
-        assert_eq!(lexer.next_token().unwrap().token_type, TokenType::Eof);
+        assert_eq!(tokens.next(), Some(&TokenType::CloseBrace));
+        assert_eq!(tokens.next(), None);
     }
 
     #[test]
     fn continuation_newlines_are_consumed_iteratively() {
         let input = format!("(\n{}1)", "\n".repeat(100_000));
         let mut source = Source::from_test_str(&input);
-        let tokens = Lexer::new(&mut source).lex_all().unwrap();
-
-        assert_eq!(tokens.len(), 3);
-        assert_eq!(tokens[0].token_type, TokenType::OpenParen);
-        assert_eq!(tokens[1].token_type, TokenType::Int(1));
-        assert_eq!(tokens[2].token_type, TokenType::CloseParen);
+        let result = Lexer::new(&mut source).lex_all_lossless();
+        assert!(result.errors.is_empty());
+        assert_eq!(result.tokens[0].token_type, TokenType::OpenParen);
+        assert_eq!(result.tokens[1].token_type, TokenType::NewLine);
+        assert_eq!(
+            result
+                .tokens
+                .iter()
+                .filter(|token| token.token_type == TokenType::NewLine)
+                .count(),
+            100_001
+        );
+        assert_eq!(
+            result
+                .tokens
+                .iter()
+                .filter(|token| token.token_type == TokenType::Int(1))
+                .count(),
+            1
+        );
+        assert_eq!(result.tokens.last().unwrap().token_type, TokenType::Eof);
     }
 
     #[test]
@@ -1177,8 +1090,14 @@ mod tests {
                 && source.slice(token.span.byte_range.unwrap()) == "// keep  this"
         }));
         assert!(result.tokens.iter().any(|token| {
+            matches!(&token.token_type, TokenType::LineComment(comment) if comment == " keep  this")
+        }));
+        assert!(result.tokens.iter().any(|token| {
             token.token_type == TokenType::Whitespace
                 && source.slice(token.span.byte_range.unwrap()) == "\r"
+        }));
+        assert!(result.tokens.iter().any(|token| {
+            matches!(&token.token_type, TokenType::MultilineComment(comment) if comment == " keep  this ")
         }));
     }
 
@@ -1250,19 +1169,19 @@ mod tests {
         // Empty string literal
         let input = "auto x = \"\"";
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert!(result.is_ok(), "Empty string literals should be valid");
 
         // Unterminated string
         let input = "auto x = \"unterminated";
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert_lexer_error(input, result, "Unterminated string", 1, 10);
 
         // Invalid escape sequence in string
         let input = "auto x = \"invalid \\z escape\"";
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert_lexer_error(input, result, "Unknown escape sequence", 1, 20);
     }
 
@@ -1271,12 +1190,12 @@ mod tests {
         let input = r#"auto x = "unterminated
 auto y = 42"#;
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert_lexer_error(input, result, "Unterminated string", 1, 10);
 
         let input = r#"auto x = "invalid \z escape""#;
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
 
         match result {
             Ok(tokens) => {
@@ -1299,7 +1218,7 @@ auto y = 42"#;
         // The lexer should fail on multiple decimal points
         let input = "auto x = 1.2.3";
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert!(
             result.is_err(),
             "Expected error for invalid float literal with multiple decimals"
@@ -1308,7 +1227,7 @@ auto y = 42"#;
         // The lexer should fail on invalid scientific notation
         let input = "auto x = 1.23e";
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert!(
             result.is_err(),
             "Expected error for invalid scientific notation"
@@ -1317,7 +1236,7 @@ auto y = 42"#;
         // The lexer should fail on "1e+" as it's invalid scientific notation
         let input = "auto x = 1e+";
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert!(
             result.is_err(),
             "Expected error for invalid scientific notation"
@@ -1326,13 +1245,13 @@ auto y = 42"#;
         // The lexer should fail on trailing decimal points
         let input = "auto x = 1.";
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert!(result.is_err(), "Expected error for trailing decimal point");
 
         // The lexer should fail on integer literals with identifier suffixes
         let input = "auto x = 123abc";
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert!(
             result.is_err(),
             "Expected error for invalid integer literal"
@@ -1346,7 +1265,7 @@ auto y = 42"#;
         // "Expected digit after decimal point" message.
         let input = "for int i in 0..10 {}";
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         assert_lexer_error(
             input,
             result,
@@ -1365,7 +1284,7 @@ auto y = 42"#;
         "#;
 
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
 
         // The lexer will stop at the first error, so we should only get one error
         match result {
@@ -1394,7 +1313,7 @@ auto y = 42"#;
 
         // First error (unterminated string)
         let mut source = Source::from_test_str(input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         match result {
             Ok(tokens) => panic!("Expected error but got tokens: {tokens:?}"),
             Err(e) => {
@@ -1414,7 +1333,7 @@ auto y = 42"#;
             auto y = 1.2
         ";
         let mut source = Source::from_test_str(fixed_input);
-        let result = Lexer::new(&mut source).lex_all();
+        let result = Lexer::new(&mut source).lex_tokens();
         match result {
             Ok(tokens) => {
                 // The lexer should successfully tokenize this input
@@ -1437,7 +1356,7 @@ auto y = 42"#;
     fn test_number_parsing() {
         // Method calls on literals should be unambiguous: `1.to_string()` is int + dot + ident.
         let mut source = Source::from_test_str("auto x = 1.to_string()");
-        let tokens = Lexer::new(&mut source).lex_all().unwrap();
+        let tokens = Lexer::new(&mut source).lex_tokens().unwrap();
         let token_types: Vec<_> = tokens.into_iter().map(|t| t.token_type).collect();
         assert_eq!(
             token_types,
@@ -1455,7 +1374,7 @@ auto y = 42"#;
 
         // Leading-dot floats should be accepted (and normalized to 0.x)
         let mut source = Source::from_test_str("auto y = .5");
-        let tokens = Lexer::new(&mut source).lex_all().unwrap();
+        let tokens = Lexer::new(&mut source).lex_tokens().unwrap();
         match tokens.last().map(|t| &t.token_type) {
             Some(TokenType::Float(f)) => assert!((f.into_inner() - 0.5).abs() < f64::EPSILON),
             other => panic!("Expected Float(0.5), got {other:?}"),
@@ -1467,7 +1386,7 @@ auto y = 42"#;
         let input = "42 1_000 3.45 0.5 5.0";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
         let token_types: Vec<_> = tokens.into_iter().map(|t| t.token_type).collect();
 
         match &token_types[..] {
@@ -1489,7 +1408,7 @@ auto y = 42"#;
         let input = r#""hello" "world""#;
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         assert_eq!(tokens.len(), 2);
         match &tokens[0].token_type {
@@ -1510,7 +1429,7 @@ world"
 "#;
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         assert_eq!(tokens.len(), 3);
         assert_eq!(tokens[0].token_type, TokenType::NewLine);
@@ -1526,7 +1445,7 @@ world"
         let input = r"'a''\n''\''"; // No spaces between characters
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         // We expect 3 character literals with no whitespace tokens
         assert_eq!(tokens.len(), 3);
@@ -1556,7 +1475,7 @@ world"
         let input = r#""a\n\t\\\"\'\r\0""#;
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         assert_eq!(tokens.len(), 1);
         match &tokens[0].token_type {
@@ -1568,7 +1487,7 @@ world"
         let input = "Some None Ok Err";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         assert_eq!(
             tokens.into_iter().map(|t| t.token_type).collect::<Vec<_>>(),
@@ -1584,7 +1503,7 @@ world"
         let input = "true false";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         assert_eq!(
             tokens.into_iter().map(|t| t.token_type).collect::<Vec<_>>(),
@@ -1595,7 +1514,7 @@ world"
         let input = "some none ok err";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         assert_eq!(
             tokens.into_iter().map(|t| t.token_type).collect::<Vec<_>>(),
@@ -1611,13 +1530,13 @@ world"
         let input = "\"unterminated";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        assert!(lexer.lex_all().is_err());
+        assert!(lexer.lex_tokens().is_err());
 
         // unknown escape sequences
         for input in [r#""\a""#, r#""\c""#] {
             let mut source = Source::from_test_str(input);
             let mut lexer = Lexer::new(&mut source);
-            assert!(lexer.lex_all().is_err());
+            assert!(lexer.lex_tokens().is_err());
         }
     }
 
@@ -1625,7 +1544,7 @@ world"
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
         lexer
-            .lex_all()
+            .lex_tokens()
             .unwrap()
             .into_iter()
             .map(|t| t.token_type)
@@ -1670,7 +1589,7 @@ world"
         let input = "auto x = 42 if else for while match const class interface enum is as in range list map optional result some none ok err true false common";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens: Vec<_> = lexer.lex_all().unwrap().into_iter().collect();
+        let tokens: Vec<_> = lexer.lex_tokens().unwrap().into_iter().collect();
 
         let token_types: Vec<_> = tokens.into_iter().map(|t| t.token_type).collect();
 
@@ -1727,7 +1646,7 @@ world"
             let mut source = Source::from_test_str(input);
             let mut lexer = Lexer::new(&mut source);
             lexer
-                .lex_all()
+                .lex_tokens()
                 .unwrap()
                 .into_iter()
                 .map(|t| t.token_type)
@@ -1811,14 +1730,14 @@ world"
         let input = "// line comment\n/* multi\nline */";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         // We should have 3 tokens: line comment, newline, and multiline comment
         assert_eq!(tokens.len(), 3);
 
-        // Check line comment - leading space is now trimmed
+        // The comment payload retains exactly the text after the marker.
         match &tokens[0].token_type {
-            TokenType::LineComment(s) => assert_eq!(s, "line comment"),
+            TokenType::LineComment(s) => assert_eq!(s, " line comment"),
             _ => panic!("Expected LineComment, got {:?}", tokens[0]),
         }
 
@@ -1827,7 +1746,7 @@ world"
 
         // Check multiline comment
         match &tokens[2].token_type {
-            TokenType::MultilineComment(s) => assert_eq!(s, "multi\nline"),
+            TokenType::MultilineComment(s) => assert_eq!(s, " multi\nline "),
             _ => panic!("Expected MultilineComment, got {:?}", tokens[2]),
         }
     }
@@ -1837,14 +1756,14 @@ world"
         let input = "// first comment\n// second comment\n// third comment";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         // We should have 5 tokens: 3 comments and 2 newlines
         assert_eq!(tokens.len(), 5);
 
         // Check first comment
         match &tokens[0].token_type {
-            TokenType::LineComment(s) => assert_eq!(s, "first comment"),
+            TokenType::LineComment(s) => assert_eq!(s, " first comment"),
             _ => panic!("Expected first LineComment, got {:?}", tokens[0]),
         }
 
@@ -1853,7 +1772,7 @@ world"
 
         // Second comment
         match &tokens[2].token_type {
-            TokenType::LineComment(s) => assert_eq!(s, "second comment"),
+            TokenType::LineComment(s) => assert_eq!(s, " second comment"),
             _ => panic!("Expected second LineComment, got {:?}", tokens[2]),
         }
 
@@ -1862,7 +1781,7 @@ world"
 
         // Third comment
         match &tokens[4].token_type {
-            TokenType::LineComment(s) => assert_eq!(s, "third comment"),
+            TokenType::LineComment(s) => assert_eq!(s, " third comment"),
             _ => panic!("Expected third LineComment, got {:?}", tokens[4]),
         }
     }
@@ -1872,7 +1791,7 @@ world"
         let input = "1.2\n3.4\n5.6";
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         // We expect 3 floats and 2 newlines
         assert_eq!(tokens.len(), 5);
@@ -1929,7 +1848,7 @@ world"
 
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         // Find the 'auto' token
         let auto_token = tokens
@@ -1981,7 +1900,7 @@ world"
 
         let mut source = Source::from_test_str(input);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
 
         // Find the string token
         let string_token = tokens
@@ -2010,7 +1929,7 @@ world"
     fn test_byte_literal_hex_escapes() {
         let mut source = Source::from_test_str(r#"b"Mux\x00\xff""#);
         let mut lexer = Lexer::new(&mut source);
-        let tokens = lexer.lex_all().unwrap();
+        let tokens = lexer.lex_tokens().unwrap();
         assert!(matches!(
             &tokens[0].token_type,
             TokenType::Bytes(bytes) if bytes == &vec![b'M', b'u', b'x', 0, 255]
