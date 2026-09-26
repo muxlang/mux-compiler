@@ -109,7 +109,7 @@ pub enum SyntaxImportSpec {
 /// source range or another range, so spelling and token values remain owned by
 /// the lossless token leaves.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SyntaxData {
+pub enum AstLoweringData {
     Name {
         token: ByteRange,
     },
@@ -471,7 +471,7 @@ pub enum SyntaxElement {
 pub struct SyntaxNode {
     kind: SyntaxKind,
     range: ByteRange,
-    data: Option<SyntaxData>,
+    data: Option<AstLoweringData>,
     children: Vec<SyntaxElement>,
 }
 
@@ -487,7 +487,7 @@ impl SyntaxNode {
     }
 
     #[must_use]
-    pub fn data(&self) -> Option<&SyntaxData> {
+    pub fn lowering_data(&self) -> Option<&AstLoweringData> {
         self.data.as_ref()
     }
 
@@ -502,7 +502,7 @@ impl SyntaxNode {
 pub(crate) struct SyntaxNodeEvent {
     pub kind: SyntaxKind,
     pub range: ByteRange,
-    pub data: Option<SyntaxData>,
+    pub data: Option<AstLoweringData>,
 }
 
 /// The lossless syntax tree for one source file.
@@ -745,7 +745,7 @@ impl SyntaxTree {
         nodes
             .into_iter()
             .map(|node| {
-                let Some(SyntaxData::Test {
+                let Some(AstLoweringData::Test {
                     name,
                     body,
                     body_contents,
@@ -955,7 +955,7 @@ impl SyntaxTree {
         &self,
         node: &'a SyntaxNode,
         range: ByteRange,
-        accepts: fn(&SyntaxData) -> bool,
+        accepts: fn(&AstLoweringData) -> bool,
     ) -> Option<&'a SyntaxNode> {
         if range.start < node.range.start || range.end > node.range.end {
             return None;
@@ -979,10 +979,10 @@ impl SyntaxTree {
         }
         if let Some(data) = node.data.as_ref().filter(|data| is_expression_data(data)) {
             let ast_range = match data {
-                SyntaxData::Lambda { ast_span, .. }
-                | SyntaxData::IfExpression { ast_span, .. }
-                | SyntaxData::MatchExpression { ast_span, .. } => *ast_span,
-                SyntaxData::Unary {
+                AstLoweringData::Lambda { ast_span, .. }
+                | AstLoweringData::IfExpression { ast_span, .. }
+                | AstLoweringData::MatchExpression { ast_span, .. } => *ast_span,
+                AstLoweringData::Unary {
                     operator,
                     operand,
                     postfix,
@@ -993,7 +993,9 @@ impl SyntaxTree {
                         ByteRange::new(operator.start, operand.end)
                     }
                 }
-                SyntaxData::Binary { left, right, .. } => ByteRange::new(left.start, right.end),
+                AstLoweringData::Binary { left, right, .. } => {
+                    ByteRange::new(left.start, right.end)
+                }
                 _ => node.range,
             };
             if ast_range == range {
@@ -1017,16 +1019,18 @@ impl SyntaxTree {
     ) -> Result<Option<AstNode>, SyntaxLowerError> {
         if let Some(data) = node.data.as_ref() {
             match data {
-                SyntaxData::Function { .. } => {
+                AstLoweringData::Function { .. } => {
                     return self
                         .lower_function_node(node)
                         .map(AstNode::Function)
                         .map(Some);
                 }
-                SyntaxData::Class { .. } => return self.lower_class_node(node).map(Some),
-                SyntaxData::Interface { .. } => return self.lower_interface_node(node).map(Some),
-                SyntaxData::Enum { .. } => return self.lower_enum_node(node).map(Some),
-                SyntaxData::Test { .. } => return self.lower_test_node(node).map(Some),
+                AstLoweringData::Class { .. } => return self.lower_class_node(node).map(Some),
+                AstLoweringData::Interface { .. } => {
+                    return self.lower_interface_node(node).map(Some);
+                }
+                AstLoweringData::Enum { .. } => return self.lower_enum_node(node).map(Some),
+                AstLoweringData::Test { .. } => return self.lower_test_node(node).map(Some),
                 data if is_statement_data(data) => {
                     return self
                         .lower_statement_node(node)
@@ -1052,10 +1056,12 @@ impl SyntaxTree {
             .as_ref()
             .ok_or(SyntaxLowerError::UnsupportedContext(node.kind))?;
         let span = match data {
-            SyntaxData::Lambda { ast_span, .. }
-            | SyntaxData::IfExpression { ast_span, .. }
-            | SyntaxData::MatchExpression { ast_span, .. } => self.span_for_range(*ast_span)?,
-            SyntaxData::Unary {
+            AstLoweringData::Lambda { ast_span, .. }
+            | AstLoweringData::IfExpression { ast_span, .. }
+            | AstLoweringData::MatchExpression { ast_span, .. } => {
+                self.span_for_range(*ast_span)?
+            }
+            AstLoweringData::Unary {
                 operator,
                 operand,
                 postfix,
@@ -1067,13 +1073,13 @@ impl SyntaxTree {
                 };
                 self.span_for_range(range)?
             }
-            SyntaxData::Binary { left, right, .. } => {
+            AstLoweringData::Binary { left, right, .. } => {
                 self.span_for_range(ByteRange::new(left.start, right.end))?
             }
             _ => self.span_for_range(node.range)?,
         };
         match data {
-            SyntaxData::Name { token } => {
+            AstLoweringData::Name { token } => {
                 let token = self.token_for_range(*token)?;
                 match token.kind() {
                     TokenType::Id(name) => Ok(ExpressionNode {
@@ -1083,7 +1089,7 @@ impl SyntaxTree {
                     _ => Err(SyntaxLowerError::MissingToken(token.range())),
                 }
             }
-            SyntaxData::Literal { token } => {
+            AstLoweringData::Literal { token } => {
                 let token = self.token_for_range(*token)?;
                 let kind = match token.kind() {
                     TokenType::Int(value) => ExpressionKind::Literal(LiteralNode::Integer(*value)),
@@ -1101,7 +1107,7 @@ impl SyntaxTree {
                 };
                 Ok(ExpressionNode { kind, span })
             }
-            SyntaxData::Unary {
+            AstLoweringData::Unary {
                 operator,
                 operand,
                 postfix,
@@ -1121,7 +1127,7 @@ impl SyntaxTree {
                     span,
                 })
             }
-            SyntaxData::Binary {
+            AstLoweringData::Binary {
                 operator,
                 left,
                 right,
@@ -1140,15 +1146,15 @@ impl SyntaxTree {
                     span,
                 })
             }
-            SyntaxData::Parenthesized { expression } => self.lower_expression_at(*expression),
-            SyntaxData::Tuple { first, second } => Ok(ExpressionNode {
+            AstLoweringData::Parenthesized { expression } => self.lower_expression_at(*expression),
+            AstLoweringData::Tuple { first, second } => Ok(ExpressionNode {
                 kind: ExpressionKind::TupleLiteral(vec![
                     self.lower_expression_at(*first)?,
                     self.lower_expression_at(*second)?,
                 ]),
                 span,
             }),
-            SyntaxData::Lambda {
+            AstLoweringData::Lambda {
                 parameters,
                 return_type,
                 where_clause,
@@ -1178,7 +1184,7 @@ impl SyntaxTree {
                     span,
                 })
             }
-            SyntaxData::IfExpression {
+            AstLoweringData::IfExpression {
                 condition,
                 then_expression,
                 else_expression,
@@ -1191,7 +1197,7 @@ impl SyntaxTree {
                 },
                 span,
             }),
-            SyntaxData::MatchExpression {
+            AstLoweringData::MatchExpression {
                 expression, arms, ..
             } => Ok(ExpressionNode {
                 kind: ExpressionKind::Match {
@@ -1203,7 +1209,7 @@ impl SyntaxTree {
                 },
                 span,
             }),
-            SyntaxData::Slice { base, start, end } => Ok(ExpressionNode {
+            AstLoweringData::Slice { base, start, end } => Ok(ExpressionNode {
                 kind: ExpressionKind::Slice {
                     expr: Box::new(self.lower_expression_at(*base)?),
                     start: start
@@ -1215,7 +1221,7 @@ impl SyntaxTree {
                 },
                 span,
             }),
-            SyntaxData::List { elements } => Ok(ExpressionNode {
+            AstLoweringData::List { elements } => Ok(ExpressionNode {
                 kind: ExpressionKind::ListLiteral(
                     elements
                         .iter()
@@ -1224,7 +1230,7 @@ impl SyntaxTree {
                 ),
                 span,
             }),
-            SyntaxData::Map {
+            AstLoweringData::Map {
                 entries,
                 inferred_type_span,
             } => {
@@ -1252,7 +1258,7 @@ impl SyntaxTree {
                     span,
                 })
             }
-            SyntaxData::Set { elements } => Ok(ExpressionNode {
+            AstLoweringData::Set { elements } => Ok(ExpressionNode {
                 kind: ExpressionKind::SetLiteral(
                     elements
                         .iter()
@@ -1261,7 +1267,7 @@ impl SyntaxTree {
                 ),
                 span,
             }),
-            SyntaxData::Call { callee, arguments } => Ok(ExpressionNode {
+            AstLoweringData::Call { callee, arguments } => Ok(ExpressionNode {
                 kind: ExpressionKind::Call {
                     func: Box::new(self.lower_expression_at(*callee)?),
                     args: arguments
@@ -1271,7 +1277,7 @@ impl SyntaxTree {
                 },
                 span,
             }),
-            SyntaxData::FieldAccess { base, field } => {
+            AstLoweringData::FieldAccess { base, field } => {
                 let field_token = self.token_for_range(*field)?;
                 let TokenType::Id(field_name) = field_token.kind() else {
                     return Err(SyntaxLowerError::MissingToken(*field));
@@ -1284,14 +1290,14 @@ impl SyntaxTree {
                     span,
                 })
             }
-            SyntaxData::Index { base, index } => Ok(ExpressionNode {
+            AstLoweringData::Index { base, index } => Ok(ExpressionNode {
                 kind: ExpressionKind::ListAccess {
                     expr: Box::new(self.lower_expression_at(*base)?),
                     index: Box::new(self.lower_expression_at(*index)?),
                 },
                 span,
             }),
-            SyntaxData::Generic { target, arguments } => {
+            AstLoweringData::Generic { target, arguments } => {
                 let target_node = self.lower_expression_at(*target)?;
                 let name = generic_target_name(&target_node)
                     .ok_or(SyntaxLowerError::MissingContext(*target))?;
@@ -1317,7 +1323,7 @@ impl SyntaxTree {
             .ok_or(SyntaxLowerError::UnsupportedContext(node.kind))?;
         let span = self.span_for_range(node.range)?;
         match data {
-            SyntaxData::TypeName { name, arguments } => {
+            AstLoweringData::TypeName { name, arguments } => {
                 let name = self
                     .source
                     .text()
@@ -1339,11 +1345,11 @@ impl SyntaxTree {
                 };
                 Ok(TypeNode { kind, span })
             }
-            SyntaxData::TypeReference { reference } => Ok(TypeNode {
+            AstLoweringData::TypeReference { reference } => Ok(TypeNode {
                 kind: TypeKind::Reference(Box::new(self.lower_type_at(*reference)?)),
                 span,
             }),
-            SyntaxData::TypeContainer {
+            AstLoweringData::TypeContainer {
                 name: name_range,
                 arguments,
             } => {
@@ -1381,7 +1387,7 @@ impl SyntaxTree {
                 };
                 Ok(TypeNode { kind, span })
             }
-            SyntaxData::FunctionType {
+            AstLoweringData::FunctionType {
                 parameters,
                 returns,
             } => Ok(TypeNode {
@@ -1404,21 +1410,21 @@ impl SyntaxTree {
             .as_ref()
             .ok_or(SyntaxLowerError::UnsupportedContext(node.kind))?;
         let span = match data {
-            SyntaxData::Import { ast_span, .. } => self.span_for_range(*ast_span)?,
-            SyntaxData::MatchStatement { ast_span, .. } => self.span_for_range(*ast_span)?,
-            SyntaxData::Function { ast_span, .. } => self.span_for_range(*ast_span)?,
-            SyntaxData::IfStatement { ast_span, .. }
-            | SyntaxData::WhileStatement { ast_span, .. }
-            | SyntaxData::ForStatement { ast_span, .. }
-            | SyntaxData::VariableDeclaration { ast_span, .. }
-            | SyntaxData::ExpressionStatement { ast_span, .. }
-            | SyntaxData::ReturnStatement { ast_span, .. }
-            | SyntaxData::BreakStatement { ast_span }
-            | SyntaxData::ContinueStatement { ast_span } => self.span_for_range(*ast_span)?,
+            AstLoweringData::Import { ast_span, .. } => self.span_for_range(*ast_span)?,
+            AstLoweringData::MatchStatement { ast_span, .. } => self.span_for_range(*ast_span)?,
+            AstLoweringData::Function { ast_span, .. } => self.span_for_range(*ast_span)?,
+            AstLoweringData::IfStatement { ast_span, .. }
+            | AstLoweringData::WhileStatement { ast_span, .. }
+            | AstLoweringData::ForStatement { ast_span, .. }
+            | AstLoweringData::VariableDeclaration { ast_span, .. }
+            | AstLoweringData::ExpressionStatement { ast_span, .. }
+            | AstLoweringData::ReturnStatement { ast_span, .. }
+            | AstLoweringData::BreakStatement { ast_span }
+            | AstLoweringData::ContinueStatement { ast_span } => self.span_for_range(*ast_span)?,
             _ => self.span_for_range(node.range)?,
         };
         let kind = match data {
-            SyntaxData::VariableDeclaration {
+            AstLoweringData::VariableDeclaration {
                 kind,
                 name,
                 type_range,
@@ -1458,19 +1464,21 @@ impl SyntaxTree {
                     ),
                 }
             }
-            SyntaxData::ExpressionStatement { expression, .. } => {
+            AstLoweringData::ExpressionStatement { expression, .. } => {
                 StatementKind::Expression(self.lower_expression_at(*expression)?)
             }
-            SyntaxData::Function { .. } => StatementKind::Function(self.lower_function_node(node)?),
-            SyntaxData::ReturnStatement { value, .. } => StatementKind::Return(
+            AstLoweringData::Function { .. } => {
+                StatementKind::Function(self.lower_function_node(node)?)
+            }
+            AstLoweringData::ReturnStatement { value, .. } => StatementKind::Return(
                 (*value)
                     .map(|range| self.lower_expression_at(range))
                     .transpose()?,
             ),
-            SyntaxData::BreakStatement { .. } => StatementKind::Break,
-            SyntaxData::ContinueStatement { .. } => StatementKind::Continue,
-            SyntaxData::Block => StatementKind::Block(self.lower_statement_children(node)?),
-            SyntaxData::IfStatement {
+            AstLoweringData::BreakStatement { .. } => StatementKind::Break,
+            AstLoweringData::ContinueStatement { .. } => StatementKind::Continue,
+            AstLoweringData::Block => StatementKind::Block(self.lower_statement_children(node)?),
+            AstLoweringData::IfStatement {
                 condition,
                 then_block,
                 else_branch,
@@ -1495,7 +1503,7 @@ impl SyntaxTree {
                     else_block,
                 }
             }
-            SyntaxData::WhileStatement {
+            AstLoweringData::WhileStatement {
                 condition, body, ..
             } => {
                 let statement = self.lower_statement_at(*body)?;
@@ -1507,7 +1515,7 @@ impl SyntaxTree {
                     body,
                 }
             }
-            SyntaxData::ForStatement {
+            AstLoweringData::ForStatement {
                 variable,
                 variable_type,
                 iterator,
@@ -1537,7 +1545,7 @@ impl SyntaxTree {
                     body,
                 }
             }
-            SyntaxData::MatchStatement {
+            AstLoweringData::MatchStatement {
                 expression, arms, ..
             } => StatementKind::Match {
                 expr: self.lower_expression_at(*expression)?,
@@ -1546,7 +1554,7 @@ impl SyntaxTree {
                     .map(|range| self.lower_match_arm_at(*range))
                     .collect::<Result<_, _>>()?,
             },
-            SyntaxData::Import {
+            AstLoweringData::Import {
                 module_path, spec, ..
             } => {
                 let module_path = self.lower_module_path(*module_path)?;
@@ -1561,7 +1569,7 @@ impl SyntaxTree {
     }
 
     fn lower_test_node(&self, node: &SyntaxNode) -> Result<AstNode, SyntaxLowerError> {
-        let Some(SyntaxData::Test {
+        let Some(AstLoweringData::Test {
             name,
             body,
             ast_span,
@@ -1587,7 +1595,7 @@ impl SyntaxTree {
     }
 
     fn lower_enum_node(&self, node: &SyntaxNode) -> Result<AstNode, SyntaxLowerError> {
-        let Some(SyntaxData::Enum {
+        let Some(AstLoweringData::Enum {
             name,
             type_parameters,
             variants,
@@ -1613,11 +1621,11 @@ impl SyntaxTree {
 
     fn lower_enum_variant_at(&self, range: ByteRange) -> Result<EnumVariant, SyntaxLowerError> {
         let Some(node) = self.find_typed_node(self.root(), range, |data| {
-            matches!(data, SyntaxData::EnumVariant { .. })
+            matches!(data, AstLoweringData::EnumVariant { .. })
         }) else {
             return Err(SyntaxLowerError::MissingContext(range));
         };
-        let SyntaxData::EnumVariant {
+        let AstLoweringData::EnumVariant {
             name,
             fields,
             where_clause,
@@ -1651,11 +1659,11 @@ impl SyntaxTree {
         range: ByteRange,
     ) -> Result<EnumVariantField, SyntaxLowerError> {
         let Some(node) = self.find_typed_node(self.root(), range, |data| {
-            matches!(data, SyntaxData::EnumVariantField { .. })
+            matches!(data, AstLoweringData::EnumVariantField { .. })
         }) else {
             return Err(SyntaxLowerError::MissingContext(range));
         };
-        let SyntaxData::EnumVariantField {
+        let AstLoweringData::EnumVariantField {
             field_name,
             type_range,
         } = node
@@ -1678,7 +1686,7 @@ impl SyntaxTree {
     }
 
     fn lower_class_node(&self, node: &SyntaxNode) -> Result<AstNode, SyntaxLowerError> {
-        let Some(SyntaxData::Class {
+        let Some(AstLoweringData::Class {
             name,
             type_parameters,
             traits,
@@ -1716,7 +1724,7 @@ impl SyntaxTree {
     }
 
     fn lower_interface_node(&self, node: &SyntaxNode) -> Result<AstNode, SyntaxLowerError> {
-        let Some(SyntaxData::Interface {
+        let Some(AstLoweringData::Interface {
             name,
             type_parameters,
             fields,
@@ -1745,7 +1753,7 @@ impl SyntaxTree {
     }
 
     fn lower_pattern_node(&self, node: &SyntaxNode) -> Result<PatternNode, SyntaxLowerError> {
-        let Some(SyntaxData::Pattern(pattern)) = node.data.as_ref() else {
+        let Some(AstLoweringData::Pattern(pattern)) = node.data.as_ref() else {
             return Err(SyntaxLowerError::UnsupportedContext(node.kind));
         };
         match pattern {
@@ -1797,7 +1805,7 @@ impl SyntaxTree {
     }
 
     fn lower_match_arm_node(&self, node: &SyntaxNode) -> Result<MatchArm, SyntaxLowerError> {
-        let Some(SyntaxData::MatchArm {
+        let Some(AstLoweringData::MatchArm {
             pattern,
             guard,
             body,
@@ -1833,11 +1841,11 @@ impl SyntaxTree {
 
     fn lower_trait_reference_at(&self, range: ByteRange) -> Result<TraitRef, SyntaxLowerError> {
         let Some(node) = self.find_typed_node(self.root(), range, |data| {
-            matches!(data, SyntaxData::TraitReference { .. })
+            matches!(data, AstLoweringData::TraitReference { .. })
         }) else {
             return Err(SyntaxLowerError::MissingContext(range));
         };
-        let SyntaxData::TraitReference {
+        let AstLoweringData::TraitReference {
             name,
             type_arguments,
         } = node
@@ -1859,11 +1867,11 @@ impl SyntaxTree {
 
     fn lower_class_field_at(&self, range: ByteRange) -> Result<Field, SyntaxLowerError> {
         let Some(node) = self.find_typed_node(self.root(), range, |data| {
-            matches!(data, SyntaxData::Field { .. })
+            matches!(data, AstLoweringData::Field { .. })
         }) else {
             return Err(SyntaxLowerError::MissingContext(range));
         };
-        let SyntaxData::Field {
+        let AstLoweringData::Field {
             name,
             type_range,
             is_generic_param,
@@ -1893,11 +1901,11 @@ impl SyntaxTree {
 
     fn lower_class_method_at(&self, range: ByteRange) -> Result<FunctionNode, SyntaxLowerError> {
         let Some(node) = self.find_typed_node(self.root(), range, |data| {
-            matches!(data, SyntaxData::ClassMethod { .. })
+            matches!(data, AstLoweringData::ClassMethod { .. })
         }) else {
             return Err(SyntaxLowerError::MissingContext(range));
         };
-        let SyntaxData::ClassMethod { function } = node
+        let AstLoweringData::ClassMethod { function } = node
             .data
             .as_ref()
             .ok_or(SyntaxLowerError::UnsupportedContext(node.kind))?
@@ -1977,7 +1985,7 @@ impl SyntaxTree {
     }
 
     fn lower_function_node(&self, node: &SyntaxNode) -> Result<FunctionNode, SyntaxLowerError> {
-        let Some(SyntaxData::Function {
+        let Some(AstLoweringData::Function {
             name,
             ast_span,
             type_parameters,
@@ -2041,11 +2049,11 @@ impl SyntaxTree {
         range: ByteRange,
     ) -> Result<(String, Vec<TraitBound>), SyntaxLowerError> {
         let Some(node) = self.find_typed_node(self.root(), range, |data| {
-            matches!(data, SyntaxData::TypeParameter { .. })
+            matches!(data, AstLoweringData::TypeParameter { .. })
         }) else {
             return Err(SyntaxLowerError::MissingContext(range));
         };
-        let SyntaxData::TypeParameter { name, bounds } = node
+        let AstLoweringData::TypeParameter { name, bounds } = node
             .data
             .as_ref()
             .ok_or(SyntaxLowerError::UnsupportedContext(node.kind))?
@@ -2063,11 +2071,11 @@ impl SyntaxTree {
 
     fn lower_trait_bound_at(&self, range: ByteRange) -> Result<TraitBound, SyntaxLowerError> {
         let Some(node) = self.find_typed_node(self.root(), range, |data| {
-            matches!(data, SyntaxData::TraitBound { .. })
+            matches!(data, AstLoweringData::TraitBound { .. })
         }) else {
             return Err(SyntaxLowerError::MissingContext(range));
         };
-        let SyntaxData::TraitBound {
+        let AstLoweringData::TraitBound {
             name,
             type_arguments,
         } = node
@@ -2091,11 +2099,11 @@ impl SyntaxTree {
 
     fn lower_parameter_at(&self, range: ByteRange) -> Result<Param, SyntaxLowerError> {
         let Some(node) = self.find_typed_node(self.root(), range, |data| {
-            matches!(data, SyntaxData::Parameter { .. })
+            matches!(data, AstLoweringData::Parameter { .. })
         }) else {
             return Err(SyntaxLowerError::MissingContext(range));
         };
-        let SyntaxData::Parameter {
+        let AstLoweringData::Parameter {
             name,
             type_range,
             default_value,
@@ -2117,11 +2125,11 @@ impl SyntaxTree {
 
     fn lower_where_clause_at(&self, range: ByteRange) -> Result<WhereClause, SyntaxLowerError> {
         let Some(node) = self.find_typed_node(self.root(), range, |data| {
-            matches!(data, SyntaxData::WhereClause { .. })
+            matches!(data, AstLoweringData::WhereClause { .. })
         }) else {
             return Err(SyntaxLowerError::MissingContext(range));
         };
-        let SyntaxData::WhereClause { predicates } = node
+        let AstLoweringData::WhereClause { predicates } = node
             .data
             .as_ref()
             .ok_or(SyntaxLowerError::UnsupportedContext(node.kind))?
@@ -2230,21 +2238,21 @@ fn generic_target_name(expression: &ExpressionNode) -> Option<String> {
     }
 }
 
-fn is_statement_data(data: &SyntaxData) -> bool {
+fn is_statement_data(data: &AstLoweringData) -> bool {
     matches!(
         data,
-        SyntaxData::VariableDeclaration { .. }
-            | SyntaxData::Function { .. }
-            | SyntaxData::ExpressionStatement { .. }
-            | SyntaxData::ReturnStatement { .. }
-            | SyntaxData::BreakStatement { .. }
-            | SyntaxData::ContinueStatement { .. }
-            | SyntaxData::Block
-            | SyntaxData::IfStatement { .. }
-            | SyntaxData::WhileStatement { .. }
-            | SyntaxData::ForStatement { .. }
-            | SyntaxData::MatchStatement { .. }
-            | SyntaxData::Import { .. }
+        AstLoweringData::VariableDeclaration { .. }
+            | AstLoweringData::Function { .. }
+            | AstLoweringData::ExpressionStatement { .. }
+            | AstLoweringData::ReturnStatement { .. }
+            | AstLoweringData::BreakStatement { .. }
+            | AstLoweringData::ContinueStatement { .. }
+            | AstLoweringData::Block
+            | AstLoweringData::IfStatement { .. }
+            | AstLoweringData::WhileStatement { .. }
+            | AstLoweringData::ForStatement { .. }
+            | AstLoweringData::MatchStatement { .. }
+            | AstLoweringData::Import { .. }
     )
 }
 
@@ -2261,64 +2269,64 @@ fn is_compilation_unit_wrapper(kind: SyntaxKind) -> bool {
     )
 }
 
-fn is_function_data(data: &SyntaxData) -> bool {
-    matches!(data, SyntaxData::Function { .. })
+fn is_function_data(data: &AstLoweringData) -> bool {
+    matches!(data, AstLoweringData::Function { .. })
 }
 
-fn is_test_data(data: &SyntaxData) -> bool {
-    matches!(data, SyntaxData::Test { .. })
+fn is_test_data(data: &AstLoweringData) -> bool {
+    matches!(data, AstLoweringData::Test { .. })
 }
 
-fn is_enum_data(data: &SyntaxData) -> bool {
-    matches!(data, SyntaxData::Enum { .. })
+fn is_enum_data(data: &AstLoweringData) -> bool {
+    matches!(data, AstLoweringData::Enum { .. })
 }
 
-fn is_class_data(data: &SyntaxData) -> bool {
-    matches!(data, SyntaxData::Class { .. })
+fn is_class_data(data: &AstLoweringData) -> bool {
+    matches!(data, AstLoweringData::Class { .. })
 }
 
-fn is_interface_data(data: &SyntaxData) -> bool {
-    matches!(data, SyntaxData::Interface { .. })
+fn is_interface_data(data: &AstLoweringData) -> bool {
+    matches!(data, AstLoweringData::Interface { .. })
 }
 
-fn is_pattern_data(data: &SyntaxData) -> bool {
-    matches!(data, SyntaxData::Pattern(_))
+fn is_pattern_data(data: &AstLoweringData) -> bool {
+    matches!(data, AstLoweringData::Pattern(_))
 }
 
-fn is_match_arm_data(data: &SyntaxData) -> bool {
-    matches!(data, SyntaxData::MatchArm { .. })
+fn is_match_arm_data(data: &AstLoweringData) -> bool {
+    matches!(data, AstLoweringData::MatchArm { .. })
 }
 
-fn is_expression_data(data: &SyntaxData) -> bool {
+fn is_expression_data(data: &AstLoweringData) -> bool {
     matches!(
         data,
-        SyntaxData::Name { .. }
-            | SyntaxData::Literal { .. }
-            | SyntaxData::Unary { .. }
-            | SyntaxData::Binary { .. }
-            | SyntaxData::Lambda { .. }
-            | SyntaxData::IfExpression { .. }
-            | SyntaxData::MatchExpression { .. }
-            | SyntaxData::Parenthesized { .. }
-            | SyntaxData::Tuple { .. }
-            | SyntaxData::List { .. }
-            | SyntaxData::Map { .. }
-            | SyntaxData::Set { .. }
-            | SyntaxData::Call { .. }
-            | SyntaxData::FieldAccess { .. }
-            | SyntaxData::Index { .. }
-            | SyntaxData::Slice { .. }
-            | SyntaxData::Generic { .. }
+        AstLoweringData::Name { .. }
+            | AstLoweringData::Literal { .. }
+            | AstLoweringData::Unary { .. }
+            | AstLoweringData::Binary { .. }
+            | AstLoweringData::Lambda { .. }
+            | AstLoweringData::IfExpression { .. }
+            | AstLoweringData::MatchExpression { .. }
+            | AstLoweringData::Parenthesized { .. }
+            | AstLoweringData::Tuple { .. }
+            | AstLoweringData::List { .. }
+            | AstLoweringData::Map { .. }
+            | AstLoweringData::Set { .. }
+            | AstLoweringData::Call { .. }
+            | AstLoweringData::FieldAccess { .. }
+            | AstLoweringData::Index { .. }
+            | AstLoweringData::Slice { .. }
+            | AstLoweringData::Generic { .. }
     )
 }
 
-fn is_type_data(data: &SyntaxData) -> bool {
+fn is_type_data(data: &AstLoweringData) -> bool {
     matches!(
         data,
-        SyntaxData::TypeName { .. }
-            | SyntaxData::TypeReference { .. }
-            | SyntaxData::TypeContainer { .. }
-            | SyntaxData::FunctionType { .. }
+        AstLoweringData::TypeName { .. }
+            | AstLoweringData::TypeReference { .. }
+            | AstLoweringData::TypeContainer { .. }
+            | AstLoweringData::FunctionType { .. }
     )
 }
 
@@ -2346,7 +2354,7 @@ fn collect_test_nodes<'a>(node: &'a SyntaxNode, found: &mut Vec<&'a SyntaxNode>)
     if node
         .data
         .as_ref()
-        .is_some_and(|data| matches!(data, SyntaxData::Test { .. }))
+        .is_some_and(|data| matches!(data, AstLoweringData::Test { .. }))
     {
         found.push(node);
         return;
@@ -2369,7 +2377,7 @@ struct PendingNode {
     kind: SyntaxKind,
     range: ByteRange,
     event_index: Option<usize>,
-    data: Option<SyntaxData>,
+    data: Option<AstLoweringData>,
     children: Vec<PendingElement>,
 }
 
@@ -2629,9 +2637,9 @@ mod tests {
 
     fn find_data<'a>(
         node: &'a SyntaxNode,
-        predicate: &impl Fn(&SyntaxData) -> bool,
+        predicate: &impl Fn(&AstLoweringData) -> bool,
     ) -> Option<&'a SyntaxNode> {
-        if node.data().is_some_and(predicate) {
+        if node.lowering_data().is_some_and(predicate) {
             return Some(node);
         }
         node.children().iter().find_map(|child| match child {
@@ -2640,7 +2648,7 @@ mod tests {
         })
     }
 
-    fn lower_data(source: &str, predicate: impl Fn(&SyntaxData) -> bool) -> ExpressionNode {
+    fn lower_data(source: &str, predicate: impl Fn(&AstLoweringData) -> bool) -> ExpressionNode {
         let output = parse_source(source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let node = find_data(output.tree.root(), &predicate).expect("typed expression context");
@@ -2650,7 +2658,7 @@ mod tests {
             .expect("lower typed context")
     }
 
-    fn lower_type_data(source: &str, predicate: impl Fn(&SyntaxData) -> bool) -> TypeNode {
+    fn lower_type_data(source: &str, predicate: impl Fn(&AstLoweringData) -> bool) -> TypeNode {
         let output = parse_source(source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let node = find_data(output.tree.root(), &predicate).expect("typed type context");
@@ -2659,7 +2667,7 @@ mod tests {
 
     fn lower_statement_data(
         source: &str,
-        predicate: impl Fn(&SyntaxData) -> bool,
+        predicate: impl Fn(&AstLoweringData) -> bool,
     ) -> StatementNode {
         let output = parse_source(source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
@@ -2667,7 +2675,7 @@ mod tests {
         output.tree.lower_statement(node).unwrap_or_else(|error| {
             panic!(
                 "lower statement from {source:?}, data {:?}: {error}",
-                node.data()
+                node.lowering_data()
             )
         })
     }
@@ -2675,34 +2683,34 @@ mod tests {
     #[test]
     fn typed_expression_contexts_lower_to_existing_ast_nodes() {
         let binary = lower_data("auto x = 1 + 2", |data| {
-            matches!(data, SyntaxData::Binary { .. })
+            matches!(data, AstLoweringData::Binary { .. })
         });
         assert!(matches!(binary.kind, ExpressionKind::Binary { .. }));
 
         let tuple = lower_data("auto x = (1, 2)", |data| {
-            matches!(data, SyntaxData::Tuple { .. })
+            matches!(data, AstLoweringData::Tuple { .. })
         });
         assert!(matches!(tuple.kind, ExpressionKind::TupleLiteral(values) if values.len() == 2));
 
         let list = lower_data("auto x = [1, 2]", |data| {
-            matches!(data, SyntaxData::List { .. })
+            matches!(data, AstLoweringData::List { .. })
         });
         assert!(matches!(list.kind, ExpressionKind::ListLiteral(values) if values.len() == 2));
 
         let empty_list = lower_data("auto x = []", |data| {
-            matches!(data, SyntaxData::List { .. })
+            matches!(data, AstLoweringData::List { .. })
         });
         assert!(
             matches!(empty_list.kind, ExpressionKind::ListLiteral(values) if values.is_empty())
         );
 
         let set = lower_data("auto x = {1, 2}", |data| {
-            matches!(data, SyntaxData::Set { .. })
+            matches!(data, AstLoweringData::Set { .. })
         });
         assert!(matches!(set.kind, ExpressionKind::SetLiteral(values) if values.len() == 2));
 
         let map = lower_data("auto x = {1: 2}", |data| {
-            matches!(data, SyntaxData::Map { .. })
+            matches!(data, AstLoweringData::Map { .. })
         });
         assert!(
             matches!(map.kind, ExpressionKind::MapLiteral { entries, .. } if entries.len() == 1)
@@ -2720,7 +2728,7 @@ mod tests {
             lambda_output.errors
         );
         let lambda_node = find_data(lambda_output.tree.root(), &|data| {
-            matches!(data, SyntaxData::Lambda { .. })
+            matches!(data, AstLoweringData::Lambda { .. })
         })
         .expect("lambda syntax data");
         let lambda = lambda_output
@@ -2779,7 +2787,7 @@ mod tests {
         let if_output = parse_source(if_source);
         assert!(if_output.errors.is_empty(), "{:?}", if_output.errors);
         let if_node = find_data(if_output.tree.root(), &|data| {
-            matches!(data, SyntaxData::IfExpression { .. })
+            matches!(data, AstLoweringData::IfExpression { .. })
         })
         .expect("conditional expression syntax data");
         let conditional = if_output
@@ -2831,24 +2839,24 @@ mod tests {
     #[test]
     fn typed_postfix_contexts_lower_recursively() {
         let call = lower_data("auto x = foo(1, 2)", |data| {
-            matches!(data, SyntaxData::Call { .. })
+            matches!(data, AstLoweringData::Call { .. })
         });
         assert!(matches!(call.kind, ExpressionKind::Call { args, .. } if args.len() == 2));
 
         let field = lower_data("auto x = value.field", |data| {
-            matches!(data, SyntaxData::FieldAccess { .. })
+            matches!(data, AstLoweringData::FieldAccess { .. })
         });
         assert!(
             matches!(field.kind, ExpressionKind::FieldAccess { field, .. } if field == "field")
         );
 
         let index = lower_data("auto x = values[0]", |data| {
-            matches!(data, SyntaxData::Index { .. })
+            matches!(data, AstLoweringData::Index { .. })
         });
         assert!(matches!(index.kind, ExpressionKind::ListAccess { .. }));
 
         let postfix = lower_data("value++", |data| {
-            matches!(data, SyntaxData::Unary { postfix: true, .. })
+            matches!(data, AstLoweringData::Unary { postfix: true, .. })
         });
         assert!(matches!(
             postfix.kind,
@@ -2930,7 +2938,7 @@ mod tests {
         let match_output = parse_source(match_source);
         assert!(match_output.errors.is_empty(), "{:?}", match_output.errors);
         let match_node = find_data(match_output.tree.root(), &|data| {
-            matches!(data, SyntaxData::MatchExpression { .. })
+            matches!(data, AstLoweringData::MatchExpression { .. })
         })
         .expect("match expression syntax data");
         let lowered = match_output
@@ -2988,7 +2996,7 @@ mod tests {
             let output = parse_source(&format!("auto result = {source}"));
             assert!(output.errors.is_empty(), "{:?}", output.errors);
             let node = find_data(output.tree.root(), &|data| {
-                matches!(data, SyntaxData::Slice { .. })
+                matches!(data, AstLoweringData::Slice { .. })
             })
             .expect("slice syntax data");
             let lowered = output
@@ -3008,7 +3016,7 @@ mod tests {
     #[test]
     fn typed_generic_and_type_contexts_lower_recursively() {
         let generic = lower_data("auto x = Box<list<int>>(1)", |data| {
-            matches!(data, SyntaxData::Generic { .. })
+            matches!(data, AstLoweringData::Generic { .. })
         });
         assert!(
             matches!(generic.kind, ExpressionKind::GenericType(name, args)
@@ -3018,14 +3026,14 @@ mod tests {
 
         let named = lower_type_data(
             "func f(Box<int> x) returns void {}",
-            |data| matches!(data, SyntaxData::TypeName { arguments, .. } if !arguments.is_empty()),
+            |data| matches!(data, AstLoweringData::TypeName { arguments, .. } if !arguments.is_empty()),
         );
         assert!(matches!(named.kind, TypeKind::Named(name, args)
             if name == "Box" && matches!(args.as_slice(), [TypeNode { kind: TypeKind::Primitive(PrimitiveType::Int), .. }])));
 
         let container =
             lower_type_data("func f(map<string, list<int>> x) returns void {}", |data| {
-                matches!(data, SyntaxData::TypeContainer { .. })
+                matches!(data, AstLoweringData::TypeContainer { .. })
             });
         assert!(matches!(container.kind, TypeKind::Map(key, value)
             if matches!(&key.kind, TypeKind::Primitive(PrimitiveType::Str))
@@ -3034,7 +3042,7 @@ mod tests {
 
         let reference_function = lower_type_data(
             "func f(&func(int, string) returns bool x) returns void {}",
-            |data| matches!(data, SyntaxData::TypeReference { .. }),
+            |data| matches!(data, AstLoweringData::TypeReference { .. }),
         );
         assert!(matches!(reference_function.kind, TypeKind::Reference(inner)
             if matches!(&inner.kind, TypeKind::Function { params, returns }
@@ -3044,19 +3052,19 @@ mod tests {
     #[test]
     fn typed_leaf_statements_lower_to_existing_ast_nodes() {
         let expression = lower_statement_data("value", |data| {
-            matches!(data, SyntaxData::ExpressionStatement { .. })
+            matches!(data, AstLoweringData::ExpressionStatement { .. })
         });
         assert!(matches!(expression.kind, StatementKind::Expression(_)));
 
         let returned = lower_statement_data("return 1", |data| {
-            matches!(data, SyntaxData::ReturnStatement { .. })
+            matches!(data, AstLoweringData::ReturnStatement { .. })
         });
         assert!(matches!(returned.kind, StatementKind::Return(Some(_))));
 
         let auto = lower_statement_data("auto x = 1", |data| {
             matches!(
                 data,
-                SyntaxData::VariableDeclaration {
+                AstLoweringData::VariableDeclaration {
                     kind: VariableDeclarationKind::Auto,
                     ..
                 }
@@ -3068,7 +3076,7 @@ mod tests {
         let typed = lower_statement_data("int x = 1", |data| {
             matches!(
                 data,
-                SyntaxData::VariableDeclaration {
+                AstLoweringData::VariableDeclaration {
                     kind: VariableDeclarationKind::Typed,
                     ..
                 }
@@ -3080,7 +3088,7 @@ mod tests {
         let uninitialized = lower_statement_data("int x", |data| {
             matches!(
                 data,
-                SyntaxData::VariableDeclaration {
+                AstLoweringData::VariableDeclaration {
                     kind: VariableDeclarationKind::Uninitialized,
                     ..
                 }
@@ -3094,7 +3102,7 @@ mod tests {
         let constant = lower_statement_data("const int x = 1", |data| {
             matches!(
                 data,
-                SyntaxData::VariableDeclaration {
+                AstLoweringData::VariableDeclaration {
                     kind: VariableDeclarationKind::Const,
                     ..
                 }
@@ -3104,12 +3112,12 @@ mod tests {
             if name == "x"));
 
         let broke = lower_statement_data("while true { break }", |data| {
-            matches!(data, SyntaxData::BreakStatement { .. })
+            matches!(data, AstLoweringData::BreakStatement { .. })
         });
         assert!(matches!(broke.kind, StatementKind::Break));
 
         let continued = lower_statement_data("while true { continue }", |data| {
-            matches!(data, SyntaxData::ContinueStatement { .. })
+            matches!(data, AstLoweringData::ContinueStatement { .. })
         });
         assert!(matches!(continued.kind, StatementKind::Continue));
     }
@@ -3133,7 +3141,7 @@ mod tests {
         let output = parse_source("{ { auto x = 1 } }");
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let node = find_data(output.tree.root(), &|data| {
-            matches!(data, SyntaxData::Block)
+            matches!(data, AstLoweringData::Block)
         })
         .expect("outer block context");
         let block = output
@@ -3155,7 +3163,7 @@ mod tests {
     fn typed_if_while_and_for_lower_with_existing_block_shapes() {
         let if_statement =
             lower_statement_data("if true { auto x = 1 } else { return 2 }", |data| {
-                matches!(data, SyntaxData::IfStatement { .. })
+                matches!(data, AstLoweringData::IfStatement { .. })
             });
         let StatementKind::If {
             then_block,
@@ -3181,7 +3189,7 @@ mod tests {
         ));
 
         let else_if = lower_statement_data("if true {} else if false { return 1 }", |data| {
-            matches!(data, SyntaxData::IfStatement { .. })
+            matches!(data, AstLoweringData::IfStatement { .. })
         });
         let StatementKind::If {
             else_block: Some(else_block),
@@ -3199,7 +3207,7 @@ mod tests {
         ));
 
         let while_statement = lower_statement_data("while true { break }", |data| {
-            matches!(data, SyntaxData::WhileStatement { .. })
+            matches!(data, AstLoweringData::WhileStatement { .. })
         });
         assert!(
             matches!(while_statement.kind, StatementKind::While { body, .. }
@@ -3207,7 +3215,7 @@ mod tests {
         );
 
         let for_block = lower_statement_data("for int x in values { auto y = x }", |data| {
-            matches!(data, SyntaxData::ForStatement { .. })
+            matches!(data, AstLoweringData::ForStatement { .. })
         });
         assert!(
             matches!(for_block.kind, StatementKind::For { var, body, .. }
@@ -3215,7 +3223,7 @@ mod tests {
         );
 
         let for_single = lower_statement_data("for int x in values return x", |data| {
-            matches!(data, SyntaxData::ForStatement { .. })
+            matches!(data, AstLoweringData::ForStatement { .. })
         });
         assert!(matches!(for_single.kind, StatementKind::For { body, .. }
             if matches!(body.as_slice(), [StatementNode { kind: StatementKind::Return(Some(_)), .. }])));
@@ -3224,7 +3232,7 @@ mod tests {
     #[test]
     fn for_loop_wildcard_binding_lowers_to_underscore_name() {
         let statement = lower_statement_data("for int _ in range(0, 6) {}", |data| {
-            matches!(data, SyntaxData::ForStatement { .. })
+            matches!(data, AstLoweringData::ForStatement { .. })
         });
         assert!(matches!(statement.kind, StatementKind::For { var, .. } if var == "_"));
     }
@@ -3236,7 +3244,7 @@ mod tests {
         let output = parse_source(source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let syntax_function = find_data(output.tree.root(), &|data| {
-            matches!(data, SyntaxData::Function { .. })
+            matches!(data, AstLoweringData::Function { .. })
         })
         .expect("function syntax data");
         let lowered = output
@@ -3349,7 +3357,7 @@ mod tests {
         let common_node = find_data(common_output.tree.root(), &|data| {
             matches!(
                 data,
-                SyntaxData::Function {
+                AstLoweringData::Function {
                     is_common: true,
                     ..
                 }
@@ -3376,7 +3384,7 @@ mod tests {
             interface_output.errors
         );
         let method_node = find_data(interface_output.tree.root(), &|data| {
-            matches!(data, SyntaxData::Function { body: None, .. })
+            matches!(data, AstLoweringData::Function { body: None, .. })
         })
         .expect("bodyless method syntax data");
         let lowered_method = interface_output
@@ -3414,7 +3422,7 @@ mod tests {
             let output = parse_source(source);
             assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
             let node = find_data(output.tree.root(), &|data| {
-                matches!(data, SyntaxData::Import { .. })
+                matches!(data, AstLoweringData::Import { .. })
             })
             .expect("import syntax data");
             let lowered = output
@@ -3508,7 +3516,7 @@ mod tests {
         assert_eq!(declaration.annotation(), None);
 
         let node = find_data(output.tree.root(), &|data| {
-            matches!(data, SyntaxData::Test { .. })
+            matches!(data, AstLoweringData::Test { .. })
         })
         .expect("test declaration syntax data");
         let lowered = output
@@ -3598,7 +3606,7 @@ mod tests {
         let output = parse_source(source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let node = find_data(output.tree.root(), &|data| {
-            matches!(data, SyntaxData::Enum { .. })
+            matches!(data, AstLoweringData::Enum { .. })
         })
         .expect("enum syntax data");
         let lowered = output
@@ -3657,7 +3665,7 @@ mod tests {
         let output = parse_source(source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let node = find_data(output.tree.root(), &|data| {
-            matches!(data, SyntaxData::Class { .. })
+            matches!(data, AstLoweringData::Class { .. })
         })
         .expect("class syntax data");
         let lowered = output
@@ -3740,7 +3748,7 @@ mod tests {
         let output = parse_source(source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let node = find_data(output.tree.root(), &|data| {
-            matches!(data, SyntaxData::Interface { .. })
+            matches!(data, AstLoweringData::Interface { .. })
         })
         .expect("interface syntax data");
         let lowered = output
@@ -3791,7 +3799,7 @@ mod tests {
         let output = parse_source(source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let node = find_data(output.tree.root(), &|data| {
-            matches!(data, SyntaxData::MatchStatement { .. })
+            matches!(data, AstLoweringData::MatchStatement { .. })
         })
         .expect("match statement syntax data");
         let lowered = output

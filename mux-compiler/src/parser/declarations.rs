@@ -149,7 +149,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::VariableDeclaration {
+            AstLoweringData::VariableDeclaration {
                 kind: VariableDeclarationKind::Auto,
                 name: name_span
                     .byte_range
@@ -210,7 +210,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::VariableDeclaration {
+            AstLoweringData::VariableDeclaration {
                 kind: VariableDeclarationKind::Const,
                 name: name_span
                     .byte_range
@@ -250,7 +250,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Statement,
                 start,
                 self.current,
-                SyntaxData::VariableDeclaration {
+                AstLoweringData::VariableDeclaration {
                     kind: VariableDeclarationKind::Uninitialized,
                     name: name_span
                         .byte_range
@@ -276,7 +276,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::VariableDeclaration {
+            AstLoweringData::VariableDeclaration {
                 kind: VariableDeclarationKind::Typed,
                 name: name_span
                     .byte_range
@@ -311,22 +311,22 @@ impl<'a> Parser<'a> {
         let type_parameters_start = self.syntax_events.len();
         let type_params = self.parse_type_params_list()?;
         let type_parameters = self.syntax_ranges_since(type_parameters_start, |data| {
-            matches!(data, SyntaxData::TypeParameter { .. })
+            matches!(data, AstLoweringData::TypeParameter { .. })
         });
         let traits_start = self.syntax_events.len();
         self.parse_trait_list()?;
         let trait_ranges = self.syntax_ranges_since(traits_start, |data| {
-            matches!(data, SyntaxData::TraitReference { .. })
+            matches!(data, AstLoweringData::TraitReference { .. })
         });
         let body_start = self.current;
         self.consume_token(TokenType::OpenBrace, "Expected '{' after class header")?;
         let members_start = self.syntax_events.len();
         self.parse_class_body(&type_params.names)?;
         let field_ranges = self.syntax_ranges_since(members_start, |data| {
-            matches!(data, SyntaxData::Field { .. })
+            matches!(data, AstLoweringData::Field { .. })
         });
         let method_ranges = self.syntax_ranges_since(members_start, |data| {
-            matches!(data, SyntaxData::ClassMethod { .. })
+            matches!(data, AstLoweringData::ClassMethod { .. })
         });
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after class body")?;
@@ -334,13 +334,13 @@ impl<'a> Parser<'a> {
         let where_start = self.syntax_events.len();
         let where_clause = self.parse_where_clause_fact()?;
         let where_range = self.last_syntax_range_since(where_start, |data| {
-            matches!(data, SyntaxData::WhereClause { .. })
+            matches!(data, AstLoweringData::WhereClause { .. })
         });
         let full_span = match &where_clause {
             Some(clause) => start_span.combine(&clause.span),
             None => start_span.combine(&end_span),
         };
-        let syntax_data = SyntaxData::Class {
+        let lowering_data = AstLoweringData::Class {
             name: name_range,
             type_parameters,
             traits: trait_ranges,
@@ -353,7 +353,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::ClassDeclaration,
             class_start,
             self.current,
-            syntax_data,
+            lowering_data,
         );
         Ok(())
     }
@@ -423,7 +423,7 @@ impl<'a> Parser<'a> {
                 .start,
         );
         let span = start_span.combine(&block_span);
-        let syntax_data = SyntaxData::Test {
+        let lowering_data = AstLoweringData::Test {
             name: name_range,
             body: block_span.byte_range.expect("test block source range"),
             body_contents,
@@ -433,7 +433,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::TestDeclaration,
             test_start,
             self.current,
-            syntax_data,
+            lowering_data,
         );
         Ok(())
     }
@@ -455,9 +455,9 @@ impl<'a> Parser<'a> {
             let bounds_start = self.syntax_events.len();
             self.parse_trait_bounds()?;
             let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
-                matches!(data, SyntaxData::TraitBound { .. })
+                matches!(data, AstLoweringData::TraitBound { .. })
             });
-            let syntax_data = SyntaxData::TypeParameter {
+            let lowering_data = AstLoweringData::TypeParameter {
                 name,
                 bounds: bound_ranges,
             };
@@ -465,7 +465,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TypeParameter,
                 parameter_start,
                 self.current,
-                syntax_data,
+                lowering_data,
             );
             names.push(name);
             if !self.matches(&[TokenType::Comma]) {
@@ -494,7 +494,7 @@ impl<'a> Parser<'a> {
                         .expect("trait bound type argument has source range")
                 })
                 .collect();
-            let syntax_data = SyntaxData::TraitBound {
+            let lowering_data = AstLoweringData::TraitBound {
                 name: bound_span
                     .byte_range
                     .expect("trait bound name has source range"),
@@ -504,7 +504,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                syntax_data,
+                lowering_data,
             );
             if !self.matches(&[TokenType::Ref]) {
                 break;
@@ -530,13 +530,13 @@ impl<'a> Parser<'a> {
             let type_arguments = self.syntax_ranges_since(type_arguments_start, |data| {
                 matches!(
                     data,
-                    SyntaxData::TypeName { .. }
-                        | SyntaxData::TypeReference { .. }
-                        | SyntaxData::TypeContainer { .. }
-                        | SyntaxData::FunctionType { .. }
+                    AstLoweringData::TypeName { .. }
+                        | AstLoweringData::TypeReference { .. }
+                        | AstLoweringData::TypeContainer { .. }
+                        | AstLoweringData::FunctionType { .. }
                 )
             });
-            let syntax_data = SyntaxData::TraitReference {
+            let lowering_data = AstLoweringData::TraitReference {
                 name,
                 type_arguments,
             };
@@ -544,7 +544,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TraitReference,
                 trait_start,
                 self.current,
-                syntax_data,
+                lowering_data,
             );
             trait_ranges.push(name);
             if !self.matches(&[TokenType::Comma]) {
@@ -634,14 +634,14 @@ impl<'a> Parser<'a> {
                 }
                 let function_range = self
                     .last_syntax_range_since(function_event_start, |data| {
-                        matches!(data, SyntaxData::Function { .. })
+                        matches!(data, AstLoweringData::Function { .. })
                     })
                     .expect("parsed class method has a function context");
                 self.record_typed_syntax_node(
                     SyntaxKind::ClassMethod,
                     member_start,
                     self.current,
-                    SyntaxData::ClassMethod {
+                    AstLoweringData::ClassMethod {
                         function: function_range,
                     },
                 );
@@ -680,17 +680,17 @@ impl<'a> Parser<'a> {
         let type_parameters_start = self.syntax_events.len();
         let type_params = self.parse_interface_type_params()?;
         let type_parameters = self.syntax_ranges_since(type_parameters_start, |data| {
-            matches!(data, SyntaxData::TypeParameter { .. })
+            matches!(data, AstLoweringData::TypeParameter { .. })
         });
         let body_start = self.current;
         self.consume_token(TokenType::OpenBrace, "Expected '{' after interface header")?;
         let members_start = self.syntax_events.len();
         self.parse_interface_body(&type_params.names)?;
         let field_ranges = self.syntax_ranges_since(members_start, |data| {
-            matches!(data, SyntaxData::Field { .. })
+            matches!(data, AstLoweringData::Field { .. })
         });
         let method_ranges = self.syntax_ranges_since(members_start, |data| {
-            matches!(data, SyntaxData::Function { .. })
+            matches!(data, AstLoweringData::Function { .. })
         });
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after interface body")?;
@@ -700,7 +700,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::InterfaceDeclaration,
             interface_start,
             self.current,
-            SyntaxData::Interface {
+            AstLoweringData::Interface {
                 name: name_range,
                 type_parameters,
                 fields: field_ranges,
@@ -729,13 +729,13 @@ impl<'a> Parser<'a> {
                 let bounds_start = self.syntax_events.len();
                 self.parse_colon_trait_bounds()?;
                 let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
-                    matches!(data, SyntaxData::TraitBound { .. })
+                    matches!(data, AstLoweringData::TraitBound { .. })
                 });
                 self.record_typed_syntax_node(
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    SyntaxData::TypeParameter {
+                    AstLoweringData::TypeParameter {
                         name,
                         bounds: bound_ranges,
                     },
@@ -768,17 +768,17 @@ impl<'a> Parser<'a> {
             let type_arguments = self.syntax_ranges_since(type_arguments_start, |data| {
                 matches!(
                     data,
-                    SyntaxData::TypeName { .. }
-                        | SyntaxData::TypeReference { .. }
-                        | SyntaxData::TypeContainer { .. }
-                        | SyntaxData::FunctionType { .. }
+                    AstLoweringData::TypeName { .. }
+                        | AstLoweringData::TypeReference { .. }
+                        | AstLoweringData::TypeContainer { .. }
+                        | AstLoweringData::FunctionType { .. }
                 )
             });
             self.record_typed_syntax_node(
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                SyntaxData::TraitBound {
+                AstLoweringData::TraitBound {
                     name,
                     type_arguments,
                 },
@@ -825,21 +825,21 @@ impl<'a> Parser<'a> {
         let type_params_start = self.syntax_events.len();
         self.parse_simple_type_params()?;
         let type_parameters = self.syntax_ranges_since(type_params_start, |data| {
-            matches!(data, SyntaxData::TypeParameter { .. })
+            matches!(data, AstLoweringData::TypeParameter { .. })
         });
         self.consume_token(TokenType::OpenParen, "Expected '(' after method name")?;
         let params_start = self.current;
         let params_event_start = self.syntax_events.len();
         self.parse_param_list()?;
         let parameters = self.syntax_ranges_since(params_event_start, |data| {
-            matches!(data, SyntaxData::Parameter { .. })
+            matches!(data, AstLoweringData::Parameter { .. })
         });
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
         self.record_syntax_node(SyntaxKind::ParameterList, params_start, self.current);
         let where_event_start = self.syntax_events.len();
         let where_clause = self.parse_where_clause_fact()?;
         let where_range = self.last_syntax_range_since(where_event_start, |data| {
-            matches!(data, SyntaxData::WhereClause { .. })
+            matches!(data, AstLoweringData::WhereClause { .. })
         });
         if where_clause.is_some() {
             self.skip_newlines_before(TokenType::Returns);
@@ -849,10 +849,10 @@ impl<'a> Parser<'a> {
         let return_type_range = self.last_syntax_range_since(return_event_start, |data| {
             matches!(
                 data,
-                SyntaxData::TypeName { .. }
-                    | SyntaxData::TypeReference { .. }
-                    | SyntaxData::TypeContainer { .. }
-                    | SyntaxData::FunctionType { .. }
+                AstLoweringData::TypeName { .. }
+                    | AstLoweringData::TypeReference { .. }
+                    | AstLoweringData::TypeContainer { .. }
+                    | AstLoweringData::FunctionType { .. }
             )
         });
         let return_type_span = return_type
@@ -867,7 +867,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::FunctionDeclaration,
             function_start,
             end,
-            SyntaxData::Function {
+            AstLoweringData::Function {
                 name: name_range,
                 ast_span,
                 type_parameters,
@@ -900,7 +900,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    SyntaxData::TypeParameter {
+                    AstLoweringData::TypeParameter {
                         name,
                         bounds: Vec::new(),
                     },
@@ -933,7 +933,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::Parameter,
                     parameter_start,
                     self.current,
-                    SyntaxData::Parameter {
+                    AstLoweringData::Parameter {
                         name,
                         type_range,
                         default_value: None,
@@ -969,20 +969,20 @@ impl<'a> Parser<'a> {
         let type_parameters_start = self.syntax_events.len();
         self.parse_colon_type_params()?;
         let type_parameters = self.syntax_ranges_since(type_parameters_start, |data| {
-            matches!(data, SyntaxData::TypeParameter { .. })
+            matches!(data, AstLoweringData::TypeParameter { .. })
         });
         let body_start = self.current;
         self.consume_token(TokenType::OpenBrace, "Expected '{' after enum header")?;
         let variants_start = self.syntax_events.len();
         self.parse_enum_variants()?;
         let variant_ranges = self.syntax_ranges_since(variants_start, |data| {
-            matches!(data, SyntaxData::EnumVariant { .. })
+            matches!(data, AstLoweringData::EnumVariant { .. })
         });
         let end_span =
             self.consume_token(TokenType::CloseBrace, "Expected '}' after enum variants")?;
         self.record_syntax_node(SyntaxKind::EnumBody, body_start, self.current);
         let full_span = start_span.combine(&end_span);
-        let syntax_data = SyntaxData::Enum {
+        let lowering_data = AstLoweringData::Enum {
             name: name_range,
             type_parameters,
             variants: variant_ranges,
@@ -992,7 +992,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::EnumDeclaration,
             enum_start,
             self.current,
-            syntax_data,
+            lowering_data,
         );
         Ok(())
     }
@@ -1014,9 +1014,9 @@ impl<'a> Parser<'a> {
                 let bounds_start = self.syntax_events.len();
                 self.parse_colon_trait_bounds()?;
                 let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
-                    matches!(data, SyntaxData::TraitBound { .. })
+                    matches!(data, AstLoweringData::TraitBound { .. })
                 });
-                let syntax_data = SyntaxData::TypeParameter {
+                let lowering_data = AstLoweringData::TypeParameter {
                     name,
                     bounds: bound_ranges,
                 };
@@ -1024,7 +1024,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    syntax_data,
+                    lowering_data,
                 );
                 if !self.matches(&[TokenType::Comma]) {
                     break;
@@ -1065,7 +1065,7 @@ impl<'a> Parser<'a> {
         self.parse_enum_variant_data()?;
         let fields = has_fields.then(|| {
             self.syntax_ranges_since(fields_start, |data| {
-                matches!(data, SyntaxData::EnumVariantField { .. })
+                matches!(data, AstLoweringData::EnumVariantField { .. })
             })
         });
         let where_start = self.syntax_events.len();
@@ -1076,9 +1076,9 @@ impl<'a> Parser<'a> {
             // belongs to this variant.
         }
         let where_range = self.last_syntax_range_since(where_start, |data| {
-            matches!(data, SyntaxData::WhereClause { .. })
+            matches!(data, AstLoweringData::WhereClause { .. })
         });
-        let syntax_data = SyntaxData::EnumVariant {
+        let lowering_data = AstLoweringData::EnumVariant {
             name,
             fields,
             where_clause: where_range,
@@ -1087,7 +1087,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::EnumVariant,
             variant_start,
             self.current,
-            syntax_data,
+            lowering_data,
         );
         Ok(())
     }
@@ -1113,7 +1113,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::EnumVariantField,
                     field_start,
                     self.current,
-                    SyntaxData::EnumVariantField {
+                    AstLoweringData::EnumVariantField {
                         field_name: field_name_range,
                         type_range,
                     },
@@ -1141,7 +1141,7 @@ impl<'a> Parser<'a> {
             .source_range_for_tokens(path_start, path_end)
             .expect("import module path source range");
         let syntax_spec = self.import_syntax_spec(spec_start, self.current);
-        let syntax_data = SyntaxData::Import {
+        let lowering_data = AstLoweringData::Import {
             module_path: module_path_range,
             spec: syntax_spec,
             ast_span: span.byte_range.expect("import span range"),
@@ -1150,7 +1150,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::ImportDeclaration,
             import_start,
             self.current,
-            syntax_data,
+            lowering_data,
         );
         Ok(())
     }
@@ -1310,21 +1310,21 @@ impl<'a> Parser<'a> {
         let type_params_start = self.syntax_events.len();
         self.parse_is_type_params()?;
         let type_parameters = self.syntax_ranges_since(type_params_start, |data| {
-            matches!(data, SyntaxData::TypeParameter { .. })
+            matches!(data, AstLoweringData::TypeParameter { .. })
         });
         let params_start = self.current;
         self.consume_token(TokenType::OpenParen, "Expected '(' after function name")?;
         let params_event_start = self.syntax_events.len();
         self.parse_function_params()?;
         let parameters = self.syntax_ranges_since(params_event_start, |data| {
-            matches!(data, SyntaxData::Parameter { .. })
+            matches!(data, AstLoweringData::Parameter { .. })
         });
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
         self.record_syntax_node(SyntaxKind::ParameterList, params_start, self.current);
         let where_event_start = self.syntax_events.len();
         self.parse_where_clause_fact()?;
         let where_range = self.last_syntax_range_since(where_event_start, |data| {
-            matches!(data, SyntaxData::WhereClause { .. })
+            matches!(data, AstLoweringData::WhereClause { .. })
         });
         if where_range.is_some() {
             self.skip_newlines();
@@ -1334,10 +1334,10 @@ impl<'a> Parser<'a> {
         let return_type_range = self.last_syntax_range_since(return_event_start, |data| {
             matches!(
                 data,
-                SyntaxData::TypeName { .. }
-                    | SyntaxData::TypeReference { .. }
-                    | SyntaxData::TypeContainer { .. }
-                    | SyntaxData::FunctionType { .. }
+                AstLoweringData::TypeName { .. }
+                    | AstLoweringData::TypeReference { .. }
+                    | AstLoweringData::TypeContainer { .. }
+                    | AstLoweringData::FunctionType { .. }
             )
         });
         let return_type_span = return_type
@@ -1353,7 +1353,7 @@ impl<'a> Parser<'a> {
             .map_or(start_range.end, |range| range.end);
         let ast_span = ByteRange::new(start_range.start, ast_end);
         let function_end = self.current;
-        let syntax_data = SyntaxData::Function {
+        let lowering_data = AstLoweringData::Function {
             name: name_range,
             ast_span,
             type_parameters,
@@ -1368,7 +1368,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::FunctionDeclaration,
             function_start,
             function_end,
-            syntax_data,
+            lowering_data,
         );
         Ok(())
     }
@@ -1390,9 +1390,9 @@ impl<'a> Parser<'a> {
                 let bounds_start = self.syntax_events.len();
                 self.parse_ref_trait_bounds()?;
                 let bound_ranges = self.syntax_ranges_since(bounds_start, |data| {
-                    matches!(data, SyntaxData::TraitBound { .. })
+                    matches!(data, AstLoweringData::TraitBound { .. })
                 });
-                let syntax_data = SyntaxData::TypeParameter {
+                let lowering_data = AstLoweringData::TypeParameter {
                     name: name_range,
                     bounds: bound_ranges,
                 };
@@ -1400,7 +1400,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::TypeParameter,
                     parameter_start,
                     self.current,
-                    syntax_data,
+                    lowering_data,
                 );
                 if !self.matches(&[TokenType::Comma]) {
                     break;
@@ -1426,13 +1426,13 @@ impl<'a> Parser<'a> {
             let type_arguments = self.syntax_ranges_since(type_arguments_start, |data| {
                 matches!(
                     data,
-                    SyntaxData::TypeName { .. }
-                        | SyntaxData::TypeReference { .. }
-                        | SyntaxData::TypeContainer { .. }
-                        | SyntaxData::FunctionType { .. }
+                    AstLoweringData::TypeName { .. }
+                        | AstLoweringData::TypeReference { .. }
+                        | AstLoweringData::TypeContainer { .. }
+                        | AstLoweringData::FunctionType { .. }
                 )
             });
-            let syntax_data = SyntaxData::TraitBound {
+            let lowering_data = AstLoweringData::TraitBound {
                 name,
                 type_arguments,
             };
@@ -1440,7 +1440,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TraitBound,
                 bound_start,
                 self.current,
-                syntax_data,
+                lowering_data,
             );
             if !self.matches(&[TokenType::Ref]) {
                 break;
@@ -1477,7 +1477,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Parameter,
             parameter_start,
             self.current,
-            SyntaxData::Parameter {
+            AstLoweringData::Parameter {
                 name,
                 type_range,
                 default_value: default_value.range,
@@ -1572,9 +1572,9 @@ impl<'a> Parser<'a> {
             self.parse_where_clause_fact()?;
         }
         let where_range = self.last_syntax_range_since(where_start, |data| {
-            matches!(data, SyntaxData::WhereClause { .. })
+            matches!(data, AstLoweringData::WhereClause { .. })
         });
-        let syntax_data = SyntaxData::Field {
+        let lowering_data = AstLoweringData::Field {
             name,
             type_range,
             is_generic_param,
@@ -1586,7 +1586,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::FieldDeclaration,
             field_start,
             self.current,
-            syntax_data,
+            lowering_data,
         );
         Ok(())
     }
@@ -1628,7 +1628,7 @@ impl<'a> Parser<'a> {
         range.is_some_and(|range| {
             self.syntax_events.iter().any(|event| {
                 event.range == range
-                    && matches!(event.data.as_ref(), Some(SyntaxData::Literal { .. }))
+                    && matches!(event.data.as_ref(), Some(AstLoweringData::Literal { .. }))
             })
         })
     }

@@ -3,7 +3,7 @@
 use super::{Parser, ParserError, ParserResult};
 use crate::diagnostic::DiagnosticCode;
 use crate::lexer::{ByteRange, Span, Token, TokenType};
-use crate::syntax::{SyntaxData, SyntaxKind};
+use crate::syntax::{AstLoweringData, SyntaxKind};
 
 /// Parser-owned type facts retain source ranges for later syntax lowering.
 #[derive(Clone, Debug)]
@@ -219,7 +219,7 @@ impl<'a> Parser<'a> {
                 if let Some(range) = self.source_range(start, self.current) {
                     fact.span = Span::new(range.start, range.end);
                 }
-                if let Some(data) = self.syntax_data_for_type(start, self.current, &fact.kind) {
+                if let Some(data) = self.lowering_data_for_type(start, self.current, &fact.kind) {
                     self.record_typed_syntax_node(SyntaxKind::Type, start, self.current, data);
                 } else {
                     self.record_syntax_node(SyntaxKind::Type, start, self.current);
@@ -256,12 +256,12 @@ impl<'a> Parser<'a> {
         self.source_range(start, cursor)
     }
 
-    fn syntax_data_for_type(
+    fn lowering_data_for_type(
         &self,
         start: usize,
         end: usize,
         kind: &TypeFactKind,
-    ) -> Option<SyntaxData> {
+    ) -> Option<AstLoweringData> {
         let name = || self.type_name_range(start, end);
         let ranges = |types: &[TypeFact]| {
             types
@@ -270,31 +270,33 @@ impl<'a> Parser<'a> {
                 .collect::<Option<Vec<_>>>()
         };
         Some(match kind {
-            TypeFactKind::Primitive | TypeFactKind::Named { .. } => SyntaxData::TypeName {
+            TypeFactKind::Primitive | TypeFactKind::Named { .. } => AstLoweringData::TypeName {
                 name: name()?,
                 arguments: match kind {
                     TypeFactKind::Named { args, .. } => ranges(args)?,
                     _ => Vec::new(),
                 },
             },
-            TypeFactKind::TraitObject(inner) => SyntaxData::TypeName {
+            TypeFactKind::TraitObject(inner) => AstLoweringData::TypeName {
                 name: name()?,
                 arguments: vec![inner.span.byte_range?],
             },
-            TypeFactKind::Reference(reference) => SyntaxData::TypeReference {
+            TypeFactKind::Reference(reference) => AstLoweringData::TypeReference {
                 reference: reference.span.byte_range?,
             },
-            TypeFactKind::List(element) | TypeFactKind::Set(element) => SyntaxData::TypeContainer {
-                name: name()?,
-                arguments: vec![element.span.byte_range?],
-            },
+            TypeFactKind::List(element) | TypeFactKind::Set(element) => {
+                AstLoweringData::TypeContainer {
+                    name: name()?,
+                    arguments: vec![element.span.byte_range?],
+                }
+            }
             TypeFactKind::Map(key, value) | TypeFactKind::Tuple(key, value) => {
-                SyntaxData::TypeContainer {
+                AstLoweringData::TypeContainer {
                     name: name()?,
                     arguments: vec![key.span.byte_range?, value.span.byte_range?],
                 }
             }
-            TypeFactKind::Function { params, returns } => SyntaxData::FunctionType {
+            TypeFactKind::Function { params, returns } => AstLoweringData::FunctionType {
                 parameters: ranges(params)?,
                 returns: returns.span.byte_range?,
             },

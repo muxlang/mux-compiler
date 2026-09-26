@@ -20,8 +20,8 @@ use crate::ast::{
 use crate::diagnostic::DiagnosticCode;
 use crate::lexer::{ByteRange, Span, Token, TokenType};
 use crate::syntax::{
-    SyntaxData, SyntaxImportSpec, SyntaxKind, SyntaxModuleAlias, SyntaxNodeEvent, SyntaxPattern,
-    VariableDeclarationKind,
+    AstLoweringData, SyntaxImportSpec, SyntaxKind, SyntaxModuleAlias, SyntaxNodeEvent,
+    SyntaxPattern, VariableDeclarationKind,
 };
 
 #[derive(Debug)]
@@ -129,7 +129,7 @@ impl<'a> Parser<'a> {
     }
 
     fn record_syntax_node(&mut self, kind: SyntaxKind, start: usize, end: usize) {
-        self.record_syntax_data(kind, start, end, None);
+        self.record_lowering_data(kind, start, end, None);
     }
 
     fn record_typed_syntax_node(
@@ -137,17 +137,17 @@ impl<'a> Parser<'a> {
         kind: SyntaxKind,
         start: usize,
         end: usize,
-        data: crate::syntax::SyntaxData,
+        data: crate::syntax::AstLoweringData,
     ) {
-        self.record_syntax_data(kind, start, end, Some(data));
+        self.record_lowering_data(kind, start, end, Some(data));
     }
 
-    fn record_syntax_data(
+    fn record_lowering_data(
         &mut self,
         kind: SyntaxKind,
         start: usize,
         end: usize,
-        data: Option<crate::syntax::SyntaxData>,
+        data: Option<crate::syntax::AstLoweringData>,
     ) {
         if start > end {
             return;
@@ -211,16 +211,16 @@ impl<'a> Parser<'a> {
                 matches!(
                     event.data.as_ref(),
                     Some(
-                        SyntaxData::VariableDeclaration { .. }
-                            | SyntaxData::ExpressionStatement { .. }
-                            | SyntaxData::ReturnStatement { .. }
-                            | SyntaxData::BreakStatement { .. }
-                            | SyntaxData::ContinueStatement { .. }
-                            | SyntaxData::Block
-                            | SyntaxData::IfStatement { .. }
-                            | SyntaxData::WhileStatement { .. }
-                            | SyntaxData::ForStatement { .. }
-                            | SyntaxData::MatchStatement { .. }
+                        AstLoweringData::VariableDeclaration { .. }
+                            | AstLoweringData::ExpressionStatement { .. }
+                            | AstLoweringData::ReturnStatement { .. }
+                            | AstLoweringData::BreakStatement { .. }
+                            | AstLoweringData::ContinueStatement { .. }
+                            | AstLoweringData::Block
+                            | AstLoweringData::IfStatement { .. }
+                            | AstLoweringData::WhileStatement { .. }
+                            | AstLoweringData::ForStatement { .. }
+                            | AstLoweringData::MatchStatement { .. }
                     )
                 )
             })
@@ -243,31 +243,31 @@ impl<'a> Parser<'a> {
                 matches!(
                     event.data.as_ref(),
                     Some(
-                        SyntaxData::VariableDeclaration { .. }
-                            | SyntaxData::ExpressionStatement { .. }
-                            | SyntaxData::ReturnStatement { .. }
-                            | SyntaxData::BreakStatement { .. }
-                            | SyntaxData::ContinueStatement { .. }
-                            | SyntaxData::IfStatement { .. }
-                            | SyntaxData::WhileStatement { .. }
-                            | SyntaxData::ForStatement { .. }
-                            | SyntaxData::MatchStatement { .. }
-                            | SyntaxData::Block
+                        AstLoweringData::VariableDeclaration { .. }
+                            | AstLoweringData::ExpressionStatement { .. }
+                            | AstLoweringData::ReturnStatement { .. }
+                            | AstLoweringData::BreakStatement { .. }
+                            | AstLoweringData::ContinueStatement { .. }
+                            | AstLoweringData::IfStatement { .. }
+                            | AstLoweringData::WhileStatement { .. }
+                            | AstLoweringData::ForStatement { .. }
+                            | AstLoweringData::MatchStatement { .. }
+                            | AstLoweringData::Block
                     )
-                ) && !(matches!(event.data.as_ref(), Some(SyntaxData::Block))
+                ) && !(matches!(event.data.as_ref(), Some(AstLoweringData::Block))
                     && containing_block == Some(event.range))
             })
             .map(|event| match event.data.as_ref() {
                 Some(
-                    SyntaxData::VariableDeclaration { ast_span, .. }
-                    | SyntaxData::ExpressionStatement { ast_span, .. }
-                    | SyntaxData::ReturnStatement { ast_span, .. }
-                    | SyntaxData::BreakStatement { ast_span }
-                    | SyntaxData::ContinueStatement { ast_span }
-                    | SyntaxData::IfStatement { ast_span, .. }
-                    | SyntaxData::WhileStatement { ast_span, .. }
-                    | SyntaxData::ForStatement { ast_span, .. }
-                    | SyntaxData::MatchStatement { ast_span, .. },
+                    AstLoweringData::VariableDeclaration { ast_span, .. }
+                    | AstLoweringData::ExpressionStatement { ast_span, .. }
+                    | AstLoweringData::ReturnStatement { ast_span, .. }
+                    | AstLoweringData::BreakStatement { ast_span }
+                    | AstLoweringData::ContinueStatement { ast_span }
+                    | AstLoweringData::IfStatement { ast_span, .. }
+                    | AstLoweringData::WhileStatement { ast_span, .. }
+                    | AstLoweringData::ForStatement { ast_span, .. }
+                    | AstLoweringData::MatchStatement { ast_span, .. },
                 ) => *ast_span,
                 _ => event.range,
             })
@@ -276,7 +276,7 @@ impl<'a> Parser<'a> {
     fn syntax_ranges_since(
         &self,
         event_start: usize,
-        matches_data: impl Fn(&SyntaxData) -> bool,
+        matches_data: impl Fn(&AstLoweringData) -> bool,
     ) -> Vec<ByteRange> {
         self.syntax_events
             .iter()
@@ -294,7 +294,7 @@ impl<'a> Parser<'a> {
     fn last_syntax_range_since(
         &self,
         event_start: usize,
-        matches_data: impl Fn(&SyntaxData) -> bool,
+        matches_data: impl Fn(&AstLoweringData) -> bool,
     ) -> Option<ByteRange> {
         self.syntax_events
             .iter()
@@ -467,12 +467,12 @@ impl<'a> Parser<'a> {
                                 && matches!(
                                     event.data.as_ref(),
                                     Some(
-                                        SyntaxData::Import { .. }
-                                            | SyntaxData::VariableDeclaration { .. }
-                                            | SyntaxData::ExpressionStatement { .. }
-                                            | SyntaxData::ReturnStatement { .. }
-                                            | SyntaxData::BreakStatement { .. }
-                                            | SyntaxData::ContinueStatement { .. }
+                                        AstLoweringData::Import { .. }
+                                            | AstLoweringData::VariableDeclaration { .. }
+                                            | AstLoweringData::ExpressionStatement { .. }
+                                            | AstLoweringData::ReturnStatement { .. }
+                                            | AstLoweringData::BreakStatement { .. }
+                                            | AstLoweringData::ContinueStatement { .. }
                                     )
                                 )
                         })

@@ -93,7 +93,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::WhereClause,
             start,
             self.current,
-            SyntaxData::WhereClause {
+            AstLoweringData::WhereClause {
                 predicates: predicate_ranges,
             },
         );
@@ -273,7 +273,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::IfStatement,
             start,
             self.current,
-            SyntaxData::IfStatement {
+            AstLoweringData::IfStatement {
                 condition: condition_range,
                 then_block: then_range,
                 else_branch: else_range,
@@ -325,7 +325,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::WhileStatement,
             start,
             self.current,
-            SyntaxData::WhileStatement {
+            AstLoweringData::WhileStatement {
                 condition: condition_range,
                 body: body_range,
                 ast_span: ByteRange::new(
@@ -376,7 +376,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::ForStatement,
             start,
             self.current,
-            SyntaxData::ForStatement {
+            AstLoweringData::ForStatement {
                 variable: variable_range,
                 variable_type: variable_type_range,
                 iterator: iterator_range,
@@ -402,7 +402,7 @@ impl<'a> Parser<'a> {
             self.parse_match_arm(start_span)?;
             arm_ranges.push(
                 self.last_syntax_range_since(arm_events_start, |data| {
-                    matches!(data, SyntaxData::MatchArm { .. })
+                    matches!(data, AstLoweringData::MatchArm { .. })
                 })
                 .expect("match arm syntax range"),
             );
@@ -420,7 +420,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::MatchStatement,
             statement_start,
             self.current,
-            SyntaxData::MatchStatement {
+            AstLoweringData::MatchStatement {
                 expression: expression_range,
                 arms: arm_ranges,
                 ast_span: start_span
@@ -437,7 +437,9 @@ impl<'a> Parser<'a> {
         let pattern_start = self.syntax_events.len();
         self.parse_pattern_fact()?;
         let pattern_range = self
-            .last_syntax_range_since(pattern_start, |data| matches!(data, SyntaxData::Pattern(_)))
+            .last_syntax_range_since(pattern_start, |data| {
+                matches!(data, AstLoweringData::Pattern(_))
+            })
             .expect("parsed match pattern has a syntax range");
         let guard_range = if self.matches(&[TokenType::If]) {
             self.parse_expression_parsed()?.span.byte_range
@@ -454,7 +456,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::MatchArm,
             arm_start,
             self.current,
-            SyntaxData::MatchArm {
+            AstLoweringData::MatchArm {
                 pattern: pattern_range,
                 guard: guard_range,
                 body: body_range,
@@ -505,7 +507,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::ReturnStatement {
+            AstLoweringData::ReturnStatement {
                 value,
                 ast_span: start_span
                     .combine(&end_span)
@@ -531,7 +533,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::BreakStatement {
+            AstLoweringData::BreakStatement {
                 ast_span: span.byte_range.expect("break statement range"),
             },
         );
@@ -553,7 +555,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::ContinueStatement {
+            AstLoweringData::ContinueStatement {
                 ast_span: span.byte_range.expect("continue statement range"),
             },
         );
@@ -564,8 +566,9 @@ impl<'a> Parser<'a> {
         let pattern_start = self.current;
         let events_start = self.syntax_events.len();
         let kind = self.parse_pattern_inner_fact()?;
-        let mut candidates =
-            self.syntax_ranges_since(events_start, |data| matches!(data, SyntaxData::Pattern(_)));
+        let mut candidates = self.syntax_ranges_since(events_start, |data| {
+            matches!(data, AstLoweringData::Pattern(_))
+        });
         candidates.sort_by_key(|range| (range.start, std::cmp::Reverse(range.end)));
         let mut child_ranges = Vec::new();
         let mut enclosing = Vec::new();
@@ -612,7 +615,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Pattern,
             pattern_start,
             self.current,
-            SyntaxData::Pattern(syntax_pattern),
+            AstLoweringData::Pattern(syntax_pattern),
         );
         Ok(kind)
     }
@@ -715,7 +718,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Block,
                 start,
                 self.current,
-                SyntaxData::Block,
+                AstLoweringData::Block,
             );
         } else if self.current > start {
             self.record_syntax_node(SyntaxKind::Error, start, self.current);
@@ -813,7 +816,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Statement,
             start,
             self.current,
-            SyntaxData::ExpressionStatement {
+            AstLoweringData::ExpressionStatement {
                 expression: expr
                     .span
                     .byte_range
@@ -852,7 +855,7 @@ impl<'a> Parser<'a> {
             Some(event.range) == range
                 && matches!(
                     event.data.as_ref(),
-                    Some(SyntaxData::Unary { postfix: true, .. })
+                    Some(AstLoweringData::Unary { postfix: true, .. })
                 )
         });
         if has_top_level_update {

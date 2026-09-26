@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{Precedence, SpanExt};
-use crate::syntax::SyntaxData;
+use crate::syntax::AstLoweringData;
 
 /// Expression facts retained while parsing for syntax events and disambiguation.
 pub(super) struct ParsedExpression {
@@ -92,7 +92,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::BinaryExpression,
                     expression_start,
                     self.current,
-                    SyntaxData::Binary {
+                    AstLoweringData::Binary {
                         operator,
                         left,
                         right,
@@ -128,7 +128,7 @@ impl<'a> Parser<'a> {
                 let inside_expression =
                     event.range.start >= range.start && event.range.end <= range.end;
                 match event.data.as_ref() {
-                    Some(SyntaxData::Lambda { body, .. }) if inside_expression => Some(*body),
+                    Some(AstLoweringData::Lambda { body, .. }) if inside_expression => Some(*body),
                     _ => None,
                 }
             })
@@ -140,12 +140,12 @@ impl<'a> Parser<'a> {
                     && event.range.end <= range.end
                     && matches!(
                         event.data.as_ref(),
-                        Some(SyntaxData::Unary { postfix: true, .. })
+                        Some(AstLoweringData::Unary { postfix: true, .. })
                     )
                     && !self.syntax_events.iter().any(|statement| {
                         matches!(
                             statement.data.as_ref(),
-                            Some(SyntaxData::ExpressionStatement { expression, .. })
+                            Some(AstLoweringData::ExpressionStatement { expression, .. })
                                 if *expression == event.range
                         )
                     })
@@ -200,7 +200,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::UnaryExpression,
                     start,
                     self.current,
-                    SyntaxData::Unary {
+                    AstLoweringData::Unary {
                         operator,
                         operand,
                         postfix: false,
@@ -236,8 +236,8 @@ impl<'a> Parser<'a> {
                 })
             });
             let kind = match data {
-                Some(SyntaxData::Map { .. }) => SyntaxKind::MapLiteral,
-                Some(SyntaxData::Set { .. }) => SyntaxKind::SetLiteral,
+                Some(AstLoweringData::Map { .. }) => SyntaxKind::MapLiteral,
+                Some(AstLoweringData::Set { .. }) => SyntaxKind::SetLiteral,
                 _ => SyntaxKind::Delimited,
             };
             let end =
@@ -277,7 +277,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::SetLiteral,
             start,
             self.current,
-            SyntaxData::Set {
+            AstLoweringData::Set {
                 elements: Vec::new(),
             },
         );
@@ -297,7 +297,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::MapLiteral,
             start,
             self.current,
-            SyntaxData::Map {
+            AstLoweringData::Map {
                 entries: Vec::new(),
                 inferred_type_span: start_span.byte_range.expect("empty map opening range"),
             },
@@ -329,7 +329,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::MapLiteral,
             self.token_index_for_span(start_span),
             self.current,
-            SyntaxData::Map {
+            AstLoweringData::Map {
                 entries: syntax_entries,
                 inferred_type_span: start_span.byte_range.expect("map opening range"),
             },
@@ -359,7 +359,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::SetLiteral,
             self.token_index_for_span(start_span),
             self.current,
-            SyntaxData::Set {
+            AstLoweringData::Set {
                 elements: syntax_elements,
             },
         );
@@ -499,7 +499,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::ListLiteral,
             self.token_index_for_span(start_span),
             self.current,
-            SyntaxData::List {
+            AstLoweringData::List {
                 elements: element_ranges,
             },
         );
@@ -584,7 +584,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::Parameter,
                     parameter_start,
                     self.current,
-                    SyntaxData::Parameter {
+                    AstLoweringData::Parameter {
                         name: name_range,
                         type_range,
                         default_value: None,
@@ -597,7 +597,7 @@ impl<'a> Parser<'a> {
             }
         }
         let parameter_ranges = self.syntax_ranges_since(parameters_start, |data| {
-            matches!(data, SyntaxData::Parameter { .. })
+            matches!(data, AstLoweringData::Parameter { .. })
         });
 
         self.consume_token(TokenType::CloseParen, "Expected ')' after parameters")?;
@@ -605,7 +605,7 @@ impl<'a> Parser<'a> {
         let where_start = self.syntax_events.len();
         let where_clause_fact = self.parse_where_clause_fact()?;
         let where_range = self.last_syntax_range_since(where_start, |data| {
-            matches!(data, SyntaxData::WhereClause { .. })
+            matches!(data, AstLoweringData::WhereClause { .. })
         });
         if where_clause_fact.is_some() {
             self.skip_newlines();
@@ -637,7 +637,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::LambdaExpression,
             lambda_start,
             self.current,
-            SyntaxData::Lambda {
+            AstLoweringData::Lambda {
                 parameters: parameter_ranges,
                 return_type: return_type_range,
                 where_clause: where_range,
@@ -687,7 +687,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::IfExpression,
             expression_start,
             self.current,
-            SyntaxData::IfExpression {
+            AstLoweringData::IfExpression {
                 condition: condition_range,
                 then_expression: then_range,
                 else_expression: else_range,
@@ -727,7 +727,7 @@ impl<'a> Parser<'a> {
             self.parse_pattern_fact()?;
             let pattern_range = self
                 .last_syntax_range_since(pattern_events_start, |data| {
-                    matches!(data, SyntaxData::Pattern(_))
+                    matches!(data, AstLoweringData::Pattern(_))
                 })
                 .expect("match expression pattern range");
             let guard = if self.matches(&[TokenType::If]) {
@@ -763,7 +763,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::MatchArm,
                 arm_start,
                 self.current,
-                SyntaxData::MatchArm {
+                AstLoweringData::MatchArm {
                     pattern: pattern_range,
                     guard: guard_range,
                     body: body_range,
@@ -783,7 +783,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::MatchExpression,
             match_start,
             self.current,
-            SyntaxData::MatchExpression {
+            AstLoweringData::MatchExpression {
                 expression: expression_range,
                 arms: arm_ranges,
                 ast_span: span.byte_range.expect("match expression AST span range"),
@@ -906,14 +906,14 @@ impl<'a> Parser<'a> {
             && let Some(range) = token_span.byte_range
         {
             let data = match &self.tokens[token_index].token_type {
-                TokenType::Id(_) => Some(SyntaxData::Name { token: range }),
+                TokenType::Id(_) => Some(AstLoweringData::Name { token: range }),
                 TokenType::Int(_)
                 | TokenType::Float(_)
                 | TokenType::Bool(_)
                 | TokenType::Char(_)
                 | TokenType::Str(_)
                 | TokenType::Bytes(_)
-                | TokenType::None => Some(SyntaxData::Literal { token: range }),
+                | TokenType::None => Some(AstLoweringData::Literal { token: range }),
                 _ => None,
             };
             if let Some(data) = data {
@@ -988,7 +988,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::TupleExpression,
                 syntax_start,
                 self.current,
-                SyntaxData::Tuple {
+                AstLoweringData::Tuple {
                     first: first_range,
                     second: second_range,
                 },
@@ -1008,7 +1008,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::ParenthesizedExpression,
             syntax_start,
             self.current,
-            SyntaxData::Parenthesized {
+            AstLoweringData::Parenthesized {
                 expression: expression_range,
             },
         );
@@ -1095,7 +1095,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::Expression,
             syntax_start,
             self.current,
-            SyntaxData::Generic { target, arguments },
+            AstLoweringData::Generic { target, arguments },
         );
         self.record_syntax_node(SyntaxKind::TypeArguments, arguments_start, self.current);
         let span = expr.span.combine(&end_span);
@@ -1141,7 +1141,7 @@ impl<'a> Parser<'a> {
                     SyntaxKind::Expression,
                     callee_start,
                     self.current,
-                    SyntaxData::Call {
+                    AstLoweringData::Call {
                         callee: callee_range,
                         arguments: argument_ranges,
                     },
@@ -1165,7 +1165,7 @@ impl<'a> Parser<'a> {
                         SyntaxKind::Expression,
                         start,
                         self.current,
-                        SyntaxData::FieldAccess {
+                        AstLoweringData::FieldAccess {
                             base: base_range,
                             field: field_range,
                         },
@@ -1199,7 +1199,7 @@ impl<'a> Parser<'a> {
                             SyntaxKind::Expression,
                             syntax_start,
                             self.current,
-                            SyntaxData::Index {
+                            AstLoweringData::Index {
                                 base: base_range,
                                 index: index_range,
                             },
@@ -1235,7 +1235,7 @@ impl<'a> Parser<'a> {
                         SyntaxKind::UnaryExpression,
                         self.token_index_for_span(expr.span),
                         self.current,
-                        SyntaxData::Unary {
+                        AstLoweringData::Unary {
                             operator,
                             operand,
                             postfix: true,
@@ -1282,7 +1282,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::SliceExpression,
             slice_start,
             self.current,
-            SyntaxData::Slice {
+            AstLoweringData::Slice {
                 base: base_range,
                 start: start_range,
                 end: end_range,

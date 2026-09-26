@@ -44,13 +44,13 @@ fn validate_tree(node: &syntax::SyntaxNode, tree: &syntax::SyntaxTree, indices: 
     }
 }
 
-fn contains_syntax_data(
+fn contains_lowering_data(
     node: &syntax::SyntaxNode,
-    predicate: fn(&syntax::SyntaxData) -> bool,
+    predicate: fn(&syntax::AstLoweringData) -> bool,
 ) -> bool {
-    node.data().is_some_and(predicate)
+    node.lowering_data().is_some_and(predicate)
         || node.children().iter().any(|child| match child {
-            syntax::SyntaxElement::Node(child) => contains_syntax_data(child, predicate),
+            syntax::SyntaxElement::Node(child) => contains_lowering_data(child, predicate),
             syntax::SyntaxElement::Token(_) => false,
         })
 }
@@ -152,13 +152,13 @@ fn syntax_lowering_preserves_unary_binary_and_postfix_validation() {
 
     let comparison = syntax::parse_source("auto result = (-value)<int>(value)\n");
     assert!(comparison.errors.is_empty(), "{:?}", comparison.errors);
-    assert!(contains_syntax_data(
+    assert!(contains_lowering_data(
         comparison.tree.root(),
-        |data| matches!(data, syntax::SyntaxData::Binary { .. })
+        |data| matches!(data, syntax::AstLoweringData::Binary { .. })
     ));
-    assert!(!contains_syntax_data(
+    assert!(!contains_lowering_data(
         comparison.tree.root(),
-        |data| matches!(data, syntax::SyntaxData::Generic { .. })
+        |data| matches!(data, syntax::AstLoweringData::Generic { .. })
     ));
 }
 
