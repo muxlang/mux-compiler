@@ -1,7 +1,5 @@
-use mux_lang::lexer::Lexer;
-use mux_lang::parser::Parser;
 use mux_lang::semantics::SemanticAnalyzer;
-use mux_lang::source::Source;
+use mux_lang::syntax::parse_source;
 use mux_lang::{diagnostic::Files, diagnostic::Level, module_resolver::ModuleResolver};
 use std::cell::RefCell;
 use std::fs;
@@ -14,20 +12,8 @@ fn analyze_mux_file(path: &std::path::PathBuf) -> Result<(), String> {
 
     let content =
         fs::read_to_string(path).map_err(|error| format!("could not read fixture: {error}"))?;
-    let mut source = Source::from_test_str(&content);
-
-    let mut lexer = Lexer::new(&mut source);
-    let tokens: Vec<_> = std::iter::from_fn(|| match lexer.next_token() {
-        Ok(token) if token.token_type == mux_lang::lexer::TokenType::Eof => None,
-        Ok(token) => Some(Ok(token)),
-        Err(e) => Some(Err(e)),
-    })
-    .collect::<Result<_, _>>()
-    .map_err(|error| format!("lexer error: {error}"))?;
-
-    let mut parser = Parser::new(&tokens);
-    let ast = parser
-        .parse()
+    let ast = parse_source(&content)
+        .lower()
         .map_err(|error| format!("parser error: {error:?}"))?;
 
     let mut files = Files::new();

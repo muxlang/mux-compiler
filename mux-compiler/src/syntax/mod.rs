@@ -14,7 +14,7 @@ use crate::ast::{
 use crate::diagnostic::{Diagnostic, FileId, ToDiagnostic};
 use crate::lexer::{ByteRange, LexerError, Span, Token, TokenType};
 use crate::parser::{Parser, ParserError};
-use crate::source::Source;
+use crate::source::{Source, SourceText};
 
 /// A context attached to a contiguous region of source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -497,7 +497,7 @@ pub(crate) struct SyntaxNodeEvent {
 /// The lossless syntax tree for one source file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyntaxTree {
-    source: Arc<str>,
+    source: Arc<SourceText>,
     tokens: Vec<SyntaxToken>,
     root: SyntaxNode,
 }
@@ -589,9 +589,9 @@ impl ParseOutput {
 /// clients can inspect the malformed region and its original spelling.
 #[must_use]
 pub fn parse_source(input: &str) -> ParseOutput {
-    let mut source = Source::from_string(input.to_owned());
+    let tree_source = Arc::new(SourceText::new(input.to_owned()));
+    let mut source = Source::from_source_text(tree_source.clone());
     let lexed = crate::lexer::Lexer::new(&mut source).lex_all_lossless();
-    let tree_source: Arc<str> = Arc::from(input);
     let mut parser = Parser::new(&lexed.tokens);
     let parser_errors = match parser.parse_for_syntax() {
         Ok(()) => Vec::new(),
@@ -640,7 +640,12 @@ impl ToDiagnostic for FrontendError {
 }
 
 impl SyntaxTree {
-    pub(crate) fn new(source: Arc<str>, tokens: Vec<Token>, events: &[SyntaxNodeEvent]) -> Self {
+    pub(crate) fn new(
+        source: Arc<SourceText>,
+        tokens: Vec<Token>,
+        events: &[SyntaxNodeEvent],
+    ) -> Self {
+        let text = source.text();
         for token in &tokens {
             let range = token
                 .span
@@ -648,9 +653,9 @@ impl SyntaxTree {
                 .expect("lossless lexer tokens must have byte ranges");
             assert!(
                 range.start <= range.end
-                    && range.end <= source.len()
-                    && source.is_char_boundary(range.start)
-                    && source.is_char_boundary(range.end),
+                    && range.end <= text.len()
+                    && text.is_char_boundary(range.start)
+                    && text.is_char_boundary(range.end),
                 "lossless token range must be an ordered UTF-8 source range"
             );
         }
@@ -658,7 +663,7 @@ impl SyntaxTree {
             .into_iter()
             .map(|token| SyntaxToken { token })
             .collect();
-        let root_range = ByteRange::new(0, source.len());
+        let root_range = ByteRange::new(0, text.len());
         let root = build_tree(root_range, &tokens, events);
         Self {
             source,
@@ -669,7 +674,7 @@ impl SyntaxTree {
 
     #[must_use]
     pub fn source(&self) -> &str {
-        &self.source
+        self.source.text()
     }
 
     #[must_use]
@@ -686,7 +691,9 @@ impl SyntaxTree {
     /// Return the exact source spelling for a token index.
     #[must_use]
     pub fn token_text(&self, index: usize) -> Option<&str> {
-        self.tokens.get(index).map(|token| token.text(&self.source))
+        self.tokens
+            .get(index)
+            .map(|token| token.text(self.source()))
     }
 
     /// Return the test declarations with their exact body source and adjacent
@@ -737,17 +744,16 @@ impl SyntaxTree {
             }
         };
         let comment_range = comment.range();
-        let comment_start_line = self.source[..comment_range.start]
-            .rsplit(['\n', '\r'])
-            .next()?;
+        let source = self.source();
+        let comment_start_line = source[..comment_range.start].rsplit(['\n', '\r']).next()?;
         if !comment_start_line.trim().is_empty() {
             return None;
         }
-        let between = self.source.get(comment_range.end..start)?;
+        let between = source.get(comment_range.end..start)?;
         if !between.chars().all(char::is_whitespace) || count_line_breaks(between) != 1 {
             return None;
         }
-        self.source.get(comment_range.start..comment_range.end)
+        source.get(comment_range.start..comment_range.end)
     }
 
     /// Lower declarations and statements in source order from the syntax tree.
@@ -1245,6 +1251,7 @@ impl SyntaxTree {
             SyntaxData::TypeName { name, arguments } => {
                 let name = self
                     .source
+                    .text()
                     .get(name.start..name.end)
                     .ok_or(SyntaxLowerError::MissingToken(*name))?;
                 let args = arguments
@@ -1273,6 +1280,7 @@ impl SyntaxTree {
             } => {
                 let name = self
                     .source
+                    .text()
                     .get(name_range.start..name_range.end)
                     .ok_or(SyntaxLowerError::MissingToken(*name_range))?;
                 let mut args = arguments
@@ -1340,9 +1348,7 @@ impl SyntaxTree {
                 value,
             } => {
                 let name_token = self.token_for_range(*name)?;
-                let TokenType::Id(name) = name_token.kind() else {
-                    return Err(SyntaxLowerError::MissingToken(*name));
-                };
+                let name = self.identifier_for_range(*name)?;
                 let type_node = match type_range {
                     Some(range) => self.lower_type_at(*range)?,
                     None => TypeNode {
@@ -1832,7 +1838,7 @@ impl SyntaxTree {
                 | TokenType::MultilineComment(_)
                 | TokenType::Eof => {}
                 _ => {
-                    path.push_str(token.text(&self.source));
+                    path.push_str(token.text(self.source()));
                     found = true;
                 }
             }
@@ -2441,7 +2447,7 @@ mod tests {
 
     #[test]
     fn syntax_tree_keeps_raw_token_text_and_nested_context() {
-        let source: Arc<str> = Arc::from("x + 2 // note\n");
+        let source = Arc::new(SourceText::new("x + 2 // note\n".to_owned()));
         let tokens = vec![
             Token::new(
                 TokenType::Id("x".into()),
@@ -2532,7 +2538,7 @@ mod tests {
     #[test]
     fn compilation_unit_lowering_rejects_untyped_top_level_contexts() {
         let tree = SyntaxTree::new(
-            Arc::from("x"),
+            Arc::new(SourceText::new("x".to_owned())),
             vec![Token::new(
                 TokenType::Id("x".into()),
                 Span::new(1, 1).with_byte_range(0, 1),
@@ -3039,6 +3045,20 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_binding_lowers_through_the_syntax_frontend() {
+        let output = parse_source("auto _ = 1");
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let lowered = output.lower().expect("wildcard binding should lower");
+        assert!(matches!(
+            &lowered[..],
+            [AstNode::Statement(StatementNode {
+                kind: StatementKind::AutoDecl(name, ..),
+                ..
+            })] if name == "_"
+        ));
+    }
+
+    #[test]
     fn nested_block_syntax_lowers_in_source_order() {
         let output = parse_source("{ { auto x = 1 } }");
         assert!(output.errors.is_empty(), "{:?}", output.errors);
@@ -3474,7 +3494,7 @@ mod tests {
         assert!(!missing_expression.errors.is_empty());
 
         let insertion_tree = SyntaxTree::new(
-            Arc::from(")"),
+            Arc::new(SourceText::new(")".to_owned())),
             vec![Token::new(
                 TokenType::CloseParen,
                 Span::new(1, 1).with_byte_range(0, 1),

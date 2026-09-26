@@ -7,23 +7,11 @@
 //! expression and statement positions, driving the `handle_*` walk over a lambda
 //! body. A clean analysis (no semantic errors) confirms the captures type-check.
 
-use mux_lang::lexer::Lexer;
-use mux_lang::parser::Parser;
 use mux_lang::semantics::{SemanticAnalyzer, SemanticError};
-use mux_lang::source::Source;
+use mux_lang::syntax::parse_source;
 
 fn analyze(src: &str) -> Vec<SemanticError> {
-    let mut source = Source::from_test_str(src);
-    let mut lexer = Lexer::new(&mut source);
-    let tokens: Vec<_> = std::iter::from_fn(|| match lexer.next_token() {
-        Ok(token) if token.token_type == mux_lang::lexer::TokenType::Eof => None,
-        Ok(token) => Some(Ok(token)),
-        Err(e) => Some(Err(e)),
-    })
-    .collect::<Result<_, _>>()
-    .expect("lexing should succeed");
-    let mut parser = Parser::new(&tokens);
-    let ast = parser.parse().expect("parsing should succeed");
+    let ast = parse_source(src).lower().expect("parsing should succeed");
     let mut analyzer = SemanticAnalyzer::new();
     analyzer.analyze(&ast, None)
 }

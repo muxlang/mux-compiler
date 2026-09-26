@@ -1,21 +1,9 @@
 use mux_lang::diagnostic::Level;
-use mux_lang::lexer::{Lexer, TokenType};
-use mux_lang::parser::Parser;
 use mux_lang::semantics::SemanticAnalyzer;
-use mux_lang::source::Source;
+use mux_lang::syntax::parse_source;
 
 fn errors(text: &str) -> Vec<String> {
-    let mut source = Source::from_test_str(text);
-    let mut lexer = Lexer::new(&mut source);
-    let mut tokens = Vec::new();
-    loop {
-        let token = lexer.next_token().expect("valid source tokens");
-        if token.token_type == TokenType::Eof {
-            break;
-        }
-        tokens.push(token);
-    }
-    let ast = Parser::new(&tokens).parse().expect("valid source grammar");
+    let ast = parse_source(text).lower().expect("valid source grammar");
     SemanticAnalyzer::new()
         .analyze(&ast, None)
         .into_iter()

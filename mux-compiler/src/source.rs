@@ -1,5 +1,6 @@
 use std::io::{Error, ErrorKind};
 use std::path::Path;
+use std::sync::Arc;
 
 fn line_starts(input: &str) -> Vec<usize> {
     let mut starts = vec![0];
@@ -15,11 +16,32 @@ fn floor_char_boundary(input: &str, mut byte: usize) -> usize {
 }
 
 pub struct Source {
-    input: String,
+    source: Arc<SourceText>,
     pub pos: usize,
     pub line: usize,
     pub col: usize,
+}
+
+/// Immutable source text and its byte-indexed line starts, shared by frontend
+/// consumers for one parsed file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceText {
+    input: String,
     line_starts: Vec<usize>,
+}
+
+impl SourceText {
+    pub(crate) fn new(input: String) -> Self {
+        Self {
+            line_starts: line_starts(&input),
+            input,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn text(&self) -> &str {
+        &self.input
+    }
 }
 
 impl Source {
@@ -28,8 +50,7 @@ impl Source {
         if Path::new(file_path).exists() {
             let input = std::fs::read_to_string(file_path)?;
             return Ok(Self {
-                line_starts: line_starts(&input),
-                input,
+                source: Arc::new(SourceText::new(input)),
                 pos: 0,
                 line: 1,
                 col: 1,
@@ -41,8 +62,16 @@ impl Source {
     #[must_use]
     pub fn from_string(input: String) -> Self {
         Self {
-            line_starts: line_starts(&input),
-            input,
+            source: Arc::new(SourceText::new(input)),
+            pos: 0,
+            line: 1,
+            col: 1,
+        }
+    }
+
+    pub(crate) fn from_source_text(source: Arc<SourceText>) -> Self {
+        Self {
+            source,
             pos: 0,
             line: 1,
             col: 1,
@@ -58,14 +87,14 @@ impl Source {
     /// Read the immutable source text.
     #[must_use]
     pub fn text(&self) -> &str {
-        &self.input
+        self.source.text()
     }
 
     pub fn next_char(&mut self) -> Option<char> {
-        if self.pos >= self.input.len() {
+        if self.pos >= self.source.input.len() {
             return None;
         }
-        let ch = self.input[self.pos..].chars().next()?;
+        let ch = self.source.input[self.pos..].chars().next()?;
         let char_len = ch.len_utf8();
         self.pos += char_len;
 
@@ -83,31 +112,37 @@ impl Source {
 
     #[must_use]
     pub fn peek(&self) -> Option<char> {
-        if self.pos >= self.input.len() {
+        if self.pos >= self.source.input.len() {
             return None;
         }
-        self.input[self.pos..].chars().next()
+        self.source.input[self.pos..].chars().next()
     }
 
     #[must_use]
     pub fn peek_nth(&self, n: usize) -> Option<char> {
-        if self.pos >= self.input.len() {
+        if self.pos >= self.source.input.len() {
             return None;
         }
-        self.input[self.pos..].chars().nth(n)
+        self.source.input[self.pos..].chars().nth(n)
     }
 
     /// Return the one-based line and display column for a UTF-8 byte offset.
     /// Offsets are clamped to the source and rounded down to a character boundary.
     #[must_use]
     pub fn line_col(&self, byte: usize) -> (usize, usize) {
-        let byte = floor_char_boundary(&self.input, byte.min(self.input.len()));
+        let byte = floor_char_boundary(&self.source.input, byte.min(self.source.input.len()));
         let line_index = self
+            .source
             .line_starts
             .partition_point(|&start| start <= byte)
             .saturating_sub(1);
-        let line_start = self.line_starts.get(line_index).copied().unwrap_or(0);
-        let col = self.input[line_start..byte]
+        let line_start = self
+            .source
+            .line_starts
+            .get(line_index)
+            .copied()
+            .unwrap_or(0);
+        let col = self.source.input[line_start..byte]
             .chars()
             .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1))
             .sum::<usize>()
@@ -117,22 +152,23 @@ impl Source {
 
     #[must_use]
     pub fn slice(&self, range: crate::lexer::ByteRange) -> &str {
-        &self.input[range.start..range.end]
+        &self.source.input[range.start..range.end]
     }
 
     /// Return the byte range for a one-based source line, excluding its line ending.
     #[must_use]
     pub fn line_range(&self, line: usize) -> Option<crate::lexer::ByteRange> {
         let index = line.checked_sub(1)?;
-        let start = *self.line_starts.get(index)?;
+        let start = *self.source.line_starts.get(index)?;
         let mut end = self
+            .source
             .line_starts
             .get(index + 1)
             .copied()
-            .unwrap_or(self.input.len());
-        if end > start && self.input.as_bytes().get(end - 1) == Some(&b'\n') {
+            .unwrap_or(self.source.input.len());
+        if end > start && self.source.input.as_bytes().get(end - 1) == Some(&b'\n') {
             end -= 1;
-            if end > start && self.input.as_bytes().get(end - 1) == Some(&b'\r') {
+            if end > start && self.source.input.as_bytes().get(end - 1) == Some(&b'\r') {
                 end -= 1;
             }
         }
@@ -141,7 +177,7 @@ impl Source {
 
     #[must_use]
     pub fn line_count(&self) -> usize {
-        self.line_starts.len()
+        self.source.line_starts.len()
     }
 
     #[must_use]
@@ -188,16 +224,16 @@ impl Source {
 
 #[cfg(test)]
 mod tests {
-    use super::Source;
+    use super::{Source, SourceText};
+    use std::sync::Arc;
 
     #[test]
     fn test_next_char_basic() {
         let mut src = Source {
-            input: "abc\n".to_string(),
+            source: Arc::new(SourceText::new("abc\n".to_owned())),
             pos: 0,
             line: 1,
             col: 1,
-            line_starts: vec![0, 4],
         };
 
         assert_eq!(src.next_char(), Some('a'));
@@ -222,11 +258,10 @@ mod tests {
     #[test]
     fn test_peek() {
         let mut src = Source {
-            input: "xy".to_string(),
+            source: Arc::new(SourceText::new("xy".to_owned())),
             pos: 0,
             line: 1,
             col: 1,
-            line_starts: vec![0],
         };
 
         assert_eq!(src.peek(), Some('x')); // peek doesn't advance pos
@@ -344,7 +379,7 @@ mod tests {
     #[test]
     fn test_from_test_str_type_consistency() {
         let src = Source::from_test_str("test");
-        assert_eq!(src.input, "test".to_string());
+        assert_eq!(src.text(), "test");
     }
 
     #[test]
@@ -361,5 +396,14 @@ mod tests {
         assert_eq!(source.line_text(1), Some("λ"));
         assert_eq!(source.line_text(2), Some("wide界"));
         assert_eq!(source.line_text(3), Some(""));
+    }
+
+    #[test]
+    fn source_cursor_shares_immutable_text_and_line_index() {
+        let text = Arc::new(SourceText::new("λ\r\nwide界\n".to_owned()));
+        let source = Source::from_source_text(text.clone());
+        assert!(Arc::ptr_eq(&source.source, &text));
+        assert_eq!(source.text(), "λ\r\nwide界\n");
+        assert_eq!(source.line_col("λ\r\nwide".len()), (2, 5));
     }
 }
