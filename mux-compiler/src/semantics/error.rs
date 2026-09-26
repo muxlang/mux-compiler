@@ -7,7 +7,7 @@ pub struct SemanticError {
     pub code: DiagnosticCode,
     pub message: Box<str>,
     pub help: Option<Box<str>>,
-    pub span: Span,
+    pub span: Box<Span>,
     pub file_id: Option<FileId>,
     pub span_edits: Option<Box<[SpanEdit]>>,
 }
@@ -18,7 +18,7 @@ impl SemanticError {
             code,
             message: message.into().into_boxed_str(),
             help: None,
-            span,
+            span: Box::new(span),
             file_id: None,
             span_edits: None,
         }
@@ -34,7 +34,7 @@ impl SemanticError {
             code,
             message: message.into().into_boxed_str(),
             help: Some(help.into().into_boxed_str()),
-            span,
+            span: Box::new(span),
             file_id: None,
             span_edits: None,
         }
@@ -58,7 +58,7 @@ impl ToDiagnostic for SemanticError {
             self.code,
             &self.message,
             self.help.as_deref(),
-            self.span,
+            *self.span,
             self.file_id.unwrap_or(file_id),
         );
         match &self.span_edits {

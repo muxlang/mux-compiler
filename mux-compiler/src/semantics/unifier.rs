@@ -40,7 +40,7 @@ impl Unifier {
                             )
                             .into_boxed_str(),
                             help: None,
-                            span,
+                            span: Box::new(span),
                             file_id: None,
                             span_edits: None,
                         });

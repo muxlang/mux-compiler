@@ -341,7 +341,7 @@ impl<'a> Parser<'a> {
         let start = self.current.saturating_sub(1);
         let start_span = self.tokens[start].span;
         let var_type = self.parse_type_fact()?;
-        let _ = self.consume_identifier_fact("Expected variable name")?;
+        self.consume_identifier_fact("Expected variable name")?;
         let variable_range = self
             .previous()
             .span

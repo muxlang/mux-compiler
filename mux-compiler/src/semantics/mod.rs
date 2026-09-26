@@ -817,7 +817,7 @@ impl SemanticAnalyzer {
             errors.extend(warnings::collect(ast));
         }
         let mut seen = HashSet::new();
-        errors.retain(|e| seen.insert((e.code, e.message.clone(), e.span, e.file_id)));
+        errors.retain(|e| seen.insert((e.code, e.message.clone(), *e.span, e.file_id)));
         for error in &mut errors {
             if error.file_id.is_none() {
                 error.file_id = self.current_file_id;

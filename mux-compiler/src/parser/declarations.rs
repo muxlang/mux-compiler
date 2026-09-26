@@ -119,7 +119,7 @@ impl<'a> Parser<'a> {
             Ok(_) => Ok(()),
             Err(e)
                 if matches!(
-                    e.message.as_str(),
+                    e.message.as_ref(),
                     "must be terminated with a newline" | "expected newline after statement"
                 ) =>
             {
@@ -1257,10 +1257,8 @@ impl<'a> Parser<'a> {
                     self.consume_identifier_fact("Expected alias after 'as'")?;
                 }
             }
-        } else {
-            if self.matches(&[TokenType::As]) {
-                self.consume_identifier_fact("Expected alias after 'as'")?;
-            }
+        } else if self.matches(&[TokenType::As]) {
+            self.consume_identifier_fact("Expected alias after 'as'")?;
         }
         Ok(())
     }

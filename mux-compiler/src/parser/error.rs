@@ -11,8 +11,8 @@ pub type ParserResult<T> = Result<T, ParserError>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParserError {
     pub code: DiagnosticCode,
-    pub message: String,
-    pub help: Option<String>,
+    pub message: Box<str>,
+    pub help: Option<Box<str>>,
     pub span: Span,
 }
 
@@ -20,7 +20,7 @@ impl ParserError {
     pub fn new(code: DiagnosticCode, message: impl Into<String>, span: Span) -> Self {
         Self {
             code,
-            message: message.into(),
+            message: message.into().into_boxed_str(),
             help: None,
             span,
         }
@@ -29,7 +29,7 @@ impl ParserError {
     pub fn from_token(code: DiagnosticCode, message: impl Into<String>, token: &Token) -> Self {
         Self {
             code,
-            message: message.into(),
+            message: message.into().into_boxed_str(),
             help: None,
             span: token.span,
         }
@@ -43,8 +43,8 @@ impl ParserError {
     ) -> Self {
         Self {
             code,
-            message: message.into(),
-            help: Some(help.into()),
+            message: message.into().into_boxed_str(),
+            help: Some(help.into().into_boxed_str()),
             span,
         }
     }
@@ -78,7 +78,7 @@ impl From<ParseError> for ParserError {
     fn from(err: ParseError) -> Self {
         Self {
             code: DiagnosticCode::ParseExpectedToken,
-            message: err.message,
+            message: err.message.into_boxed_str(),
             help: None,
             span: err.span,
         }
