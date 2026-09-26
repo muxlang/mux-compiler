@@ -258,6 +258,7 @@ pub enum SyntaxData {
     Test {
         name: ByteRange,
         body: ByteRange,
+        body_contents: ByteRange,
         ast_span: ByteRange,
     },
     Enum {
@@ -501,6 +502,45 @@ pub struct SyntaxTree {
     root: SyntaxNode,
 }
 
+/// Structured source information for a top-level test declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TestDeclaration<'a> {
+    range: ByteRange,
+    name: &'a str,
+    body_contents: ByteRange,
+    body_start_line: usize,
+    annotation: Option<&'a str>,
+}
+
+impl TestDeclaration<'_> {
+    #[must_use]
+    pub fn range(&self) -> ByteRange {
+        self.range
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.name
+    }
+
+    /// Source bytes inside the test body's braces, including original trivia.
+    #[must_use]
+    pub fn body_contents(&self) -> ByteRange {
+        self.body_contents
+    }
+
+    #[must_use]
+    pub fn body_start_line(&self) -> usize {
+        self.body_start_line
+    }
+
+    /// An immediately preceding `// mux:test ...` comment, if present.
+    #[must_use]
+    pub fn annotation(&self) -> Option<&str> {
+        self.annotation
+    }
+}
+
 /// A parser or lexer error produced while building a [`SyntaxTree`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum FrontendError {
@@ -647,6 +687,67 @@ impl SyntaxTree {
     #[must_use]
     pub fn token_text(&self, index: usize) -> Option<&str> {
         self.tokens.get(index).map(|token| token.text(&self.source))
+    }
+
+    /// Return the test declarations with their exact body source and adjacent
+    /// annotation comment, without requiring clients to reconstruct them from
+    /// the lossless token stream.
+    pub fn test_declarations(&self) -> Result<Vec<TestDeclaration<'_>>, SyntaxLowerError> {
+        let mut nodes = Vec::new();
+        collect_test_nodes(&self.root, &mut nodes);
+        nodes
+            .into_iter()
+            .map(|node| {
+                let Some(SyntaxData::Test {
+                    name,
+                    body,
+                    body_contents,
+                    ..
+                }) = node.data.as_ref()
+                else {
+                    return Err(SyntaxLowerError::UnsupportedContext(node.kind));
+                };
+                let name_token = self.token_for_range(*name)?;
+                let TokenType::Str(name) = name_token.kind() else {
+                    return Err(SyntaxLowerError::MissingToken(*name));
+                };
+                let body_start_line = self.span_for_range(*body)?.row_start;
+                Ok(TestDeclaration {
+                    range: node.range,
+                    name,
+                    body_contents: *body_contents,
+                    body_start_line,
+                    annotation: self.test_annotation_before(node.range.start),
+                })
+            })
+            .collect()
+    }
+
+    fn test_annotation_before(&self, start: usize) -> Option<&str> {
+        let mut index = self
+            .tokens
+            .partition_point(|token| token.range().end <= start);
+        let comment = loop {
+            let token = self.tokens.get(index.checked_sub(1)?)?;
+            index -= 1;
+            match token.kind() {
+                TokenType::Whitespace | TokenType::NewLine => continue,
+                TokenType::LineComment(_) => break token,
+                _ => return None,
+            }
+        };
+        let comment_range = comment.range();
+        let comment_start_line = self.source[..comment_range.start]
+            .rsplit(['\n', '\r'])
+            .next()?;
+        if !comment_start_line.trim().is_empty() {
+            return None;
+        }
+        let between = self.source.get(comment_range.end..start)?;
+        if !between.chars().all(char::is_whitespace) || count_line_breaks(between) != 1 {
+            return None;
+        }
+        self.source.get(comment_range.start..comment_range.end)
     }
 
     /// Lower declarations and statements in source order from the syntax tree.
@@ -1374,6 +1475,7 @@ impl SyntaxTree {
             name,
             body,
             ast_span,
+            ..
         }) = node.data.as_ref()
         else {
             return Err(SyntaxLowerError::UnsupportedContext(node.kind));
@@ -2140,6 +2242,42 @@ fn is_type_data(data: &SyntaxData) -> bool {
             | SyntaxData::TypeContainer { .. }
             | SyntaxData::FunctionType { .. }
     )
+}
+
+fn count_line_breaks(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut count = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\n' => count += 1,
+            b'\r' => {
+                count += 1;
+                if bytes.get(index + 1) == Some(&b'\n') {
+                    index += 1;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    count
+}
+
+fn collect_test_nodes<'a>(node: &'a SyntaxNode, found: &mut Vec<&'a SyntaxNode>) {
+    if node
+        .data
+        .as_ref()
+        .is_some_and(|data| matches!(data, SyntaxData::Test { .. }))
+    {
+        found.push(node);
+        return;
+    }
+    for child in &node.children {
+        if let SyntaxElement::Node(child) = child {
+            collect_test_nodes(child, found);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -3255,6 +3393,22 @@ mod tests {
     fn typed_test_declaration_lowers_name_body_and_span() {
         let output = parse_source("test \"addition\" { auto result = 1 + 2 }");
         assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let declarations = output
+            .tree
+            .test_declarations()
+            .expect("test declaration metadata should be available");
+        let [declaration] = declarations.as_slice() else {
+            panic!("expected one test declaration");
+        };
+        assert_eq!(declaration.name(), "addition");
+        assert_eq!(
+            &output.tree.source()
+                [declaration.body_contents().start..declaration.body_contents().end],
+            " auto result = 1 + 2 "
+        );
+        assert_eq!(declaration.body_start_line(), 1);
+        assert_eq!(declaration.annotation(), None);
+
         let node = find_data(output.tree.root(), &|data| {
             matches!(data, SyntaxData::Test { .. })
         })
@@ -3278,6 +3432,37 @@ mod tests {
             }] if name == "result"
         ));
         assert!(span.byte_range.is_some());
+    }
+
+    #[test]
+    fn test_declaration_metadata_reads_adjacent_indented_crlf_annotation() {
+        let source = "  // mux:test timeout=3\r\ntest \"annotated\" {\r\n    return\r\n}\r\n";
+        let output = parse_source(source);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let declarations = output
+            .tree
+            .test_declarations()
+            .expect("test declaration metadata should be available");
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].annotation(), Some("// mux:test timeout=3"));
+        assert_eq!(declarations[0].body_start_line(), 2);
+        assert_eq!(
+            &source[declarations[0].body_contents().start..declarations[0].body_contents().end],
+            "\r\n    return\r\n"
+        );
+    }
+
+    #[test]
+    fn test_declaration_metadata_does_not_attach_non_adjacent_comment() {
+        let source = "// mux:test timeout=3\n\ntest \"plain\" {}";
+        let output = parse_source(source);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let declarations = output
+            .tree
+            .test_declarations()
+            .expect("test declaration metadata should be available");
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].annotation(), None);
     }
 
     #[test]

@@ -789,13 +789,8 @@ fn is_mux_file(path: &Path) -> bool {
     path.extension().and_then(OsStr::to_str) == Some("mux")
 }
 
-fn parse_test_annotation(
-    source: &str,
-    test_start: usize,
-) -> Result<(Option<u64>, Vec<String>), String> {
-    let prefix = &source[..test_start];
-    let line = prefix.trim_end_matches(['\r', '\n']).rsplit('\n').next();
-    let Some(line) = line.map(str::trim) else {
+fn parse_test_annotation(comment: Option<&str>) -> Result<(Option<u64>, Vec<String>), String> {
+    let Some(line) = comment.map(str::trim) else {
         return Ok((None, Vec::new()));
     };
     let Some(annotation) = line.strip_prefix("// mux:test") else {
@@ -879,46 +874,23 @@ fn extract_test_cases(path: &Path, source: &str, start_id: usize) -> Result<Vec<
     }
     let mut ranges = Vec::new();
     let mut found = Vec::new();
-    for node in top_level_syntax_nodes(parsed.tree.root()) {
-        if node.kind() != syntax::SyntaxKind::TestDeclaration {
-            continue;
-        }
-        let range = node.range();
-        let tokens: Vec<_> = parsed
-            .tree
-            .tokens()
-            .iter()
-            .filter(|token| {
-                token.range().start >= range.start
-                    && token.range().end <= range.end
-                    && !matches!(
-                        token.kind(),
-                        lexer::TokenType::Whitespace
-                            | lexer::TokenType::NewLine
-                            | lexer::TokenType::LineComment(_)
-                            | lexer::TokenType::MultilineComment(_)
-                            | lexer::TokenType::Eof
-                    )
-            })
-            .collect();
-        let Some(lexer::TokenType::Str(name)) = tokens.get(1).map(|token| token.kind()) else {
-            return Err(format!("{}: test declaration has no name", path.display()));
-        };
-        let open = tokens
-            .iter()
-            .find(|token| matches!(token.kind(), lexer::TokenType::OpenBrace))
-            .ok_or_else(|| format!("{}: test declaration has no body", path.display()))?;
-        let close = tokens
-            .last()
-            .filter(|token| matches!(token.kind(), lexer::TokenType::CloseBrace))
-            .ok_or_else(|| format!("{}: test body has no closing brace", path.display()))?;
-        let (timeout_seconds, tags) = parse_test_annotation(source, range.start)
+    let tests = parsed
+        .tree
+        .test_declarations()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    for test in tests {
+        let range = test.range();
+        let body_range = test.body_contents();
+        let body = source
+            .get(body_range.start..body_range.end)
+            .ok_or_else(|| format!("{}: test body range is outside the source", path.display()))?;
+        let (timeout_seconds, tags) = parse_test_annotation(test.annotation())
             .map_err(|error| format!("{}: {error}", path.display()))?;
         ranges.push((range.start, range.end));
         found.push((
-            name.clone(),
-            source[open.range().end..close.range().start].to_string(),
-            open.token().span.row_start,
+            test.name().to_string(),
+            body.to_string(),
+            test.body_start_line(),
             timeout_seconds,
             tags,
         ));
@@ -3311,7 +3283,7 @@ mod tests {
             .with_file_id(file_id)
             .with_span_edit(SpanEdit::machine_applicable_text(
                 Span {
-                    byte_range: None,
+                    byte_range: Some(crate::lexer::ByteRange::new(1, 2)),
                     row_start: 1,
                     row_end: Some(1),
                     col_start: 2,

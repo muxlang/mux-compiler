@@ -2,6 +2,7 @@ use insta::assert_debug_snapshot;
 use mux_lang::lexer::Lexer;
 use mux_lang::parser::Parser;
 use mux_lang::source::Source;
+use mux_lang::syntax;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,22 @@ fn parse_file_to_ast(test_file: &Path) -> String {
         output.push('\n');
     }
     output
+}
+
+fn ast_without_spans(nodes: &[mux_lang::ast::AstNode]) -> String {
+    let debug = format!("{nodes:#?}");
+    let mut normalized = String::with_capacity(debug.len());
+    let mut remainder = debug.as_str();
+    while let Some(start) = remainder.find("Span {") {
+        normalized.push_str(&remainder[..start]);
+        normalized.push_str("Span");
+        let span_end = remainder[start..]
+            .find('}')
+            .expect("debug span has a closing brace");
+        remainder = &remainder[start + span_end + 1..];
+    }
+    normalized.push_str(remainder);
+    normalized
 }
 
 #[test]
@@ -126,5 +143,52 @@ fn test_parse_all_mux_files_in_dir() {
                 panic!("Test failed while processing: {file_name}");
             }
         }
+    }
+}
+
+#[test]
+fn syntax_frontend_lowering_matches_compatibility_parser_corpus() {
+    let fixture_dir = std::env::var_os("MUX_TEST_SCRIPTS_DIR").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_scripts"),
+        PathBuf::from,
+    );
+    let mut files: Vec<_> = fs::read_dir(&fixture_dir)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", fixture_dir.display()))
+        .map(|entry| entry.expect("failed to read fixture entry").path())
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("mux"))
+        .collect();
+    files.sort();
+
+    for path in files {
+        let source_text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        let mut source = Source::from_string(source_text.clone());
+        let tokens = Lexer::new(&mut source)
+            .lex_all()
+            .unwrap_or_else(|error| panic!("legacy lexer failed on {}: {error}", path.display()));
+        let legacy = Parser::new(&tokens).parse().unwrap_or_else(|(_, errors)| {
+            panic!("legacy parser failed on {}: {errors:#?}", path.display())
+        });
+
+        let parsed = syntax::parse_source(&source_text);
+        assert!(
+            parsed.errors.is_empty(),
+            "syntax frontend failed on {}: {:#?}",
+            path.display(),
+            parsed.errors
+        );
+        let lowered = parsed.lower().unwrap_or_else(|error| {
+            panic!(
+                "syntax frontend could not lower {}: {error}",
+                path.display()
+            )
+        });
+
+        assert_eq!(
+            ast_without_spans(&lowered),
+            ast_without_spans(&legacy),
+            "syntax-to-AST lowering differs from the compatibility parser for {}",
+            path.display()
+        );
     }
 }

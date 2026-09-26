@@ -10,7 +10,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use unicode_width::UnicodeWidthChar;
 
 /// Source intervals produced while recovering from syntax errors.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -129,81 +128,29 @@ impl From<std::io::Error> for FixError {
     }
 }
 
-/// Convert an existing row/column span to bytes using the exact source text.
+/// Return the authoritative byte range for a source span.
 ///
-/// Mux columns count terminal display width, not UTF-8 bytes. A location in
-/// the middle of a wide character is rejected instead of risking a corrupted
-/// source file. This mapping is deliberately performed only by fix handling.
+/// Row and display-column coordinates are presentation data; reconstructing
+/// edit ranges from them is ambiguous for Unicode and must not be used for
+/// source edits.
 pub fn source_range_for_span(source: &str, span: Span) -> Result<SourceRange, FixError> {
-    if let Some(range) = span.byte_range {
-        if range.start > range.end
-            || range.end > source.len()
-            || !source.is_char_boundary(range.start)
-            || !source.is_char_boundary(range.end)
-        {
-            return Err(FixError::InvalidLocation {
-                span,
-                reason: "byte range is outside source or splits a UTF-8 character",
-            });
-        }
-        return Ok(SourceRange::new(range.start, range.end));
-    }
-    let start = byte_offset_for_position(source, span.row_start, span.col_start, span)?;
-    let end = match (span.row_end, span.col_end) {
-        (Some(row), Some(column)) => byte_offset_for_position(source, row, column, span)?,
-        (None, None) => start,
-        _ => {
-            return Err(FixError::InvalidLocation {
-                span,
-                reason: "span has only one end coordinate",
-            });
-        }
+    let Some(range) = span.byte_range else {
+        return Err(FixError::InvalidLocation {
+            span,
+            reason: "span has no authoritative byte range",
+        });
     };
-
-    if end < start {
+    if range.start > range.end
+        || range.end > source.len()
+        || !source.is_char_boundary(range.start)
+        || !source.is_char_boundary(range.end)
+    {
         return Err(FixError::InvalidLocation {
             span,
-            reason: "span end precedes its start",
+            reason: "byte range is outside source or splits a UTF-8 character",
         });
     }
-    Ok(SourceRange::new(start, end))
-}
-
-fn byte_offset_for_position(
-    source: &str,
-    row: usize,
-    column: usize,
-    span: Span,
-) -> Result<usize, FixError> {
-    if row == 0 || column == 0 {
-        return Err(FixError::InvalidLocation {
-            span,
-            reason: "locations are one-based",
-        });
-    }
-
-    let mut current_row = 1;
-    let mut current_column = 1;
-    for (byte, character) in source.char_indices() {
-        if current_row == row && current_column == column {
-            return Ok(byte);
-        }
-        if character == '\n' {
-            current_row += 1;
-            current_column = 1;
-        } else {
-            current_column += UnicodeWidthChar::width(character).unwrap_or(1);
-        }
-    }
-
-    if current_row == row && current_column == column {
-        return Ok(source.len());
-    }
-
-    Err(FixError::InvalidLocation {
-        span,
-        reason: "location is outside the source or inside a wide character",
-    })
+    Ok(SourceRange::new(range.start, range.end))
 }
 
 /// Apply machine-applicable edits without touching the filesystem.
@@ -740,10 +687,10 @@ mod tests {
     }
 
     #[test]
-    fn maps_ascii_and_unicode_spans_to_utf8_bytes() {
+    fn uses_authoritative_byte_ranges_for_unicode_spans() {
         let source = "auto x = \u{3053}\u{3093}\u{306B}\u{3061}\u{306F}\nvalue\n";
         let span = Span {
-            byte_range: None,
+            byte_range: Some(crate::lexer::ByteRange::new(9, 24)),
             row_start: 1,
             row_end: Some(1),
             col_start: 10,
@@ -756,7 +703,7 @@ mod tests {
         );
 
         let second_line = Span {
-            byte_range: None,
+            byte_range: Some(crate::lexer::ByteRange::new(25, 30)),
             row_start: 2,
             row_end: None,
             col_start: 1,
@@ -768,6 +715,18 @@ mod tests {
                 .start_byte,
             25
         );
+    }
+
+    #[test]
+    fn rejects_spans_without_authoritative_byte_ranges() {
+        let span = Span::new(1, 1);
+        assert!(matches!(
+            source_range_for_span("text", span),
+            Err(FixError::InvalidLocation {
+                reason: "span has no authoritative byte range",
+                ..
+            })
+        ));
     }
 
     #[test]

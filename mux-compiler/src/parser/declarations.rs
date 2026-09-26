@@ -1102,13 +1102,27 @@ impl<'a> Parser<'a> {
             )
         };
         self.skip_newlines();
+        let block_start = self.current;
         let block = self.block()?;
         let body = block.statements;
         let block_span = block.span;
+        let body_contents = ByteRange::new(
+            self.tokens[block_start]
+                .span
+                .byte_range
+                .expect("test body opening brace range")
+                .end,
+            self.previous()
+                .span
+                .byte_range
+                .expect("test body closing brace range")
+                .start,
+        );
         let span = start_span.combine(&block_span);
         let syntax_data = SyntaxData::Test {
             name: name_range,
             body: block_span.byte_range.expect("test block source range"),
+            body_contents,
             ast_span: span.byte_range.expect("test declaration source range"),
         };
         self.record_typed_syntax_node(
