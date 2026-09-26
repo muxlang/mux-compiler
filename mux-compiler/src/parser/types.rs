@@ -216,17 +216,8 @@ impl<'a> Parser<'a> {
         let start = self.current;
         match self.parse_type_inner() {
             Ok(mut fact) => {
-                if let Some(range) = self.source_range(start, self.current)
-                    && let (Some(first), Some(last)) = (
-                        self.tokens.get(start),
-                        self.tokens.get(self.current.saturating_sub(1)),
-                    )
-                {
-                    fact.span.row_start = first.span.row_start;
-                    fact.span.col_start = first.span.col_start;
-                    fact.span.row_end = last.span.row_end;
-                    fact.span.col_end = last.span.col_end;
-                    fact.span.byte_range = Some(range);
+                if let Some(range) = self.source_range(start, self.current) {
+                    fact.span = Span::new(0, 0).with_byte_range(range.start, range.end);
                 }
                 if let Some(data) = self.syntax_data_for_type(start, self.current, &fact.kind) {
                     self.record_typed_syntax_node(SyntaxKind::Type, start, self.current, data);
@@ -321,20 +312,13 @@ impl<'a> Parser<'a> {
         if self.matches(&[TokenType::Ref]) {
             let start_span = self.previous().span;
             let referenced_type = self.parse_type_fact()?;
+            let span = match (start_span.byte_range, self.previous().span.byte_range) {
+                (Some(start), Some(end)) => Span::new(0, 0).with_byte_range(start.start, end.end),
+                _ => Span::new(0, 0),
+            };
             return Ok(TypeFact {
                 kind: TypeFactKind::Reference(Box::new(referenced_type)),
-                span: Span {
-                    row_start: start_span.row_start,
-                    col_start: start_span.col_start,
-                    row_end: self.previous().span.row_end,
-                    col_end: self.previous().span.col_end,
-                    byte_range: match (start_span.byte_range, self.previous().span.byte_range) {
-                        (Some(start), Some(end)) => {
-                            Some(crate::lexer::ByteRange::new(start.start, end.end))
-                        }
-                        _ => None,
-                    },
-                },
+                span,
             });
         }
 

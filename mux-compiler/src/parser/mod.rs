@@ -718,14 +718,22 @@ mod tests {
 
     fn assert_auto_decl_literal_statement(
         stmt: &StatementNode,
-        expected_row: usize,
+        source: &str,
+        expected_statement: &str,
+        expected_literal: &str,
         expected_value: &LiteralNode,
     ) {
         if let StatementKind::AutoDecl(_, _, expr) = &stmt.kind {
-            assert_eq!(stmt.span.row_start, expected_row);
-            assert!(stmt.span.col_start > 0);
-            assert_eq!(expr.span.row_start, expected_row);
-            assert!(expr.span.col_start > 0);
+            let statement_range = stmt.span.byte_range.expect("statement byte range");
+            let expression_range = expr.span.byte_range.expect("expression byte range");
+            assert_eq!(
+                &source[statement_range.start..statement_range.end],
+                expected_statement
+            );
+            assert_eq!(
+                &source[expression_range.start..expression_range.end],
+                expected_literal
+            );
 
             if let ExpressionKind::Literal(lit) = &expr.kind {
                 assert_eq!(lit, expected_value);
@@ -749,8 +757,20 @@ mod tests {
         assert!(!stmts.is_empty(), "No statements were parsed");
         assert!(stmts.len() >= 2, "Expected at least 2 statements");
 
-        assert_auto_decl_literal_statement(&stmts[0], 2, &LiteralNode::Integer(42));
-        assert_auto_decl_literal_statement(&stmts[1], 3, &LiteralNode::String("hello".to_string()));
+        assert_auto_decl_literal_statement(
+            &stmts[0],
+            input,
+            "auto x = 42",
+            "42",
+            &LiteralNode::Integer(42),
+        );
+        assert_auto_decl_literal_statement(
+            &stmts[1],
+            input,
+            "auto y = \"hello\"",
+            "\"hello\"",
+            &LiteralNode::String("hello".to_string()),
+        );
     }
 
     #[test]
@@ -763,16 +783,14 @@ mod tests {
             left, op: _, right, ..
         } = &expr.kind
         {
-            // The entire expression should span from the start of the first token to the end of the last token
-            assert_eq!(expr.span.row_start, 1);
-            assert_eq!(expr.span.col_start, 1);
-            assert_eq!(expr.span.col_end, Some(10)); // 1-based, inclusive of last character
+            let whole = expr.span.byte_range.expect("expression byte range");
+            assert_eq!(&input[whole.start..whole.end], input);
 
             // The left and right operands should have their own spans
-            assert_eq!(left.span.row_start, 1);
-            assert_eq!(left.span.col_start, 1);
-            assert_eq!(right.span.row_start, 1);
-            assert!(right.span.col_start > left.span.col_start);
+            let left = left.span.byte_range.expect("left operand byte range");
+            let right = right.span.byte_range.expect("right operand byte range");
+            assert_eq!(&input[left.start..left.end], "1");
+            assert_eq!(&input[right.start..right.end], "2 * 3");
         } else {
             panic!("Expected binary expression, got {:?}", expr.kind);
         }
@@ -785,27 +803,27 @@ mod tests {
 
         // The function call should span the entire input
         if let ExpressionKind::Call { func, args } = &expr.kind {
-            assert_eq!(expr.span.row_start, 1);
-            assert_eq!(expr.span.col_start, 1);
+            let whole = expr.span.byte_range.expect("call byte range");
+            assert_eq!(&input[whole.start..whole.end], input);
 
             // The function name should have its own span
-            assert_eq!(func.span.row_start, 1);
-            assert_eq!(func.span.col_start, 1);
+            let function = func.span.byte_range.expect("callee byte range");
+            assert_eq!(&input[function.start..function.end], "add");
 
             // Arguments should have their own spans
             assert_eq!(args.len(), 2);
-            assert_eq!(args[0].span.row_start, 1);
-            assert_eq!(args[0].span.col_start, 5);
+            let first_argument = args[0].span.byte_range.expect("argument byte range");
+            assert_eq!(&input[first_argument.start..first_argument.end], "1");
 
             // The second argument is a binary expression
             if let ExpressionKind::Binary {
                 left, op: _, right, ..
             } = &args[1].kind
             {
-                assert_eq!(left.span.row_start, 1);
-                assert_eq!(left.span.col_start, 8);
-                assert_eq!(right.span.row_start, 1);
-                assert_eq!(right.span.col_start, 12);
+                let left = left.span.byte_range.expect("left operand byte range");
+                let right = right.span.byte_range.expect("right operand byte range");
+                assert_eq!(&input[left.start..left.end], "2");
+                assert_eq!(&input[right.start..right.end], "3");
             } else {
                 panic!(
                     "Expected binary expression as second argument, got {:?}",
@@ -929,8 +947,11 @@ mod tests {
         assert_eq!(then_block.len(), 1);
         assert!(matches!(then_block[0].kind, StatementKind::AutoDecl(..)));
         assert!(else_block.is_none());
-        assert_eq!(stmts[0].span.row_start, 1);
-        assert_eq!(stmts[0].span.row_end, Some(2));
+        let range = stmts[0].span.byte_range.expect("if statement byte range");
+        assert_eq!(
+            &"if true {\n  auto y = 1\n}\n"[range.start..range.end],
+            "if true {\n  auto y = 1"
+        );
     }
 
     #[test]

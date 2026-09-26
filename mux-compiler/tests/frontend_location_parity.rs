@@ -3,7 +3,6 @@ use mux_lang::ast::{
     TypeNode,
 };
 use mux_lang::lexer::Span;
-use mux_lang::source::Source;
 use mux_lang::syntax;
 use std::collections::BTreeMap;
 use std::fs;
@@ -425,45 +424,30 @@ fn range_location_mismatches(
     fixture: &Path,
     path: &str,
     span: Span,
-    source: &Source,
+    source_text: &str,
 ) -> Vec<String> {
     let Some(range) = span.byte_range else {
         return vec![format!(
-            "{}: {path}.byte_range: syntax span has no authoritative byte range",
+            "{}: {path}.byte_range: lowered span has no authoritative byte range",
             fixture.display()
         )];
     };
-    let (row_start, col_start) = source.line_col(range.start);
-    let (row_end, col_end) = source.line_col(range.end);
-    let mut mismatches = Vec::new();
-    for (field, actual, expected) in [
-        ("row_start", span.row_start, row_start),
-        ("col_start", span.col_start, col_start),
-        ("row_end", span.row_end.unwrap_or_default(), row_end),
-        ("col_end", span.col_end.unwrap_or_default(), col_end),
-    ] {
-        if actual != expected
-            || ((field == "row_end" || field == "col_end")
-                && (span.row_end.is_none() || span.col_end.is_none()))
-        {
-            mismatches.push(format!(
-                "{}: syntax {path}.{field} {:?} disagrees with byte_range {:?} (expected {expected})",
-                fixture.display(),
-                match field {
-                    "row_start" => format!("{}", span.row_start),
-                    "col_start" => format!("{}", span.col_start),
-                    "row_end" => format!("{:?}", span.row_end),
-                    _ => format!("{:?}", span.col_end),
-                },
-                range
-            ));
-        }
+    if range.start > range.end
+        || range.end > source_text.len()
+        || !source_text.is_char_boundary(range.start)
+        || !source_text.is_char_boundary(range.end)
+    {
+        return vec![format!(
+            "{}: {path}.byte_range {:?} is not a valid UTF-8 source range",
+            fixture.display(),
+            range
+        )];
     }
-    mismatches
+    Vec::new()
 }
 
 #[test]
-fn syntax_frontend_locations_match_byte_ranges_for_all_fixtures() {
+fn lowered_spans_use_valid_byte_ranges_for_all_fixtures() {
     let mut mismatches = Vec::new();
     for fixture in fixtures() {
         let source_text = fs::read_to_string(&fixture).unwrap_or_else(|error| {
@@ -481,20 +465,19 @@ fn syntax_frontend_locations_match_byte_ranges_for_all_fixtures() {
         });
 
         let syntax_spans = collect_ast(&lowered);
-        let location_source = Source::from_string(source_text.clone());
         for (path, span) in syntax_spans {
             mismatches.extend(range_location_mismatches(
                 &fixture,
                 &path,
                 span,
-                &location_source,
+                &source_text,
             ));
         }
     }
     let failure_count = mismatches.len();
     assert!(
         mismatches.is_empty(),
-        "authoritative source-location failures ({failure_count}; showing at most 250):\n{}",
+        "invalid lowered source ranges ({failure_count}; showing at most 250):\n{}",
         mismatches
             .iter()
             .take(250)

@@ -758,7 +758,7 @@ impl SyntaxTree {
                 let TokenType::Str(name) = name_token.kind() else {
                     return Err(SyntaxLowerError::MissingToken(*name));
                 };
-                let body_start_line = self.span_for_range(*body)?.row_start;
+                let body_start_line = self.source.line_col(body.start).0;
                 Ok(TestDeclaration {
                     range: node.range,
                     name,
@@ -2174,40 +2174,14 @@ impl SyntaxTree {
     }
 
     fn span_for_range(&self, range: ByteRange) -> Result<crate::lexer::Span, SyntaxLowerError> {
-        let first_index = self
-            .tokens
-            .partition_point(|token| token.range().start < range.start);
-        let first = self
-            .tokens
-            .get(first_index)
-            .filter(|token| token.range().start == range.start)
-            .ok_or(SyntaxLowerError::MissingToken(range))?;
-        let mut end_index = self
-            .tokens
-            .partition_point(|token| token.range().end <= range.end);
-        let last = loop {
-            let Some(index) = end_index.checked_sub(1) else {
-                return Err(SyntaxLowerError::MissingToken(range));
-            };
-            let token = &self.tokens[index];
-            if token.range().end < range.end {
-                return Err(SyntaxLowerError::MissingToken(range));
-            }
-            if token.range().start < token.range().end && token.range().end == range.end {
-                break token;
-            }
-            end_index = index;
-        };
-        let mut span = first.token().span;
-        span.row_end = last.token().span.row_end;
-        span.col_end = last.token().span.col_end;
-        if span.row_end.is_none() || span.col_end.is_none() {
-            let (row_end, col_end) = self.source.line_col(range.end);
-            span.row_end.get_or_insert(row_end);
-            span.col_end.get_or_insert(col_end);
-        }
-        span.byte_range = Some(range);
-        Ok(span)
+        // Preserve the legacy coordinates during the AST migration, but derive
+        // them from the authoritative byte range instead of copying lexer
+        // token coordinates into every lowered node.
+        let (row_start, col_start) = self.source.line_col(range.start);
+        let (row_end, col_end) = self.source.line_col(range.end);
+        let mut span = crate::lexer::Span::new(row_start, col_start);
+        span.complete(row_end, col_end);
+        Ok(span.with_byte_range(range.start, range.end))
     }
 }
 
