@@ -904,8 +904,8 @@ fn extract_test_cases(path: &Path, source: &str, start_id: usize) -> Result<Vec<
         let blanked = source[start..end]
             .chars()
             .map(|character| match character {
-                '\n' | '\r' => character,
-                _ => ' ',
+                '\n' | '\r' => character.to_string(),
+                _ => " ".repeat(character.len_utf8()),
             })
             .collect::<String>();
         source_without_tests.replace_range(start..end, &blanked);
@@ -4072,6 +4072,8 @@ test "annotated" {
                 .source_without_tests
                 .starts_with("/* caf\u{e9} e\u{301} */")
         );
+        assert_eq!(cases[0].source_without_tests.len(), source.len());
+        assert!(cases[0].source_without_tests.ends_with('\n'));
     }
 
     #[test]

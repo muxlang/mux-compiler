@@ -32,22 +32,22 @@ profile. The corpus contained 171 compiling programs; each filtered run measured
 three fixtures. Syntax-only timing includes lossless lexing and recording syntax
 events and facts.
 
-| Fixture | Before moving syntax events | After moving syntax events | Change |
-| --- | ---: | ---: | ---: |
-| `arithmetic` | 57.107 µs | 51.904 µs | -9.1% |
-| `collections` | 981.41 µs | 821.21 µs | -16.3% |
-| `enums_classes` | 283.43 µs | 211.95 µs | -25.2% |
+| Fixture | Before moving syntax events | After moving syntax events | After byte-only spans | Change from prior |
+| --- | ---: | ---: | ---: | ---: |
+| `arithmetic` | 57.107 µs | 51.904 µs | 46.608 µs | -10.2% |
+| `collections` | 981.41 µs | 821.21 µs | 814.87 µs | -0.8% |
+| `enums_classes` | 283.43 µs | 211.95 µs | 220.33 µs | +4.0% |
 
-| Fixture | Legacy parser (`60f5254`) | Early syntax path (`60f5254`) | Before move | Current | Current / legacy |
+| Fixture | Legacy parser (`60f5254`) | Early syntax path (`60f5254`) | Before move | After byte-only spans | Current / legacy |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `arithmetic` | 25.964 µs | 82.945 µs | 78.352 µs | 69.238 µs | 2.67× |
-| `collections` | 409.61 µs | 1.1645 ms | 1.2928 ms | 1.1500 ms | 2.81× |
-| `enums_classes` | 123.54 µs | 368.04 µs | 377.42 µs | 320.34 µs | 2.59× |
+| `arithmetic` | 25.964 µs | 82.945 µs | 78.352 µs | 58.097 µs | 2.24× |
+| `collections` | 409.61 µs | 1.1645 ms | 1.2928 ms | 1.0218 ms | 2.49× |
+| `enums_classes` | 123.54 µs | 368.04 µs | 377.42 µs | 267.20 µs | 2.16× |
 
 Moving syntax events and typed facts through the tree builder instead of cloning
-them improved both syntax-only and parse-plus-lowering times. The earlier
-collections regression is resolved: the current parse-plus-lower median is
-within 2% of the early syntax-path result. The current path remains about
-2.6–2.8 times slower than the former AST parser on these examples. This is a
+them improved both syntax-only and parse-plus-lowering times. Removing cached
+line and column fields from every span reduced parse-plus-lowering medians by
+about 11–17% from the previous measurement. The current path remains about
+2.2–2.5 times slower than the former AST parser on these examples. This is a
 focused parser comparison, not an end-to-end compile measurement. Peak memory
 was not measured.
