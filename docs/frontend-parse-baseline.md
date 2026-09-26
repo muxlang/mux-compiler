@@ -29,7 +29,7 @@ profile. The corpus contained 171 compiling programs; each filtered run measured
 three fixtures. A parse-only run after cutover separates lossless lexing and
 syntax parsing from AST lowering:
 
-| Fixture | Syntax parse only | Syntax parse + AST lowering |
+| Fixture | Lossless lex + syntax parse | Lossless lex + syntax parse + AST lowering |
 | --- | ---: | ---: |
 | `arithmetic` | 57.107 µs | 78.352 µs |
 | `collections` | 981.41 µs | 1.2928 ms |
