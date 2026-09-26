@@ -170,6 +170,45 @@ fn bench_parse(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_legacy_frontend(c: &mut Criterion) {
+    let mut group = c.benchmark_group("legacy_frontend");
+    for prog in corpus() {
+        group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
+            b.iter(|| black_box(parse(black_box(&prog.src))));
+        });
+    }
+    group.finish();
+}
+
+fn bench_syntax_parse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("syntax_parse");
+    for prog in corpus() {
+        group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
+            b.iter(|| {
+                let parsed = mux_lang::syntax::parse_source(black_box(&prog.src));
+                assert!(!parsed.has_errors(), "corpus program should syntax-parse");
+                black_box(parsed);
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_syntax_parse_lower(c: &mut Criterion) {
+    let mut group = c.benchmark_group("syntax_parse_lower");
+    for prog in corpus() {
+        group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
+            b.iter(|| {
+                let parsed = mux_lang::syntax::parse_source(black_box(&prog.src));
+                parsed.lower().unwrap_or_else(|_| {
+                    panic!("pre-validated corpus program should parse and lower")
+                })
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_semantics(c: &mut Criterion) {
     let mut group = c.benchmark_group("semantics");
     for prog in corpus() {
@@ -247,6 +286,7 @@ fn configured() -> Criterion {
 criterion_group!(
     name = benches;
     config = configured();
-    targets = bench_lex, bench_parse, bench_semantics, bench_codegen, bench_pipeline
+    targets = bench_lex, bench_parse, bench_legacy_frontend, bench_syntax_parse,
+        bench_syntax_parse_lower, bench_semantics, bench_codegen, bench_pipeline
 );
 criterion_main!(benches);

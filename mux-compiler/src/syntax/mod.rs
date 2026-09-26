@@ -917,6 +917,9 @@ impl SyntaxTree {
         range: ByteRange,
         accepts: fn(&SyntaxData) -> bool,
     ) -> Option<&'a SyntaxNode> {
+        if range.start < node.range.start || range.end > node.range.end {
+            return None;
+        }
         if node.range == range && node.data.as_ref().is_some_and(accepts) {
             return Some(node);
         }
@@ -931,6 +934,9 @@ impl SyntaxTree {
         node: &'a SyntaxNode,
         range: ByteRange,
     ) -> Option<&'a SyntaxNode> {
+        if range.start < node.range.start || range.end > node.range.end {
+            return None;
+        }
         if let Some(data) = node.data.as_ref().filter(|data| is_expression_data(data)) {
             let ast_range = match data {
                 SyntaxData::Lambda { ast_span, .. }
@@ -2072,9 +2078,12 @@ impl SyntaxTree {
     }
 
     fn token_for_range(&self, range: ByteRange) -> Result<&SyntaxToken, SyntaxLowerError> {
+        let index = self
+            .tokens
+            .partition_point(|token| token.range().start < range.start);
         self.tokens
-            .iter()
-            .find(|token| token.range() == range)
+            .get(index)
+            .filter(|token| token.range() == range)
             .ok_or(SyntaxLowerError::MissingToken(range))
     }
 
@@ -2087,17 +2096,30 @@ impl SyntaxTree {
     }
 
     fn span_for_range(&self, range: ByteRange) -> Result<crate::lexer::Span, SyntaxLowerError> {
+        let first_index = self
+            .tokens
+            .partition_point(|token| token.range().start < range.start);
         let first = self
             .tokens
-            .iter()
-            .find(|token| token.range().start == range.start)
+            .get(first_index)
+            .filter(|token| token.range().start == range.start)
             .ok_or(SyntaxLowerError::MissingToken(range))?;
-        let last = self
+        let mut end_index = self
             .tokens
-            .iter()
-            .rev()
-            .find(|token| token.range().start < token.range().end && token.range().end == range.end)
-            .ok_or(SyntaxLowerError::MissingToken(range))?;
+            .partition_point(|token| token.range().end <= range.end);
+        let last = loop {
+            let Some(index) = end_index.checked_sub(1) else {
+                return Err(SyntaxLowerError::MissingToken(range));
+            };
+            let token = &self.tokens[index];
+            if token.range().end < range.end {
+                return Err(SyntaxLowerError::MissingToken(range));
+            }
+            if token.range().start < token.range().end && token.range().end == range.end {
+                break token;
+            }
+            end_index = index;
+        };
         let mut span = first.token().span;
         span.row_end = last.token().span.row_end;
         span.col_end = last.token().span.col_end;
