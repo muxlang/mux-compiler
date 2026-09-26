@@ -221,3 +221,37 @@ fn malformed_source_is_preserved_in_the_syntax_tree() {
         assert_eq!(source, reconstructed);
     }
 }
+
+#[test]
+fn generated_utf8_inputs_reconstruct_and_bound_frontend_errors() {
+    let alphabet = [
+        'a', 'Z', '0', '_', ' ', '\t', '\r', '\n', '\0', '(', ')', '[', ']', '{', '}', ',', ':',
+        '.', '/', '*', '\'', '"', '+', '-', '=', '!', '<', '>', 'λ', '界', '🐈', '\u{301}',
+    ];
+    let mut state = 0x7a31_4b29_u32;
+
+    for case in 0..256 {
+        let length = (case * 37) % 129;
+        let mut source = String::new();
+        for _ in 0..length {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            source.push(alphabet[(state as usize) % alphabet.len()]);
+        }
+
+        let parsed = syntax::parse_source(&source);
+        let mut reconstructed = String::new();
+        reconstruct(parsed.tree.root(), &parsed.tree, &mut reconstructed);
+        assert_eq!(source, reconstructed, "generated case {case}");
+        assert!(
+            parsed.errors.len() <= 2 * mux_lang::diagnostic::MAX_DIAGNOSTICS,
+            "generated case {case} exceeded the combined lexer/parser diagnostic limits"
+        );
+        for error in &parsed.errors {
+            if let Some(range) = error.byte_range() {
+                assert!(range.start <= range.end && range.end <= source.len());
+                assert!(source.is_char_boundary(range.start));
+                assert!(source.is_char_boundary(range.end));
+            }
+        }
+    }
+}
