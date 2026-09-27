@@ -16,6 +16,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::Arc;
 
 use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
@@ -34,9 +35,11 @@ use crate::ast::{
     AstNode, EnumVariant, EnumVariantField, Field, FunctionNode, ImportSpec, StatementKind,
     StatementNode, TraitBound, TypeNode,
 };
+use crate::diagnostic::{FileId, Files};
 use crate::semantics::{
     GenericContext, SemanticAnalyzer, Type, Type as ResolvedType, mangle_module_path,
 };
+use crate::source::SourceText;
 
 use scoped_vars::ScopedVars;
 
@@ -208,6 +211,7 @@ pub struct CodeGenerator<'a> {
     closure_scope_stack: Vec<Vec<(String, PointerValue<'a>)>>,
     loop_targets: Vec<LoopTargets<'a>>,
     source_name: String,
+    source_texts: HashMap<String, Arc<SourceText>>,
     coverage_enabled: bool,
     /// ABI type sizing used to pick a union slot large enough for every variant
     /// at a heterogeneous enum payload position (issue #309). Built from LLVM's
@@ -954,6 +958,8 @@ impl<'a> CodeGenerator<'a> {
     pub fn new(
         context: &'a Context,
         analyzer: &'a mut SemanticAnalyzer,
+        files: &Files,
+        root_file_id: FileId,
         source_name: &str,
     ) -> Self {
         let module = context.create_module("mux_module");
@@ -995,6 +1001,30 @@ impl<'a> CodeGenerator<'a> {
         for (name, symbol) in analyzer.all_symbols() {
             if symbol.kind == crate::semantics::SymbolKind::Enum {
                 enum_variants.insert(name.clone(), symbol.variants.clone().unwrap_or_default());
+            }
+        }
+
+        let mut source_texts = HashMap::new();
+        let mut source_texts_by_id = HashMap::new();
+        for (file_id, path, source) in files.iter() {
+            let source_text = Arc::new(SourceText::new(source.to_string()));
+            source_texts_by_id.insert(file_id, Arc::clone(&source_text));
+            source_texts.insert(
+                path.to_string_lossy().into_owned(),
+                Arc::clone(&source_text),
+            );
+            if let Ok(absolute) = std::fs::canonicalize(path) {
+                source_texts.insert(absolute.to_string_lossy().into_owned(), source_text);
+            }
+        }
+        if let Some(source_text) = source_texts_by_id.get(&root_file_id) {
+            source_texts.insert(source_name.to_string(), Arc::clone(source_text));
+        }
+        for path in analyzer.module_source_paths().values() {
+            if let Some(file_id) = files.id_for_path(path)
+                && let Some(source_text) = source_texts_by_id.get(&file_id)
+            {
+                source_texts.insert(path.to_string_lossy().into_owned(), Arc::clone(source_text));
             }
         }
 
@@ -1045,6 +1075,7 @@ impl<'a> CodeGenerator<'a> {
             closure_scope_stack: Vec::new(),
             loop_targets: Vec::new(),
             source_name: source_name.to_string(),
+            source_texts,
             coverage_enabled: std::env::var_os("MUX_COVERAGE_MODE").is_some(),
             target_data: inkwell::targets::TargetData::create(""),
         }
@@ -1058,7 +1089,17 @@ impl<'a> CodeGenerator<'a> {
     /// Render a `file:line:col` location for runtime panic messages, matching
     /// the compiler diagnostic emitter's `--> file:line:col` locator.
     fn panic_location(&self, span: &crate::lexer::Span) -> String {
-        format!("{}:{}:{}", self.source_name, span.row_start, span.col_start)
+        self.source_location(span).map_or_else(
+            || self.source_name.clone(),
+            |(row, col)| format!("{}:{row}:{col}", self.source_name),
+        )
+    }
+
+    fn source_location(&self, span: &crate::lexer::Span) -> Option<(usize, usize)> {
+        let range = span.byte_range?;
+        self.source_texts
+            .get(&self.source_name)
+            .map(|source| source.line_col(range.start))
     }
 
     pub(super) fn emit_coverage_record(
@@ -1071,6 +1112,9 @@ impl<'a> CodeGenerator<'a> {
         if !self.coverage_enabled {
             return Ok(());
         }
+        let Some((row, _)) = self.source_location(span) else {
+            return Err("coverage site has no resolvable byte range".to_string());
+        };
         self.record_coverage_site(span, kind, branch_id)?;
         let file_name = format!("coverage_file_{}", self.string_counter);
         self.string_counter += 1;
@@ -1094,10 +1138,7 @@ impl<'a> CodeGenerator<'a> {
                 function,
                 &[
                     file.into(),
-                    self.context
-                        .i64_type()
-                        .const_int(span.row_start as u64, false)
-                        .into(),
+                    self.context.i64_type().const_int(row as u64, false).into(),
                     self.context.i32_type().const_int(kind as u64, false).into(),
                     self.context
                         .i64_type()
@@ -1130,10 +1171,13 @@ impl<'a> CodeGenerator<'a> {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
+        let Some((row, _)) = self.source_location(span) else {
+            return Err("coverage site has no resolvable byte range".to_string());
+        };
         let record = if kind == 0 {
-            format!("D\t{}\t{}\n", encoded, span.row_start)
+            format!("D\t{}\t{}\n", encoded, row)
         } else {
-            format!("C\t{}\t{}\t{}\n", encoded, span.row_start, branch_id)
+            format!("C\t{}\t{}\t{}\n", encoded, row, branch_id)
         };
         let mut file = OpenOptions::new()
             .create(true)

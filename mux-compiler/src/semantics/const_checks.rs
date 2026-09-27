@@ -275,7 +275,7 @@ impl SemanticAnalyzer {
                 env.insert(name.clone(), value);
             }
         }
-        Self::report_false_predicate(&pre.predicates, &env, expr.span, || {
+        Self::report_false_predicate(&pre.predicates, &env, expr.span, display_name, || {
             format!("arguments to '{display_name}' violate its where constraint")
         })
     }
@@ -298,7 +298,7 @@ impl SemanticAnalyzer {
                 env.insert(name.clone(), value);
             }
         }
-        Self::report_false_predicate(&pre.predicates, &env, expr.span, || {
+        Self::report_false_predicate(&pre.predicates, &env, expr.span, display_name, || {
             format!("arguments to '{display_name}' violate its where constraint")
         })
     }
@@ -307,6 +307,7 @@ impl SemanticAnalyzer {
         predicates: &[ExpressionNode],
         env: &HashMap<String, ConstValue>,
         span: Span,
+        display_name: &str,
         message: impl Fn() -> String,
     ) -> Result<(), SemanticError> {
         for predicate in predicates {
@@ -321,8 +322,7 @@ impl SemanticAnalyzer {
                     message(),
                     span,
                     format!(
-                        "The where predicate at {}:{} is always false for these argument values, so this call would panic on every execution",
-                        predicate.span.row_start, predicate.span.col_start
+                        "The where predicate for '{display_name}' is always false for these argument values, so this call would panic on every execution"
                     ),
                 ));
             }
@@ -402,8 +402,7 @@ impl SemanticAnalyzer {
                     format!("assignment violates where constraint of '{class_name}.{field}'"),
                     right.span,
                     format!(
-                        "The where predicate at {}:{} is always false for this value, so this assignment would panic on every execution",
-                        predicate.span.row_start, predicate.span.col_start
+                        "A where predicate on '{class_name}' is always false for this value, so this assignment would panic on every execution"
                     ),
                 ));
             }

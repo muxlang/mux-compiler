@@ -1,7 +1,7 @@
 //! Validation, application, and transactional persistence of compiler edits.
 
 use super::{Applicability, FileId, Files, SourceRange, TextEdit};
-use crate::lexer::Span;
+use crate::lexer::{ByteRange, Span};
 use fs2::FileExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -10,7 +10,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use unicode_width::UnicodeWidthChar;
 
 /// Source intervals produced while recovering from syntax errors.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -78,6 +77,10 @@ pub enum FixError {
         span: Span,
         reason: &'static str,
     },
+    InvalidByteRange {
+        range: ByteRange,
+        reason: &'static str,
+    },
     Io(std::io::Error),
     Transaction(String),
 }
@@ -110,10 +113,14 @@ impl fmt::Display for FixError {
                 "edit for {file_id:?} touches recovered source at {}..{}",
                 range.start_byte, range.end_byte
             ),
-            Self::InvalidLocation { span, reason } => write!(
+            Self::InvalidLocation { reason, .. } => write!(
                 f,
-                "cannot map diagnostic span at {}:{} to bytes: {reason}",
-                span.row_start, span.col_start
+                "cannot map diagnostic span without a valid byte range to bytes: {reason}"
+            ),
+            Self::InvalidByteRange { range, reason } => write!(
+                f,
+                "invalid source byte range {}..{}: {reason}",
+                range.start, range.end
             ),
             Self::Io(error) => write!(f, "I/O error while applying fixes: {error}"),
             Self::Transaction(message) => write!(f, "fix transaction failed: {message}"),
@@ -129,68 +136,40 @@ impl From<std::io::Error> for FixError {
     }
 }
 
-/// Convert an existing row/column span to bytes using the exact source text.
+/// Return the authoritative byte range for a source span.
 ///
-/// Mux columns count terminal display width, not UTF-8 bytes. A location in
-/// the middle of a wide character is rejected instead of risking a corrupted
-/// source file. This mapping is deliberately performed only by fix handling.
+/// Row and display-column coordinates are presentation data; reconstructing
+/// edit ranges from them is ambiguous for Unicode and must not be used for
+/// source edits.
 pub fn source_range_for_span(source: &str, span: Span) -> Result<SourceRange, FixError> {
-    let start = byte_offset_for_position(source, span.row_start, span.col_start, span)?;
-    let end = match (span.row_end, span.col_end) {
-        (Some(row), Some(column)) => byte_offset_for_position(source, row, column, span)?,
-        (None, None) => start,
-        _ => {
-            return Err(FixError::InvalidLocation {
-                span,
-                reason: "span has only one end coordinate",
-            });
-        }
-    };
-
-    if end < start {
+    let Some(range) = span.byte_range else {
         return Err(FixError::InvalidLocation {
             span,
-            reason: "span end precedes its start",
+            reason: "span has no authoritative byte range",
         });
-    }
-    Ok(SourceRange::new(start, end))
+    };
+    source_range_for_byte_range(source, range).map_err(|error| match error {
+        FixError::InvalidByteRange { reason, .. } => FixError::InvalidLocation { span, reason },
+        error => error,
+    })
 }
 
-fn byte_offset_for_position(
+/// Validate an authoritative byte range before using it for source edits.
+pub fn source_range_for_byte_range(
     source: &str,
-    row: usize,
-    column: usize,
-    span: Span,
-) -> Result<usize, FixError> {
-    if row == 0 || column == 0 {
-        return Err(FixError::InvalidLocation {
-            span,
-            reason: "locations are one-based",
+    range: ByteRange,
+) -> Result<SourceRange, FixError> {
+    if range.start > range.end
+        || range.end > source.len()
+        || !source.is_char_boundary(range.start)
+        || !source.is_char_boundary(range.end)
+    {
+        return Err(FixError::InvalidByteRange {
+            range,
+            reason: "byte range is outside source or splits a UTF-8 character",
         });
     }
-
-    let mut current_row = 1;
-    let mut current_column = 1;
-    for (byte, character) in source.char_indices() {
-        if current_row == row && current_column == column {
-            return Ok(byte);
-        }
-        if character == '\n' {
-            current_row += 1;
-            current_column = 1;
-        } else {
-            current_column += UnicodeWidthChar::width(character).unwrap_or(1);
-        }
-    }
-
-    if current_row == row && current_column == column {
-        return Ok(source.len());
-    }
-
-    Err(FixError::InvalidLocation {
-        span,
-        reason: "location is outside the source or inside a wide character",
-    })
+    Ok(SourceRange::new(range.start, range.end))
 }
 
 /// Apply machine-applicable edits without touching the filesystem.
@@ -638,12 +617,12 @@ fn abort_stale_transaction(
 }
 
 #[cfg(unix)]
-fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
     fs::rename(replacement, target)
 }
 
 #[cfg(windows)]
-fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn atomic_replace(replacement: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
 
@@ -727,32 +706,51 @@ mod tests {
     }
 
     #[test]
-    fn maps_ascii_and_unicode_spans_to_utf8_bytes() {
+    fn uses_authoritative_byte_ranges_for_unicode_spans() {
         let source = "auto x = \u{3053}\u{3093}\u{306B}\u{3061}\u{306F}\nvalue\n";
-        let span = Span {
-            row_start: 1,
-            row_end: Some(1),
-            col_start: 10,
-            col_end: Some(20),
-        };
+        let span = Span::new(9, 24);
         let range = source_range_for_span(source, span).unwrap();
         assert_eq!(
             &source[range.start_byte..range.end_byte],
             "\u{3053}\u{3093}\u{306B}\u{3061}\u{306F}"
         );
 
-        let second_line = Span {
-            row_start: 2,
-            row_end: None,
-            col_start: 1,
-            col_end: None,
-        };
+        let second_line = Span::new(25, 30);
         assert_eq!(
             source_range_for_span(source, second_line)
                 .unwrap()
                 .start_byte,
             25
         );
+    }
+
+    #[test]
+    fn validates_byte_ranges_directly() {
+        let source = "日本語";
+        assert_eq!(
+            source_range_for_byte_range(source, ByteRange::new(3, 6)).unwrap(),
+            SourceRange::new(3, 6)
+        );
+        assert!(matches!(
+            source_range_for_byte_range(source, ByteRange::new(1, 3)),
+            Err(FixError::InvalidByteRange { .. })
+        ));
+        assert!(matches!(
+            source_range_for_byte_range(source, ByteRange::new(0, source.len() + 1)),
+            Err(FixError::InvalidByteRange { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_spans_without_authoritative_byte_ranges() {
+        let span = Span::default();
+        assert!(matches!(
+            source_range_for_span("text", span),
+            Err(FixError::InvalidLocation {
+                reason: "span has no authoritative byte range",
+                ..
+            })
+        ));
     }
 
     #[test]

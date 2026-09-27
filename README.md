@@ -59,6 +59,8 @@ mux run hello.mux
 
 ## Documentation
 
+Formatter usage is documented in [Formatting Mux source](docs/formatter.md).
+
 The full language reference, guides, and standard-library docs live at
 **[mux-lang.dev](https://mux-lang.dev)**:
 

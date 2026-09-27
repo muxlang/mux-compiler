@@ -1,13 +1,12 @@
 use crate::diagnostic::{self, Diagnostic, DiagnosticCode, FileId, SpanEdit, ToDiagnostic};
 use crate::lexer::Span;
-use crate::semantics::format::format_span_location;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticError {
     pub code: DiagnosticCode,
     pub message: Box<str>,
     pub help: Option<Box<str>>,
-    pub span: Span,
+    pub span: Box<Span>,
     pub file_id: Option<FileId>,
     pub span_edits: Option<Box<[SpanEdit]>>,
 }
@@ -18,7 +17,7 @@ impl SemanticError {
             code,
             message: message.into().into_boxed_str(),
             help: None,
-            span,
+            span: Box::new(span),
             file_id: None,
             span_edits: None,
         }
@@ -34,7 +33,7 @@ impl SemanticError {
             code,
             message: message.into().into_boxed_str(),
             help: Some(help.into().into_boxed_str()),
-            span,
+            span: Box::new(span),
             file_id: None,
             span_edits: None,
         }
@@ -58,7 +57,7 @@ impl ToDiagnostic for SemanticError {
             self.code,
             &self.message,
             self.help.as_deref(),
-            self.span,
+            *self.span,
             self.file_id.unwrap_or(file_id),
         );
         match &self.span_edits {
@@ -70,12 +69,7 @@ impl ToDiagnostic for SemanticError {
 
 impl std::fmt::Display for SemanticError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Semantic error at {}: {}",
-            format_span_location(&self.span),
-            self.message
-        )
+        write!(f, "Semantic error: {}", self.message)
     }
 }
 

@@ -1,17 +1,10 @@
-mod ast;
 mod build_config;
-mod codegen;
-pub mod diagnostic;
-mod embedded_std {
-    include!(concat!(env!("OUT_DIR"), "/embedded_std.rs"));
-}
-mod lexer;
-mod module_resolver;
-mod parser;
-mod semantics;
-mod source;
-mod spinner;
+mod format_config;
 mod version_banner;
+
+use mux_lang::{
+    ast, codegen, diagnostic, formatter, lexer, module_resolver, semantics, spinner, syntax,
+};
 
 use anstream::{eprintln, println};
 use anstyle::AnsiColor;
@@ -22,7 +15,6 @@ use diagnostic::{
     fix::{self, RecoveryIntervals},
 };
 use module_resolver::ModuleResolver;
-use source::Source;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::env;
@@ -73,7 +65,7 @@ fn emit_diagnostic_batch(files: &Files, diagnostics: &[Diagnostic], deny_warning
 /// Mux compiler CLI
 #[derive(ClapParser)]
 #[command(name = "mux")]
-#[command(about = "CLI tool for Mux Programming Language", long_about = None)]
+#[command(about = "CLI for the Mux Programming Language", long_about = None)]
 #[command(styles = HELP_STYLES)]
 struct Cli {
     /// Name of the output executable
@@ -85,7 +77,7 @@ struct Cli {
     intermediate: bool,
 
     /// Treat warnings as compilation failures while preserving their codes.
-    #[arg(long, global = true)]
+    #[arg(short = 'd', long, global = true)]
     deny_warnings: bool,
 
     /// The command to run
@@ -111,8 +103,14 @@ enum Commands {
         #[arg(short, long)]
         intermediate: bool,
     },
-    /// Format a Mux file
-    Format { file: PathBuf },
+    /// Format Mux files
+    Format {
+        /// Files or directories to format. With no paths, discover .mux files under .
+        files: Vec<PathBuf>,
+        /// Check whether files are formatted without changing them.
+        #[arg(short, long)]
+        check: bool,
+    },
     /// Check system dependencies for the Mux compiler
     Doctor {
         /// Validate contributor toolchain requirements (LLVM 22)
@@ -136,7 +134,7 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = FixOutputFormat::Text)]
         format: FixOutputFormat,
     },
-    /// Discover and run named top-level test blocks
+    /// Discover and run named test blocks
     Test {
         /// Source files to test. With no files, discover tests/**/*.mux.
         files: Vec<PathBuf>,
@@ -792,45 +790,8 @@ fn is_mux_file(path: &Path) -> bool {
     path.extension().and_then(OsStr::to_str) == Some("mux")
 }
 
-/// Convert the lexer's one-based display column into a byte offset. Source
-/// columns count non-ASCII characters as two cells, so mirror that rule while
-/// walking the line. Test names and braces are normally ASCII; this also keeps
-/// offsets correct when a test contains Unicode before a nested brace.
-fn source_offset(source: &str, row: usize, col: usize) -> usize {
-    let mut offset = 0;
-    for (line_number, line) in source.split_inclusive('\n').enumerate() {
-        if line_number + 1 != row {
-            offset += line.len();
-            continue;
-        }
-        let mut display_col = 1;
-        for (byte_offset, character) in line.char_indices() {
-            if display_col >= col {
-                return offset + byte_offset;
-            }
-            display_col += if character.is_ascii() { 1 } else { 2 };
-        }
-        return offset + line.len();
-    }
-    source.len()
-}
-
-fn token_offset(source: &str, span: lexer::Span, end: bool) -> usize {
-    let column = if end {
-        span.col_end.unwrap_or(span.col_start.saturating_add(1))
-    } else {
-        span.col_start
-    };
-    source_offset(source, span.row_start, column)
-}
-
-fn parse_test_annotation(
-    source: &str,
-    test_start: usize,
-) -> Result<(Option<u64>, Vec<String>), String> {
-    let prefix = &source[..test_start];
-    let line = prefix.trim_end_matches(['\r', '\n']).rsplit('\n').next();
-    let Some(line) = line.map(str::trim) else {
+fn parse_test_annotation(comment: Option<&str>) -> Result<(Option<u64>, Vec<String>), String> {
+    let Some(line) = comment.map(str::trim) else {
         return Ok((None, Vec::new()));
     };
     let Some(annotation) = line.strip_prefix("// mux:test") else {
@@ -881,77 +842,59 @@ fn parse_test_annotation(
     Ok((timeout_seconds, tags))
 }
 
-fn extract_test_cases(path: &Path, source: &str, start_id: usize) -> Result<Vec<TestCase>, String> {
-    let mut source_file = Source::from_test_str(source);
-    let mut lexer = lexer::Lexer::new(&mut source_file);
-    let tokens = lexer
-        .lex_all()
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+fn top_level_syntax_nodes(node: &syntax::SyntaxNode) -> Vec<&syntax::SyntaxNode> {
+    match node.kind() {
+        syntax::SyntaxKind::Root
+        | syntax::SyntaxKind::Declaration
+        | syntax::SyntaxKind::Statement => node
+            .children()
+            .iter()
+            .filter_map(|child| match child {
+                syntax::SyntaxElement::Node(child) => Some(child.as_ref()),
+                _ => None,
+            })
+            .flat_map(top_level_syntax_nodes)
+            .collect(),
+        _ => vec![node],
+    }
+}
 
+fn extract_test_cases(path: &Path, source: &str, start_id: usize) -> Result<Vec<TestCase>, String> {
+    let parsed = syntax::parse_source(source);
+    if parsed.has_errors() {
+        return Err(format!(
+            "{}: {}",
+            path.display(),
+            parsed
+                .errors
+                .iter()
+                .map(|error| error.display_with_source(source))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
     let mut ranges = Vec::new();
     let mut found = Vec::new();
-    let mut index = 0;
-    while index < tokens.len() {
-        if tokens[index].token_type != lexer::TokenType::Test {
-            index += 1;
-            continue;
-        }
-        let Some(name_token) = tokens.get(index + 1) else {
-            return Err(format!("{}: test is missing a name", path.display()));
-        };
-        let lexer::TokenType::Str(name) = &name_token.token_type else {
-            return Err(format!("{}: test name must be a string", path.display()));
-        };
-        let mut open_index = index + 2;
-        while tokens
-            .get(open_index)
-            .is_some_and(|token| token.token_type == lexer::TokenType::NewLine)
-        {
-            open_index += 1;
-        }
-        if tokens.get(open_index).map(|token| &token.token_type)
-            != Some(&lexer::TokenType::OpenBrace)
-        {
-            return Err(format!(
-                "{}: test '{name}' is missing its body",
-                path.display()
-            ));
-        }
-        let mut depth = 1usize;
-        let mut close_index = open_index + 1;
-        while close_index < tokens.len() && depth > 0 {
-            match tokens[close_index].token_type {
-                lexer::TokenType::OpenBrace => depth += 1,
-                lexer::TokenType::CloseBrace => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-            close_index += 1;
-        }
-        if depth != 0 {
-            return Err(format!(
-                "{}: test '{name}' has an unterminated body",
-                path.display()
-            ));
-        }
-        let close_index = close_index - 1;
-        let start = token_offset(source, tokens[index].span, false);
-        let end = token_offset(source, tokens[close_index].span, true);
-        let body_start = token_offset(source, tokens[open_index].span, true);
-        let body_end = token_offset(source, tokens[close_index].span, false);
-        if start > end || body_start > body_end || body_end > source.len() {
-            return Err(format!("{}: invalid test source span", path.display()));
-        }
-        let (timeout_seconds, tags) = parse_test_annotation(source, start)
+    let tests = parsed
+        .tree
+        .test_declarations()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    for test in tests {
+        let range = test.range();
+        let body_range = test.body_contents();
+        let body = source
+            .get(body_range.start..body_range.end)
+            .ok_or_else(|| format!("{}: test body range is outside the source", path.display()))?;
+        let (timeout_seconds, tags) = parse_test_annotation(test.annotation())
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        ranges.push((start, end));
+        ranges.push((range.start, range.end));
         found.push((
-            name.clone(),
-            source[body_start..body_end].to_string(),
-            tokens[open_index].span.row_start,
+            test.name().to_string(),
+            body.to_string(),
+            test.body_start_line(),
             timeout_seconds,
             tags,
         ));
-        index = close_index + 1;
     }
 
     if found.is_empty() {
@@ -962,8 +905,8 @@ fn extract_test_cases(path: &Path, source: &str, start_id: usize) -> Result<Vec<
         let blanked = source[start..end]
             .chars()
             .map(|character| match character {
-                '\n' | '\r' => character,
-                _ => ' ',
+                '\n' | '\r' => character.to_string(),
+                _ => " ".repeat(character.len_utf8()),
             })
             .collect::<String>();
         source_without_tests.replace_range(start..end, &blanked);
@@ -987,23 +930,32 @@ fn extract_test_cases(path: &Path, source: &str, start_id: usize) -> Result<Vec<
 }
 
 fn rename_main_declaration(source: &str) -> String {
-    let mut source_file = Source::from_test_str(source);
-    let mut lexer = lexer::Lexer::new(&mut source_file);
-    let Ok(tokens) = lexer.lex_all() else {
+    let parsed = syntax::parse_source(source);
+    if parsed.has_errors() {
         return source.to_string();
-    };
-    for index in 0..tokens.len().saturating_sub(1) {
-        if tokens[index].token_type != lexer::TokenType::Func {
+    }
+    for node in top_level_syntax_nodes(parsed.tree.root()) {
+        if node.kind() != syntax::SyntaxKind::FunctionDeclaration {
             continue;
         }
-        if !matches!(&tokens[index + 1].token_type, lexer::TokenType::Id(name) if name == "main") {
-            continue;
+        let mut saw_func = false;
+        for token in parsed.tree.tokens().iter().filter(|token| {
+            token.range().start >= node.range().start && token.range().end <= node.range().end
+        }) {
+            if matches!(token.kind(), lexer::TokenType::Func) {
+                saw_func = true;
+            } else if saw_func && let lexer::TokenType::Id(name) = token.kind() {
+                if name == "main" {
+                    let mut renamed = source.to_string();
+                    renamed.replace_range(
+                        token.range().start..token.range().end,
+                        "__mux_original_main",
+                    );
+                    return renamed;
+                }
+                break;
+            }
         }
-        let start = token_offset(source, tokens[index + 1].span, false);
-        let end = token_offset(source, tokens[index + 1].span, true);
-        let mut renamed = source.to_string();
-        renamed.replace_range(start..end, "__mux_original_main");
-        return renamed;
     }
     source.to_string()
 }
@@ -1782,9 +1734,26 @@ fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
             *intermediate,
             cli.deny_warnings,
         ),
-        Commands::Format { file } => {
-            eprintln!("formatting is not yet implemented for {}", file.display());
-            process::exit(1);
+        Commands::Format { files, check } => {
+            let (options, warnings) = format_config::load_from_current_directory();
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            let status = match formatter::format_paths_with_options(files, *check, options) {
+                Ok(outcome) => {
+                    if *check {
+                        for path in &outcome.changed {
+                            println!("would format {}", path.display());
+                        }
+                    }
+                    i32::from(*check && !outcome.changed.is_empty())
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    2
+                }
+            };
+            process::exit(status);
         }
         Commands::Test {
             files,
@@ -1924,7 +1893,7 @@ fn print_fix_json_with_truncation(
 }
 
 fn sort_fix_diagnostics(diagnostics: &mut [Diagnostic], files: &Files) {
-    diagnostics.sort_by_key(|diagnostic| diagnostic::sort_key(diagnostic, files));
+    diagnostic::sort_diagnostics(diagnostics, files);
 }
 
 fn diagnostic_touches_recovery(
@@ -2032,14 +2001,11 @@ fn validate_staged_sources(
         .or_else(|| files.source(root_file_id))
         .ok_or_else(|| format!("root file {} is not registered", root_path.display()))?;
 
-    let mut source = Source::from_string(root_source.to_string());
-    let mut lexer = lexer::Lexer::new(&mut source);
-    let tokens = lexer.lex_all().map_err(|error| error.message.to_string())?;
-    let mut parser = parser::Parser::new(&tokens);
-    let nodes = parser.parse().map_err(|(_, errors)| {
+    let parsed = syntax::parse_source(root_source);
+    let nodes = parsed.lower().map_err(|errors| {
         errors
-            .into_iter()
-            .map(|error| error.message)
+            .iter()
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("; ")
     })?;
@@ -2079,34 +2045,42 @@ fn parse_fix_source(
     source: &str,
     file_id: FileId,
 ) -> Result<(Vec<ast::AstNode>, RecoveryIntervals, Vec<Diagnostic>), Vec<Diagnostic>> {
-    let mut source_cursor = Source::from_string(source.to_string());
-    let mut lexer = lexer::Lexer::new(&mut source_cursor);
-    let tokens = lexer
-        .lex_all()
-        .map_err(|error| vec![error.to_diagnostic(file_id)])?;
-
-    let mut parser = parser::Parser::new(&tokens);
-    match parser.parse() {
-        Ok(nodes) => Ok((nodes, RecoveryIntervals::new(), Vec::new())),
-        Err((partial_nodes, errors)) => {
-            let mut recovery = RecoveryIntervals::new();
-            let diagnostics = errors
-                .into_iter()
-                .map(|error| {
-                    if let Ok(range) = fix::source_range_for_span(source, error.span) {
-                        recovery.add(file_id, range);
-                    }
-                    error.to_diagnostic(file_id)
-                })
-                .collect();
-            for span in parser.recovery_spans() {
-                if let Ok(range) = fix::source_range_for_span(source, *span) {
-                    recovery.add(file_id, range);
-                }
-            }
-            Ok((partial_nodes, recovery, diagnostics))
+    let parsed = syntax::parse_source(source);
+    let diagnostics: Vec<_> = parsed
+        .errors
+        .iter()
+        .map(|error| error.to_diagnostic(file_id))
+        .collect();
+    if parsed
+        .errors
+        .iter()
+        .any(|error| matches!(error, syntax::FrontendError::Lexer(_)))
+    {
+        return Err(diagnostics);
+    }
+    let mut recovery = RecoveryIntervals::new();
+    for range in parsed
+        .errors
+        .iter()
+        .filter_map(syntax::FrontendError::byte_range)
+        .chain(parsed.recovery_byte_ranges())
+    {
+        if let Ok(range) = fix::source_range_for_byte_range(source, range) {
+            recovery.add(file_id, range);
         }
     }
+    let nodes = if parsed.has_errors() {
+        parsed.lower_recovered()
+    } else {
+        parsed.lower().map_err(|error| {
+            vec![
+                Diagnostic::new(DiagnosticCode::InternalCompiler)
+                    .with_message(format!("Failed to lower parsed source: {error}"))
+                    .with_file_id(file_id),
+            ]
+        })?
+    };
+    Ok((nodes, recovery, diagnostics))
 }
 
 fn analyze_fix_source(
@@ -2389,31 +2363,16 @@ fn load_source_or_exit(file_path: &Path) -> String {
     }
 }
 
-fn lex_source_or_exit(file_id: FileId, files: &Files, source: String) -> Vec<lexer::Token> {
-    let mut src = Source::from_string(source);
-    let mut lex = lexer::Lexer::new(&mut src);
-    match lex.lex_all() {
-        Ok(tokens) => tokens,
-        Err(err) => {
-            emit_diagnostics(files, file_id, &[err], false);
-            process::exit(1);
-        }
+fn parse_source_or_exit(file_id: FileId, files: &Files, source: &str) -> Vec<ast::AstNode> {
+    let parsed = syntax::parse_source(source);
+    if parsed.has_errors() {
+        emit_diagnostics(files, file_id, &parsed.errors, false);
+        process::exit(1);
     }
-}
-
-fn parse_tokens_or_exit(
-    file_id: FileId,
-    files: &Files,
-    tokens: &[lexer::Token],
-) -> Vec<ast::AstNode> {
-    let mut parser = parser::Parser::new(tokens);
-    match parser.parse() {
-        Ok(nodes) => nodes,
-        Err((_, errors)) => {
-            emit_diagnostics(files, file_id, &errors, false);
-            process::exit(1);
-        }
-    }
+    parsed.lower().unwrap_or_else(|error| {
+        eprintln!("Internal compiler error while lowering source: {error}");
+        process::exit(1);
+    })
 }
 
 fn analyze_semantics_or_exit(
@@ -3053,8 +3012,7 @@ fn main() {
     // post-link stop below clear the line before anything else prints.
     spinner::start(format!("compiling {}", file_path.display()));
 
-    let tokens = { lex_source_or_exit(file_id, &files, source_str) };
-    let nodes = { parse_tokens_or_exit(file_id, &files, &tokens) };
+    let nodes = parse_source_or_exit(file_id, &files, &source_str);
 
     let base_path = file_path
         .parent()
@@ -3075,7 +3033,8 @@ fn main() {
             |name| name.to_string_lossy().into_owned(),
         )
     };
-    let mut codegen = codegen::CodeGenerator::new(&context, &mut analyzer, &source_name);
+    let mut codegen =
+        codegen::CodeGenerator::new(&context, &mut analyzer, &files, file_id, &source_name);
 
     let stem = file_path
         .to_string_lossy()
@@ -3191,11 +3150,12 @@ mod tests {
         REQUIRED_LLVM_MAJOR, TestCase, TestResult, append_linker_output, build_linker_args,
         build_linker_args_for, build_linker_args_for_with_runtime, clang_failure_detail,
         clang_version_output, compiling_file, dir_holding_runtime_lib, extract_clang_major,
-        find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
-        llvm_config_candidates, materialize_span_edits, merge_coverage, native_runtime_deps,
-        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, relativize_to_cwd,
-        report_clang_for_doctor, report_runtime_for_doctor, runtime_lib_dir_is_static_only,
-        set_compiling_file, status_marker, validate_llvm_for_doctor,
+        extract_test_cases, find_runtime_lib_in_dir, format_panic_detail,
+        internal_compiler_error_report, llvm_config_candidates, materialize_span_edits,
+        merge_coverage, native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict,
+        print_version_banner, relativize_to_cwd, rename_main_declaration, report_clang_for_doctor,
+        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
+        status_marker, validate_llvm_for_doctor,
     };
     use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, SpanEdit};
     use crate::lexer::Span;
@@ -3328,12 +3288,7 @@ mod tests {
         let diagnostic = Diagnostic::new(DiagnosticCode::RedundantConstruct)
             .with_file_id(file_id)
             .with_span_edit(SpanEdit::machine_applicable_text(
-                Span {
-                    row_start: 1,
-                    row_end: Some(1),
-                    col_start: 2,
-                    col_end: Some(3),
-                },
+                Span::new(1, 2),
                 "X",
                 DiagnosticCode::RedundantConstruct,
             ));
@@ -4109,6 +4064,29 @@ test "annotated" {
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].timeout_seconds, Some(3));
         assert_eq!(cases[0].tags, vec!["slow", "integration"]);
+    }
+
+    #[test]
+    fn test_extraction_uses_byte_ranges_after_unicode_comments() {
+        let source = "/* caf\u{e9} e\u{301} */ test \"unicode\" { print(\"ok\") }\n";
+        let cases = extract_test_cases(Path::new("unicode.mux"), source, 0).unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].body, " print(\"ok\") ");
+        assert!(
+            cases[0]
+                .source_without_tests
+                .starts_with("/* caf\u{e9} e\u{301} */")
+        );
+        assert_eq!(cases[0].source_without_tests.len(), source.len());
+        assert!(cases[0].source_without_tests.ends_with('\n'));
+    }
+
+    #[test]
+    fn rename_main_only_changes_the_top_level_declaration() {
+        let source = "func helper() returns void {\nfunc main() returns void { return }\n}\nfunc main() returns void { return }\n";
+        let renamed = rename_main_declaration(source);
+        assert!(renamed.contains("func helper() returns void {\nfunc main()"));
+        assert!(renamed.ends_with("func __mux_original_main() returns void { return }\n"));
     }
 
     #[test]

@@ -73,10 +73,9 @@ pub(crate) fn sort_key(diagnostic: &Diagnostic, files: &Files) -> DiagnosticSort
         .map_or_else(String::new, |path| path.display().to_string());
     let position = diagnostic
         .labels
-        .first()
-        .map_or((usize::MAX, usize::MAX), |label| {
-            (label.span.row_start, label.span.col_start)
-        });
+        .iter()
+        .find_map(|label| label.span.byte_range.map(|range| (range.start, 0)))
+        .unwrap_or((usize::MAX, usize::MAX));
     let labels = diagnostic
         .labels
         .iter()
@@ -91,6 +90,11 @@ pub(crate) fn sort_key(diagnostic: &Diagnostic, files: &Files) -> DiagnosticSort
         diagnostic.help.clone(),
         labels,
     )
+}
+
+/// Sort diagnostics consistently for terminal and structured output.
+pub fn sort_diagnostics(diagnostics: &mut [Diagnostic], files: &Files) {
+    diagnostics.sort_by_key(|diagnostic| sort_key(diagnostic, files));
 }
 
 /// A diagnostic message with associated labels and help text.

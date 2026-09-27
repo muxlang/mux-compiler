@@ -36,7 +36,7 @@ impl From<PrimitiveType> for TypeNode {
     fn from(prim: PrimitiveType) -> Self {
         TypeNode {
             kind: TypeKind::Primitive(prim),
-            span: Span::new(0, 0),
+            span: Span::default(),
         }
     }
 }
@@ -45,7 +45,7 @@ impl From<&str> for TypeNode {
     fn from(s: &str) -> Self {
         TypeNode {
             kind: TypeKind::Named(s.to_string(), Vec::new()),
-            span: Span::new(0, 0),
+            span: Span::default(),
         }
     }
 }

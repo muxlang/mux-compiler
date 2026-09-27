@@ -34,6 +34,45 @@ fn root_mux_files() -> Vec<PathBuf> {
     test_files
 }
 
+fn snapshot_tokens(tokens: Vec<mux_lang::lexer::Token>) -> Vec<mux_lang::lexer::Token> {
+    let mut bracket_depth = 0_usize;
+    let mut brace_depths = Vec::new();
+    let mut visible = Vec::new();
+    for mut token in tokens {
+        match &token.token_type {
+            mux_lang::lexer::TokenType::OpenBrace => {
+                brace_depths.push(bracket_depth);
+                bracket_depth = 0;
+            }
+            mux_lang::lexer::TokenType::CloseBrace => {
+                bracket_depth = brace_depths.pop().unwrap_or(0);
+            }
+            mux_lang::lexer::TokenType::OpenParen | mux_lang::lexer::TokenType::OpenBracket => {
+                bracket_depth += 1;
+            }
+            mux_lang::lexer::TokenType::CloseParen | mux_lang::lexer::TokenType::CloseBracket => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+        if token.token_type == mux_lang::lexer::TokenType::Eof
+            || token.token_type == mux_lang::lexer::TokenType::Whitespace
+            || (token.token_type == mux_lang::lexer::TokenType::NewLine && bracket_depth > 0)
+        {
+            continue;
+        }
+        match &mut token.token_type {
+            mux_lang::lexer::TokenType::LineComment(comment)
+            | mux_lang::lexer::TokenType::MultilineComment(comment) => {
+                *comment = comment.trim().to_owned();
+            }
+            _ => {}
+        }
+        visible.push(token);
+    }
+    visible
+}
+
 #[test]
 fn lexer_snapshot_inventory_matches_fixtures() {
     let fixture_stems: Vec<_> = root_mux_files()
@@ -84,9 +123,11 @@ fn test_file_lexer() {
             .unwrap_or_else(|_| panic!("Failed to open source file: {}", path.display()));
 
         let mut lexer = Lexer::new(&mut src);
-        let tokens = lexer
-            .lex_all()
-            .unwrap_or_else(|e| panic!("Lexing failed for file {file_name}: {e}"));
+        let result = lexer.lex_all_lossless();
+        if let Some(error) = result.errors.first() {
+            panic!("Lexing failed for file {file_name}: {error}");
+        }
+        let tokens = snapshot_tokens(result.tokens);
 
         let snapshot_name = path
             .file_stem()

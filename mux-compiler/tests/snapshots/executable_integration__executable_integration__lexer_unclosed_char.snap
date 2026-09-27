@@ -2,7 +2,7 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 1 error found
+error: 2 errors found
 
 error[E0106]: Unterminated character literal
 --> test_scripts/error_cases/lexer_unclosed_char.mux:2:10
@@ -11,3 +11,9 @@ error[E0106]: Unterminated character literal
    |          ^
    |
 = help: Make sure to close the character with a matching quote
+
+error[E0201]: Expected expression, found Invalid("'\n")
+--> test_scripts/error_cases/lexer_unclosed_char.mux:2:10
+   |
+ 2 | auto c = '
+   |          ^

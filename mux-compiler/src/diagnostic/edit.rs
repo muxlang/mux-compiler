@@ -9,8 +9,8 @@ use crate::lexer::Span;
 
 /// A byte range in one source file. The range is half-open: `[start, end)`.
 ///
-/// Spans remain row/column based for diagnostics. Byte ranges are calculated
-/// only by the fix engine, against the exact source it is about to edit.
+/// Parser spans carry byte ranges; edits validate them against the source
+/// before writing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SourceRange {
     pub start_byte: usize,

@@ -7,8 +7,8 @@ use crate::diagnostic::{self, Diagnostic, DiagnosticCode, FileId, ToDiagnostic};
 #[derive(Debug, Clone, PartialEq)]
 pub struct LexerError {
     pub code: DiagnosticCode,
-    pub message: String,
-    pub help: Option<String>,
+    pub message: Box<str>,
+    pub help: Option<Box<str>>,
     pub span: Span,
 }
 
@@ -16,7 +16,7 @@ impl LexerError {
     pub fn new(code: DiagnosticCode, message: impl Into<String>, span: Span) -> Self {
         Self {
             code,
-            message: message.into(),
+            message: message.into().into_boxed_str(),
             help: None,
             span,
         }
@@ -30,8 +30,8 @@ impl LexerError {
     ) -> Self {
         Self {
             code,
-            message: message.into(),
-            help: Some(help.into()),
+            message: message.into().into_boxed_str(),
+            help: Some(help.into().into_boxed_str()),
             span,
         }
     }
@@ -51,11 +51,7 @@ impl ToDiagnostic for LexerError {
 
 impl std::fmt::Display for LexerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Lexer error at {}:{} - {}",
-            self.span.row_start, self.span.col_start, self.message
-        )
+        write!(f, "Lexer error: {}", self.message)
     }
 }
 

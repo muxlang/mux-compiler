@@ -5,10 +5,15 @@ use crate::diagnostic::DiagnosticCode;
 use crate::lexer::{Span, Token, TokenType};
 
 impl<'a> Parser<'a> {
+    pub(super) fn set_position(&mut self, position: usize) {
+        self.current = position.min(self.tokens.len());
+    }
+
     pub(super) fn advance(&mut self) -> &Token {
-        if !self.is_at_end() {
-            self.current += 1;
+        if self.is_at_end() {
+            return self.peek();
         }
+        self.current += 1;
         self.previous()
     }
 
@@ -22,34 +27,25 @@ impl<'a> Parser<'a> {
     #[must_use]
     pub(super) fn is_at_end(&self) -> bool {
         self.current >= self.tokens.len()
+            || self
+                .tokens
+                .get(self.current)
+                .is_some_and(|token| token.token_type == TokenType::Eof)
     }
 
     pub(super) fn peek(&self) -> &Token {
-        if self.is_at_end() {
-            // Return the last token if available, otherwise use a default EOF token.
-            // This prevents "line 0" errors.
-            if let Some(last_token) = self.tokens.last() {
-                last_token
-            } else {
-                static EOF_TOKEN: Token = Token {
-                    token_type: TokenType::Eof,
-                    span: Span {
-                        row_start: 1,
-                        row_end: None,
-                        col_start: 1,
-                        col_end: None,
-                    },
-                };
-                &EOF_TOKEN
-            }
-        } else {
-            self.tokens[self.current]
-        }
+        static EOF_TOKEN: Token = Token {
+            token_type: TokenType::Eof,
+            span: Span::empty(0),
+        };
+        self.tokens.get(self.current).copied().unwrap_or(&EOF_TOKEN)
     }
 
     pub(super) fn consume(&mut self) -> &Token {
         if let Some(token) = self.tokens.get(self.current).copied() {
-            self.current += 1;
+            if token.token_type != TokenType::Eof {
+                self.current += 1;
+            }
             token
         } else {
             self.peek()
@@ -95,15 +91,9 @@ impl<'a> Parser<'a> {
             return Err(ParserError::new(
                 DiagnosticCode::ParseExpectedToken,
                 format!("{error_msg}, but reached end of file"),
-                self.tokens.last().map_or_else(
-                    || Span {
-                        row_start: 1,
-                        row_end: None,
-                        col_start: 1,
-                        col_end: None,
-                    },
-                    |t| t.span,
-                ),
+                self.tokens
+                    .last()
+                    .map_or_else(|| Span::empty(0), |t| t.span),
             ));
         }
 
@@ -121,7 +111,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn consume_identifier(&mut self, error_msg: &str) -> ParserResult<String> {
+    pub(super) fn consume_identifier_fact(&mut self, error_msg: &str) -> ParserResult<()> {
         if self.is_at_end() {
             return Err(ParserError::new(
                 DiagnosticCode::ParseExpectedToken,
@@ -131,15 +121,13 @@ impl<'a> Parser<'a> {
         }
 
         match &self.peek().token_type {
-            TokenType::Id(name) => {
-                let name_clone = name.clone();
+            TokenType::Id(_) => {
                 self.current += 1;
-                Ok(name_clone)
+                Ok(())
             }
             TokenType::Underscore => {
-                let name_clone = "_".to_string();
                 self.current += 1;
-                Ok(name_clone)
+                Ok(())
             }
             _ => {
                 let found_desc = Self::describe_token(&self.peek().token_type);
@@ -232,7 +220,7 @@ mod tests {
     #[test]
     fn cursor_consumes_identifiers_and_preserves_lookahead() {
         let tokens = [
-            Token::new(TokenType::Id("value".to_string()), Span::new(1, 1)),
+            Token::new(TokenType::Id("value".to_string()), Span::default()),
             Token::new(TokenType::NewLine, Span::new(1, 6)),
         ];
         let mut parser = Parser::new(&tokens);
@@ -242,17 +230,14 @@ mod tests {
             parser.peek_ahead(1).map(|token| &token.token_type),
             Some(&TokenType::NewLine)
         );
-        assert_eq!(
-            parser.consume_identifier("expected name"),
-            Ok("value".to_string())
-        );
+        assert_eq!(parser.consume_identifier_fact("expected name"), Ok(()));
         assert!(parser.matches(&[TokenType::NewLine]));
         assert!(parser.is_at_end());
     }
 
     #[test]
     fn cursor_bounds_are_safe_at_start_and_end() {
-        let tokens = [Token::new(TokenType::Eof, Span::new(1, 1))];
+        let tokens = [Token::new(TokenType::Eof, Span::default())];
         let mut parser = Parser::new(&tokens);
 
         assert_eq!(parser.previous().token_type, TokenType::Eof);

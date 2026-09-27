@@ -5,9 +5,7 @@ use crate::diagnostic::{
     ToDiagnostic,
 };
 use crate::embedded_std::embedded_std_sources;
-use crate::lexer::Lexer;
-use crate::parser::Parser;
-use crate::source::Source;
+use crate::syntax::{self, FrontendError};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -365,9 +363,40 @@ impl ModuleResolver {
     ) -> Result<Vec<AstNode>, String> {
         let source_str = self.read_module_source(file_path, source_override)?;
         let file_id = files.add(file_path, source_str.clone());
-        let mut src = Source::from_string(source_str);
-        let tokens = self.lex_module(file_path, file_id, files, &mut src)?;
-        self.parse_module_tokens(file_path, file_id, files, &tokens)
+        let parsed = syntax::parse_source(&source_str);
+        if parsed.errors.is_empty() {
+            return parsed.lower().map_err(|error| {
+                format!("Failed to lower module {}: {error}", file_path.display())
+            });
+        }
+        let lexical = parsed
+            .errors
+            .iter()
+            .any(|e| matches!(e, FrontendError::Lexer(_)));
+        let diagnostics: Vec<_> = parsed
+            .errors
+            .iter()
+            .map(|error| {
+                if let Some(byte_range) = error.byte_range()
+                    && let Ok(range) = fix::source_range_for_byte_range(&source_str, byte_range)
+                {
+                    self.recovery_intervals.add(file_id, range);
+                }
+                error.to_diagnostic(file_id)
+            })
+            .collect();
+        for byte_range in parsed.recovery_byte_ranges() {
+            if let Ok(range) = fix::source_range_for_byte_range(&source_str, byte_range) {
+                self.recovery_intervals.add(file_id, range);
+            }
+        }
+        if self.emit_diagnostics {
+            crate::spinner::stop();
+            StandardEmitter::new(ColorConfig::Auto).emit_batch(&diagnostics, files);
+        }
+        self.diagnostics.extend(diagnostics);
+        let stage = if lexical { "Lexer" } else { "Parse" };
+        Err(format!("{stage} error in module {}", file_path.display()))
     }
 
     fn read_module_source(
@@ -382,72 +411,6 @@ impl ModuleResolver {
             },
             |source| Ok(source.to_string()),
         )
-    }
-
-    fn lex_module(
-        &mut self,
-        file_path: &Path,
-        file_id: FileId,
-        files: &Files,
-        source: &mut Source,
-    ) -> Result<Vec<crate::lexer::Token>, String> {
-        let mut lex = Lexer::new(source);
-        let tokens = match lex.lex_all() {
-            Ok(t) => t,
-            Err(e) => {
-                let diagnostic = e.to_diagnostic(file_id);
-                if self.emit_diagnostics {
-                    crate::spinner::stop();
-                    let emitter = StandardEmitter::new(ColorConfig::Auto);
-                    emitter.emit(&diagnostic, files);
-                }
-                if let Ok(range) =
-                    fix::source_range_for_span(files.source(file_id).unwrap_or_default(), e.span)
-                {
-                    self.recovery_intervals.add(file_id, range);
-                }
-                self.diagnostics.push(diagnostic);
-                return Err(format!("Lexer error in module {}", file_path.display()));
-            }
-        };
-        Ok(tokens)
-    }
-
-    fn parse_module_tokens(
-        &mut self,
-        file_path: &Path,
-        file_id: FileId,
-        files: &Files,
-        tokens: &[crate::lexer::Token],
-    ) -> Result<Vec<AstNode>, String> {
-        let mut parser = Parser::new(tokens);
-        match parser.parse() {
-            Ok(nodes) => Ok(nodes),
-            Err((_, errors)) => {
-                let source = files.source(file_id).unwrap_or_default();
-                let diagnostics: Vec<_> = errors
-                    .iter()
-                    .map(|error| {
-                        if let Ok(range) = fix::source_range_for_span(source, error.span) {
-                            self.recovery_intervals.add(file_id, range);
-                        }
-                        error.to_diagnostic(file_id)
-                    })
-                    .collect();
-                for span in parser.recovery_spans() {
-                    if let Ok(range) = fix::source_range_for_span(source, *span) {
-                        self.recovery_intervals.add(file_id, range);
-                    }
-                }
-                if self.emit_diagnostics {
-                    crate::spinner::stop();
-                    let emitter = StandardEmitter::new(ColorConfig::Auto);
-                    emitter.emit_batch(&diagnostics, files);
-                }
-                self.diagnostics.extend(diagnostics);
-                Err(format!("Parse error in module {}", file_path.display()))
-            }
-        }
     }
 }
 

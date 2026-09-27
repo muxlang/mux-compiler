@@ -1,11 +1,5 @@
 use crate::ast::{BinaryOp, PrimitiveType};
-use crate::lexer::Span;
 use crate::semantics::types::Type;
-
-#[must_use]
-pub fn format_span_location(span: &Span) -> String {
-    format!("{}:{}", span.row_start, span.col_start)
-}
 
 pub fn format_type(t: &Type) -> String {
     match t {

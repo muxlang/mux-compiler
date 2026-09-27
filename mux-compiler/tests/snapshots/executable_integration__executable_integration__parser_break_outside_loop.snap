@@ -1,13 +1,14 @@
 ---
 source: mux-compiler/tests/executable_integration.rs
+assertion_line: 258
 expression: normalized
 ---
 error: 1 error found
 
 error[E0203]: Cannot use 'break' outside of a loop
---> test_scripts/error_cases/parser_break_outside_loop.mux:2:6
+--> test_scripts/error_cases/parser_break_outside_loop.mux:2:1
    |
  2 | break
-   |      ^
+   | ^^^^^
    |
 = help: 'break' can only be used inside a 'for' or 'while' loop

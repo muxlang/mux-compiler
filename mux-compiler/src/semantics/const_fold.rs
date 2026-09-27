@@ -181,10 +181,10 @@ mod tests {
             kind: ExpressionKind::Binary {
                 left: Box::new(left),
                 op,
-                op_span: Span::new(0, 0),
+                op_span: Span::default(),
                 right: Box::new(right),
             },
-            span: Span::new(0, 0),
+            span: Span::default(),
         }
     }
 
@@ -192,11 +192,11 @@ mod tests {
         ExpressionNode {
             kind: ExpressionKind::Unary {
                 op,
-                op_span: Span::new(0, 0),
+                op_span: Span::default(),
                 expr: Box::new(expr),
                 postfix: false,
             },
-            span: Span::new(0, 0),
+            span: Span::default(),
         }
     }
 

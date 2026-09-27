@@ -6,6 +6,42 @@ use super::{
 use crate::lexer::Span;
 use anstream::eprintln;
 use std::cmp::{max, min};
+use unicode_width::UnicodeWidthChar;
+
+struct SourceLine<'a> {
+    content: &'a str,
+    start_byte: usize,
+    end_byte: usize,
+}
+
+fn source_lines(source: &str) -> Vec<SourceLine<'_>> {
+    let mut lines = Vec::new();
+    let mut start_byte = 0;
+    for (newline, _) in source.match_indices('\n') {
+        let mut end_byte = newline;
+        if end_byte > start_byte && source.as_bytes()[end_byte - 1] == b'\r' {
+            end_byte -= 1;
+        }
+        lines.push(SourceLine {
+            content: &source[start_byte..end_byte],
+            start_byte,
+            end_byte,
+        });
+        start_byte = newline + 1;
+    }
+    lines.push(SourceLine {
+        content: &source[start_byte..],
+        start_byte,
+        end_byte: source.len(),
+    });
+    lines
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars()
+        .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(1))
+        .sum()
+}
 
 /// Keep noisy recovery output useful without hiding the fact that more
 /// diagnostics existed.
@@ -36,7 +72,12 @@ impl StandardEmitter {
     /// Render a single line of source with line number.
     fn render_source_line(&self, line_number: usize, line_content: &str, width: usize) -> String {
         let line_num_str = self.styles.line_number(&format!("{line_number:width$}"));
-        format!("{} | {}", line_num_str, line_content.trim_end())
+        let line_content = line_content.trim_end();
+        if line_content.is_empty() {
+            format!("{line_num_str} |")
+        } else {
+            format!("{line_num_str} | {line_content}")
+        }
     }
 
     /// Render the gutter (line number column) without source.
@@ -48,30 +89,18 @@ impl StandardEmitter {
     fn render_label_underline(
         &self,
         span: &Span,
-        line_number: usize,
-        line_content: &str,
+        line: &SourceLine<'_>,
         style: LabelStyle,
         width: usize,
-    ) -> String {
+    ) -> Option<String> {
         let gutter = Self::render_gutter(width);
-
-        // Calculate column positions
-        let start_col = if span.row_start == line_number {
-            span.col_start.saturating_sub(1)
-        } else {
-            0
-        };
-
-        let end_col = if let Some(end_line) = span.row_end {
-            if end_line == line_number {
-                span.col_end.unwrap_or(span.col_start).saturating_sub(1)
-            } else {
-                line_content.len()
-            }
-        } else {
-            // Single position span - just show caret
-            start_col
-        };
+        let range = span.byte_range?;
+        let start_byte = range.start.max(line.start_byte).min(line.end_byte);
+        let end_byte = range.end.max(line.start_byte).min(line.end_byte);
+        let start = start_byte.saturating_sub(line.start_byte);
+        let end = end_byte.saturating_sub(line.start_byte);
+        let start_col = display_width(&line.content[..start]);
+        let end_col = display_width(&line.content[..end]);
 
         let underline_len = (end_col.saturating_sub(start_col)).max(1);
         let indicator = "^".repeat(underline_len);
@@ -80,7 +109,12 @@ impl StandardEmitter {
             LabelStyle::Secondary => self.styles.secondary_label(&indicator),
         };
 
-        format!("{} {}{}", gutter, " ".repeat(start_col), colored_indicator)
+        Some(format!(
+            "{} {}{}",
+            gutter,
+            " ".repeat(start_col),
+            colored_indicator
+        ))
     }
 
     /// Emit a single diagnostic with source context.
@@ -92,11 +126,25 @@ impl StandardEmitter {
             return;
         }
 
-        let lines: Vec<&str> = source.lines().collect();
-        let (min_line, max_line) = Self::label_line_range(diagnostic);
+        if diagnostic
+            .labels
+            .iter()
+            .all(|label| label.span.byte_range.is_none())
+        {
+            eprintln!("{}", self.styles.location(&format!("--> {file_path}")));
+            for label in &diagnostic.labels {
+                self.emit_label_message(label, 2);
+            }
+            self.emit_help(diagnostic, 2);
+            eprintln!();
+            return;
+        }
+
+        let lines = source_lines(source);
+        let (min_line, max_line) = Self::label_line_range(diagnostic, &lines);
         let width = Self::line_number_width(max_line);
 
-        self.emit_file_location(diagnostic, file_path, min_line, width);
+        self.emit_file_location(diagnostic, file_path, &lines, min_line, width);
         for line_num in min_line..=max_line {
             self.emit_source_context_line(diagnostic, &lines, line_num, width);
         }
@@ -120,40 +168,78 @@ impl StandardEmitter {
         );
     }
 
-    fn label_line_range(diagnostic: &Diagnostic) -> (usize, usize) {
+    fn label_line_range(diagnostic: &Diagnostic, lines: &[SourceLine<'_>]) -> (usize, usize) {
         let mut min_line = usize::MAX;
         let mut max_line = 0;
 
         for label in &diagnostic.labels {
-            min_line = min(min_line, label.span.row_start);
-            max_line = max(max_line, label.span.row_end.unwrap_or(label.span.row_start));
+            let Some((start, end)) = Self::span_line_range(&label.span, lines) else {
+                continue;
+            };
+            min_line = min(min_line, start);
+            max_line = max(max_line, end);
         }
 
+        assert!(min_line != usize::MAX, "a source range was checked above");
         (min_line, max_line)
+    }
+
+    fn line_index_at(lines: &[SourceLine<'_>], byte: usize) -> usize {
+        lines
+            .partition_point(|line| line.start_byte <= byte)
+            .saturating_sub(1)
+            .min(lines.len().saturating_sub(1))
+    }
+
+    fn span_line_range(span: &Span, lines: &[SourceLine<'_>]) -> Option<(usize, usize)> {
+        let range = span.byte_range?;
+        let start = Self::line_index_at(lines, range.start);
+        let end_byte = if range.end > range.start {
+            range.end - 1
+        } else {
+            range.end
+        };
+        let end = Self::line_index_at(lines, end_byte);
+        Some((start + 1, end + 1))
+    }
+
+    fn span_start_column(span: &Span, lines: &[SourceLine<'_>]) -> Option<usize> {
+        let range = span.byte_range?;
+        let line = &lines[Self::line_index_at(lines, range.start)];
+        let byte = range
+            .start
+            .saturating_sub(line.start_byte)
+            .min(line.content.len());
+        Some(display_width(&line.content[..byte]) + 1)
     }
 
     fn emit_file_location(
         &self,
         diagnostic: &Diagnostic,
         file_path: &str,
+        lines: &[SourceLine<'_>],
         min_line: usize,
         width: usize,
     ) {
-        let location = format!(
-            "--> {}:{}:{}",
-            file_path,
-            min_line,
-            diagnostic.labels.first().map_or(1, |l| l.span.col_start)
-        );
+        let column = diagnostic
+            .labels
+            .iter()
+            .find_map(|label| {
+                Self::span_line_range(&label.span, lines)
+                    .filter(|(start, _)| *start == min_line)
+                    .and_then(|_| Self::span_start_column(&label.span, lines))
+            })
+            .unwrap_or(1);
+        let location = format!("--> {}:{}:{}", file_path, min_line, column);
         eprintln!("{}", self.styles.location(&location));
         eprintln!("{}", Self::render_gutter(width));
     }
 
-    fn label_covers_line(line_num: usize, span: &Span) -> bool {
-        span.row_start == line_num
-            || span
-                .row_end
-                .is_some_and(|end| end >= line_num && span.row_start <= line_num)
+    fn label_covers_line(line_num: usize, span: &Span, lines: &[SourceLine<'_>]) -> bool {
+        let Some((start, end)) = Self::span_line_range(span, lines) else {
+            return false;
+        };
+        (start..=end).contains(&line_num)
     }
 
     fn emit_label_message(&self, label: &super::Label, width: usize) {
@@ -169,7 +255,7 @@ impl StandardEmitter {
     fn emit_source_context_line(
         &self,
         diagnostic: &Diagnostic,
-        lines: &[&str],
+        lines: &[SourceLine<'_>],
         line_num: usize,
         width: usize,
     ) {
@@ -178,24 +264,20 @@ impl StandardEmitter {
             return;
         }
 
-        let line_content = lines[line_idx];
+        let line = &lines[line_idx];
+        let line_content = line.content;
         eprintln!("{}", self.render_source_line(line_num, line_content, width));
 
         for label in &diagnostic.labels {
-            if !Self::label_covers_line(line_num, &label.span) {
+            if !Self::label_covers_line(line_num, &label.span, lines) {
                 continue;
             }
 
-            eprintln!(
-                "{}",
-                self.render_label_underline(
-                    &label.span,
-                    line_num,
-                    line_content,
-                    label.style,
-                    width
-                )
-            );
+            if let Some(underline) =
+                self.render_label_underline(&label.span, line, label.style, width)
+            {
+                eprintln!("{underline}");
+            }
             self.emit_label_message(label, width);
         }
     }
@@ -317,7 +399,7 @@ mod tests {
         row: usize,
     ) -> Diagnostic {
         Diagnostic::new(code)
-            .with_label(Label::primary(Span::new(row, 1), ""))
+            .with_label(Label::primary(Span::new(row - 1, row), ""))
             .with_file_id(file_id)
     }
 
@@ -366,5 +448,55 @@ mod tests {
             emitter.render_source_line(3, "  let answer = 42;  ", 2),
             "\u{1b}[1m\u{1b}[38;2;96;165;250m 3\u{1b}[0m |   let answer = 42;"
         );
+        assert_eq!(
+            emitter.render_source_line(4, "   ", 2),
+            "\u{1b}[1m\u{1b}[38;2;96;165;250m 4\u{1b}[0m |"
+        );
+    }
+
+    #[test]
+    fn byte_range_underlines_use_display_width_not_utf8_length() {
+        let emitter = StandardEmitter::new(super::ColorConfig::Auto);
+        let text = "界x\nrest";
+        let lines = super::source_lines(text);
+        let span = Span::new(0, text.len());
+
+        let rendered = emitter
+            .render_label_underline(&span, &lines[0], crate::diagnostic::LabelStyle::Primary, 2)
+            .unwrap();
+
+        assert_eq!(rendered.matches('^').count(), 3);
+    }
+
+    #[test]
+    fn labels_without_byte_ranges_have_no_underline() {
+        let emitter = StandardEmitter::new(super::ColorConfig::Auto);
+        let line = super::source_lines("source");
+
+        assert!(
+            emitter
+                .render_label_underline(
+                    &Span::default(),
+                    &line[0],
+                    crate::diagnostic::LabelStyle::Primary,
+                    2,
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn byte_ranges_determine_diagnostic_lines_and_columns() {
+        let text = "a\n界x\nlast";
+        let lines = super::source_lines(text);
+        let span = Span::new(5, 6);
+
+        assert_eq!(
+            StandardEmitter::span_line_range(&span, &lines),
+            Some((2, 2))
+        );
+        assert_eq!(StandardEmitter::span_start_column(&span, &lines), Some(3));
+        assert!(StandardEmitter::label_covers_line(2, &span, &lines));
+        assert!(!StandardEmitter::label_covers_line(99, &span, &lines));
     }
 }

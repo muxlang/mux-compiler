@@ -1,0 +1,257 @@
+use mux_lang::{formatter, syntax};
+use std::{fs, path::PathBuf};
+
+fn fixtures() -> Vec<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_scripts");
+    let mut paths: Vec<_> = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "mux"))
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn reconstruct(node: &syntax::SyntaxNode, tree: &syntax::SyntaxTree, output: &mut String) {
+    for child in node.children() {
+        match child {
+            syntax::SyntaxElement::Node(child) => reconstruct(child, tree, output),
+            syntax::SyntaxElement::Token(index) => {
+                output.push_str(tree.token_text(*index).unwrap())
+            }
+        }
+    }
+}
+
+fn validate_tree(node: &syntax::SyntaxNode, tree: &syntax::SyntaxTree, indices: &mut Vec<usize>) {
+    for child in node.children() {
+        let range = match child {
+            syntax::SyntaxElement::Node(child) => {
+                validate_tree(child, tree, indices);
+                child.range()
+            }
+            syntax::SyntaxElement::Token(index) => {
+                indices.push(*index);
+                tree.tokens()[*index].range()
+            }
+        };
+        assert!(
+            range.start >= node.range().start && range.end <= node.range().end,
+            "child {range:?} escapes {:?} {:?}",
+            node.kind(),
+            node.range()
+        );
+    }
+}
+
+fn contains_lowering_data(
+    node: &syntax::SyntaxNode,
+    predicate: fn(&syntax::AstLoweringData) -> bool,
+) -> bool {
+    node.lowering_data().is_some_and(predicate)
+        || node.children().iter().any(|child| match child {
+            syntax::SyntaxElement::Node(child) => contains_lowering_data(child, predicate),
+            syntax::SyntaxElement::Token(_) => false,
+        })
+}
+
+#[test]
+fn corpus_syntax_trees_reconstruct_the_original_source() {
+    for path in fixtures() {
+        let source = fs::read_to_string(&path).unwrap();
+        let parsed = syntax::parse_source(&source);
+        assert!(
+            !parsed.has_errors(),
+            "{}: {:?}",
+            path.display(),
+            parsed.errors
+        );
+        let mut reconstructed = String::new();
+        reconstruct(parsed.tree.root(), &parsed.tree, &mut reconstructed);
+        assert_eq!(source, reconstructed, "{}", path.display());
+        let mut indices = Vec::new();
+        validate_tree(parsed.tree.root(), &parsed.tree, &mut indices);
+        assert_eq!(
+            indices,
+            (0..parsed.tree.tokens().len()).collect::<Vec<_>>(),
+            "{}: token leaves must occur exactly once in source order",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn corpus_syntax_lowering_succeeds_for_every_fixture() {
+    for path in fixtures() {
+        let source = fs::read_to_string(&path).unwrap();
+        let parsed = syntax::parse_source(&source);
+        assert!(
+            !parsed.has_errors(),
+            "{}: {:?}",
+            path.display(),
+            parsed.errors
+        );
+        parsed
+            .lower()
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+}
+
+#[test]
+fn syntax_lowering_preserves_unary_binary_and_postfix_validation() {
+    let source = "func valid(int seed = 1) returns void {\n    auto value = -seed + 2\n    value++\n    return\n}\n";
+    let parsed = syntax::parse_source(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    parsed
+        .lower()
+        .expect("unary and binary expressions should lower");
+
+    let negative_default =
+        syntax::parse_source("func invalid(int seed = -other) returns void {\n    return\n}\n");
+    assert!(
+        negative_default.has_errors(),
+        "a unary expression must not be accepted as a literal default"
+    );
+
+    let nested_postfix = syntax::parse_source(
+        "func invalid() returns void {\n    auto value = 0\n    value + value++\n}\n",
+    );
+    assert!(
+        nested_postfix.has_errors(),
+        "postfix updates inside binary expressions must remain rejected"
+    );
+
+    let lambda_postfix = syntax::parse_source(
+        "func main() returns void {\n    auto f = func() returns void {\n        auto value = 0\n        value++\n    }\n    return\n}\n",
+    );
+    assert!(
+        lambda_postfix.errors.is_empty(),
+        "a lambda's standalone postfix update must be checked in its own statement context: {:?}",
+        lambda_postfix.errors
+    );
+
+    let nested_lambda_postfix = syntax::parse_source(
+        "func main() returns void {\n    auto f = func(int y) returns int {\n        auto a = 1\n        return a + y++\n    }\n    return\n}\n",
+    );
+    assert_eq!(
+        nested_lambda_postfix.errors.len(),
+        1,
+        "the invalid lambda return should produce one diagnostic: {:?}",
+        nested_lambda_postfix.errors
+    );
+
+    for source in [
+        "func invalid() returns int {\n    auto value = 0\n    return value++\n}\n",
+        "func invalid() returns void {\n    auto value = 0\n    if value++ {\n        return\n    }\n}\n",
+    ] {
+        assert!(
+            syntax::parse_source(source).has_errors(),
+            "postfix updates in return values and conditions must remain rejected"
+        );
+    }
+
+    let comparison = syntax::parse_source("auto result = (-value)<int>(value)\n");
+    assert!(comparison.errors.is_empty(), "{:?}", comparison.errors);
+    assert!(contains_lowering_data(
+        comparison.tree.root(),
+        |data| matches!(data, syntax::AstLoweringData::Binary { .. })
+    ));
+    assert!(!contains_lowering_data(
+        comparison.tree.root(),
+        |data| matches!(data, syntax::AstLoweringData::Generic { .. })
+    ));
+}
+
+#[test]
+fn corpus_formatting_preserves_ast_and_is_idempotent() {
+    let spans = regex::Regex::new(r"Span \{[^}]*\}").unwrap();
+    for path in fixtures() {
+        let source = fs::read_to_string(&path).unwrap();
+        let original = syntax::parse_source(&source);
+        assert!(
+            !original.has_errors(),
+            "{}: {:?}",
+            path.display(),
+            original.errors
+        );
+        let original_ast = original
+            .lower()
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let formatted = formatter::format_source(&source)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let reparsed = syntax::parse_source(&formatted);
+        assert!(
+            !reparsed.has_errors(),
+            "{}: {:?}\n{formatted}",
+            path.display(),
+            reparsed.errors
+        );
+        let reparsed_ast = reparsed
+            .lower()
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(
+            spans.replace_all(&format!("{original_ast:?}"), "SPAN"),
+            spans.replace_all(&format!("{reparsed_ast:?}"), "SPAN"),
+            "{}: formatting changed program structure",
+            path.display()
+        );
+        assert_eq!(
+            formatted,
+            formatter::format_source(&formatted).unwrap(),
+            "{}: second format changed output",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn malformed_source_is_preserved_in_the_syntax_tree() {
+    for source in [
+        "",
+        "\0",
+        "func (",
+        "/* unfinished",
+        "\"unfinished",
+        "\u{e9}\u{301}\r\nfunc ??? {",
+        "auto =\n}\n",
+    ] {
+        let parsed = syntax::parse_source(source);
+        let mut reconstructed = String::new();
+        reconstruct(parsed.tree.root(), &parsed.tree, &mut reconstructed);
+        assert_eq!(source, reconstructed);
+    }
+}
+
+#[test]
+fn generated_utf8_inputs_reconstruct_and_bound_frontend_errors() {
+    let alphabet = [
+        'a', 'Z', '0', '_', ' ', '\t', '\r', '\n', '\0', '(', ')', '[', ']', '{', '}', ',', ':',
+        '.', '/', '*', '\'', '"', '+', '-', '=', '!', '<', '>', 'λ', '界', '🐈', '\u{301}',
+    ];
+    let mut state = 0x7a31_4b29_u32;
+
+    for case in 0..256 {
+        let length = (case * 37) % 129;
+        let mut source = String::new();
+        for _ in 0..length {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            source.push(alphabet[(state as usize) % alphabet.len()]);
+        }
+
+        let parsed = syntax::parse_source(&source);
+        let mut reconstructed = String::new();
+        reconstruct(parsed.tree.root(), &parsed.tree, &mut reconstructed);
+        assert_eq!(source, reconstructed, "generated case {case}");
+        assert!(
+            parsed.errors.len() <= 2 * mux_lang::diagnostic::MAX_DIAGNOSTICS,
+            "generated case {case} exceeded the combined lexer/parser diagnostic limits"
+        );
+        for error in &parsed.errors {
+            if let Some(range) = error.byte_range() {
+                assert!(range.start <= range.end && range.end <= source.len());
+                assert!(source.is_char_boundary(range.start));
+                assert!(source.is_char_boundary(range.end));
+            }
+        }
+    }
+}

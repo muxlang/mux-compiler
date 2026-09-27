@@ -27,10 +27,9 @@ use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, c
 use inkwell::context::Context;
 use mux_lang::ast::AstNode;
 use mux_lang::codegen::CodeGenerator;
-use mux_lang::diagnostic::Files;
-use mux_lang::lexer::{Lexer, Token};
+use mux_lang::diagnostic::{FileId, Files};
+use mux_lang::lexer::{Lexer, LosslessLexResult};
 use mux_lang::module_resolver::ModuleResolver;
-use mux_lang::parser::Parser;
 use mux_lang::semantics::SemanticAnalyzer;
 use mux_lang::source::Source;
 
@@ -50,52 +49,58 @@ fn test_scripts_dir() -> PathBuf {
 // Bench-time helpers. The corpus is pre-validated, so a failure here means a
 // regression (a corpus program stopped lexing/parsing) - panic loudly rather
 // than silently measuring an empty/short-circuited input.
-fn lex(src: &str) -> Vec<Token> {
+fn lex(src: &str) -> LosslessLexResult {
     let mut source = Source::from_string(src.to_string());
     let mut lexer = Lexer::new(&mut source);
-    match lexer.lex_all() {
-        Ok(tokens) => tokens,
-        Err(_) => panic!("pre-validated corpus program should lex"),
+    let result = lexer.lex_all_lossless();
+    if !result.errors.is_empty() {
+        panic!("pre-validated corpus program should lex");
     }
+    result
 }
 
 fn parse(src: &str) -> Vec<AstNode> {
-    let tokens = lex(src);
-    let mut parser = Parser::new(&tokens);
-    match parser.parse() {
-        Ok(nodes) => nodes,
-        Err(_) => panic!("pre-validated corpus program should parse"),
-    }
+    let parsed = mux_lang::syntax::parse_source(src);
+    parsed
+        .lower()
+        .unwrap_or_else(|_| panic!("pre-validated corpus program should syntax-parse and lower"))
 }
 
 // A fresh analyzer + diagnostics registry for a program, wired with a module
 // resolver anchored at the file's directory so imports resolve exactly as they
 // do in `run_compile` (src/main.rs).
-fn fresh(prog: &Program) -> (SemanticAnalyzer, Files) {
+fn fresh(prog: &Program) -> (SemanticAnalyzer, Files, FileId) {
     let base = prog
         .path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let resolver = Rc::new(RefCell::new(ModuleResolver::new(base)));
     let mut files = Files::new();
-    files.add(&prog.path, prog.src.clone());
-    (SemanticAnalyzer::new_with_resolver(resolver), files)
+    let root_file_id = files.add(&prog.path, prog.src.clone());
+    (
+        SemanticAnalyzer::new_with_resolver(resolver),
+        files,
+        root_file_id,
+    )
 }
 
-// True iff the program fully lexes, parses, and passes semantics. Each step is
-// checked explicitly so a lex/parse failure excludes the file rather than
+// True iff the program fully lexes, syntax-parses, lowers, and passes semantics.
+// Each step is checked explicitly so a failure excludes the file rather than
 // slipping through as an empty token stream.
 fn compiles(prog: &Program) -> bool {
     let mut source = Source::from_string(prog.src.clone());
     let mut lexer = Lexer::new(&mut source);
-    let Ok(tokens) = lexer.lex_all() else {
+    if !lexer.lex_all_lossless().errors.is_empty() {
+        return false;
+    }
+    let parsed = mux_lang::syntax::parse_source(&prog.src);
+    if parsed.has_errors() {
+        return false;
+    }
+    let Ok(nodes) = parsed.lower() else {
         return false;
     };
-    let mut parser = Parser::new(&tokens);
-    let Ok(nodes) = parser.parse() else {
-        return false;
-    };
-    let (mut analyzer, mut files) = fresh(prog);
+    let (mut analyzer, mut files, _) = fresh(prog);
     analyzer.analyze(&nodes, Some(&mut files)).is_empty()
 }
 
@@ -155,15 +160,28 @@ fn bench_lex(c: &mut Criterion) {
 }
 
 fn bench_parse(c: &mut Criterion) {
-    let mut group = c.benchmark_group("parse");
+    let mut group = c.benchmark_group("syntax_parse");
     for prog in corpus() {
-        let tokens = lex(&prog.src);
-        group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, _| {
+        group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
             b.iter(|| {
-                let mut parser = Parser::new(black_box(&tokens));
-                parser
-                    .parse()
-                    .unwrap_or_else(|_| panic!("pre-validated corpus program should parse"))
+                let parsed = mux_lang::syntax::parse_source(black_box(&prog.src));
+                assert!(!parsed.has_errors(), "corpus program should syntax-parse");
+                black_box(parsed);
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_syntax_parse_lower(c: &mut Criterion) {
+    let mut group = c.benchmark_group("syntax_parse_lower");
+    for prog in corpus() {
+        group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
+            b.iter(|| {
+                let parsed = mux_lang::syntax::parse_source(black_box(&prog.src));
+                parsed.lower().unwrap_or_else(|_| {
+                    panic!("pre-validated corpus program should parse and lower")
+                })
             });
         });
     }
@@ -177,7 +195,7 @@ fn bench_semantics(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
             b.iter_batched(
                 || fresh(prog),
-                |(mut analyzer, mut files)| {
+                |(mut analyzer, mut files, _)| {
                     let errors = analyzer.analyze(black_box(&nodes), Some(&mut files));
                     assert!(errors.is_empty(), "corpus program should pass semantics");
                 },
@@ -196,14 +214,20 @@ fn bench_codegen(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     // Setup (untimed): a fully analyzed analyzer ready for codegen.
-                    let (mut analyzer, mut files) = fresh(prog);
+                    let (mut analyzer, mut files, root_file_id) = fresh(prog);
                     let errors = analyzer.analyze(&nodes, Some(&mut files));
                     assert!(errors.is_empty(), "corpus program should pass semantics");
-                    analyzer
+                    (analyzer, files, root_file_id)
                 },
-                |mut analyzer| {
+                |(mut analyzer, files, root_file_id)| {
                     let context = Context::create();
-                    let mut codegen = CodeGenerator::new(&context, &mut analyzer, &prog.name);
+                    let mut codegen = CodeGenerator::new(
+                        &context,
+                        &mut analyzer,
+                        &files,
+                        root_file_id,
+                        &prog.name,
+                    );
                     codegen
                         .generate(black_box(&nodes))
                         .expect("corpus program should codegen");
@@ -221,11 +245,12 @@ fn bench_pipeline(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
             b.iter(|| {
                 let nodes = parse(black_box(&prog.src));
-                let (mut analyzer, mut files) = fresh(prog);
+                let (mut analyzer, mut files, root_file_id) = fresh(prog);
                 let errors = analyzer.analyze(&nodes, Some(&mut files));
                 assert!(errors.is_empty(), "corpus program should pass semantics");
                 let context = Context::create();
-                let mut codegen = CodeGenerator::new(&context, &mut analyzer, &prog.name);
+                let mut codegen =
+                    CodeGenerator::new(&context, &mut analyzer, &files, root_file_id, &prog.name);
                 codegen
                     .generate(&nodes)
                     .expect("corpus program should codegen");
@@ -247,6 +272,7 @@ fn configured() -> Criterion {
 criterion_group!(
     name = benches;
     config = configured();
-    targets = bench_lex, bench_parse, bench_semantics, bench_codegen, bench_pipeline
+    targets = bench_lex, bench_parse,
+        bench_syntax_parse_lower, bench_semantics, bench_codegen, bench_pipeline
 );
 criterion_main!(benches);

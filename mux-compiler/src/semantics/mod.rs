@@ -817,7 +817,7 @@ impl SemanticAnalyzer {
             errors.extend(warnings::collect(ast));
         }
         let mut seen = HashSet::new();
-        errors.retain(|e| seen.insert((e.code, e.message.clone(), e.span, e.file_id)));
+        errors.retain(|e| seen.insert((e.code, e.message.clone(), *e.span, e.file_id)));
         for error in &mut errors {
             if error.file_id.is_none() {
                 error.file_id = self.current_file_id;
@@ -828,7 +828,7 @@ impl SemanticAnalyzer {
 
     fn add_builtin_functions(&mut self) {
         // Register built-in functions from the canonical stdlib table.
-        let span = Span::new(0, 0);
+        let span = Span::default();
         for (name, sig) in crate::semantics::stdlib::BUILT_IN_FUNCTIONS.iter() {
             self.register_builtin_function(name, sig, span);
         }
@@ -842,7 +842,7 @@ impl SemanticAnalyzer {
     }
 
     fn add_sync_builtin_types(&mut self) {
-        let span = Span::new(0, 0);
+        let span = Span::default();
         // Use canonical class symbols from the stdlib module and register them.
         let classes = crate::semantics::stdlib::sync_module_class_symbols(span);
         for (name, sym) in classes {
@@ -851,20 +851,20 @@ impl SemanticAnalyzer {
     }
 
     fn add_csv_builtin_types(&mut self) {
-        let span = Span::new(0, 0);
+        let span = Span::default();
         let symbol = Self::make_csv_symbol(span);
         let _ = self.symbol_table.add_symbol("Csv", symbol);
     }
 
     fn add_bytes_cursor_builtin_type(&mut self) {
-        let span = Span::new(0, 0);
+        let span = Span::default();
         for (name, symbol) in crate::semantics::stdlib::bytes_cursor_builtin_symbols(span) {
             let _ = self.symbol_table.add_symbol(&name, symbol);
         }
     }
 
     fn add_byte_error_builtin_type(&mut self) {
-        let span = Span::new(0, 0);
+        let span = Span::default();
         let _ = self.symbol_table.add_symbol(
             "ByteErrorKind",
             crate::semantics::stdlib::make_enum_symbol(
@@ -886,7 +886,7 @@ impl SemanticAnalyzer {
     }
 
     fn add_bytes_error_builtin_type(&mut self) {
-        let span = Span::new(0, 0);
+        let span = Span::default();
         let _ = self.symbol_table.add_symbol(
             "BytesErrorKind",
             crate::semantics::stdlib::make_enum_symbol(

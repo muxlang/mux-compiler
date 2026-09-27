@@ -2,7 +2,13 @@
 source: mux-compiler/tests/executable_integration.rs
 expression: normalized
 ---
-error: 1 error found
+error: 4 errors found
+
+error[E0201]: Expected expression, found Invalid("'\\x")
+--> test_scripts/error_cases/lexer_invalid_escape_in_char.mux:2:10
+   |
+ 2 | auto c = '\x'
+   |          ^^^
 
 error[E0102]: Unknown escape sequence: \x
 --> test_scripts/error_cases/lexer_invalid_escape_in_char.mux:2:12
@@ -11,3 +17,17 @@ error[E0102]: Unknown escape sequence: \x
    |            ^
    |
 = help: Valid escape sequences: \n, \t, \r, \0, \\, \'
+
+error[E0106]: Unterminated character literal
+--> test_scripts/error_cases/lexer_invalid_escape_in_char.mux:2:13
+   |
+ 2 | auto c = '\x'
+   |             ^
+   |
+= help: Make sure to close the character with a matching quote
+
+error[E0201]: Expected expression, found Invalid("'\n")
+--> test_scripts/error_cases/lexer_invalid_escape_in_char.mux:2:13
+   |
+ 2 | auto c = '\x'
+   |             ^

@@ -1,21 +1,11 @@
 use mux_lang::diagnostic::DiagnosticCode;
-use mux_lang::lexer::Lexer;
-use mux_lang::parser::Parser;
 use mux_lang::semantics::SemanticAnalyzer;
-use mux_lang::source::Source;
+use mux_lang::syntax::parse_source;
 
 fn analyze(source_text: &str) -> Vec<(DiagnosticCode, String)> {
-    let mut source = Source::from_test_str(source_text);
-    let mut lexer = Lexer::new(&mut source);
-    let tokens = std::iter::from_fn(|| match lexer.next_token() {
-        Ok(token) if token.token_type == mux_lang::lexer::TokenType::Eof => None,
-        Ok(token) => Some(Ok(token)),
-        Err(error) => Some(Err(error)),
-    })
-    .collect::<Result<Vec<_>, _>>()
-    .expect("source should lex");
-    let mut parser = Parser::new(&tokens);
-    let ast = parser.parse().expect("source should parse");
+    let ast = parse_source(source_text)
+        .lower()
+        .expect("source should parse");
     let mut analyzer = SemanticAnalyzer::new();
     analyzer
         .analyze(&ast, None)

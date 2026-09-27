@@ -1,0 +1,53 @@
+---
+source: mux-compiler/tests/parser_integration.rs
+---
+[
+    Enum {
+        name: "Shape",
+        type_params: [],
+        variants: [
+            EnumVariant {
+                name: "Unit",
+                data: None,
+                where_clause: None,
+            },
+            EnumVariant {
+                name: "Circ",
+                data: Some(
+                    [
+                        (
+                            Some(
+                                "r",
+                            ),
+                            TypeNode {
+                                kind: Primitive(
+                                    Float,
+                                ),
+                                span: Span,
+                            },
+                        ),
+                    ],
+                ),
+                where_clause: None,
+            },
+        ],
+        span: Span,
+    },
+    Enum {
+        name: "Tint",
+        type_params: [],
+        variants: [
+            EnumVariant {
+                name: "Warm",
+                data: None,
+                where_clause: None,
+            },
+            EnumVariant {
+                name: "Cool",
+                data: None,
+                where_clause: None,
+            },
+        ],
+        span: Span,
+    },
+]
