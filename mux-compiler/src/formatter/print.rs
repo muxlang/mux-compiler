@@ -1,4 +1,4 @@
-use crate::lexer::{ByteRange, TokenType};
+use crate::lexer::TokenType;
 use crate::syntax::{self, FrontendError, SyntaxKind, SyntaxNode, SyntaxTree};
 use std::collections::HashSet;
 use unicode_width::UnicodeWidthStr;
@@ -94,10 +94,14 @@ struct Printer<'a> {
     previous: Option<usize>,
     saw_significant: bool,
     wrapped_commas: HashSet<usize>,
+    contexts: Vec<TokenContext>,
 }
 
 impl<'a> Printer<'a> {
     fn new(tree: &'a SyntaxTree, options: FormatOptions) -> Self {
+        let contexts = TokenContexts::from_tree(tree);
+        let wrapped_commas =
+            find_wrapped_commas(tree, options.indent_width, options.line_width, &contexts);
         Self {
             tree,
             options,
@@ -107,7 +111,8 @@ impl<'a> Printer<'a> {
             pending_newlines: 0,
             previous: None,
             saw_significant: false,
-            wrapped_commas: find_wrapped_commas(tree, options.indent_width, options.line_width),
+            wrapped_commas,
+            contexts,
         }
     }
 
@@ -129,26 +134,22 @@ impl<'a> Printer<'a> {
     }
 
     fn write_token(&mut self, index: usize, kind: &TokenType) {
-        let range = self.tree.tokens()[index].range();
         let text = self.tree.token_text(index).unwrap_or("");
-        let block_open =
-            matches!(kind, TokenType::OpenBrace) && is_open_block(self.tree.root(), range.start);
-        let block_close =
-            matches!(kind, TokenType::CloseBrace) && is_close_block(self.tree.root(), range.start);
+        let block_open = matches!(kind, TokenType::OpenBrace) && self.contexts[index].block;
+        let block_close = matches!(kind, TokenType::CloseBrace) && self.contexts[index].block;
 
         if let Some(previous_index) = self.previous {
             let previous_kind = self.tree.tokens()[previous_index].kind();
-            let previous_range = self.tree.tokens()[previous_index].range();
             // Suppress a source newline only while both adjacent tokens are
             // inside the same continuation region. A break after the closing
             // delimiter ends the expression and must remain significant.
-            let continuation = !has_block_context(self.tree, range.start)
-                && !has_block_context(self.tree, previous_range.start)
-                && is_continuation_context(self.tree, range.start)
-                && is_continuation_context(self.tree, previous_range.start);
+            let continuation = !self.contexts[index].block
+                && !self.contexts[previous_index].block
+                && self.contexts[index].continuation
+                && self.contexts[previous_index].continuation;
             let mut requested_newlines = self.pending_newlines;
             if (matches!(previous_kind, TokenType::OpenBrace)
-                && is_open_block(self.tree.root(), previous_range.start))
+                && self.contexts[previous_index].block)
                 || block_close
             {
                 requested_newlines = requested_newlines.max(1);
@@ -163,14 +164,7 @@ impl<'a> Printer<'a> {
                     requested_newlines.min(2)
                 };
                 self.newlines(count);
-            } else if self.needs_space(
-                previous_index,
-                index,
-                previous_kind,
-                kind,
-                previous_range,
-                range,
-            ) {
+            } else if self.needs_space(previous_index, index, previous_kind, kind) {
                 self.space();
             }
         } else if self.pending_newlines > 0 {
@@ -204,8 +198,6 @@ impl<'a> Printer<'a> {
         current_index: usize,
         previous: &TokenType,
         current: &TokenType,
-        previous_range: ByteRange,
-        current_range: ByteRange,
     ) -> bool {
         use TokenType as T;
 
@@ -243,13 +235,13 @@ impl<'a> Printer<'a> {
             return !matches!(previous, T::NewLine);
         }
         if is_operator(previous) || is_operator(current) {
-            let generic = self.in_kind(previous_range.start, SyntaxKind::TypeArguments)
-                || self.in_kind(current_range.start, SyntaxKind::TypeArguments);
+            let generic = self.contexts[previous_index].type_arguments
+                || self.contexts[current_index].type_arguments;
             let reference_type = matches!(previous, T::Ref) || matches!(current, T::Ref);
             if generic && (matches!(previous, T::Lt | T::Gt) || matches!(current, T::Lt | T::Gt)) {
                 return false;
             }
-            if reference_type && self.in_kind(current_range.start, SyntaxKind::Type) {
+            if reference_type && self.contexts[current_index].type_context {
                 return false;
             }
             if self.is_prefix_at(current_index) {
@@ -266,10 +258,6 @@ impl<'a> Printer<'a> {
             return false;
         }
         is_word(previous) && is_word(current)
-    }
-
-    fn in_kind(&self, offset: usize, kind: SyntaxKind) -> bool {
-        has_kind_at(self.tree.root(), offset, kind)
     }
 
     fn is_prefix_at(&self, index: usize) -> bool {
@@ -353,57 +341,110 @@ impl<'a> Printer<'a> {
     }
 }
 
-fn has_kind_at(node: &SyntaxNode, offset: usize, kind: SyntaxKind) -> bool {
-    node.range().start <= offset
-        && offset < node.range().end
-        && (node.kind() == kind
-            || node.children().iter().any(|child| match child {
-                syntax::SyntaxElement::Node(child) => has_kind_at(child, offset, kind),
-                syntax::SyntaxElement::Token(_) => false,
-            }))
+#[derive(Debug, Default, Clone, Copy)]
+struct ContextDelta {
+    block: isize,
+    continuation: isize,
+    type_arguments: isize,
+    type_context: isize,
 }
 
-fn is_open_block(root: &SyntaxNode, offset: usize) -> bool {
-    has_any_block_context(root, offset)
+#[derive(Debug, Default, Clone, Copy)]
+struct TokenContext {
+    block: bool,
+    block_depth: usize,
+    continuation: bool,
+    type_arguments: bool,
+    type_context: bool,
 }
 
-fn is_close_block(root: &SyntaxNode, offset: usize) -> bool {
-    is_open_block(root, offset)
+struct TokenContexts;
+
+impl TokenContexts {
+    fn from_tree(tree: &SyntaxTree) -> Vec<TokenContext> {
+        let tokens = tree.tokens();
+        let mut deltas = vec![ContextDelta::default(); tokens.len() + 1];
+        collect_context_deltas(tree.root(), tokens, &mut deltas);
+
+        let mut active = ContextDelta::default();
+        deltas
+            .into_iter()
+            .take(tokens.len())
+            .map(|delta| {
+                active.block += delta.block;
+                active.continuation += delta.continuation;
+                active.type_arguments += delta.type_arguments;
+                active.type_context += delta.type_context;
+                TokenContext {
+                    block: active.block > 0,
+                    block_depth: active.block.max(0) as usize,
+                    continuation: active.continuation > 0,
+                    type_arguments: active.type_arguments > 0,
+                    type_context: active.type_context > 0,
+                }
+            })
+            .collect()
+    }
 }
 
-fn is_continuation_context(tree: &SyntaxTree, offset: usize) -> bool {
-    [
-        SyntaxKind::CallArguments,
-        SyntaxKind::ParameterList,
-        SyntaxKind::ParenthesizedExpression,
-        SyntaxKind::TupleExpression,
-        SyntaxKind::ListLiteral,
-        SyntaxKind::IndexExpression,
-    ]
-    .into_iter()
-    .any(|kind| has_kind_at(tree.root(), offset, kind))
-}
-
-fn has_block_context(tree: &SyntaxTree, offset: usize) -> bool {
-    has_any_block_context(tree.root(), offset)
-}
-
-fn has_any_block_context(node: &SyntaxNode, offset: usize) -> bool {
-    [
-        SyntaxKind::Block,
-        SyntaxKind::ClassBody,
-        SyntaxKind::InterfaceBody,
-        SyntaxKind::EnumBody,
-        SyntaxKind::MatchArms,
-    ]
-    .into_iter()
-    .any(|kind| has_kind_at(node, offset, kind))
+fn collect_context_deltas(
+    node: &SyntaxNode,
+    tokens: &[syntax::SyntaxToken],
+    deltas: &mut [ContextDelta],
+) {
+    let kind = node.kind();
+    let block = matches!(
+        kind,
+        SyntaxKind::Block
+            | SyntaxKind::ClassBody
+            | SyntaxKind::InterfaceBody
+            | SyntaxKind::EnumBody
+            | SyntaxKind::MatchArms
+    );
+    let continuation = matches!(
+        kind,
+        SyntaxKind::CallArguments
+            | SyntaxKind::ParameterList
+            | SyntaxKind::ParenthesizedExpression
+            | SyntaxKind::TupleExpression
+            | SyntaxKind::ListLiteral
+            | SyntaxKind::IndexExpression
+    );
+    let type_arguments = kind == SyntaxKind::TypeArguments;
+    let type_context = kind == SyntaxKind::Type;
+    if block || continuation || type_arguments || type_context {
+        let range = node.range();
+        let start = tokens.partition_point(|token| token.range().start < range.start);
+        let end = tokens.partition_point(|token| token.range().start < range.end);
+        if start < end {
+            for (index, amount) in [(start, 1), (end, -1)] {
+                if block {
+                    deltas[index].block += amount;
+                }
+                if continuation {
+                    deltas[index].continuation += amount;
+                }
+                if type_arguments {
+                    deltas[index].type_arguments += amount;
+                }
+                if type_context {
+                    deltas[index].type_context += amount;
+                }
+            }
+        }
+    }
+    for child in node.children() {
+        if let syntax::SyntaxElement::Node(child) = child {
+            collect_context_deltas(child, tokens, deltas);
+        }
+    }
 }
 
 fn find_wrapped_commas(
     tree: &SyntaxTree,
     indent_width: usize,
     line_width: usize,
+    contexts: &[TokenContext],
 ) -> HashSet<usize> {
     let eligible = [
         SyntaxKind::CallArguments,
@@ -411,162 +452,165 @@ fn find_wrapped_commas(
         SyntaxKind::ListLiteral,
         SyntaxKind::TupleExpression,
     ];
+    let width_prefixes = TokenWidthPrefixes::new(tree);
     let mut ranges = Vec::new();
-    collect_nodes(tree.root(), &mut ranges, &eligible);
+    collect_eligible_ranges(tree.root(), 0, &eligible, tree.tokens(), &mut ranges);
+    for range in &mut ranges {
+        range.wraps = width_prefixes.estimate(
+            tree,
+            range.start_token,
+            range.end_token,
+            indent_width,
+            contexts[range.start_token].block_depth,
+        ) > line_width;
+    }
+    ranges.sort_by_key(|range: &EligibleRange| {
+        (
+            range.start_token,
+            std::cmp::Reverse(range.end_token),
+            range.depth,
+        )
+    });
+
     let mut commas = HashSet::new();
-    for (kind, range) in ranges {
-        let Some(flat) = tree.source().get(range.start..range.end) else {
-            continue;
-        };
-        if canonical_width_estimate(tree, range, flat, indent_width) <= line_width {
-            continue;
+    let mut active = Vec::new();
+    let mut next_range = 0;
+    for (index, token) in tree.tokens().iter().enumerate() {
+        while active
+            .last()
+            .is_some_and(|active_index: &usize| ranges[*active_index].end_token <= index)
+        {
+            active.pop();
         }
-        for (index, token) in tree.tokens().iter().enumerate() {
-            let token_range = token.range();
-            if token_range.start < range.start || token_range.end > range.end {
-                continue;
-            }
-            if matches!(token.kind(), TokenType::Comma)
-                && innermost_eligible_range(tree.root(), token_range.start, &eligible)
-                    == Some((kind, range))
-            {
-                commas.insert(index);
-            }
+        while ranges
+            .get(next_range)
+            .is_some_and(|range| range.start_token == index)
+        {
+            active.push(next_range);
+            next_range += 1;
+        }
+        if matches!(token.kind(), TokenType::Comma)
+            && active
+                .last()
+                .is_some_and(|active_index| ranges[*active_index].wraps)
+        {
+            commas.insert(index);
         }
     }
     commas
 }
 
-fn canonical_width_estimate(
-    tree: &SyntaxTree,
-    range: ByteRange,
-    _text: &str,
-    indent_width: usize,
-) -> usize {
-    let line_start = tree.source()[..range.start]
-        .rfind('\n')
-        .map_or(0, |newline| newline + 1);
-    let prefix_width = token_width(tree, ByteRange::new(line_start, range.start));
-    let node_width = token_width(tree, range);
-    let separator_spaces = tree
-        .tokens()
-        .iter()
-        .filter(|token| {
-            let token_range = token.range();
-            token_range.start >= range.start && token_range.end <= range.end
-        })
-        .map(|token| match token.kind() {
-            TokenType::Comma => 1,
-            kind if is_operator(kind) => 2,
-            _ => 0,
-        })
-        .sum::<usize>();
-    let significant_tokens: Vec<_> = tree
-        .tokens()
-        .iter()
-        .filter(|token| {
-            let token_range = token.range();
-            token_range.start >= range.start && token_range.end <= range.end
-        })
-        .filter(|token| {
-            !matches!(
-                token.kind(),
-                TokenType::Whitespace | TokenType::NewLine | TokenType::Eof
-            )
-        })
-        .collect();
-    let word_separators = significant_tokens
-        .windows(2)
-        .filter(|pair| is_word(pair[0].kind()) && is_word(pair[1].kind()))
-        .count();
-    let indent = block_depth_at(tree.root(), range.start).saturating_mul(indent_width);
-    prefix_width + node_width + separator_spaces + word_separators + indent
+struct EligibleRange {
+    start_token: usize,
+    end_token: usize,
+    depth: usize,
+    wraps: bool,
 }
 
-fn token_width(tree: &SyntaxTree, range: ByteRange) -> usize {
-    tree.tokens()
-        .iter()
-        .filter(|token| {
-            let token_range = token.range();
-            token_range.start >= range.start && token_range.end <= range.end
-        })
-        .filter(|token| {
-            !matches!(
-                token.kind(),
-                TokenType::Whitespace | TokenType::NewLine | TokenType::Eof
-            )
-        })
-        .map(|token| UnicodeWidthStr::width(token.text(tree.source())))
-        .sum()
+struct TokenWidthPrefixes {
+    width: Vec<usize>,
+    separators: Vec<usize>,
+    word_separators: Vec<usize>,
 }
 
-fn block_depth_at(node: &SyntaxNode, offset: usize) -> usize {
-    if !(node.range().start <= offset && offset < node.range().end) {
-        return 0;
-    }
-    let own = if matches!(
-        node.kind(),
-        SyntaxKind::Block
-            | SyntaxKind::ClassBody
-            | SyntaxKind::InterfaceBody
-            | SyntaxKind::EnumBody
-            | SyntaxKind::MatchArms
-    ) {
-        1
-    } else {
-        0
-    };
-    node.children()
-        .iter()
-        .filter_map(|child| match child {
-            syntax::SyntaxElement::Node(child)
-                if child.range().start <= offset && offset < child.range().end =>
-            {
-                Some(block_depth_at(child, offset))
+impl TokenWidthPrefixes {
+    fn new(tree: &SyntaxTree) -> Self {
+        let tokens = tree.tokens();
+        let mut width = Vec::with_capacity(tokens.len() + 1);
+        let mut separators = Vec::with_capacity(tokens.len() + 1);
+        let mut word_separators = Vec::with_capacity(tokens.len() + 1);
+        width.push(0);
+        separators.push(0);
+        word_separators.push(0);
+        let mut previous_word = false;
+
+        for token in tokens {
+            let significant = !matches!(
+                token.kind(),
+                TokenType::Whitespace | TokenType::NewLine | TokenType::Eof
+            );
+            let token_width = if significant {
+                UnicodeWidthStr::width(token.text(tree.source()))
+            } else {
+                0
+            };
+            let separator = match token.kind() {
+                TokenType::Comma => 1,
+                kind if is_operator(kind) => 2,
+                _ => 0,
+            };
+            let is_current_word = significant && is_word(token.kind());
+
+            width.push(width.last().copied().unwrap_or_default() + token_width);
+            separators.push(separators.last().copied().unwrap_or_default() + separator);
+            word_separators.push(
+                word_separators.last().copied().unwrap_or_default()
+                    + usize::from(previous_word && is_current_word),
+            );
+            if significant {
+                previous_word = is_current_word;
             }
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0)
-        + own
+        }
+        Self {
+            width,
+            separators,
+            word_separators,
+        }
+    }
+
+    fn estimate(
+        &self,
+        tree: &SyntaxTree,
+        start: usize,
+        end: usize,
+        indent_width: usize,
+        block_depth: usize,
+    ) -> usize {
+        let range = tree.tokens()[start].range();
+        let line_start = tree.source()[..range.start]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        let prefix_start = tree
+            .tokens()
+            .partition_point(|token| token.range().start < line_start);
+        let prefix_width = self.width[start] - self.width[prefix_start];
+        let node_width = self.width[end] - self.width[start];
+        let separator_spaces = self.separators[end] - self.separators[start];
+        let word_separators = if start < end {
+            self.word_separators[end] - self.word_separators[start + 1]
+        } else {
+            0
+        };
+        let indent = block_depth.saturating_mul(indent_width);
+        prefix_width + node_width + separator_spaces + word_separators + indent
+    }
 }
 
-fn collect_nodes(
+fn collect_eligible_ranges(
     node: &SyntaxNode,
-    collected: &mut Vec<(SyntaxKind, ByteRange)>,
+    depth: usize,
     eligible: &[SyntaxKind],
+    tokens: &[syntax::SyntaxToken],
+    collected: &mut Vec<EligibleRange>,
 ) {
     if eligible.contains(&node.kind()) {
-        collected.push((node.kind(), node.range()));
+        let range = node.range();
+        let start_token = tokens.partition_point(|token| token.range().start < range.start);
+        let end_token = tokens.partition_point(|token| token.range().start < range.end);
+        if start_token < end_token {
+            collected.push(EligibleRange {
+                start_token,
+                end_token,
+                depth,
+                wraps: false,
+            });
+        }
     }
     for child in node.children() {
         if let syntax::SyntaxElement::Node(child) = child {
-            collect_nodes(child, collected, eligible);
+            collect_eligible_ranges(child, depth + 1, eligible, tokens, collected);
         }
     }
-}
-
-fn innermost_eligible_range(
-    node: &SyntaxNode,
-    offset: usize,
-    eligible: &[SyntaxKind],
-) -> Option<(SyntaxKind, ByteRange)> {
-    if !(node.range().start <= offset && offset < node.range().end) {
-        return None;
-    }
-    let mut current = eligible
-        .contains(&node.kind())
-        .then_some((node.kind(), node.range()));
-    for child in node.children() {
-        if let syntax::SyntaxElement::Node(child) = child
-            && child.range().start <= offset
-            && offset < child.range().end
-        {
-            current = innermost_eligible_range(child, offset, eligible).or(current);
-            break;
-        }
-    }
-    current
 }
 
 fn is_word(token: &TokenType) -> bool {
