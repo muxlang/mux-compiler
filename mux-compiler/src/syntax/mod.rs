@@ -1324,11 +1324,38 @@ impl SyntaxTree {
         let span = self.span_for_range(node.range)?;
         match data {
             AstLoweringData::TypeName { name, arguments } => {
-                let name = self
-                    .source
-                    .text()
-                    .get(name.start..name.end)
-                    .ok_or(SyntaxLowerError::MissingToken(*name))?;
+                let mut semantic_name = String::new();
+                let mut found_name_token = false;
+                let token_start = self
+                    .tokens
+                    .partition_point(|token| token.range().end <= name.start);
+                for token in self.tokens[token_start..]
+                    .iter()
+                    .take_while(|token| token.range().start < name.end)
+                    .filter(|token| {
+                        !matches!(
+                            token.kind(),
+                            TokenType::Whitespace
+                                | TokenType::NewLine
+                                | TokenType::LineComment(_)
+                                | TokenType::MultilineComment(_)
+                                | TokenType::Eof
+                        )
+                    })
+                {
+                    match token.kind() {
+                        TokenType::Id(_) => {
+                            semantic_name.push_str(token.text(self.source.text()));
+                            found_name_token = true;
+                        }
+                        TokenType::Dot if found_name_token => semantic_name.push('.'),
+                        _ => return Err(SyntaxLowerError::MissingToken(*name)),
+                    }
+                }
+                if semantic_name.is_empty() {
+                    return Err(SyntaxLowerError::MissingToken(*name));
+                }
+                let name = semantic_name.as_str();
                 let args = arguments
                     .iter()
                     .map(|range| self.lower_type_at(*range))
@@ -3030,6 +3057,13 @@ mod tests {
         );
         assert!(matches!(named.kind, TypeKind::Named(name, args)
             if name == "Box" && matches!(args.as_slice(), [TypeNode { kind: TypeKind::Primitive(PrimitiveType::Int), .. }])));
+
+        let qualified = lower_type_data(
+            "func f(graph /* trivia */ . Graph<string> value) returns void {}",
+            |data| matches!(data, AstLoweringData::TypeName { arguments, .. } if !arguments.is_empty()),
+        );
+        assert!(matches!(qualified.kind, TypeKind::Named(name, _)
+            if name == "graph.Graph"));
 
         let container =
             lower_type_data("func f(map<string, list<int>> x) returns void {}", |data| {

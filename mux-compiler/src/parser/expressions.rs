@@ -5,6 +5,7 @@ use crate::syntax::AstLoweringData;
 /// Expression facts retained while parsing for syntax events and disambiguation.
 pub(super) struct ParsedExpression {
     pub(super) span: Span,
+    pub(super) event_start: usize,
     generic_target: Option<GenericTarget>,
 }
 
@@ -36,13 +37,17 @@ impl ParsedExpression {}
 impl<'a> Parser<'a> {
     pub(super) fn parse_expression_parsed(&mut self) -> ParserResult<ParsedExpression> {
         let start = self.current;
+        let event_start = self.syntax_events.len();
         let result = self.parse_precedence_parsed(Precedence::Assignment);
         if result.is_ok() {
             self.record_syntax_node(SyntaxKind::Expression, start, self.current);
         } else if self.current > start {
             self.record_syntax_node(SyntaxKind::Error, start, self.current);
         }
-        result
+        result.map(|mut expression| {
+            expression.event_start = event_start;
+            expression
+        })
     }
 
     fn parse_precedence_parsed(
@@ -102,6 +107,7 @@ impl<'a> Parser<'a> {
             let combined_span = left_span.combine(&right_span);
             value = ParsedExpression {
                 span: combined_span,
+                event_start: 0,
                 generic_target: None,
             };
             if value.span.byte_range.is_none() {
@@ -119,10 +125,11 @@ impl<'a> Parser<'a> {
     pub(super) fn first_postfix_update_in(
         &self,
         range: Option<crate::lexer::ByteRange>,
+        event_start: usize,
     ) -> Option<crate::lexer::ByteRange> {
         let range = range?;
-        let lambda_bodies = self
-            .syntax_events
+        let events = &self.syntax_events[event_start..];
+        let lambda_bodies = events
             .iter()
             .filter_map(|event| {
                 let inside_expression =
@@ -133,7 +140,7 @@ impl<'a> Parser<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        self.syntax_events
+        events
             .iter()
             .filter(|event| {
                 event.range.start >= range.start
@@ -142,7 +149,7 @@ impl<'a> Parser<'a> {
                         event.data.as_ref(),
                         Some(AstLoweringData::Unary { postfix: true, .. })
                     )
-                    && !self.syntax_events.iter().any(|statement| {
+                    && !events.iter().any(|statement| {
                         matches!(
                             statement.data.as_ref(),
                             Some(AstLoweringData::ExpressionStatement { expression, .. })
@@ -213,6 +220,7 @@ impl<'a> Parser<'a> {
             }
             Ok(ParsedExpression {
                 span,
+                event_start: 0,
                 generic_target: None,
             })
         } else {
@@ -284,6 +292,7 @@ impl<'a> Parser<'a> {
         let span = start_span.combine(&end_span);
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         })
     }
@@ -305,6 +314,7 @@ impl<'a> Parser<'a> {
         let span = start_span.combine(&end_span);
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         })
     }
@@ -337,6 +347,7 @@ impl<'a> Parser<'a> {
         let span = start_span.combine(&end_span);
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         })
     }
@@ -366,6 +377,7 @@ impl<'a> Parser<'a> {
         let span = start_span.combine(&end_span);
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         })
     }
@@ -506,6 +518,7 @@ impl<'a> Parser<'a> {
         let span = start_span.combine(&end_span);
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         })
     }
@@ -647,6 +660,7 @@ impl<'a> Parser<'a> {
         );
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         })
     }
@@ -696,6 +710,7 @@ impl<'a> Parser<'a> {
         );
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         })
     }
@@ -710,7 +725,7 @@ impl<'a> Parser<'a> {
             .span
             .byte_range
             .expect("match expression value source range");
-        if let Some(range) = self.first_postfix_update_in(expr.span.byte_range) {
+        if let Some(range) = self.first_postfix_update_in(expr.span.byte_range, expr.event_start) {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
                 "Increment/Decrement operator can only be used as a standalone statement",
@@ -791,6 +806,7 @@ impl<'a> Parser<'a> {
         );
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         })
     }
@@ -935,6 +951,7 @@ impl<'a> Parser<'a> {
     ) -> ParserResult<ParsedExpression> {
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target,
         })
     }
@@ -995,6 +1012,7 @@ impl<'a> Parser<'a> {
             );
             return Ok(ParsedExpression {
                 span,
+                event_start: 0,
                 generic_target: None,
             });
         }
@@ -1101,6 +1119,7 @@ impl<'a> Parser<'a> {
         let span = expr.span.combine(&end_span);
         Ok(Some(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         }))
     }
@@ -1150,6 +1169,7 @@ impl<'a> Parser<'a> {
                 let span = expr.span.combine(&end_span);
                 expr = ParsedExpression {
                     span,
+                    event_start: 0,
                     generic_target: None,
                 };
                 continue;
@@ -1175,6 +1195,7 @@ impl<'a> Parser<'a> {
                 let generic_target = expr.generic_target.take();
                 expr = ParsedExpression {
                     span,
+                    event_start: 0,
                     generic_target,
                 };
                 continue;
@@ -1206,6 +1227,7 @@ impl<'a> Parser<'a> {
                         );
                         expr = ParsedExpression {
                             span: base_span.combine(&end_span),
+                            event_start: 0,
                             generic_target: None,
                         };
                     }
@@ -1245,6 +1267,7 @@ impl<'a> Parser<'a> {
                 let span = expr.span.combine(&op_span);
                 expr = ParsedExpression {
                     span,
+                    event_start: 0,
                     generic_target: None,
                 };
                 continue;
@@ -1290,6 +1313,7 @@ impl<'a> Parser<'a> {
         );
         Ok(ParsedExpression {
             span,
+            event_start: 0,
             generic_target: None,
         })
     }

@@ -27,6 +27,7 @@ use crate::syntax::{
 #[derive(Debug)]
 pub(crate) struct Parser<'a> {
     tokens: Vec<&'a Token>,
+    brace_depths: Vec<usize>,
     current: usize,
     pub errors: Vec<ParserError>,
     recovery_spans: Vec<Span>,
@@ -93,8 +94,20 @@ impl<'a> Parser<'a> {
             }
             grammar_tokens.push(token);
         }
+        let mut brace_depths = Vec::with_capacity(grammar_tokens.len() + 1);
+        let mut brace_depth = 0_usize;
+        for token in &grammar_tokens {
+            brace_depths.push(brace_depth);
+            match &token.token_type {
+                TokenType::OpenBrace => brace_depth += 1,
+                TokenType::CloseBrace => brace_depth = brace_depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        brace_depths.push(brace_depth);
         Self {
             tokens: grammar_tokens,
+            brace_depths,
             current: 0,
             errors: Vec::new(),
             recovery_spans: Vec::new(),
@@ -454,6 +467,7 @@ impl<'a> Parser<'a> {
             }
 
             let start_position = self.current;
+            let event_start = self.syntax_events.len();
             match self.declaration() {
                 Ok(_) => {
                     let declaration_start = self
@@ -462,7 +476,7 @@ impl<'a> Parser<'a> {
                         .and_then(|token| token.span.byte_range)
                         .map(|range| range.start);
                     let is_statement = declaration_start.is_some_and(|start| {
-                        self.syntax_events.iter().any(|event| {
+                        self.syntax_events[event_start..].iter().any(|event| {
                             event.range.start == start
                                 && matches!(
                                     event.data.as_ref(),

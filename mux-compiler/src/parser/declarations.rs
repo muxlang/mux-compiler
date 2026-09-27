@@ -1502,7 +1502,8 @@ impl<'a> Parser<'a> {
             return Ok(ParameterDefaultFact { range: None });
         }
         let default_expr = self.parse_expression_parsed()?;
-        let is_literal = self.is_literal_expression_range(default_expr.span.byte_range);
+        let is_literal = self
+            .is_literal_expression_range(default_expr.span.byte_range, default_expr.event_start);
         if !is_literal {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
@@ -1624,9 +1625,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn is_literal_expression_range(&self, range: Option<ByteRange>) -> bool {
+    fn is_literal_expression_range(&self, range: Option<ByteRange>, event_start: usize) -> bool {
         range.is_some_and(|range| {
-            self.syntax_events.iter().any(|event| {
+            self.syntax_events[event_start..].iter().any(|event| {
                 event.range == range
                     && matches!(event.data.as_ref(), Some(AstLoweringData::Literal { .. }))
             })

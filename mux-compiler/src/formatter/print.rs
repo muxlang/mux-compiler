@@ -22,25 +22,49 @@ pub(super) fn format_source(source: &str, options: FormatOptions) -> Result<Stri
             .join("\n");
         return Err(FormatError::parse(errors));
     }
-    let formatted = Printer::new(&parsed.tree, options).format();
-    let reparsed = syntax::parse_source(&formatted);
-    if reparsed.has_errors() {
-        let errors = reparsed
-            .errors
-            .iter()
-            .map(|error| display_frontend_error(error, &formatted))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(FormatError::parse(format!(
-            "formatter produced invalid syntax:\n{errors}"
-        )));
+    let original_tokens: Vec<String> = significant_token_texts(&parsed.tree)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let mut current = source.to_owned();
+    let mut tree = parsed.tree;
+    let mut seen = HashSet::new();
+    seen.insert(current.clone());
+    loop {
+        let formatted = Printer::new(&tree, options).format();
+        let reparsed = syntax::parse_source(&formatted);
+        if reparsed.has_errors() {
+            let errors = reparsed
+                .errors
+                .iter()
+                .map(|error| display_frontend_error(error, &formatted))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(FormatError::parse(format!(
+                "formatter produced invalid syntax:\n{errors}"
+            )));
+        }
+        if original_tokens
+            != significant_token_texts(&reparsed.tree)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        {
+            return Err(FormatError::parse(
+                "formatter changed token spelling or order; refusing to return output",
+            ));
+        }
+        if formatted == current {
+            return Ok(formatted);
+        }
+        if !seen.insert(formatted.clone()) {
+            return Err(FormatError::parse(
+                "formatter layout did not converge; refusing to return unstable output",
+            ));
+        }
+        current = formatted;
+        tree = reparsed.tree;
     }
-    if significant_token_texts(&parsed.tree) != significant_token_texts(&reparsed.tree) {
-        return Err(FormatError::parse(
-            "formatter changed token spelling or order; refusing to return output",
-        ));
-    }
-    Ok(formatted)
 }
 
 fn significant_token_texts(tree: &SyntaxTree) -> Vec<&str> {
@@ -690,6 +714,20 @@ mod tests {
             format_source(&formatted, FormatOptions::default()).unwrap(),
             formatted
         );
+    }
+
+    #[test]
+    fn nested_call_wrapping_is_idempotent_after_outer_call_wraps() {
+        let identifier = "a".repeat(57);
+        let source = format!("auto v = outer({identifier}, inner(x, y))\n");
+
+        let formatted = format_source(&source, FormatOptions::default()).unwrap();
+
+        assert_eq!(
+            format_source(&formatted, FormatOptions::default()).unwrap(),
+            formatted
+        );
+        assert!(formatted.contains("inner(x, y)"));
     }
 
     #[test]

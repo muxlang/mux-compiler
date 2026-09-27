@@ -792,21 +792,9 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn is_in_block(&self) -> bool {
-        // look backwards for an opening brace that doesn't have a matching closing brace.
-        let mut brace_count: usize = 0;
-        for i in (0..self.current).rev() {
-            match self.tokens[i].token_type {
-                TokenType::CloseBrace => brace_count += 1,
-                TokenType::OpenBrace => {
-                    if brace_count == 0 {
-                        return true;
-                    }
-                    brace_count = brace_count.saturating_sub(1);
-                }
-                _ => {}
-            }
-        }
-        false
+        self.brace_depths
+            .get(self.current)
+            .is_some_and(|depth| *depth > 0)
     }
 
     fn parse_expression_statement(&mut self) -> ParserResult<()> {
@@ -851,7 +839,8 @@ impl<'a> Parser<'a> {
         expr: &ParsedExpression,
     ) -> ParserResult<()> {
         let range = expr.span.byte_range;
-        let has_top_level_update = self.syntax_events.iter().any(|event| {
+        let events = &self.syntax_events[expr.event_start..];
+        let has_top_level_update = events.iter().any(|event| {
             Some(event.range) == range
                 && matches!(
                     event.data.as_ref(),
@@ -861,22 +850,23 @@ impl<'a> Parser<'a> {
         if has_top_level_update {
             return Ok(());
         }
-        self.check_no_postfix_increment_decrement_range(range)
+        self.check_no_postfix_increment_decrement_range(range, expr.event_start)
     }
 
     pub(super) fn check_no_postfix_increment_decrement_parsed(
         &self,
         expr: &ParsedExpression,
     ) -> ParserResult<()> {
-        self.check_no_postfix_increment_decrement_range(expr.span.byte_range)
+        self.check_no_postfix_increment_decrement_range(expr.span.byte_range, expr.event_start)
     }
 
     #[allow(clippy::only_used_in_recursion)]
     pub(super) fn check_no_postfix_increment_decrement_range(
         &self,
         expression_range: Option<crate::lexer::ByteRange>,
+        event_start: usize,
     ) -> ParserResult<()> {
-        if let Some(range) = self.first_postfix_update_in(expression_range) {
+        if let Some(range) = self.first_postfix_update_in(expression_range, event_start) {
             return Err(ParserError::with_help(
                 DiagnosticCode::ParseExpectedToken,
                 "Increment/Decrement operator can only be used as a standalone statement",
