@@ -220,6 +220,29 @@ fn format_check_and_default_discovery_share_the_same_output() {
 }
 
 #[test]
+fn format_uses_project_configuration() {
+    let dir = unique_tmp_dir("format_config");
+    let path = write_file(
+        &dir,
+        "app.mux",
+        "func main() returns void {\nprint(1+2)\n}\n",
+    );
+    write_file(
+        &dir,
+        "mux-project.json",
+        r#"{"format":{"indent_type":"tab","indent_count":1}}"#,
+    );
+
+    let formatted = mux().current_dir(&dir).arg("format").output().unwrap();
+    assert!(formatted.status.success(), "{formatted:?}");
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "func main() returns void {\n\tprint(1 + 2)\n}\n"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn format_parse_failure_leaves_all_inputs_untouched() {
     let dir = unique_tmp_dir("format_invalid");
     let original = "auto x=1\n";

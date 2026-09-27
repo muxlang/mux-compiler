@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fs2::FileExt;
 
-use super::{FormatError, format_source};
+use super::{FormatError, FormatOptions, format_source_with_options};
 
 const IGNORED_DIRECTORIES: &[&str] = &[".git", "target", "node_modules"];
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -23,6 +23,17 @@ pub struct FormatOutcome {
 /// All inputs are read and formatted before any file is written. This keeps a
 /// parse failure from leaving a partially formatted set of files.
 pub fn format_paths(paths: &[PathBuf], check: bool) -> Result<FormatOutcome, FormatError> {
+    format_paths_with_options(paths, check, FormatOptions::default())
+}
+
+/// Format explicit files or recursively discover `.mux` files under paths
+/// using caller-supplied options. The CLI uses this after loading its project
+/// configuration; library callers can continue using [`format_paths`].
+pub fn format_paths_with_options(
+    paths: &[PathBuf],
+    check: bool,
+    options: FormatOptions,
+) -> Result<FormatOutcome, FormatError> {
     let files = discover_files(paths)?;
     let mut changes = Vec::new();
 
@@ -30,7 +41,8 @@ pub fn format_paths(paths: &[PathBuf], check: bool) -> Result<FormatOutcome, For
         let original = fs::read_to_string(&path).map_err(|error| {
             FormatError::io(format!("could not read {}: {error}", path.display()))
         })?;
-        let formatted = format_source(&original).map_err(|error| error.with_path(&path))?;
+        let formatted = format_source_with_options(&original, options)
+            .map_err(|error| error.with_path(&path))?;
         if original != formatted {
             changes.push(Change {
                 path,

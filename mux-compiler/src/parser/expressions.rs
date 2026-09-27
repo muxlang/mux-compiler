@@ -71,6 +71,17 @@ impl<'a> Parser<'a> {
             // now it is safe to consume the operator
             let operator_span = self.peek().span;
             let _ = self.consume_operator();
+            if !matches!(
+                op_token,
+                TokenType::Eq
+                    | TokenType::PlusEq
+                    | TokenType::MinusEq
+                    | TokenType::StarEq
+                    | TokenType::SlashEq
+                    | TokenType::PercentEq
+            ) {
+                self.skip_newlines();
+            }
 
             let next_precedence = if matches!(
                 op_token,
@@ -1502,5 +1513,20 @@ mod tests {
                 if matches!(&func.kind, ExpressionKind::GenericType(name, _)
                     if name == "module.factory.Builder")
         ));
+    }
+
+    #[test]
+    fn binary_operator_may_end_a_line_but_may_not_start_one() {
+        let (expression, _) = parse_test_expression("1 +\n2");
+        assert!(matches!(expression.kind, ExpressionKind::Binary { .. }));
+
+        let leading = parse_source("test \"leading operator\" {\n1\n+ 2\n}");
+        assert!(leading.has_errors());
+    }
+
+    #[test]
+    fn assignment_operator_does_not_continue_a_line() {
+        let parsed = parse_source("test \"assignment line break\" {\nauto value =\n1\n}");
+        assert!(parsed.has_errors());
     }
 }

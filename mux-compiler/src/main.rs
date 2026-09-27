@@ -1,4 +1,5 @@
 mod build_config;
+mod format_config;
 mod version_banner;
 
 use mux_lang::{
@@ -1734,7 +1735,11 @@ fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
             cli.deny_warnings,
         ),
         Commands::Format { files, check } => {
-            let status = match formatter::format_paths(files, *check) {
+            let (options, warnings) = format_config::load_from_current_directory();
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            let status = match formatter::format_paths_with_options(files, *check, options) {
                 Ok(outcome) => {
                     if *check {
                         for path in &outcome.changed {

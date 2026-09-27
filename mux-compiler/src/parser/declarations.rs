@@ -1073,11 +1073,8 @@ impl<'a> Parser<'a> {
             })
         });
         let where_start = self.syntax_events.len();
-        if self.check(TokenType::Where) {
+        if self.skip_newlines_before(TokenType::Where) {
             self.parse_where_clause_fact()?;
-        } else {
-            // Variants are newline-separated, so only a same-line `where`
-            // belongs to this variant.
         }
         let where_range = self.last_syntax_range_since(where_start, |data| {
             matches!(data, AstLoweringData::WhereClause { .. })
@@ -1571,9 +1568,10 @@ impl<'a> Parser<'a> {
 
         let is_generic_param = self.is_field_generic_param(&field_type, type_param_names);
         let where_start = self.syntax_events.len();
-        if self.check(TokenType::Where) {
-            // Fields are newline-separated, so only a same-line `where`
-            // belongs to this field.
+        if self.skip_newlines_before(TokenType::Where) {
+            // A `where` clause belongs to the field even when the formatter
+            // places it on the following line. Other member-separating
+            // newlines remain untouched.
             self.parse_where_clause_fact()?;
         }
         let where_range = self.last_syntax_range_since(where_start, |data| {
