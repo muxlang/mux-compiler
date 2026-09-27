@@ -27,7 +27,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, c
 use inkwell::context::Context;
 use mux_lang::ast::AstNode;
 use mux_lang::codegen::CodeGenerator;
-use mux_lang::diagnostic::Files;
+use mux_lang::diagnostic::{FileId, Files};
 use mux_lang::lexer::{Lexer, LosslessLexResult};
 use mux_lang::module_resolver::ModuleResolver;
 use mux_lang::semantics::SemanticAnalyzer;
@@ -69,15 +69,19 @@ fn parse(src: &str) -> Vec<AstNode> {
 // A fresh analyzer + diagnostics registry for a program, wired with a module
 // resolver anchored at the file's directory so imports resolve exactly as they
 // do in `run_compile` (src/main.rs).
-fn fresh(prog: &Program) -> (SemanticAnalyzer, Files) {
+fn fresh(prog: &Program) -> (SemanticAnalyzer, Files, FileId) {
     let base = prog
         .path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let resolver = Rc::new(RefCell::new(ModuleResolver::new(base)));
     let mut files = Files::new();
-    files.add(&prog.path, prog.src.clone());
-    (SemanticAnalyzer::new_with_resolver(resolver), files)
+    let root_file_id = files.add(&prog.path, prog.src.clone());
+    (
+        SemanticAnalyzer::new_with_resolver(resolver),
+        files,
+        root_file_id,
+    )
 }
 
 // True iff the program fully lexes, syntax-parses, lowers, and passes semantics.
@@ -96,7 +100,7 @@ fn compiles(prog: &Program) -> bool {
     let Ok(nodes) = parsed.lower() else {
         return false;
     };
-    let (mut analyzer, mut files) = fresh(prog);
+    let (mut analyzer, mut files, _) = fresh(prog);
     analyzer.analyze(&nodes, Some(&mut files)).is_empty()
 }
 
@@ -191,7 +195,7 @@ fn bench_semantics(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
             b.iter_batched(
                 || fresh(prog),
-                |(mut analyzer, mut files)| {
+                |(mut analyzer, mut files, _)| {
                     let errors = analyzer.analyze(black_box(&nodes), Some(&mut files));
                     assert!(errors.is_empty(), "corpus program should pass semantics");
                 },
@@ -210,14 +214,13 @@ fn bench_codegen(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     // Setup (untimed): a fully analyzed analyzer ready for codegen.
-                    let (mut analyzer, mut files) = fresh(prog);
+                    let (mut analyzer, mut files, root_file_id) = fresh(prog);
                     let errors = analyzer.analyze(&nodes, Some(&mut files));
                     assert!(errors.is_empty(), "corpus program should pass semantics");
-                    (analyzer, files)
+                    (analyzer, files, root_file_id)
                 },
-                |(mut analyzer, files)| {
+                |(mut analyzer, files, root_file_id)| {
                     let context = Context::create();
-                    let root_file_id = files.id_for_path(&prog.path).expect("benchmark root file");
                     let mut codegen = CodeGenerator::new(
                         &context,
                         &mut analyzer,
@@ -242,11 +245,10 @@ fn bench_pipeline(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(&prog.name), prog, |b, prog| {
             b.iter(|| {
                 let nodes = parse(black_box(&prog.src));
-                let (mut analyzer, mut files) = fresh(prog);
+                let (mut analyzer, mut files, root_file_id) = fresh(prog);
                 let errors = analyzer.analyze(&nodes, Some(&mut files));
                 assert!(errors.is_empty(), "corpus program should pass semantics");
                 let context = Context::create();
-                let root_file_id = files.id_for_path(&prog.path).expect("benchmark root file");
                 let mut codegen =
                     CodeGenerator::new(&context, &mut analyzer, &files, root_file_id, &prog.name);
                 codegen

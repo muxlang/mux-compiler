@@ -92,21 +92,15 @@ impl StandardEmitter {
         line: &SourceLine<'_>,
         style: LabelStyle,
         width: usize,
-    ) -> String {
+    ) -> Option<String> {
         let gutter = Self::render_gutter(width);
-
-        let (start_col, end_col) = if let Some(range) = span.byte_range {
-            let start_byte = range.start.max(line.start_byte).min(line.end_byte);
-            let end_byte = range.end.max(line.start_byte).min(line.end_byte);
-            let start = start_byte.saturating_sub(line.start_byte);
-            let end = end_byte.saturating_sub(line.start_byte);
-            (
-                display_width(&line.content[..start]),
-                display_width(&line.content[..end]),
-            )
-        } else {
-            unreachable!("labels without byte ranges do not underline source lines")
-        };
+        let range = span.byte_range?;
+        let start_byte = range.start.max(line.start_byte).min(line.end_byte);
+        let end_byte = range.end.max(line.start_byte).min(line.end_byte);
+        let start = start_byte.saturating_sub(line.start_byte);
+        let end = end_byte.saturating_sub(line.start_byte);
+        let start_col = display_width(&line.content[..start]);
+        let end_col = display_width(&line.content[..end]);
 
         let underline_len = (end_col.saturating_sub(start_col)).max(1);
         let indicator = "^".repeat(underline_len);
@@ -115,7 +109,12 @@ impl StandardEmitter {
             LabelStyle::Secondary => self.styles.secondary_label(&indicator),
         };
 
-        format!("{} {}{}", gutter, " ".repeat(start_col), colored_indicator)
+        Some(format!(
+            "{} {}{}",
+            gutter,
+            " ".repeat(start_col),
+            colored_indicator
+        ))
     }
 
     /// Emit a single diagnostic with source context.
@@ -274,10 +273,11 @@ impl StandardEmitter {
                 continue;
             }
 
-            eprintln!(
-                "{}",
+            if let Some(underline) =
                 self.render_label_underline(&label.span, line, label.style, width)
-            );
+            {
+                eprintln!("{underline}");
+            }
             self.emit_label_message(label, width);
         }
     }
@@ -461,14 +461,28 @@ mod tests {
         let lines = super::source_lines(text);
         let span = Span::new(0, text.len());
 
-        let rendered = emitter.render_label_underline(
-            &span,
-            &lines[0],
-            crate::diagnostic::LabelStyle::Primary,
-            2,
-        );
+        let rendered = emitter
+            .render_label_underline(&span, &lines[0], crate::diagnostic::LabelStyle::Primary, 2)
+            .unwrap();
 
         assert_eq!(rendered.matches('^').count(), 3);
+    }
+
+    #[test]
+    fn labels_without_byte_ranges_have_no_underline() {
+        let emitter = StandardEmitter::new(super::ColorConfig::Auto);
+        let line = super::source_lines("source");
+
+        assert!(
+            emitter
+                .render_label_underline(
+                    &Span::default(),
+                    &line[0],
+                    crate::diagnostic::LabelStyle::Primary,
+                    2,
+                )
+                .is_none()
+        );
     }
 
     #[test]

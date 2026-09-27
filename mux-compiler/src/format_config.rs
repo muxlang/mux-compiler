@@ -27,8 +27,18 @@ fn load_from_directory(current_dir: &Path) -> (FormatOptions, Vec<String>) {
             break;
         }
         let config_path = directory.join(CONFIG_NAME);
-        if config_path.exists() {
-            return load_file(&config_path);
+        match fs::symlink_metadata(&config_path) {
+            Ok(_) => return load_file(&config_path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return (
+                    FormatOptions::default(),
+                    vec![format!(
+                        "{}: could not inspect formatter config ({error}); using defaults",
+                        config_path.display()
+                    )],
+                );
+            }
         }
         if directory.join(".git").exists() {
             break;
@@ -113,12 +123,10 @@ fn load_file(path: &Path) -> (FormatOptions, Vec<String>) {
             ),
         }
     }
-    if !format.contains_key("indent_count") {
-        options.indent_count = match options.indent_type {
-            IndentType::Space => 4,
-            IndentType::Tab => 1,
-        };
-    }
+    options.indent_count = match options.indent_type {
+        IndentType::Space => 4,
+        IndentType::Tab => 1,
+    };
     if let Some(value) = format.get("indent_count") {
         if let Some(count) = positive_count(value) {
             options.indent_count = count;
@@ -291,13 +299,13 @@ mod tests {
         let root = temp_dir();
         fs::write(
             root.join(CONFIG_NAME),
-            r#"{"format":{"indent_count":0,"line_width":100,"blank_lines_between_members":-1}}"#,
+            r#"{"format":{"indent_type":"tab","indent_count":0,"line_width":100,"blank_lines_between_members":-1}}"#,
         )
         .unwrap();
 
         let (options, warnings) = load_from_directory(&root);
 
-        assert_eq!(options.indent_count, 4);
+        assert_eq!(options.indent_count, 1);
         assert_eq!(options.line_width, 100);
         assert_eq!(options.blank_lines_between_members, 0);
         assert_eq!(warnings.len(), 2);
@@ -342,6 +350,41 @@ mod tests {
 
         assert_eq!(options.line_width, 80);
         assert!(warnings.is_empty());
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn unusable_nearest_config_does_not_fall_back_to_parent() {
+        let parent = temp_dir();
+        fs::write(parent.join(CONFIG_NAME), r#"{"format":{"line_width":120}}"#).unwrap();
+        let worktree = parent.join("worktree");
+        fs::create_dir_all(worktree.join(".git")).unwrap();
+        fs::create_dir(worktree.join(CONFIG_NAME)).unwrap();
+
+        let (options, warnings) = load_from_directory(&worktree);
+
+        assert_eq!(options.line_width, 80);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("could not read formatter config"));
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_nearest_config_is_reported_instead_of_skipped() {
+        use std::os::unix::fs::symlink;
+
+        let parent = temp_dir();
+        fs::write(parent.join(CONFIG_NAME), r#"{"format":{"line_width":120}}"#).unwrap();
+        let worktree = parent.join("worktree");
+        fs::create_dir_all(worktree.join(".git")).unwrap();
+        symlink("missing.json", worktree.join(CONFIG_NAME)).unwrap();
+
+        let (options, warnings) = load_from_directory(&worktree);
+
+        assert_eq!(options.line_width, 80);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("could not read formatter config"));
         fs::remove_dir_all(parent).unwrap();
     }
 }

@@ -150,55 +150,7 @@ impl<'a> Printer<'a> {
         let text = self.tree.token_text(index).unwrap_or("");
         let block_open = matches!(kind, TokenType::OpenBrace) && self.contexts[index].block;
         let block_close = matches!(kind, TokenType::CloseBrace) && self.contexts[index].block;
-
-        if let Some(previous_index) = self.previous {
-            let previous_kind = self.tree.tokens()[previous_index].kind();
-            // Suppress a source newline only while both adjacent tokens are
-            // inside the same continuation region. A break after the closing
-            // delimiter ends the expression and must remain significant.
-            let continuation = !self.contexts[index].block
-                && !self.contexts[previous_index].block
-                && self.contexts[index].continuation
-                && self.contexts[previous_index].continuation;
-            let mut requested_newlines = self.pending_newlines;
-            if let Some(count) = self.forced_newlines_before.get(&index) {
-                requested_newlines = *count;
-            }
-            if block_open {
-                requested_newlines = match self.options.brace_style {
-                    BraceStyle::SameLine => 0,
-                    BraceStyle::NextLine => 1,
-                };
-            }
-            if matches!(kind, TokenType::Where) {
-                requested_newlines = match self.options.where_position {
-                    WherePosition::OwnLine => 1,
-                    WherePosition::SameLine => 0,
-                };
-            }
-            if (matches!(previous_kind, TokenType::OpenBrace)
-                && self.contexts[previous_index].block)
-                || block_close
-            {
-                requested_newlines = requested_newlines.max(1);
-            }
-            if continuation && !block_close {
-                requested_newlines = 0;
-            }
-            if requested_newlines > 0 {
-                let count = if continuation { 1 } else { requested_newlines };
-                self.newlines(count);
-            } else if !(self.insert_commas_after.contains(&previous_index)
-                && matches!(kind, TokenType::CloseBrace))
-                && self.needs_space(previous_index, index, previous_kind, kind)
-            {
-                self.space();
-            }
-        } else if self.pending_newlines > 0 {
-            // Leading blank lines are discarded for a stable file start.
-            self.pending_newlines = 0;
-        }
-        self.pending_newlines = 0;
+        self.write_space_before(index, kind);
 
         if block_close {
             self.indent = self.indent.saturating_sub(1);
@@ -220,6 +172,84 @@ impl<'a> Printer<'a> {
             self.newlines(1);
         }
         self.previous = Some(index);
+    }
+
+    fn write_space_before(&mut self, index: usize, kind: &TokenType) {
+        if let Some(previous_index) = self.previous {
+            let previous_kind = self.tree.tokens()[previous_index].kind();
+            let continuation = self.is_continuation_between(previous_index, index);
+            let requested_newlines = self.newlines_before(index, previous_index, kind);
+            self.apply_spacing_before(
+                previous_index,
+                index,
+                previous_kind,
+                kind,
+                requested_newlines,
+                continuation,
+            );
+        }
+        // Leading blank lines are discarded for a stable file start.
+        self.pending_newlines = 0;
+    }
+
+    fn is_continuation_between(&self, previous_index: usize, index: usize) -> bool {
+        !self.contexts[index].block
+            && !self.contexts[previous_index].block
+            && self.contexts[index].continuation
+            && self.contexts[previous_index].continuation
+    }
+
+    fn newlines_before(&self, index: usize, previous_index: usize, kind: &TokenType) -> usize {
+        let block_open = matches!(kind, TokenType::OpenBrace) && self.contexts[index].block;
+        let block_close = matches!(kind, TokenType::CloseBrace) && self.contexts[index].block;
+        let previous_kind = self.tree.tokens()[previous_index].kind();
+        let continuation = self.is_continuation_between(previous_index, index);
+        let mut requested = self
+            .forced_newlines_before
+            .get(&index)
+            .copied()
+            .unwrap_or(self.pending_newlines);
+        if block_open {
+            requested = match self.options.brace_style {
+                BraceStyle::SameLine => 0,
+                BraceStyle::NextLine => 1,
+            };
+        }
+        if matches!(kind, TokenType::Where) {
+            requested = match self.options.where_position {
+                WherePosition::OwnLine => 1,
+                WherePosition::SameLine => 0,
+            };
+        }
+        if (matches!(previous_kind, TokenType::OpenBrace) && self.contexts[previous_index].block)
+            || block_close
+        {
+            requested = requested.max(1);
+        }
+        if continuation && !block_close {
+            requested = 0;
+        }
+        requested
+    }
+
+    fn apply_spacing_before(
+        &mut self,
+        previous_index: usize,
+        index: usize,
+        previous_kind: &TokenType,
+        kind: &TokenType,
+        requested_newlines: usize,
+        continuation: bool,
+    ) {
+        if requested_newlines > 0 {
+            let count = if continuation { 1 } else { requested_newlines };
+            self.newlines(count);
+        } else if !(self.insert_commas_after.contains(&previous_index)
+            && matches!(kind, TokenType::CloseBrace))
+            && self.needs_space(previous_index, index, previous_kind, kind)
+        {
+            self.space();
+        }
     }
 
     fn needs_space(
@@ -268,29 +298,39 @@ impl<'a> Printer<'a> {
             return !matches!(previous, T::NewLine);
         }
         if is_operator(previous) || is_operator(current) {
-            let generic = self.contexts[previous_index].type_arguments
-                || self.contexts[current_index].type_arguments;
-            let reference_type = matches!(previous, T::Ref) || matches!(current, T::Ref);
-            if generic && (matches!(previous, T::Lt | T::Gt) || matches!(current, T::Lt | T::Gt)) {
-                return false;
-            }
-            if reference_type && self.contexts[current_index].type_context {
-                return false;
-            }
-            if self.is_prefix_at(current_index) {
-                return is_word(previous)
-                    || is_operator(previous)
-                    || matches!(previous, T::CloseParen | T::CloseBracket);
-            }
-            if self.is_prefix_at(previous_index) {
-                return false;
-            }
-            return true;
+            return self.operator_needs_space(previous_index, current_index, previous, current);
         }
         if matches!(current, T::OpenParen | T::OpenBracket) {
             return false;
         }
         is_word(previous) && is_word(current)
+    }
+
+    fn operator_needs_space(
+        &self,
+        previous_index: usize,
+        current_index: usize,
+        previous: &TokenType,
+        current: &TokenType,
+    ) -> bool {
+        use TokenType as T;
+
+        let generic = self.contexts[previous_index].type_arguments
+            || self.contexts[current_index].type_arguments;
+        if generic && (matches!(previous, T::Lt | T::Gt) || matches!(current, T::Lt | T::Gt)) {
+            return false;
+        }
+        if (matches!(previous, T::Ref) || matches!(current, T::Ref))
+            && self.contexts[current_index].type_context
+        {
+            return false;
+        }
+        if self.is_prefix_at(current_index) {
+            return is_word(previous)
+                || is_operator(previous)
+                || matches!(previous, T::CloseParen | T::CloseBracket);
+        }
+        !self.is_prefix_at(previous_index)
     }
 
     fn is_prefix_at(&self, index: usize) -> bool {
@@ -642,10 +682,9 @@ fn find_wrapped_operators(
         tree.tokens(),
         &mut ranges,
     );
-    let mut wrapped = HashSet::new();
+    let mut wrapping_ranges = vec![0isize; tree.tokens().len() + 1];
     for range in ranges {
         if width_prefixes.estimate(
-            tree,
             range.start_token,
             range.end_token,
             indent_width,
@@ -654,21 +693,21 @@ fn find_wrapped_operators(
         {
             continue;
         }
-        for (offset, context) in contexts
-            .iter()
-            .enumerate()
-            .take(range.end_token)
-            .skip(range.start_token)
+        wrapping_ranges[range.start_token] += 1;
+        wrapping_ranges[range.end_token] -= 1;
+    }
+
+    let mut active_ranges = 0isize;
+    let mut wrapped = HashSet::new();
+    for (index, (token, context)) in tree.tokens().iter().zip(contexts).enumerate() {
+        active_ranges += wrapping_ranges[index];
+        if active_ranges > 0
+            && is_binary_break_operator(token.kind())
+            && !context.type_context
+            && !context.type_arguments
+            && !is_prefix_operator_at(tree, index)
         {
-            let index = offset;
-            let kind = tree.tokens()[index].kind();
-            if is_binary_break_operator(kind)
-                && !context.type_context
-                && !context.type_arguments
-                && !is_prefix_operator_at(tree, index)
-            {
-                wrapped.insert(index);
-            }
+            wrapped.insert(index);
         }
     }
     wrapped
@@ -877,7 +916,6 @@ fn find_wrapped_commas(
     collect_eligible_ranges(tree.root(), 0, &eligible, tree.tokens(), &mut ranges);
     for range in &mut ranges {
         range.wraps = width_prefixes.estimate(
-            tree,
             range.start_token,
             range.end_token,
             indent_width,
@@ -933,6 +971,7 @@ struct TokenWidthPrefixes {
     width: Vec<usize>,
     separators: Vec<usize>,
     word_separators: Vec<usize>,
+    line_start_tokens: Vec<usize>,
 }
 
 impl TokenWidthPrefixes {
@@ -941,12 +980,15 @@ impl TokenWidthPrefixes {
         let mut width = Vec::with_capacity(tokens.len() + 1);
         let mut separators = Vec::with_capacity(tokens.len() + 1);
         let mut word_separators = Vec::with_capacity(tokens.len() + 1);
+        let mut line_start_tokens = Vec::with_capacity(tokens.len());
         width.push(0);
         separators.push(0);
         word_separators.push(0);
         let mut previous_word = false;
+        let mut line_start_token = 0;
 
-        for token in tokens {
+        for (index, token) in tokens.iter().enumerate() {
+            line_start_tokens.push(line_start_token);
             let significant = !matches!(
                 token.kind(),
                 TokenType::Whitespace | TokenType::NewLine | TokenType::Eof
@@ -972,29 +1014,22 @@ impl TokenWidthPrefixes {
             if significant {
                 previous_word = is_current_word;
             }
+            if matches!(token.kind(), TokenType::NewLine)
+                || token.text(tree.source()).contains('\n')
+            {
+                line_start_token = index + 1;
+            }
         }
         Self {
             width,
             separators,
             word_separators,
+            line_start_tokens,
         }
     }
 
-    fn estimate(
-        &self,
-        tree: &SyntaxTree,
-        start: usize,
-        end: usize,
-        indent_width: usize,
-        block_depth: usize,
-    ) -> usize {
-        let range = tree.tokens()[start].range();
-        let line_start = tree.source()[..range.start]
-            .rfind('\n')
-            .map_or(0, |newline| newline + 1);
-        let prefix_start = tree
-            .tokens()
-            .partition_point(|token| token.range().start < line_start);
+    fn estimate(&self, start: usize, end: usize, indent_width: usize, block_depth: usize) -> usize {
+        let prefix_start = self.line_start_tokens[start];
         let prefix_width = self.width[start] - self.width[prefix_start];
         let node_width = self.width[end] - self.width[start];
         let separator_spaces = self.separators[end] - self.separators[start];
