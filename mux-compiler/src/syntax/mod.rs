@@ -2419,43 +2419,9 @@ fn build_tree(
     mut events: Vec<SyntaxNodeEvent>,
 ) -> SyntaxNode {
     let mut markers = Vec::with_capacity(events.len() * 2 + tokens.len());
-    for (index, event) in events.iter().enumerate() {
-        if event.range.start <= event.range.end && event.range.end <= root_range.end {
-            if event.range.start == event.range.end {
-                markers.push((event.range.start, 1_u8, index, TreeMarker::Open(index)));
-                markers.push((event.range.end, 2_u8, index, TreeMarker::Close(index)));
-            } else {
-                markers.push((event.range.start, 1_u8, index, TreeMarker::Open(index)));
-                markers.push((event.range.end, 0_u8, index, TreeMarker::Close(index)));
-            }
-        }
-    }
-    for (index, token) in tokens.iter().enumerate() {
-        let range = token.range();
-        if range.start <= root_range.end {
-            // Tokens at a zero-width insertion point follow the empty context's
-            // close marker, so they do not become children of a missing node.
-            markers.push((range.start, 3_u8, index, TreeMarker::Token(index)));
-        }
-    }
-    markers.sort_by(|left, right| {
-        let position = left.0.cmp(&right.0);
-        if position != std::cmp::Ordering::Equal {
-            return position;
-        }
-        let priority = left.1.cmp(&right.1);
-        if priority != std::cmp::Ordering::Equal {
-            return priority;
-        }
-        match (left.3, right.3) {
-            // Completed grammar events arrive inner-first. At identical ranges,
-            // the later event is the outer wrapper and opens first.
-            (TreeMarker::Open(_), TreeMarker::Open(_)) => right.2.cmp(&left.2),
-            // Close equal-range wrappers in the opposite order.
-            (TreeMarker::Close(_), TreeMarker::Close(_)) => left.2.cmp(&right.2),
-            _ => left.2.cmp(&right.2),
-        }
-    });
+    collect_event_markers(root_range, &events, &mut markers);
+    collect_token_markers(root_range, tokens, &mut markers);
+    markers.sort_by(compare_tree_markers);
 
     let mut nodes = vec![PendingNode {
         kind: SyntaxKind::Root,
@@ -2467,91 +2433,164 @@ fn build_tree(
     let mut stack = vec![0_usize];
     let mut active_position = vec![None; events.len()];
     for (_, _, _, marker) in markers {
-        match marker {
-            TreeMarker::Open(event_index) => {
-                let (kind, range) = {
-                    let event = &events[event_index];
-                    (event.kind, event.range)
-                };
-                // A malformed overlapping annotation is retained under the
-                // smallest active node that contains it. The grammar should
-                // normally emit properly nested ranges.
-                while stack.len() > 1
-                    && range.end > nodes[*stack.last().expect("root remains")].range.end
-                {
-                    let popped = stack.pop().expect("non-root stack node");
-                    if let Some(open_event) = nodes[popped].event_index {
-                        active_position[open_event] = None;
-                    }
-                }
-                let node_index = nodes.len();
-                let data = events[event_index].data.take();
-                nodes.push(PendingNode {
-                    kind,
-                    range,
-                    event_index: Some(event_index),
-                    data,
-                    children: Vec::new(),
-                });
-                nodes[*stack.last().expect("root remains")]
-                    .children
-                    .push(PendingElement::Node(node_index));
-                active_position[event_index] = Some(stack.len());
-                stack.push(node_index);
-            }
-            TreeMarker::Token(token_index) => {
-                let range = tokens[token_index].range();
-                while stack.len() > 1 {
-                    let active = nodes[*stack.last().expect("root remains")].range;
-                    if range.start < active.end && range.end <= active.end {
-                        break;
-                    }
-                    let popped = stack.pop().expect("non-root stack node");
-                    if let Some(open_event) = nodes[popped].event_index {
-                        active_position[open_event] = None;
-                    }
-                }
-                nodes[*stack.last().expect("root remains")]
-                    .children
-                    .push(PendingElement::Token(token_index));
-            }
-            TreeMarker::Close(event_index) => {
-                if let Some(position) = active_position[event_index] {
-                    while stack.len() > position {
-                        let popped = stack.pop().expect("active syntax stack node");
-                        if let Some(open_event) = nodes[popped].event_index {
-                            active_position[open_event] = None;
-                        }
-                    }
-                }
-            }
-        }
+        apply_tree_marker(
+            marker,
+            tokens,
+            &mut events,
+            &mut nodes,
+            &mut stack,
+            &mut active_position,
+        );
     }
+    finish_tree_node(0, &mut nodes)
+}
 
-    // Building the public tree recursively from the node arena preserves event
-    // nesting while making token traversal linear in the output size.
-    fn finish(index: usize, nodes: &mut [PendingNode]) -> SyntaxNode {
-        let kind = nodes[index].kind;
-        let range = nodes[index].range;
-        let data = nodes[index].data.take();
-        let pending_children = std::mem::take(&mut nodes[index].children);
-        let children = pending_children
-            .into_iter()
-            .map(|child| match child {
-                PendingElement::Node(child_index) => {
-                    SyntaxElement::Node(Box::new(finish(child_index, nodes)))
-                }
-                PendingElement::Token(token_index) => SyntaxElement::Token(token_index),
-            })
-            .collect();
-        SyntaxNode {
-            kind,
-            range,
-            data,
-            children,
+fn collect_event_markers(
+    root_range: ByteRange,
+    events: &[SyntaxNodeEvent],
+    markers: &mut Vec<(usize, u8, usize, TreeMarker)>,
+) {
+    for (index, event) in events.iter().enumerate() {
+        if event.range.start <= event.range.end && event.range.end <= root_range.end {
+            if event.range.start == event.range.end {
+                markers.push((event.range.start, 1_u8, index, TreeMarker::Open(index)));
+                markers.push((event.range.end, 2_u8, index, TreeMarker::Close(index)));
+            } else {
+                markers.push((event.range.start, 1_u8, index, TreeMarker::Open(index)));
+                markers.push((event.range.end, 0_u8, index, TreeMarker::Close(index)));
+            }
         }
     }
-    finish(0, &mut nodes)
+}
+
+fn collect_token_markers(
+    root_range: ByteRange,
+    tokens: &[SyntaxToken],
+    markers: &mut Vec<(usize, u8, usize, TreeMarker)>,
+) {
+    for (index, token) in tokens.iter().enumerate() {
+        let range = token.range();
+        if range.start <= root_range.end {
+            // Tokens at a zero-width insertion point follow the empty context's
+            // close marker, so they do not become children of a missing node.
+            markers.push((range.start, 3_u8, index, TreeMarker::Token(index)));
+        }
+    }
+}
+
+fn compare_tree_markers(
+    left: &(usize, u8, usize, TreeMarker),
+    right: &(usize, u8, usize, TreeMarker),
+) -> std::cmp::Ordering {
+    let position = left.0.cmp(&right.0);
+    if position != std::cmp::Ordering::Equal {
+        return position;
+    }
+    let priority = left.1.cmp(&right.1);
+    if priority != std::cmp::Ordering::Equal {
+        return priority;
+    }
+    match (left.3, right.3) {
+        (TreeMarker::Open(_), TreeMarker::Open(_)) => right.2.cmp(&left.2),
+        (TreeMarker::Close(_), TreeMarker::Close(_)) => left.2.cmp(&right.2),
+        _ => left.2.cmp(&right.2),
+    }
+}
+
+fn apply_tree_marker(
+    marker: TreeMarker,
+    tokens: &[SyntaxToken],
+    events: &mut [SyntaxNodeEvent],
+    nodes: &mut Vec<PendingNode>,
+    stack: &mut Vec<usize>,
+    active_position: &mut [Option<usize>],
+) {
+    match marker {
+        TreeMarker::Open(event_index) => {
+            let (kind, range) = {
+                let event = &events[event_index];
+                (event.kind, event.range)
+            };
+            // A malformed overlapping annotation is retained under the
+            // smallest active node that contains it. The grammar should
+            // normally emit properly nested ranges.
+            while stack.len() > 1
+                && range.end > nodes[*stack.last().expect("root remains")].range.end
+            {
+                pop_tree_node(stack, nodes, active_position, "non-root stack node");
+            }
+            let node_index = nodes.len();
+            let data = events[event_index].data.take();
+            nodes.push(PendingNode {
+                kind,
+                range,
+                event_index: Some(event_index),
+                data,
+                children: Vec::new(),
+            });
+            nodes[*stack.last().expect("root remains")]
+                .children
+                .push(PendingElement::Node(node_index));
+            active_position[event_index] = Some(stack.len());
+            stack.push(node_index);
+        }
+        TreeMarker::Token(token_index) => {
+            let range = tokens[token_index].range();
+            while stack.len() > 1 {
+                let active = nodes[*stack.last().expect("root remains")].range;
+                if range.start < active.end && range.end <= active.end {
+                    break;
+                }
+                pop_tree_node(stack, nodes, active_position, "non-root stack node");
+            }
+            nodes[*stack.last().expect("root remains")]
+                .children
+                .push(PendingElement::Token(token_index));
+        }
+        TreeMarker::Close(event_index) => {
+            if let Some(position) = active_position[event_index] {
+                while stack.len() > position {
+                    pop_tree_node(stack, nodes, active_position, "active syntax stack node");
+                }
+            }
+        }
+    }
+}
+
+fn pop_tree_node(
+    stack: &mut Vec<usize>,
+    nodes: &[PendingNode],
+    active_position: &mut [Option<usize>],
+    message: &str,
+) {
+    let popped = stack.pop().expect(message);
+    if let Some(open_event) = nodes[popped].event_index {
+        active_position[open_event] = None;
+    }
+}
+
+// Building the public tree recursively from the node arena preserves event
+// nesting while making token traversal linear in the output size.
+fn finish_tree_node(index: usize, nodes: &mut [PendingNode]) -> SyntaxNode {
+    let kind = nodes[index].kind;
+    let range = nodes[index].range;
+    let data = nodes[index].data.take();
+    let pending_children = std::mem::take(&mut nodes[index].children);
+    let children = pending_children
+        .into_iter()
+        .map(|child| match child {
+            PendingElement::Node(child_index) => {
+                SyntaxElement::Node(Box::new(finish_tree_node(child_index, nodes)))
+            }
+            PendingElement::Token(token_index) => SyntaxElement::Token(token_index),
+        })
+        .collect();
+    SyntaxNode {
+        kind,
+        range,
+        data,
+        children,
+    }
 }
 
 #[cfg(test)]

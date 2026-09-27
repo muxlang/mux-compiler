@@ -225,7 +225,11 @@ impl StandardEmitter {
         let column = diagnostic
             .labels
             .iter()
-            .find_map(|label| Self::span_start_column(&label.span, lines))
+            .find_map(|label| {
+                Self::span_line_range(&label.span, lines)
+                    .filter(|(start, _)| *start == min_line)
+                    .and_then(|_| Self::span_start_column(&label.span, lines))
+            })
             .unwrap_or(1);
         let location = format!("--> {}:{}:{}", file_path, min_line, column);
         eprintln!("{}", self.styles.location(&location));

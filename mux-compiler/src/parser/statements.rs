@@ -1,6 +1,9 @@
 use super::expressions::ParsedExpression;
 use super::types::TypeFact;
-use super::*;
+use super::{
+    AstLoweringData, ByteRange, DiagnosticCode, Parser, ParserError, ParserResult, Span,
+    SyntaxKind, SyntaxPattern, TokenType,
+};
 use crate::ast::SpanExt;
 
 /// Parsed source range for a block.
@@ -651,36 +654,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(ParsedPatternKind::Wildcard)
             }
-            TokenType::OpenBracket => {
-                self.advance();
-                self.skip_newlines();
-                let mut element_count = 0;
-                let mut has_rest = false;
-                if !self.check(TokenType::CloseBracket) {
-                    loop {
-                        self.skip_newlines();
-                        if self.check(TokenType::DotDot) {
-                            self.advance();
-                            has_rest = true;
-                            self.parse_pattern_fact()?;
-                            self.skip_newlines();
-                            break;
-                        }
-                        self.parse_pattern_fact()?;
-                        element_count += 1;
-                        self.skip_newlines();
-                        if !self.matches(&[TokenType::Comma]) {
-                            break;
-                        }
-                        self.skip_newlines();
-                    }
-                }
-                self.consume_token(TokenType::CloseBracket, "Expected ']' after list pattern")?;
-                Ok(ParsedPatternKind::List {
-                    elements: element_count,
-                    has_rest,
-                })
-            }
+            TokenType::OpenBracket => self.parse_list_pattern_fact(),
             _ => {
                 let token = self.consume();
                 if !matches!(
@@ -700,6 +674,37 @@ impl<'a> Parser<'a> {
                 Ok(ParsedPatternKind::Literal)
             }
         }
+    }
+
+    fn parse_list_pattern_fact(&mut self) -> ParserResult<ParsedPatternKind> {
+        self.advance();
+        self.skip_newlines();
+        let mut element_count = 0;
+        let mut has_rest = false;
+        if !self.check(TokenType::CloseBracket) {
+            loop {
+                self.skip_newlines();
+                if self.check(TokenType::DotDot) {
+                    self.advance();
+                    has_rest = true;
+                    self.parse_pattern_fact()?;
+                    self.skip_newlines();
+                    break;
+                }
+                self.parse_pattern_fact()?;
+                element_count += 1;
+                self.skip_newlines();
+                if !self.matches(&[TokenType::Comma]) {
+                    break;
+                }
+                self.skip_newlines();
+            }
+        }
+        self.consume_token(TokenType::CloseBracket, "Expected ']' after list pattern")?;
+        Ok(ParsedPatternKind::List {
+            elements: element_count,
+            has_rest,
+        })
     }
 
     pub(super) fn skip_newlines(&mut self) -> usize {

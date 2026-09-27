@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ByteRange, DiagnosticCode, Parser, ParserError, ParserResult, Span, SyntaxKind, Token,
+    TokenType,
+};
 use crate::ast::{Precedence, SpanExt};
 use crate::syntax::AstLoweringData;
 
@@ -1130,114 +1133,17 @@ impl<'a> Parser<'a> {
     ) -> ParserResult<ParsedExpression> {
         loop {
             if self.matches(&[TokenType::OpenParen]) {
-                let start = self.current.saturating_sub(1);
-                let callee_range = expr.span.byte_range.expect("call target has source range");
-                let callee_start = self.token_index_for_span(expr.span);
-                let mut argument_ranges = Vec::new();
-                if !self.check(TokenType::CloseParen) {
-                    loop {
-                        self.skip_newlines();
-                        let argument = self.parse_expression_parsed()?;
-                        argument_ranges.push(
-                            argument
-                                .span
-                                .byte_range
-                                .expect("call argument has source range"),
-                        );
-                        self.skip_newlines();
-                        if !self.matches(&[TokenType::Comma]) {
-                            break;
-                        }
-                        self.skip_newlines();
-                        if self.check(TokenType::CloseParen) {
-                            break;
-                        }
-                    }
-                }
-                let end_span =
-                    self.consume_token(TokenType::CloseParen, "Expected ')' after arguments")?;
-                self.record_typed_syntax_node(
-                    SyntaxKind::Expression,
-                    callee_start,
-                    self.current,
-                    AstLoweringData::Call {
-                        callee: callee_range,
-                        arguments: argument_ranges,
-                    },
-                );
-                self.record_syntax_node(SyntaxKind::CallArguments, start, self.current);
-                let span = expr.span.combine(&end_span);
-                expr = ParsedExpression {
-                    span,
-                    event_start: 0,
-                    generic_target: None,
-                };
+                expr = self.parse_call_postfix_after_open(expr)?;
                 continue;
             }
 
             if self.matches(&[TokenType::Dot]) {
-                let base_range = expr.span.byte_range.expect("field base has source range");
-                let start = self.token_index_for_span(expr.span);
-                self.consume_identifier_fact("Expected field name after '.'")?;
-                let field_span = self.tokens[self.current - 1].span;
-                if let Some(field_range) = field_span.byte_range {
-                    self.record_typed_syntax_node(
-                        SyntaxKind::Expression,
-                        start,
-                        self.current,
-                        AstLoweringData::FieldAccess {
-                            base: base_range,
-                            field: field_range,
-                        },
-                    );
-                }
-                let span = expr.span.combine(&field_span);
-                let generic_target = expr.generic_target.take();
-                expr = ParsedExpression {
-                    span,
-                    event_start: 0,
-                    generic_target,
-                };
+                expr = self.parse_field_postfix_after_dot(expr)?;
                 continue;
             }
 
             if self.matches(&[TokenType::OpenBracket]) {
-                let start = self.current.saturating_sub(1);
-                let base_range = expr.span.byte_range.expect("index base has source range");
-                let base_span = expr.span;
-                let syntax_start = self.token_index_for_span(base_span);
-                if self.matches(&[TokenType::Colon]) {
-                    expr = self.finish_slice_parsed(base_span, None)?;
-                } else {
-                    let index = self.parse_expression_parsed()?;
-                    if self.matches(&[TokenType::Colon]) {
-                        expr = self.finish_slice_parsed(base_span, Some(index))?;
-                    } else {
-                        let end_span = self
-                            .consume_token(TokenType::CloseBracket, "Expected ']' after index")?;
-                        let index_range = index.span.byte_range.expect("index has source range");
-                        self.record_typed_syntax_node(
-                            SyntaxKind::Expression,
-                            syntax_start,
-                            self.current,
-                            AstLoweringData::Index {
-                                base: base_range,
-                                index: index_range,
-                            },
-                        );
-                        expr = ParsedExpression {
-                            span: base_span.combine(&end_span),
-                            event_start: 0,
-                            generic_target: None,
-                        };
-                    }
-                }
-                let end = self.matching_delimiter_end(
-                    start,
-                    TokenType::OpenBracket,
-                    TokenType::CloseBracket,
-                );
-                self.record_syntax_node(SyntaxKind::IndexExpression, start, end);
+                expr = self.parse_index_postfix_after_open(expr)?;
                 continue;
             }
 
@@ -1278,6 +1184,119 @@ impl<'a> Parser<'a> {
             }
             break;
         }
+        Ok(expr)
+    }
+
+    fn parse_call_postfix_after_open(
+        &mut self,
+        expr: ParsedExpression,
+    ) -> ParserResult<ParsedExpression> {
+        let start = self.current.saturating_sub(1);
+        let callee_range = expr.span.byte_range.expect("call target has source range");
+        let callee_start = self.token_index_for_span(expr.span);
+        let mut argument_ranges = Vec::new();
+        if !self.check(TokenType::CloseParen) {
+            loop {
+                self.skip_newlines();
+                let argument = self.parse_expression_parsed()?;
+                argument_ranges.push(
+                    argument
+                        .span
+                        .byte_range
+                        .expect("call argument has source range"),
+                );
+                self.skip_newlines();
+                if !self.matches(&[TokenType::Comma]) {
+                    break;
+                }
+                self.skip_newlines();
+                if self.check(TokenType::CloseParen) {
+                    break;
+                }
+            }
+        }
+        let end_span = self.consume_token(TokenType::CloseParen, "Expected ')' after arguments")?;
+        self.record_typed_syntax_node(
+            SyntaxKind::Expression,
+            callee_start,
+            self.current,
+            AstLoweringData::Call {
+                callee: callee_range,
+                arguments: argument_ranges,
+            },
+        );
+        self.record_syntax_node(SyntaxKind::CallArguments, start, self.current);
+        Ok(ParsedExpression {
+            span: expr.span.combine(&end_span),
+            event_start: 0,
+            generic_target: None,
+        })
+    }
+
+    fn parse_field_postfix_after_dot(
+        &mut self,
+        mut expr: ParsedExpression,
+    ) -> ParserResult<ParsedExpression> {
+        let base_range = expr.span.byte_range.expect("field base has source range");
+        let start = self.token_index_for_span(expr.span);
+        self.consume_identifier_fact("Expected field name after '.'")?;
+        let field_span = self.tokens[self.current - 1].span;
+        if let Some(field_range) = field_span.byte_range {
+            self.record_typed_syntax_node(
+                SyntaxKind::Expression,
+                start,
+                self.current,
+                AstLoweringData::FieldAccess {
+                    base: base_range,
+                    field: field_range,
+                },
+            );
+        }
+        let span = expr.span.combine(&field_span);
+        Ok(ParsedExpression {
+            span,
+            event_start: 0,
+            generic_target: expr.generic_target.take(),
+        })
+    }
+
+    fn parse_index_postfix_after_open(
+        &mut self,
+        expr: ParsedExpression,
+    ) -> ParserResult<ParsedExpression> {
+        let start = self.current.saturating_sub(1);
+        let base_range = expr.span.byte_range.expect("index base has source range");
+        let base_span = expr.span;
+        let syntax_start = self.token_index_for_span(base_span);
+        let expr = if self.matches(&[TokenType::Colon]) {
+            self.finish_slice_parsed(base_span, None)?
+        } else {
+            let index = self.parse_expression_parsed()?;
+            if self.matches(&[TokenType::Colon]) {
+                self.finish_slice_parsed(base_span, Some(index))?
+            } else {
+                let end_span =
+                    self.consume_token(TokenType::CloseBracket, "Expected ']' after index")?;
+                let index_range = index.span.byte_range.expect("index has source range");
+                self.record_typed_syntax_node(
+                    SyntaxKind::Expression,
+                    syntax_start,
+                    self.current,
+                    AstLoweringData::Index {
+                        base: base_range,
+                        index: index_range,
+                    },
+                );
+                ParsedExpression {
+                    span: base_span.combine(&end_span),
+                    event_start: 0,
+                    generic_target: None,
+                }
+            }
+        };
+        let end =
+            self.matching_delimiter_end(start, TokenType::OpenBracket, TokenType::CloseBracket);
+        self.record_syntax_node(SyntaxKind::IndexExpression, start, end);
         Ok(expr)
     }
 

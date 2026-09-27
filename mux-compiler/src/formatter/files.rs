@@ -127,7 +127,7 @@ fn discover_directory(path: &Path, found: &mut Vec<PathBuf>) -> Result<(), Forma
         if metadata.is_dir() {
             if entry
                 .file_name()
-                .and_then(|name| name.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|name| IGNORED_DIRECTORIES.contains(&name))
             {
                 continue;

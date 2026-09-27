@@ -1,5 +1,9 @@
 use super::types::TypeFact;
-use super::*;
+use super::{
+    AstLoweringData, ByteRange, DiagnosticCode, Parser, ParserCheckpoint, ParserError,
+    ParserResult, SyntaxImportSpec, SyntaxKind, SyntaxModuleAlias, TokenType,
+    VariableDeclarationKind, reserved_class_method_error,
+};
 use crate::ast::SpanExt;
 
 struct TypeParameterListFact {

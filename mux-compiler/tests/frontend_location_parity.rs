@@ -321,90 +321,111 @@ fn collect_ast(nodes: &[AstNode]) -> BTreeMap<String, Span> {
                     );
                 }
             }
-            AstNode::Class {
-                type_params,
-                traits,
-                fields,
-                methods,
-                where_clause,
-                span,
-                ..
-            } => {
-                record(&mut spans, format!("{path}.span"), *span);
-                collect_type_params(type_params, &path, &mut spans);
-                for (trait_index, trait_ref) in traits.iter().enumerate() {
-                    let trait_path = indexed(&format!("{path}.traits"), trait_index);
-                    record(&mut spans, format!("{trait_path}.span"), trait_ref.span);
-                    for (arg_index, ty) in trait_ref.type_args.iter().enumerate() {
-                        collect_type(
-                            ty,
-                            &indexed(&format!("{trait_path}.type_args"), arg_index),
-                            &mut spans,
-                        );
-                    }
-                }
-                collect_fields(fields, &format!("{path}.fields"), &mut spans);
-                for (method_index, method) in methods.iter().enumerate() {
-                    collect_function(
-                        method,
-                        &indexed(&format!("{path}.methods"), method_index),
-                        &mut spans,
-                    );
-                }
-                if let Some(clause) = where_clause {
-                    collect_where_clause(clause, &format!("{path}.where_clause"), &mut spans);
-                }
-            }
+            AstNode::Class { .. } => collect_class_spans(node, &path, &mut spans),
             AstNode::Interface {
                 type_params,
                 fields,
                 methods,
                 span,
                 ..
-            } => {
-                record(&mut spans, format!("{path}.span"), *span);
-                collect_type_params(type_params, &path, &mut spans);
-                collect_fields(fields, &format!("{path}.fields"), &mut spans);
-                for (method_index, method) in methods.iter().enumerate() {
-                    collect_function(
-                        method,
-                        &indexed(&format!("{path}.methods"), method_index),
-                        &mut spans,
-                    );
-                }
-            }
+            } => collect_interface_spans(type_params, fields, methods, *span, &path, &mut spans),
             AstNode::Enum {
                 type_params,
                 variants,
                 span,
                 ..
-            } => {
-                record(&mut spans, format!("{path}.span"), *span);
-                collect_type_params(type_params, &path, &mut spans);
-                for (variant_index, variant) in variants.iter().enumerate() {
-                    if let Some(data) = &variant.data {
-                        for (field_index, (_, ty)) in data.iter().enumerate() {
-                            collect_type(
-                                ty,
-                                &format!(
-                                    "{path}.variants[{variant_index}].fields[{field_index}].type"
-                                ),
-                                &mut spans,
-                            );
-                        }
-                    }
-                    if let Some(clause) = &variant.where_clause {
-                        collect_where_clause(
-                            clause,
-                            &format!("{path}.variants[{variant_index}].where_clause"),
-                            &mut spans,
-                        );
-                    }
-                }
-            }
+            } => collect_enum_spans(type_params, variants, *span, &path, &mut spans),
         }
     }
     spans
+}
+
+fn collect_class_spans(node: &AstNode, path: &str, spans: &mut BTreeMap<String, Span>) {
+    let AstNode::Class {
+        type_params,
+        traits,
+        fields,
+        methods,
+        where_clause,
+        span,
+        ..
+    } = node
+    else {
+        return;
+    };
+    record(spans, format!("{path}.span"), *span);
+    collect_type_params(type_params, path, spans);
+    for (trait_index, trait_ref) in traits.iter().enumerate() {
+        let trait_path = indexed(&format!("{path}.traits"), trait_index);
+        record(spans, format!("{trait_path}.span"), trait_ref.span);
+        for (arg_index, ty) in trait_ref.type_args.iter().enumerate() {
+            collect_type(
+                ty,
+                &indexed(&format!("{trait_path}.type_args"), arg_index),
+                spans,
+            );
+        }
+    }
+    collect_fields(fields, &format!("{path}.fields"), spans);
+    for (method_index, method) in methods.iter().enumerate() {
+        collect_function(
+            method,
+            &indexed(&format!("{path}.methods"), method_index),
+            spans,
+        );
+    }
+    if let Some(clause) = where_clause {
+        collect_where_clause(clause, &format!("{path}.where_clause"), spans);
+    }
+}
+
+fn collect_interface_spans(
+    type_params: &[(String, Vec<mux_lang::ast::TraitBound>)],
+    fields: &[mux_lang::ast::Field],
+    methods: &[FunctionNode],
+    span: Span,
+    path: &str,
+    spans: &mut BTreeMap<String, Span>,
+) {
+    record(spans, format!("{path}.span"), span);
+    collect_type_params(type_params, path, spans);
+    collect_fields(fields, &format!("{path}.fields"), spans);
+    for (method_index, method) in methods.iter().enumerate() {
+        collect_function(
+            method,
+            &indexed(&format!("{path}.methods"), method_index),
+            spans,
+        );
+    }
+}
+
+fn collect_enum_spans(
+    type_params: &[(String, Vec<mux_lang::ast::TraitBound>)],
+    variants: &[mux_lang::ast::EnumVariant],
+    span: Span,
+    path: &str,
+    spans: &mut BTreeMap<String, Span>,
+) {
+    record(spans, format!("{path}.span"), span);
+    collect_type_params(type_params, path, spans);
+    for (variant_index, variant) in variants.iter().enumerate() {
+        if let Some(data) = &variant.data {
+            for (field_index, (_, ty)) in data.iter().enumerate() {
+                collect_type(
+                    ty,
+                    &format!("{path}.variants[{variant_index}].fields[{field_index}].type"),
+                    spans,
+                );
+            }
+        }
+        if let Some(clause) = &variant.where_clause {
+            collect_where_clause(
+                clause,
+                &format!("{path}.variants[{variant_index}].where_clause"),
+                spans,
+            );
+        }
+    }
 }
 
 fn collect_fields(fields: &[mux_lang::ast::Field], path: &str, spans: &mut BTreeMap<String, Span>) {

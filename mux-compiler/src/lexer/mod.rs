@@ -307,13 +307,23 @@ impl<'a> Lexer<'a> {
             self.source.next_char();
             let mut comment = String::new();
             let mut found_terminator = false;
+            let mut depth = 1_usize;
             while let Some(ch) = self.source.next_char() {
-                if ch == '*' && self.source.peek() == Some('/') {
+                if ch == '/' && self.source.peek() == Some('*') {
                     self.source.next_char();
-                    found_terminator = true;
-                    break;
+                    comment.push_str("/*");
+                    depth += 1;
+                } else if ch == '*' && self.source.peek() == Some('/') {
+                    self.source.next_char();
+                    depth -= 1;
+                    if depth == 0 {
+                        found_terminator = true;
+                        break;
+                    }
+                    comment.push_str("*/");
+                } else {
+                    comment.push(ch);
                 }
-                comment.push(ch);
             }
             if !found_terminator {
                 return Err(LexerError::with_help(
@@ -1749,6 +1759,19 @@ world"
             TokenType::MultilineComment(s) => assert_eq!(s, " multi\nline "),
             _ => panic!("Expected MultilineComment, got {:?}", tokens[2]),
         }
+    }
+
+    #[test]
+    fn nested_block_comments_end_at_the_outer_delimiter() {
+        let input = "/* outer /* inner */ trailing */ auto value = 1";
+        let mut source = Source::from_test_str(input);
+        let tokens = Lexer::new(&mut source).lex_tokens().unwrap();
+
+        assert!(matches!(
+            &tokens[0].token_type,
+            TokenType::MultilineComment(comment) if comment == " outer /* inner */ trailing "
+        ));
+        assert_eq!(tokens[1].token_type, TokenType::Auto);
     }
 
     #[test]
