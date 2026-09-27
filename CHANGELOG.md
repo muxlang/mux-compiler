@@ -7,17 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-27
+
+### Added
+
 - Add source formatting and `mux format --check` with four-space indentation
   and an 80-column target.
 - Configure `mux format` through `mux-project.json`, including indentation,
   wrapping, brace and `where` placement, blank-line spacing, and trailing commas.
 - Allow binary expressions to continue after a trailing operator; the formatter
   uses these breaks when wrapping long expressions.
+
+### Changed
+
 - Preserve source text and byte ranges in the shared syntax frontend for
   formatting, diagnostics, and test discovery.
-- Correct triple quoted string recognition and operator diagnostic locations.
 - Share the compiler library with the CLI instead of compiling the frontend
   into both targets.
+
+### Fixed
+
+- Correct triple-quoted string recognition and operator diagnostic locations.
 
 ## [0.11.0] - 2026-09-14
 
