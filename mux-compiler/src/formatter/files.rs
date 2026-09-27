@@ -4,6 +4,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use fs2::FileExt;
+
 use super::{FormatError, format_source};
 
 const IGNORED_DIRECTORIES: &[&str] = &[".git", "target", "node_modules"];
@@ -158,6 +160,22 @@ fn replace_if_unchanged_with(
     change: Change,
     after_staging: impl FnOnce(),
 ) -> Result<(), FormatError> {
+    let lock = OpenOptions::new()
+        .read(true)
+        .open(&change.path)
+        .map_err(|error| {
+            FormatError::io(format!(
+                "could not open {} for formatting: {error}",
+                change.path.display()
+            ))
+        })?;
+    lock.try_lock_exclusive().map_err(|error| {
+        FormatError::io(format!(
+            "could not lock {} for formatting: {error}",
+            change.path.display()
+        ))
+    })?;
+
     let current = fs::read(&change.path).map_err(|error| {
         FormatError::io(format!(
             "could not re-read {}: {error}",
@@ -206,8 +224,8 @@ fn replace_if_unchanged_with(
     // tests; production callers leave the file untouched here.
     after_staging();
 
-    // Recheck just before replacement. A concurrent writer can still race
-    // between this read and the atomic rename, so this is a best-effort guard.
+    // The advisory lock coordinates with other Mux writers. Keep this check
+    // for external writers that do not honor advisory locks.
     let current = fs::read(&change.path).map_err(|error| {
         let _ = fs::remove_file(&temporary);
         FormatError::io(format!(
@@ -358,6 +376,25 @@ mod tests {
         assert!(error.to_string().contains("changed while formatting"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "auto value=2");
         assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn replacement_refuses_when_another_mux_writer_holds_the_file_lock() {
+        let scratch = Scratch::new();
+        let path = scratch.path().join("source.mux");
+        fs::write(&path, "auto value=1").unwrap();
+        let lock = OpenOptions::new().read(true).open(&path).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        let change = Change {
+            path: path.clone(),
+            original: "auto value=1".to_string(),
+            formatted: "auto value = 1\n".to_string(),
+        };
+
+        let error = replace_if_unchanged(change).unwrap_err();
+
+        assert!(error.to_string().contains("could not lock"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "auto value=1");
     }
 
     #[cfg(unix)]
