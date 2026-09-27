@@ -49,5 +49,10 @@ them improved both syntax-only and parse-plus-lowering times. Removing cached
 line and column fields from every span reduced parse-plus-lowering medians by
 about 15–17% from the previous measurement. The current path remains about
 2.1–2.4 times slower than the former AST parser on these examples. This is a
-focused parser comparison, not an end-to-end compile measurement. Peak memory
-was not measured.
+focused parser comparison, not an end-to-end compile measurement.
+
+For the same three-fixture Criterion runs (30 samples, one-second warm-up,
+two-second measurement), the benchmark process peaked at 68.2 MiB for the
+legacy AST parser and 63.6 MiB for the current syntax path. These values come
+from Linux `VmHWM` and include Criterion and corpus initialization; they are a
+process-level comparison, not an isolated measurement of parser allocations.
