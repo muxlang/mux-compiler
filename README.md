@@ -10,7 +10,6 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-online-blue.svg?style=flat-square)](https://mux-lang.dev)
 [![Sonar Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=muxlang_mux-compiler&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=muxlang_mux-compiler)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=muxlang_mux-compiler&metric=coverage)](https://sonarcloud.io/summary/new_code?id=muxlang_mux-compiler)
 
 </div>
 
