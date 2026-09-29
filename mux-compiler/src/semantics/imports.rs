@@ -9,6 +9,22 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 impl SemanticAnalyzer {
+    fn record_editor_imported_module(
+        &mut self,
+        module_path: &str,
+        module_symbols: &HashMap<String, Symbol>,
+    ) {
+        if self.collect_editor_references {
+            self.editor_imported_modules.insert(
+                module_path.to_owned(),
+                module_symbols
+                    .iter()
+                    .map(|(name, symbol)| (name.clone(), symbol.kind.clone()))
+                    .collect(),
+            );
+        }
+    }
+
     // Add module as namespace (import logger as log)
     pub(super) fn add_module_namespace(
         &mut self,
@@ -17,6 +33,7 @@ impl SemanticAnalyzer {
         module_path: &str,
         span: Span,
     ) -> Result<(), SemanticError> {
+        self.record_editor_imported_module(namespace, &symbols);
         // Mangle function names in the symbols before storing
         let module_name_for_mangling = crate::semantics::mangle_module_path(module_path);
         let mut mangled_symbols = std::collections::HashMap::new();
@@ -278,6 +295,7 @@ impl SemanticAnalyzer {
         module_path: &str,
         span: Span,
     ) -> Result<(), SemanticError> {
+        self.record_editor_imported_module(module_path, module_symbols);
         match spec {
             ImportSpec::Module { alias } => {
                 if let Some(namespace) = alias {
@@ -1923,6 +1941,13 @@ impl SemanticAnalyzer {
         span: Span,
         module_symbols: std::collections::HashMap<String, Symbol>,
     ) -> Result<(), SemanticError> {
+        self.record_editor_imported_module(&format!("std.{module_name}"), &module_symbols);
+        if let ImportSpec::Module { alias } = spec {
+            let namespace = alias
+                .as_deref()
+                .unwrap_or_else(|| module_name.rsplit('.').next().unwrap_or(module_name));
+            self.record_editor_imported_module(namespace, &module_symbols);
+        }
         match spec {
             ImportSpec::Module { alias } => {
                 let namespace = alias.as_deref().map_or_else(

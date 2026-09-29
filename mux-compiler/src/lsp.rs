@@ -58,8 +58,78 @@ enum WorkerResult {
     Diagnostics(DiagnosticResult),
 }
 
+struct ServerState {
+    documents: HashMap<String, OpenDocument>,
+    published_uris: std::collections::HashSet<String>,
+    shutdown_requested: bool,
+    outstanding: HashMap<RequestId, HashMap<String, u64>>,
+    next_revision: u64,
+    exiting: bool,
+    task_sender: std::sync::mpsc::Sender<WorkerTask>,
+    result_receiver: std::sync::mpsc::Receiver<WorkerResult>,
+    cancelled: Arc<Mutex<std::collections::HashSet<RequestId>>>,
+    current_revisions: Arc<Mutex<HashMap<String, u64>>>,
+    pending_diagnostics: Arc<Mutex<PendingDiagnostics>>,
+    workspace_folders: Vec<PathBuf>,
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (connection, io_threads) = Connection::stdio();
+    let workspace_folders = initialize(&connection)?;
+    let (task_sender, task_receiver) = std::sync::mpsc::channel::<WorkerTask>();
+    let (result_sender, result_receiver) = std::sync::mpsc::channel::<WorkerResult>();
+    let cancelled = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let current_revisions = Arc::new(Mutex::new(HashMap::new()));
+    let pending_diagnostics = Arc::new(Mutex::new(PendingDiagnostics::default()));
+    let stop_worker = Arc::new(AtomicBool::new(false));
+    let worker = {
+        let cancelled = Arc::clone(&cancelled);
+        let current_revisions = Arc::clone(&current_revisions);
+        let pending_diagnostics = Arc::clone(&pending_diagnostics);
+        let stop_worker = Arc::clone(&stop_worker);
+        thread::spawn(move || {
+            analysis_worker(
+                task_receiver,
+                result_sender,
+                cancelled,
+                current_revisions,
+                pending_diagnostics,
+                stop_worker,
+            )
+        })
+    };
+    let mut state = ServerState {
+        documents: HashMap::new(),
+        published_uris: std::collections::HashSet::new(),
+        shutdown_requested: false,
+        outstanding: HashMap::new(),
+        next_revision: 0,
+        exiting: false,
+        task_sender,
+        result_receiver,
+        cancelled,
+        current_revisions,
+        pending_diagnostics,
+        workspace_folders,
+    };
+    let event_loop_result = server_event_loop(&connection, &mut state);
+    let shutdown_requested = state.shutdown_requested;
+    stop_worker.store(true, Ordering::Release);
+    drop(state);
+    let worker_result = worker
+        .join()
+        .map_err(|_| "language server request worker panicked");
+    drop(connection);
+    io_threads.join()?;
+    event_loop_result?;
+    worker_result?;
+    if !shutdown_requested {
+        return Err("received exit before shutdown".into());
+    }
+    Ok(())
+}
+
+fn initialize(connection: &Connection) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let (initialize_id, initialize_params) = connection.initialize_start()?;
     let initialize_params = serde_json::from_value::<lsp::InitializeParams>(initialize_params)?;
     let watch_mux_files = initialize_params
@@ -134,232 +204,216 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .into(),
         )?;
     }
+    Ok(workspace_folders)
+}
 
-    let mut documents = HashMap::<String, OpenDocument>::new();
-    let mut published_uris = std::collections::HashSet::<String>::new();
-    let mut shutdown_requested = false;
-    let (task_sender, task_receiver) = std::sync::mpsc::channel::<WorkerTask>();
-    let (result_sender, result_receiver) = std::sync::mpsc::channel::<WorkerResult>();
-    let cancelled = Arc::new(Mutex::new(std::collections::HashSet::new()));
-    let current_revisions = Arc::new(Mutex::new(HashMap::new()));
-    let pending_diagnostics = Arc::new(Mutex::new(PendingDiagnostics::default()));
-    let stop_worker = Arc::new(AtomicBool::new(false));
-    let worker_cancelled = Arc::clone(&cancelled);
-    let worker_revisions = Arc::clone(&current_revisions);
-    let worker_diagnostics = Arc::clone(&pending_diagnostics);
-    let worker_stop = Arc::clone(&stop_worker);
-    let worker = thread::spawn(move || {
-        analysis_worker(
-            task_receiver,
-            result_sender,
-            worker_cancelled,
-            worker_revisions,
-            worker_diagnostics,
-            worker_stop,
-        )
-    });
-    let mut outstanding = HashMap::<RequestId, HashMap<String, u64>>::new();
-    let mut next_revision = 0u64;
-    let mut exiting = false;
-    while !exiting {
+fn server_event_loop(
+    connection: &Connection,
+    state: &mut ServerState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    while !state.exiting {
         match connection.receiver.recv_timeout(Duration::from_millis(10)) {
-            Ok(message) => match message {
-                Message::Request(request) if request.method == "shutdown" => {
-                    shutdown_requested = true;
-                    connection
-                        .sender
-                        .send(Response::new_ok(request.id, serde_json::Value::Null).into())?;
-                }
-                Message::Request(request) => {
-                    if supported_request(&request.method) {
-                        let id = request.id.clone();
-                        outstanding.insert(id, document_versions(&documents));
-                        if task_sender
-                            .send(WorkerTask::Request(RequestTask {
-                                request,
-                                documents: documents.clone(),
-                                workspace_folders: workspace_folders.clone(),
-                            }))
-                            .is_err()
-                        {
-                            return Err("language server request worker stopped".into());
-                        }
-                    } else {
-                        connection.sender.send(
-                            Response::new_err(
-                                request.id,
-                                lsp_server::ErrorCode::MethodNotFound as i32,
-                                format!("unsupported request: {}", request.method),
-                            )
-                            .into(),
-                        )?;
-                    }
-                }
-                Message::Notification(notification) if notification.method == "exit" => {
-                    exiting = true;
-                }
-                Message::Notification(notification) if notification.method == "$/cancelRequest" => {
-                    if let Some(id) = notification
-                        .params
-                        .get("id")
-                        .cloned()
-                        .and_then(|id| serde_json::from_value::<RequestId>(id).ok())
-                        && outstanding.remove(&id).is_some()
-                    {
-                        cancelled
-                            .lock()
-                            .expect("cancel set poisoned")
-                            .insert(id.clone());
-                        connection.sender.send(
-                            Response::new_err(id, -32800, "Request cancelled".to_owned()).into(),
-                        )?;
-                    }
-                }
-                Message::Notification(notification)
-                    if notification.method == "workspace/didChangeWorkspaceFolders" =>
-                {
-                    if let Ok(params) = serde_json::from_value::<lsp::DidChangeWorkspaceFoldersParams>(
-                        notification.params,
-                    ) {
-                        update_workspace_folders(&mut workspace_folders, params);
-                    }
-                }
-                Message::Notification(notification)
-                    if notification.method == "workspace/didChangeWatchedFiles" =>
-                {
-                    if let Ok(params) = serde_json::from_value::<lsp::DidChangeWatchedFilesParams>(
-                        notification.params,
-                    ) && params.changes.iter().any(|change| {
-                        uri_to_path(&change.uri)
-                            .is_some_and(|path| path.extension().is_some_and(|ext| ext == "mux"))
-                    }) {
-                        next_revision = next_revision.wrapping_add(1);
-                        for document in documents.values_mut() {
-                            document.revision = next_revision;
-                        }
-                        schedule_diagnostics(
-                            &task_sender,
-                            &current_revisions,
-                            &pending_diagnostics,
-                            &documents,
-                            &published_uris,
-                        )?;
-                    }
-                }
-                Message::Notification(notification)
-                    if notification.method == "textDocument/didOpen" =>
-                {
-                    if let Ok(params) = serde_json::from_value::<lsp::DidOpenTextDocumentParams>(
-                        notification.params,
-                    ) {
-                        let uri = params.text_document.uri.clone();
-                        if let Some(path) = uri_to_path(&uri) {
-                            next_revision = next_revision.wrapping_add(1);
-                            let document = OpenDocument {
-                                uri: uri.clone(),
-                                path,
-                                source: params.text_document.text,
-                                version: params.text_document.version,
-                                revision: next_revision,
-                            };
-                            documents.insert(uri.as_str().to_owned(), document);
-                            schedule_diagnostics(
-                                &task_sender,
-                                &current_revisions,
-                                &pending_diagnostics,
-                                &documents,
-                                &published_uris,
-                            )?;
-                        }
-                    }
-                }
-                Message::Notification(notification)
-                    if notification.method == "textDocument/didChange" =>
-                {
-                    if let Ok(params) = serde_json::from_value::<lsp::DidChangeTextDocumentParams>(
-                        notification.params,
-                    ) && let Some(change) = params.content_changes.last()
-                        && let Some(document) = documents.get_mut(params.text_document.uri.as_str())
-                        && params.text_document.version > document.version
-                    {
-                        next_revision = next_revision.wrapping_add(1);
-                        document.source.clone_from(&change.text);
-                        document.version = params.text_document.version;
-                        document.revision = next_revision;
-                        schedule_diagnostics(
-                            &task_sender,
-                            &current_revisions,
-                            &pending_diagnostics,
-                            &documents,
-                            &published_uris,
-                        )?;
-                    }
-                }
-                Message::Notification(notification)
-                    if notification.method == "textDocument/didClose" =>
-                {
-                    if let Ok(params) = serde_json::from_value::<lsp::DidCloseTextDocumentParams>(
-                        notification.params,
-                    ) {
-                        documents.remove(params.text_document.uri.as_str());
-                        schedule_diagnostics(
-                            &task_sender,
-                            &current_revisions,
-                            &pending_diagnostics,
-                            &documents,
-                            &published_uris,
-                        )?;
-                    }
-                }
-                Message::Notification(_) => {}
-                Message::Response(_) => {}
-            },
+            Ok(message) => handle_protocol_message(connection, state, message)?,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         }
+        send_worker_results(connection, state)?;
+    }
+    Ok(())
+}
 
-        while let Ok(result) = result_receiver.try_recv() {
-            match result {
-                WorkerResult::Request(result) => {
-                    let Some(expected_revisions) = outstanding.remove(&result.id) else {
-                        cancelled
-                            .lock()
-                            .expect("cancel set poisoned")
-                            .remove(&result.id);
-                        continue;
-                    };
-                    let response = if expected_revisions != document_versions(&documents) {
-                        Response::new_err(
-                            result.id,
-                            -32801,
-                            "Document changed while request was running".to_owned(),
-                        )
-                        .into()
-                    } else {
-                        result.message
-                    };
-                    connection.sender.send(response)?;
+fn handle_protocol_message(
+    connection: &Connection,
+    state: &mut ServerState,
+    message: Message,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match message {
+        Message::Request(request) => handle_request(connection, state, request),
+        Message::Notification(notification) => handle_notification(connection, state, notification),
+        Message::Response(_) => Ok(()),
+    }
+}
+
+fn handle_request(
+    connection: &Connection,
+    state: &mut ServerState,
+    request: Request,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if request.method == "shutdown" {
+        state.shutdown_requested = true;
+        connection
+            .sender
+            .send(Response::new_ok(request.id, serde_json::Value::Null).into())?;
+        return Ok(());
+    }
+    if !supported_request(&request.method) {
+        connection.sender.send(
+            Response::new_err(
+                request.id,
+                lsp_server::ErrorCode::MethodNotFound as i32,
+                format!("unsupported request: {}", request.method),
+            )
+            .into(),
+        )?;
+        return Ok(());
+    }
+
+    state
+        .outstanding
+        .insert(request.id.clone(), document_versions(&state.documents));
+    state
+        .task_sender
+        .send(WorkerTask::Request(RequestTask {
+            request,
+            documents: state.documents.clone(),
+            workspace_folders: state.workspace_folders.clone(),
+        }))
+        .map_err(|_| "language server request worker stopped".into())
+}
+
+fn handle_notification(
+    connection: &Connection,
+    state: &mut ServerState,
+    notification: Notification,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match notification.method.as_str() {
+        "exit" => state.exiting = true,
+        "$/cancelRequest" => handle_cancellation(connection, state, notification)?,
+        "workspace/didChangeWorkspaceFolders" => {
+            if let Ok(params) =
+                serde_json::from_value::<lsp::DidChangeWorkspaceFoldersParams>(notification.params)
+            {
+                update_workspace_folders(&mut state.workspace_folders, params);
+            }
+        }
+        "workspace/didChangeWatchedFiles" => {
+            if let Ok(params) =
+                serde_json::from_value::<lsp::DidChangeWatchedFilesParams>(notification.params)
+                && params.changes.iter().any(|change| {
+                    uri_to_path(&change.uri)
+                        .is_some_and(|path| path.extension().is_some_and(|ext| ext == "mux"))
+                })
+            {
+                state.next_revision = state.next_revision.wrapping_add(1);
+                for document in state.documents.values_mut() {
+                    document.revision = state.next_revision;
                 }
-                WorkerResult::Diagnostics(result) => {
-                    if result.revisions == document_versions(&documents) {
-                        published_uris = result.published_uris;
-                        for message in result.messages {
-                            connection.sender.send(message)?;
-                        }
+                schedule_state_diagnostics(state)?;
+            }
+        }
+        "textDocument/didOpen" => {
+            if let Ok(params) =
+                serde_json::from_value::<lsp::DidOpenTextDocumentParams>(notification.params)
+            {
+                let uri = params.text_document.uri.clone();
+                if let Some(path) = uri_to_path(&uri) {
+                    state.next_revision = state.next_revision.wrapping_add(1);
+                    state.documents.insert(
+                        uri.as_str().to_owned(),
+                        OpenDocument {
+                            uri,
+                            path,
+                            source: params.text_document.text,
+                            version: params.text_document.version,
+                            revision: state.next_revision,
+                        },
+                    );
+                    schedule_state_diagnostics(state)?;
+                }
+            }
+        }
+        "textDocument/didChange" => {
+            if let Ok(params) =
+                serde_json::from_value::<lsp::DidChangeTextDocumentParams>(notification.params)
+                && let Some(change) = params.content_changes.last()
+                && let Some(document) = state.documents.get_mut(params.text_document.uri.as_str())
+                && params.text_document.version > document.version
+            {
+                state.next_revision = state.next_revision.wrapping_add(1);
+                document.source.clone_from(&change.text);
+                document.version = params.text_document.version;
+                document.revision = state.next_revision;
+                schedule_state_diagnostics(state)?;
+            }
+        }
+        "textDocument/didClose" => {
+            if let Ok(params) =
+                serde_json::from_value::<lsp::DidCloseTextDocumentParams>(notification.params)
+            {
+                state.documents.remove(params.text_document.uri.as_str());
+                schedule_state_diagnostics(state)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_cancellation(
+    connection: &Connection,
+    state: &mut ServerState,
+    notification: Notification,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(id) = notification
+        .params
+        .get("id")
+        .cloned()
+        .and_then(|id| serde_json::from_value::<RequestId>(id).ok())
+    else {
+        return Ok(());
+    };
+    if state.outstanding.remove(&id).is_some() {
+        lock_or_recover(&state.cancelled, "request cancellation state").insert(id.clone());
+        connection
+            .sender
+            .send(Response::new_err(id, -32800, "Request cancelled".to_owned()).into())?;
+    }
+    Ok(())
+}
+
+fn schedule_state_diagnostics(state: &ServerState) -> Result<(), Box<dyn std::error::Error>> {
+    schedule_diagnostics(
+        &state.task_sender,
+        &state.current_revisions,
+        &state.pending_diagnostics,
+        &state.documents,
+        &state.published_uris,
+    )
+}
+
+fn send_worker_results(
+    connection: &Connection,
+    state: &mut ServerState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    while let Ok(result) = state.result_receiver.try_recv() {
+        match result {
+            WorkerResult::Request(result) => {
+                let Some(expected_revisions) = state.outstanding.remove(&result.id) else {
+                    lock_or_recover(&state.cancelled, "request cancellation state")
+                        .remove(&result.id);
+                    continue;
+                };
+                let response = if expected_revisions != document_versions(&state.documents) {
+                    Response::new_err(
+                        result.id,
+                        -32801,
+                        "Document changed while request was running".to_owned(),
+                    )
+                    .into()
+                } else {
+                    result.message
+                };
+                connection.sender.send(response)?;
+            }
+            WorkerResult::Diagnostics(result) => {
+                if result.revisions == document_versions(&state.documents) {
+                    state.published_uris = result.published_uris;
+                    for message in result.messages {
+                        connection.sender.send(message)?;
                     }
                 }
             }
         }
-    }
-    stop_worker.store(true, Ordering::Release);
-    drop(task_sender);
-    worker
-        .join()
-        .map_err(|_| "language server request worker panicked")?;
-    drop(connection);
-    io_threads.join()?;
-    if !shutdown_requested {
-        return Err("received exit before shutdown".into());
     }
     Ok(())
 }
@@ -392,16 +446,14 @@ fn schedule_diagnostics(
     published_uris: &std::collections::HashSet<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let revisions = document_revisions(documents);
-    *current_revisions
-        .lock()
-        .expect("document revision map poisoned") = revisions.clone();
+    *lock_or_recover(current_revisions, "document revision map") = revisions.clone();
     let task = DiagnosticTask {
         documents: documents.clone(),
         revisions,
         published_uris: published_uris.clone(),
     };
     let should_signal = {
-        let mut pending = pending.lock().expect("pending diagnostics poisoned");
+        let mut pending = lock_or_recover(pending, "pending diagnostics");
         pending.latest = Some(task);
         if pending.signal_queued {
             false
@@ -441,20 +493,14 @@ fn analysis_worker(
             }
             WorkerTask::Diagnostics => {
                 let task = {
-                    let mut pending = pending_diagnostics
-                        .lock()
-                        .expect("pending diagnostics poisoned");
+                    let mut pending = lock_or_recover(&pending_diagnostics, "pending diagnostics");
                     pending.signal_queued = false;
                     pending.latest.take()
                 };
                 let Some(task) = task else {
                     continue;
                 };
-                if task.revisions
-                    != *current_revisions
-                        .lock()
-                        .expect("document revision map poisoned")
-                {
+                if task.revisions != *lock_or_recover(&current_revisions, "document revision map") {
                     continue;
                 }
                 let (worker_connection, client_connection) = Connection::memory();
@@ -484,11 +530,7 @@ fn run_request_task(
     cancelled: &Arc<Mutex<std::collections::HashSet<RequestId>>>,
 ) {
     let request_id = task.request.id.clone();
-    if cancelled
-        .lock()
-        .expect("cancel set poisoned")
-        .remove(&request_id)
-    {
+    if lock_or_recover(cancelled, "request cancellation state").remove(&request_id) {
         return;
     }
 
@@ -529,6 +571,18 @@ fn run_request_task(
             id: request_id,
             message,
         }));
+    }
+}
+
+fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("mux lsp: recovering poisoned {label}");
+            let guard = poisoned.into_inner();
+            mutex.clear_poison();
+            guard
+        }
     }
 }
 
@@ -829,9 +883,6 @@ fn complete(
     let mut candidates =
         std::collections::BTreeMap::<String, Option<lsp::CompletionItemKind>>::new();
     collect_completions(&symbols, position, false, &mut candidates);
-    if mux_lang::syntax::parse_source(source).has_errors() {
-        collect_recovered_local_completions(&symbols, position, &mut candidates);
-    }
     collect_visible_syntax_completions(source, offset, &mut candidates);
     let imports = collect_imports(source);
     let parsed = mux_lang::syntax::parse_source(source);
@@ -914,6 +965,7 @@ fn collect_import_completions(
     for (module, spec) in imports {
         let module_source = module_source_for_import(analysis, path, module);
         let module_symbols = module_source.map(document_symbols).unwrap_or_default();
+        let imported_symbols = analysis.imported_modules.get(module);
         match spec {
             mux_lang::syntax::SyntaxImportSpec::Module { alias } => {
                 let label = match alias {
@@ -931,15 +983,31 @@ fn collect_import_completions(
                 candidates.insert(label.to_owned(), Some(lsp::CompletionItemKind::MODULE));
             }
             mux_lang::syntax::SyntaxImportSpec::Item { item, alias } => {
-                insert_imported_item(source, *item, *alias, &module_symbols, candidates);
+                insert_imported_item(
+                    source,
+                    *item,
+                    *alias,
+                    imported_symbols,
+                    &module_symbols,
+                    candidates,
+                );
             }
             mux_lang::syntax::SyntaxImportSpec::Items { items } => {
                 for (item, alias) in items {
-                    insert_imported_item(source, *item, *alias, &module_symbols, candidates);
+                    insert_imported_item(
+                        source,
+                        *item,
+                        *alias,
+                        imported_symbols,
+                        &module_symbols,
+                        candidates,
+                    );
                 }
             }
             mux_lang::syntax::SyntaxImportSpec::Wildcard => {
-                if module_source.is_some() {
+                if let Some(imported_symbols) = imported_symbols {
+                    collect_imported_symbols(imported_symbols, candidates);
+                } else if module_source.is_some() {
                     for symbol in &module_symbols {
                         candidates.insert(symbol.name.clone(), Some(completion_kind(symbol.kind)));
                     }
@@ -968,6 +1036,7 @@ fn insert_imported_item(
     source: &str,
     item: mux_lang::lexer::ByteRange,
     alias: Option<mux_lang::lexer::ByteRange>,
+    imported_symbols: Option<&std::collections::HashMap<String, mux_lang::semantics::SymbolKind>>,
     module_symbols: &[lsp::DocumentSymbol],
     candidates: &mut std::collections::BTreeMap<String, Option<lsp::CompletionItemKind>>,
 ) {
@@ -977,10 +1046,36 @@ fn insert_imported_item(
     let label = alias
         .and_then(|range| source.get(range.start..range.end))
         .unwrap_or(original_name);
-    let kind = find_symbol_kind(module_symbols, original_name)
-        .map(completion_kind)
+    let kind = imported_symbols
+        .and_then(|symbols| symbols.get(original_name))
+        .map(semantic_completion_kind)
+        .or_else(|| find_symbol_kind(module_symbols, original_name).map(completion_kind))
         .unwrap_or(lsp::CompletionItemKind::VARIABLE);
     candidates.insert(label.to_owned(), Some(kind));
+}
+
+fn collect_imported_symbols(
+    symbols: &std::collections::HashMap<String, mux_lang::semantics::SymbolKind>,
+    candidates: &mut std::collections::BTreeMap<String, Option<lsp::CompletionItemKind>>,
+) {
+    for (name, kind) in symbols {
+        candidates.insert(name.clone(), Some(semantic_completion_kind(kind)));
+    }
+}
+
+fn semantic_completion_kind(kind: &mux_lang::semantics::SymbolKind) -> lsp::CompletionItemKind {
+    use mux_lang::semantics::SymbolKind;
+
+    match kind {
+        SymbolKind::Function => lsp::CompletionItemKind::FUNCTION,
+        SymbolKind::Class | SymbolKind::Interface | SymbolKind::Enum => {
+            lsp::CompletionItemKind::CLASS
+        }
+        SymbolKind::Constant => lsp::CompletionItemKind::CONSTANT,
+        SymbolKind::Variable | SymbolKind::Import | SymbolKind::Type => {
+            lsp::CompletionItemKind::VARIABLE
+        }
+    }
 }
 
 fn find_symbol_kind(symbols: &[lsp::DocumentSymbol], name: &str) -> Option<lsp::SymbolKind> {
@@ -1087,6 +1182,10 @@ fn collect_module_namespace_members(
     candidates: &mut std::collections::BTreeMap<String, Option<lsp::CompletionItemKind>>,
 ) {
     let module = module_path_for_namespace(source, namespace).unwrap_or(namespace);
+    if let Some(symbols) = analysis.imported_modules.get(module) {
+        collect_imported_symbols(symbols, candidates);
+        return;
+    }
     if let Some(module_source) = module_source_for_import(analysis, root_path, module) {
         for symbol in document_symbols(module_source) {
             candidates.insert(symbol.name, Some(completion_kind(symbol.kind)));
@@ -1217,25 +1316,6 @@ fn collect_completions(
                     lsp::SymbolKind::FUNCTION | lsp::SymbolKind::METHOD
                 );
             collect_completions(children, position, child_is_inside_function, candidates);
-        }
-    }
-}
-
-fn collect_recovered_local_completions(
-    symbols: &[lsp::DocumentSymbol],
-    position: lsp::Position,
-    candidates: &mut std::collections::BTreeMap<String, Option<lsp::CompletionItemKind>>,
-) {
-    for symbol in symbols {
-        if matches!(
-            symbol.kind,
-            lsp::SymbolKind::VARIABLE | lsp::SymbolKind::CONSTANT
-        ) && symbol.selection_range.start <= position
-        {
-            candidates.insert(symbol.name.clone(), Some(completion_kind(symbol.kind)));
-        }
-        if let Some(children) = &symbol.children {
-            collect_recovered_local_completions(children, position, candidates);
         }
     }
 }
@@ -2006,7 +2086,7 @@ fn floor_char_boundary(source: &str, mut offset: usize) -> usize {
 mod tests {
     use super::{
         OpenDocument, PendingDiagnostics, WorkerTask, complete, find_member_access_base,
-        formatting_config_directory, lsp, offset_to_position, position_to_offset,
+        formatting_config_directory, lock_or_recover, lsp, offset_to_position, position_to_offset,
         schedule_diagnostics, update_workspace_folders,
     };
     use lsp_types::Position;
@@ -2067,6 +2147,63 @@ mod tests {
         assert!(outer_labels.contains("module_value"));
         assert!(!outer_labels.contains("inner"));
         assert!(!outer_labels.contains("later"));
+    }
+
+    #[test]
+    fn completion_keeps_recovered_locals_in_their_function_and_block_scope() {
+        let source = "func first() returns void {\n    auto from_first = 1\n}\nfunc main() returns void {\n    if true {\n        auto from_closed_block = 2\n    }\n    auto visible = 3\n    auto broken = \n    \n}\n";
+        let cursor = source.rfind("    \n}").unwrap() + 4;
+        assert!(mux_lang::syntax::parse_source(source).has_errors());
+        let labels = complete(
+            source,
+            offset_to_position(source, cursor),
+            std::path::Path::new("/tmp/mux-completion.mux"),
+            &HashMap::new(),
+        )
+        .into_iter()
+        .map(|item| item.label)
+        .collect::<std::collections::HashSet<_>>();
+
+        assert!(labels.contains("visible"), "{labels:?}");
+        assert!(!labels.contains("from_first"), "{labels:?}");
+        assert!(!labels.contains("from_closed_block"), "{labels:?}");
+    }
+
+    #[test]
+    fn module_completion_includes_runtime_backed_standard_library_symbols() {
+        let source = "import std.io as output\nfunc main() returns void {\n    output.st\n}\n";
+        let cursor = source.rfind("output.st").unwrap() + "output.".len();
+        let parsed = mux_lang::syntax::parse_source(source);
+        let base = find_member_access_base(parsed.tree.root(), cursor);
+        assert!(base.is_some());
+        let labels = complete(
+            source,
+            offset_to_position(source, cursor),
+            std::path::Path::new("/tmp/mux-completion.mux"),
+            &HashMap::new(),
+        )
+        .into_iter()
+        .map(|item| item.label)
+        .collect::<std::collections::HashSet<_>>();
+
+        assert!(labels.contains("stdout"), "{labels:?}");
+    }
+
+    #[test]
+    fn wildcard_import_completion_includes_runtime_backed_standard_library_symbols() {
+        let source = "import std.io.*\nfunc main() returns void {\n    st\n}\n";
+        let cursor = source.rfind("    st").unwrap() + 6;
+        let labels = complete(
+            source,
+            offset_to_position(source, cursor),
+            std::path::Path::new("/tmp/mux-completion.mux"),
+            &HashMap::new(),
+        )
+        .into_iter()
+        .map(|item| item.label)
+        .collect::<std::collections::HashSet<_>>();
+
+        assert!(labels.contains("stdout"), "{labels:?}");
     }
 
     #[test]
@@ -2243,6 +2380,20 @@ mod tests {
         let latest = pending.latest.as_ref().unwrap();
         assert_eq!(latest.documents.len(), 1);
         assert_eq!(latest.revisions.values().copied().collect::<Vec<_>>(), [7]);
+    }
+
+    #[test]
+    fn poisoned_server_state_is_recovered_without_panicking() {
+        let state = Arc::new(Mutex::new(false));
+        let worker_state = Arc::clone(&state);
+        let worker = std::thread::spawn(move || {
+            let _guard = worker_state.lock().unwrap();
+            panic!("poison test mutex");
+        });
+        assert!(worker.join().is_err());
+
+        assert!(!*lock_or_recover(&state, "test state"));
+        assert!(!state.is_poisoned());
     }
 
     #[test]

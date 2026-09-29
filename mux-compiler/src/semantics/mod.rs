@@ -80,6 +80,8 @@ pub struct SemanticAnalyzer {
     pub(super) expression_guards: HashMap<Span, narrowing::Guard>,
     pub(super) symbol_table: SymbolTable,
     editor_references: Vec<ResolvedIdentifier>,
+    collect_editor_references: bool,
+    editor_imported_modules: HashMap<String, HashMap<String, SymbolKind>>,
     current_bounds: std::collections::HashMap<String, GenericBounds>,
     /// Type parameters of the declaration whose signature is being resolved.
     /// A signature is resolved before its parameters become type variables, so
@@ -208,6 +210,8 @@ impl SemanticAnalyzer {
         Self {
             symbol_table,
             editor_references: Vec::new(),
+            collect_editor_references: false,
+            editor_imported_modules: HashMap::new(),
             flow: narrowing::FlowState::default(),
             flow_generation: 0,
             expression_guards: HashMap::new(),
@@ -359,6 +363,17 @@ impl SemanticAnalyzer {
     /// Take names resolved by expression analysis for editor navigation.
     pub fn take_editor_references(&mut self) -> Vec<ResolvedIdentifier> {
         std::mem::take(&mut self.editor_references)
+    }
+
+    /// Retain resolved source references for editor features such as
+    /// definitions, hover, and member completion.
+    pub fn enable_editor_references(&mut self) {
+        self.collect_editor_references = true;
+    }
+
+    /// Take exported members for modules imported by the current editor source.
+    pub fn take_editor_imported_modules(&mut self) -> HashMap<String, HashMap<String, SymbolKind>> {
+        std::mem::take(&mut self.editor_imported_modules)
     }
 
     fn editor_bound_methods(&self, type_: &Type) -> Vec<String> {
@@ -2611,17 +2626,19 @@ impl SemanticAnalyzer {
                 Type::Generic(n) if n == name => Type::Variable(name.to_string()),
                 _ => type_,
             };
-            let source_path = self.source_path_for_symbol(name, &symbol);
-            let bound_methods = self.editor_bound_methods(&type_);
-            self.editor_references.push(ResolvedIdentifier {
-                name: name.to_owned(),
-                usage: span,
-                declaration: symbol.span.byte_range.map(|_| symbol.span),
-                kind: symbol.kind,
-                type_: Some(type_.clone()),
-                bound_methods,
-                source_path,
-            });
+            if self.collect_editor_references {
+                let source_path = self.source_path_for_symbol(name, &symbol);
+                let bound_methods = self.editor_bound_methods(&type_);
+                self.editor_references.push(ResolvedIdentifier {
+                    name: name.to_owned(),
+                    usage: span,
+                    declaration: symbol.span.byte_range.map(|_| symbol.span),
+                    kind: symbol.kind,
+                    type_: Some(type_.clone()),
+                    bound_methods,
+                    source_path,
+                });
+            }
             return Ok(type_);
         }
 
@@ -2631,15 +2648,17 @@ impl SemanticAnalyzer {
                 returns: Box::new(sig.return_type.clone()),
                 default_count: 0,
             };
-            self.editor_references.push(ResolvedIdentifier {
-                name: name.to_owned(),
-                usage: span,
-                declaration: None,
-                kind: SymbolKind::Function,
-                type_: Some(type_.clone()),
-                bound_methods: Vec::new(),
-                source_path: None,
-            });
+            if self.collect_editor_references {
+                self.editor_references.push(ResolvedIdentifier {
+                    name: name.to_owned(),
+                    usage: span,
+                    declaration: None,
+                    kind: SymbolKind::Function,
+                    type_: Some(type_.clone()),
+                    bound_methods: Vec::new(),
+                    source_path: None,
+                });
+            }
             return Ok(Type::Function {
                 params: sig.params.clone(),
                 returns: Box::new(sig.return_type.clone()),

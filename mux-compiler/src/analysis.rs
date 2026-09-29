@@ -23,6 +23,9 @@ pub struct Analysis {
     pub diagnostics: Vec<Diagnostic>,
     /// Name expressions resolved by semantic analysis for editor navigation.
     pub resolved_identifiers: Vec<crate::semantics::ResolvedIdentifier>,
+    /// Exported members of modules imported by the root source, used for
+    /// namespace and import completion even when a module is runtime-backed.
+    pub imported_modules: HashMap<String, HashMap<String, crate::semantics::SymbolKind>>,
     /// ID of the root source in `files`.
     pub root_file: FileId,
     /// Parser recovery ranges that safe edits must avoid.
@@ -77,6 +80,7 @@ pub fn analyze_source_with_overlays(
         resolver.set_source_overrides(overlays.clone());
     }
     let mut analyzer = SemanticAnalyzer::new_with_resolver(Rc::clone(&resolver));
+    analyzer.enable_editor_references();
     analyzer.set_current_file(file_path.to_path_buf());
     analyzer.set_current_file_id(root_file);
 
@@ -122,11 +126,13 @@ pub fn analyze_source_with_overlays(
     recovery.extend(resolver.borrow_mut().take_recovery_intervals());
     crate::diagnostic::sort_diagnostics(&mut diagnostics, &files);
     let resolved_identifiers = analyzer.take_editor_references();
+    let imported_modules = analyzer.take_editor_imported_modules();
 
     Analysis {
         files,
         diagnostics,
         resolved_identifiers,
+        imported_modules,
         root_file,
         recovery,
     }
@@ -159,15 +165,48 @@ pub fn apply_fixes_and_validate(
             );
         }
         let staged = analyze_source_with_overlays(root_path, root_source, &overlays);
-        if let Some(diagnostic) = staged
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.level == crate::diagnostic::Level::Error)
-        {
+        if let Some(diagnostic) = first_new_error(analysis, &staged) {
             return Err(format!("{}: {}", diagnostic.code, diagnostic.message));
         }
         Ok(())
     })
+}
+
+fn first_new_error<'a>(baseline: &Analysis, staged: &'a Analysis) -> Option<&'a Diagnostic> {
+    use crate::diagnostic::Level;
+
+    let mut existing =
+        HashMap::<(Option<PathBuf>, crate::diagnostic::DiagnosticCode, String), usize>::new();
+    for diagnostic in baseline
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.level == Level::Error)
+    {
+        *existing.entry(error_key(baseline, diagnostic)).or_default() += 1;
+    }
+    for diagnostic in staged
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.level == Level::Error)
+    {
+        let count = existing.entry(error_key(staged, diagnostic)).or_default();
+        if *count == 0 {
+            return Some(diagnostic);
+        }
+        *count -= 1;
+    }
+    None
+}
+
+fn error_key(
+    analysis: &Analysis,
+    diagnostic: &Diagnostic,
+) -> (Option<PathBuf>, crate::diagnostic::DiagnosticCode, String) {
+    let path = diagnostic
+        .file_id
+        .and_then(|file_id| analysis.files.path(file_id))
+        .map(Path::to_path_buf);
+    (path, diagnostic.code, diagnostic.message.clone())
 }
 
 /// Make a path suitable for use as a stable source identity during analysis.
@@ -182,8 +221,8 @@ pub fn absolute_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{analyze_source, analyze_source_with_overlays};
-    use crate::diagnostic::Level;
+    use super::{analyze_source, analyze_source_with_overlays, apply_fixes_and_validate};
+    use crate::diagnostic::{DiagnosticCode, Level, SourceRange, TextEdit};
     use std::collections::HashMap;
     use std::path::Path;
 
@@ -240,5 +279,43 @@ mod tests {
             });
 
         assert_eq!(reference.source_path.as_deref(), Some(imported));
+    }
+
+    #[test]
+    fn accepts_a_fix_when_unrelated_errors_remain_unchanged() {
+        let path = Path::new("/tmp/mux-lsp-analysis/fix.mux");
+        let source = "func main() returns void {\n    int bad = \"wrong\"\n    auto value = 1\n}\n";
+        let analysis = analyze_source(path, source);
+        let start = source.find("= 1").unwrap() + 2;
+        let edit = TextEdit::machine_applicable(
+            analysis.root_file,
+            SourceRange::new(start, start + 1),
+            "2",
+            DiagnosticCode::TypeMismatch,
+        );
+
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.level == Level::Error)
+        );
+        assert!(apply_fixes_and_validate(&analysis, path, &[edit]).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_fix_that_introduces_an_error() {
+        let path = Path::new("/tmp/mux-lsp-analysis/fix.mux");
+        let source = "func main() returns void {\n    int value = 1\n}\n";
+        let analysis = analyze_source(path, source);
+        let start = source.find("= 1").unwrap() + 2;
+        let edit = TextEdit::machine_applicable(
+            analysis.root_file,
+            SourceRange::new(start, start + 1),
+            "\"wrong\"",
+            DiagnosticCode::TypeMismatch,
+        );
+
+        assert!(apply_fixes_and_validate(&analysis, path, &[edit]).is_err());
     }
 }
