@@ -2,6 +2,118 @@ use super::{MethodSig, SemanticAnalyzer, Type};
 use crate::ast::PrimitiveType;
 
 impl SemanticAnalyzer {
+    /// Return built-in instance method names accepted by `type_`.
+    ///
+    /// Keep the candidate inventory aligned with the method signatures below;
+    /// querying `get_method_sig` filters names to the receiver's actual type.
+    #[must_use]
+    pub fn builtin_method_names(&self, type_: &Type) -> Vec<&'static str> {
+        const CANDIDATES: &[&str] = &[
+            "add",
+            "bit_and",
+            "bit_not",
+            "bit_or",
+            "bit_xor",
+            "char_at",
+            "checked_add",
+            "checked_div",
+            "checked_mul",
+            "checked_rem",
+            "checked_sub",
+            "clear",
+            "cmp",
+            "contains",
+            "copy_within",
+            "cursor",
+            "ends_with",
+            "eq",
+            "error",
+            "extend",
+            "fill",
+            "find",
+            "format",
+            "get",
+            "get_keys",
+            "get_pairs",
+            "get_values",
+            "hash",
+            "index_of",
+            "insert",
+            "is_empty",
+            "is_err",
+            "is_none",
+            "is_ok",
+            "is_some",
+            "len",
+            "length",
+            "message",
+            "new",
+            "pop",
+            "pop_back",
+            "pop_front",
+            "push",
+            "push_back",
+            "push_front",
+            "put",
+            "read_float_be",
+            "read_float_le",
+            "read_uint_be",
+            "read_uint_le",
+            "read_varint",
+            "remove",
+            "replace",
+            "reserve",
+            "resize",
+            "rotate_left",
+            "rotate_right",
+            "saturating_add",
+            "saturating_mul",
+            "saturating_sub",
+            "shift_left",
+            "shift_right",
+            "size",
+            "split",
+            "starts_with",
+            "substring",
+            "to_binary",
+            "to_byte",
+            "to_bytes",
+            "to_char",
+            "to_codepoint",
+            "to_decimal",
+            "to_float",
+            "to_hex",
+            "to_int",
+            "to_list",
+            "to_lower",
+            "to_octal",
+            "to_string",
+            "to_upper",
+            "to_utf8",
+            "to_utf8_lossy",
+            "trim",
+            "truncate",
+            "value",
+            "wrapping_add",
+            "wrapping_mul",
+            "wrapping_sub",
+            "write_float_be",
+            "write_float_le",
+            "write_uint_be",
+            "write_uint_le",
+            "write_varint",
+        ];
+
+        CANDIDATES
+            .iter()
+            .copied()
+            .filter(|name| {
+                self.get_method_sig(type_, name)
+                    .is_some_and(|signature| !signature.is_static)
+            })
+            .collect()
+    }
+
     fn get_primitive_method_sig(
         &self,
         prim: &PrimitiveType,

@@ -53,6 +53,29 @@ pub struct ModuleResolver {
 }
 
 impl ModuleResolver {
+    fn source_key(path: &Path) -> PathBuf {
+        if let Ok(canonical) = path.canonicalize() {
+            return canonical;
+        }
+
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path)
+        };
+        let mut normalized = PathBuf::new();
+        for component in absolute.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                other => normalized.push(other.as_os_str()),
+            }
+        }
+        normalized
+    }
+
     #[must_use]
     pub fn new(base_path: PathBuf) -> Self {
         Self {
@@ -92,7 +115,10 @@ impl ModuleResolver {
 
     /// Use staged source for a local module during fix validation.
     pub fn set_source_overrides(&mut self, overrides: HashMap<PathBuf, String>) {
-        self.source_overrides = overrides;
+        self.source_overrides = overrides
+            .into_iter()
+            .map(|(path, source)| (Self::source_key(&path), source))
+            .collect();
     }
 
     /// Control direct diagnostic emission while a caller is collecting a
@@ -214,12 +240,13 @@ impl ModuleResolver {
         let file_path = self.determine_file_path(module_path, current_file)?;
 
         // Canonicalize for cache key
-        let canonical_path = file_path.canonicalize().map_err(|e| {
-            ModuleResolutionError::new(
+        let canonical_path = Self::source_key(&file_path);
+        if !canonical_path.exists() && !self.source_overrides.contains_key(&canonical_path) {
+            return Err(ModuleResolutionError::new(
                 DiagnosticCode::ImportFailure,
-                format!("Cannot resolve module path {module_path}: {e}"),
-            )
-        })?;
+                format!("Cannot resolve module path {module_path}: file does not exist"),
+            ));
+        }
 
         // Check cache by canonical path
         if let Some(cached_module_path) = self.canonical_cache.get(&canonical_path)
@@ -345,7 +372,7 @@ impl ModuleResolver {
         }
         path.set_extension("mux");
 
-        if !path.exists() {
+        if !path.exists() && !self.source_overrides.contains_key(&Self::source_key(&path)) {
             return Err(ModuleResolutionError::new(
                 DiagnosticCode::ModuleNotFound,
                 format!("Module not found: {module_path} (looked for {path:?})"),
@@ -427,6 +454,30 @@ mod tests {
             std::env::temp_dir().join(format!("mux_mod_{}_{}_{}", tag, std::process::id(), nanos));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn resolves_unsaved_open_module_from_source_override() {
+        let dir = unique_tmp_dir("open_module");
+        let module_path = dir.join("pending.mux");
+        let source = "func pending() returns void {}\n";
+        let mut resolver = ModuleResolver::new(dir.clone());
+        resolver.set_source_overrides(HashMap::from([(module_path.clone(), source.to_owned())]));
+        let mut files = Files::new();
+
+        let nodes = resolver
+            .resolve_import_path("pending", None, &mut files)
+            .expect("unsaved module should resolve from the editor overlay");
+
+        assert!(!nodes.is_empty());
+        assert_eq!(
+            files
+                .iter()
+                .find(|(_, path, _)| *path == module_path)
+                .map(|(_, _, text)| text),
+            Some(source)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

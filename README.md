@@ -60,6 +60,17 @@ mux run hello.mux
 
 Formatter usage is documented in [Formatting Mux source](docs/formatter.md).
 
+The compiler also provides a language server for editors. Configure the editor
+to start `mux lsp` over stdio. The current server publishes parser and semantic
+diagnostics as buffers change, offers safe compiler fixes, and supports whole
+document formatting using editor indentation preferences and the nearest
+`mux-project.json`. It also provides document symbols, go-to-definition,
+resolved-name hover, visible-scope, imported-name, class-member, built-in
+method, and imported module namespace completion, plus function signature help.
+VSCode's maintained
+extension starts `mux lsp` automatically; Neovim and Helix can run the same
+command through their built-in LSP clients.
+
 The full language reference, guides, and standard-library docs live at
 **[mux-lang.dev](https://mux-lang.dev)**:
 

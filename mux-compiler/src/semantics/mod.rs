@@ -79,6 +79,7 @@ pub struct SemanticAnalyzer {
     pub(super) flow_generation: u64,
     pub(super) expression_guards: HashMap<Span, narrowing::Guard>,
     pub(super) symbol_table: SymbolTable,
+    editor_references: Vec<ResolvedIdentifier>,
     current_bounds: std::collections::HashMap<String, GenericBounds>,
     /// Type parameters of the declaration whose signature is being resolved.
     /// A signature is resolved before its parameters become type variables, so
@@ -151,6 +152,26 @@ pub struct SemanticAnalyzer {
         HashMap<(String, String), const_checks::EnumVariantPreconditions>,
 }
 
+/// A name expression resolved during semantic analysis, retained for editor
+/// navigation without re-running name lookup in the language server.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedIdentifier {
+    /// The visible name at this use site.
+    pub name: String,
+    /// Exact source range of the name expression.
+    pub usage: Span,
+    /// Declaration range when the binding has source text.
+    pub declaration: Option<Span>,
+    /// Semantic category used to produce editor information.
+    pub kind: types::SymbolKind,
+    /// Type inferred by the compiler for this use site.
+    pub type_: Option<types::Type>,
+    /// Methods available through generic interface bounds at this use site.
+    pub bound_methods: Vec<String>,
+    /// Defining module path for an imported source declaration.
+    pub source_path: Option<std::path::PathBuf>,
+}
+
 impl Default for SemanticAnalyzer {
     fn default() -> Self {
         Self::new()
@@ -186,6 +207,7 @@ impl SemanticAnalyzer {
         let symbol_table = SymbolTable::new();
         Self {
             symbol_table,
+            editor_references: Vec::new(),
             flow: narrowing::FlowState::default(),
             flow_generation: 0,
             expression_guards: HashMap::new(),
@@ -332,6 +354,83 @@ impl SemanticAnalyzer {
 
     pub fn take_imported_errors(&mut self) -> Vec<SemanticError> {
         std::mem::take(&mut self.imported_errors)
+    }
+
+    /// Take names resolved by expression analysis for editor navigation.
+    pub fn take_editor_references(&mut self) -> Vec<ResolvedIdentifier> {
+        std::mem::take(&mut self.editor_references)
+    }
+
+    fn editor_bound_methods(&self, type_: &Type) -> Vec<String> {
+        let (Type::Variable(variable) | Type::Generic(variable)) = type_ else {
+            return Vec::new();
+        };
+        let Some(bounds) = self.current_bounds.get(variable) else {
+            return Vec::new();
+        };
+        let mut names = std::collections::BTreeSet::new();
+        for (bound_name, _) in bounds {
+            if let Some(symbol) = self.symbol_table.lookup(bound_name)
+                && symbol.kind == SymbolKind::Interface
+            {
+                names.extend(
+                    symbol
+                        .interfaces
+                        .values()
+                        .flat_map(|(_, methods)| methods.keys().cloned()),
+                );
+            }
+        }
+        names.extend(
+            self.builtin_method_names(type_)
+                .into_iter()
+                .map(str::to_owned),
+        );
+        names.into_iter().collect()
+    }
+
+    fn source_path_for_symbol(
+        &self,
+        name: &str,
+        symbol: &types::Symbol,
+    ) -> Option<std::path::PathBuf> {
+        let source_name = symbol.original_name.as_deref().unwrap_or(name);
+        self.all_module_asts.iter().find_map(|(module, nodes)| {
+            let defined_here = nodes.iter().any(|node| match node {
+                AstNode::Function(function) => {
+                    function.name == source_name && function.span == symbol.span
+                }
+                AstNode::Class {
+                    name,
+                    span,
+                    methods,
+                    ..
+                }
+                | AstNode::Interface {
+                    name,
+                    span,
+                    methods,
+                    ..
+                } => {
+                    (name == source_name && *span == symbol.span)
+                        || methods
+                            .iter()
+                            .any(|method| method.name == source_name && method.span == symbol.span)
+                }
+                AstNode::Enum { name, span, .. } => name == source_name && *span == symbol.span,
+                AstNode::Statement(statement) => match &statement.kind {
+                    StatementKind::Function(function) => {
+                        function.name == source_name && function.span == symbol.span
+                    }
+                    _ => false,
+                },
+                AstNode::Test { .. } => false,
+            });
+            defined_here
+                .then(|| self.module_source_paths.get(module))
+                .flatten()
+                .cloned()
+        })
     }
 
     #[must_use]
@@ -2484,7 +2583,7 @@ impl SemanticAnalyzer {
     }
 
     fn resolve_identifier_expression_type(
-        &self,
+        &mut self,
         name: &str,
         span: Span,
     ) -> Result<Type, SemanticError> {
@@ -2512,10 +2611,35 @@ impl SemanticAnalyzer {
                 Type::Generic(n) if n == name => Type::Variable(name.to_string()),
                 _ => type_,
             };
+            let source_path = self.source_path_for_symbol(name, &symbol);
+            let bound_methods = self.editor_bound_methods(&type_);
+            self.editor_references.push(ResolvedIdentifier {
+                name: name.to_owned(),
+                usage: span,
+                declaration: symbol.span.byte_range.map(|_| symbol.span),
+                kind: symbol.kind,
+                type_: Some(type_.clone()),
+                bound_methods,
+                source_path,
+            });
             return Ok(type_);
         }
 
-        if let Some(sig) = self.get_builtin_sig(name) {
+        if let Some(sig) = self.get_builtin_sig(name).cloned() {
+            let type_ = Type::Function {
+                params: sig.params.clone(),
+                returns: Box::new(sig.return_type.clone()),
+                default_count: 0,
+            };
+            self.editor_references.push(ResolvedIdentifier {
+                name: name.to_owned(),
+                usage: span,
+                declaration: None,
+                kind: SymbolKind::Function,
+                type_: Some(type_.clone()),
+                bound_methods: Vec::new(),
+                source_path: None,
+            });
             return Ok(Type::Function {
                 params: sig.params.clone(),
                 returns: Box::new(sig.return_type.clone()),

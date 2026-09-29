@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove a given `mux` can compile and run real programs.
+# Prove a given `mux` can serve LSP requests and compile and run real programs.
 #
 # Takes the executable rather than a layout, so it works for anything that
 # produces one: a staged dist/ tree (scripts/ci/smoke-packaged.sh) or an install
@@ -29,7 +29,7 @@ if [[ ! -x "$mux" && ! -f "$mux" ]]; then
 fi
 
 echo "Smoke-testing: $mux"
-"$mux" --version || true
+"$mux" version > /dev/null
 
 # Misbehaving compiled programs (LLVM UB) hang rather than crash, so every run
 # is bounded. macOS ships no `timeout`, so fall back to gtimeout and then to a
@@ -64,6 +64,37 @@ run_bounded() {
     return "$rc"
   fi
 }
+
+# Keep this on the packaged binary in the cross-platform install matrix. It
+# proves the language server starts and completes its protocol lifecycle
+# without relying on the runtime archive used by compiled Mux programs.
+lsp_input="$smoke_tmp/lsp.input"
+lsp_output="$smoke_tmp/lsp.output"
+write_lsp_message() {
+  local body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
+}
+{
+  write_lsp_message '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+  write_lsp_message '{"jsonrpc":"2.0","method":"initialized","params":{}}'
+  write_lsp_message '{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}'
+  write_lsp_message '{"jsonrpc":"2.0","method":"exit","params":null}'
+} > "$lsp_input"
+if ! ( unset MUX_RUNTIME_LIB; run_bounded 15 "$mux" lsp < "$lsp_input" > "$lsp_output" 2> "$smoke_tmp/lsp.stderr" ); then
+  cat "$smoke_tmp/lsp.stderr" >&2
+  printf '::error::%s failed the packaged LSP lifecycle smoke\n' "$mux"
+  exit 1
+fi
+if ! grep -Fq '"id":1' "$lsp_output" \
+  || ! grep -Fq '"textDocumentSync":1' "$lsp_output" \
+  || ! grep -Fq '"hoverProvider":true' "$lsp_output" \
+  || ! grep -Fq '"id":2' "$lsp_output"; then
+  cat "$lsp_output" >&2
+  cat "$smoke_tmp/lsp.stderr" >&2
+  printf '::error::%s did not complete the packaged LSP lifecycle\n' "$mux"
+  exit 1
+fi
+echo "OK: completed the LSP initialize/shutdown lifecycle without MUX_RUNTIME_LIB."
 
 # MUX_RUNTIME_LIB is unset deliberately: it wins over every other resolution
 # path, so leaving it set would test whatever it points at rather than the
