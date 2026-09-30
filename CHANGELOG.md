@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-30
+
+### Added
+
+- Add `mux lsp`, a stdio language server with live diagnostics, formatting,
+  safe compiler fixes, document symbols, definitions, hover, completion, and
+  signature help. It watches imported files and refreshes open documents when
+  workspace files change. (#16, #462)
+
 ## [0.12.0] - 2026-09-27
 
 ### Added
