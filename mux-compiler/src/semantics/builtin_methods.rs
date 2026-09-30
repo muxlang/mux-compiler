@@ -135,7 +135,7 @@ impl SemanticAnalyzer {
             .iter()
             .copied()
             .filter(|method| {
-                self.get_builtin_method_sig(type_, *method)
+                self.get_method_sig(type_, method.name())
                     .is_some_and(|signature| !signature.is_static)
             })
             .map(BuiltinMethod::name)
@@ -824,39 +824,44 @@ impl SemanticAnalyzer {
     }
 
     pub(crate) fn get_method_sig(&self, type_: &Type, method_name: &str) -> Option<MethodSig> {
-        if let Some(method) = BuiltinMethod::parse(method_name) {
-            return self.get_builtin_method_sig(type_, method);
-        }
+        let method = BuiltinMethod::parse(method_name);
+        self.resolve_method_sig(type_, method_name, method)
+    }
 
+    fn resolve_method_sig(
+        &self,
+        type_: &Type,
+        method_name: &str,
+        builtin_method: Option<BuiltinMethod>,
+    ) -> Option<MethodSig> {
         match type_ {
             Type::Named(name, args) => self.get_named_method_sig(name, args, method_name),
             Type::Variable(var) | Type::Generic(var) => {
                 self.get_variable_generic_method_sig(var, method_name)
             }
+            Type::Primitive(prim) => {
+                builtin_method.and_then(|method| self.get_primitive_method_sig(prim, method))
+            }
+            Type::List(elem_type) => {
+                builtin_method.and_then(|method| self.get_list_method_sig(elem_type, method))
+            }
+            Type::Map(key_type, value_type) => builtin_method
+                .and_then(|method| self.get_map_method_sig(key_type, value_type, method)),
+            Type::Set(elem_type) => {
+                builtin_method.and_then(|method| self.get_set_method_sig(elem_type, method))
+            }
+            Type::Optional(inner) => {
+                builtin_method.and_then(|method| self.get_optional_method_sig(inner, method))
+            }
+            Type::Result(ok, error) => {
+                builtin_method.and_then(|method| self.get_result_method_sig(ok, error, method))
+            }
+            Type::Tuple(_, _) => {
+                builtin_method.and_then(|method| self.get_tuple_method_sig(method))
+            }
             Type::Reference(inner) | Type::TraitObject(inner) => {
-                self.get_method_sig(inner, method_name)
+                self.resolve_method_sig(inner, method_name, builtin_method)
             }
-            _ => None,
-        }
-    }
-
-    fn get_builtin_method_sig(&self, type_: &Type, method: BuiltinMethod) -> Option<MethodSig> {
-        match type_ {
-            Type::Named(name, args) => self.get_named_method_sig(name, args, method.name()),
-            Type::Variable(var) | Type::Generic(var) => {
-                self.get_variable_generic_method_sig(var, method.name())
-            }
-            Type::Primitive(prim) => self.get_primitive_method_sig(prim, method),
-            Type::List(elem_type) => self.get_list_method_sig(elem_type, method),
-            Type::Map(key_type, value_type) => {
-                self.get_map_method_sig(key_type, value_type, method)
-            }
-            Type::Set(elem_type) => self.get_set_method_sig(elem_type, method),
-            Type::Optional(inner) => self.get_optional_method_sig(inner, method),
-            Type::Result(ok, error) => self.get_result_method_sig(ok, error, method),
-            Type::Tuple(_, _) => self.get_tuple_method_sig(method),
-            Type::Reference(inner) => self.get_builtin_method_sig(inner, method),
-            Type::TraitObject(inner) => self.get_builtin_method_sig(inner, method),
             _ => None,
         }
     }
