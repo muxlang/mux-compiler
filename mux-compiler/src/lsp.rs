@@ -559,12 +559,17 @@ fn run_request_task(
         "textDocument/codeAction" => {
             handle_code_action(&worker_connection, task.request, &task.documents)
         }
-        _ => unreachable!("only supported methods enter the request worker"),
+        _ => Err(format!("unsupported request: {method}").into()),
     };
     if let Err(error) = response {
+        let code = if supported_request(&method) {
+            -32603
+        } else {
+            lsp_server::ErrorCode::MethodNotFound as i32
+        };
         let _ = worker_connection
             .sender
-            .send(Response::new_err(request_id.clone(), -32603, error.to_string()).into());
+            .send(Response::new_err(request_id.clone(), code, error.to_string()).into());
     }
     if let Ok(message) = client_connection.receiver.recv() {
         let _ = results.send(WorkerResult::Request(RequestResult {
@@ -2085,10 +2090,12 @@ fn floor_char_boundary(source: &str, mut offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenDocument, PendingDiagnostics, WorkerTask, complete, find_member_access_base,
-        formatting_config_directory, lock_or_recover, lsp, offset_to_position, position_to_offset,
-        schedule_diagnostics, update_workspace_folders,
+        OpenDocument, PendingDiagnostics, RequestTask, WorkerResult, WorkerTask, complete,
+        find_member_access_base, formatting_config_directory, lock_or_recover, lsp,
+        offset_to_position, position_to_offset, run_request_task, schedule_diagnostics,
+        update_workspace_folders,
     };
+    use lsp_server::{Message, Request};
     use lsp_types::Position;
     use std::collections::HashMap;
     use std::str::FromStr;
@@ -2102,6 +2109,35 @@ mod tests {
             offset_to_position(source, source.len()),
             Position::new(1, 1)
         );
+    }
+
+    #[test]
+    fn unexpected_worker_requests_return_method_not_found() {
+        let request = Request::new(
+            "unexpected-request".to_owned().into(),
+            "textDocument/unknown".to_owned(),
+            serde_json::Value::Null,
+        );
+        let task = RequestTask {
+            request,
+            documents: HashMap::new(),
+            workspace_folders: Vec::new(),
+        };
+        let cancelled = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        run_request_task(task, &sender, &cancelled);
+
+        let WorkerResult::Request(result) = receiver.recv().expect("worker should reply") else {
+            panic!("worker should return a request result");
+        };
+        let Message::Response(response) = result.message else {
+            panic!("worker should send a JSON-RPC response");
+        };
+        let error = response
+            .response_result
+            .expect_err("unsupported request should be an error");
+        assert_eq!(error.code, lsp_server::ErrorCode::MethodNotFound as i32);
     }
 
     #[test]

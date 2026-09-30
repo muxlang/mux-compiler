@@ -68,30 +68,93 @@ run_bounded() {
 # Keep this on the packaged binary in the cross-platform install matrix. It
 # proves the language server starts and completes its protocol lifecycle
 # without relying on the runtime archive used by compiled Mux programs.
-lsp_input="$smoke_tmp/lsp.input"
-lsp_output="$smoke_tmp/lsp.output"
-write_lsp_message() {
-  local body="$1"
-  printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
-}
-{
-  write_lsp_message '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
-  write_lsp_message '{"jsonrpc":"2.0","method":"initialized","params":{}}'
-  write_lsp_message '{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}'
-  write_lsp_message '{"jsonrpc":"2.0","method":"exit","params":null}'
-} > "$lsp_input"
-if ! ( unset MUX_RUNTIME_LIB; run_bounded 15 "$mux" lsp < "$lsp_input" > "$lsp_output" 2> "$smoke_tmp/lsp.stderr" ); then
+if ! (
+  unset MUX_RUNTIME_LIB
+  run_bounded 20 python3 - "$mux" 2> "$smoke_tmp/lsp.stderr" <<'PY'
+import json
+import os
+import select
+import subprocess
+import sys
+import time
+
+
+def read_exact(stream, length, deadline):
+    result = bytearray()
+    while len(result) < length:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([stream], [], [], remaining)[0]:
+            raise TimeoutError("timed out waiting for an LSP response")
+        chunk = os.read(stream.fileno(), length - len(result))
+        if not chunk:
+            raise EOFError("Mux LSP server closed stdout before replying")
+        result.extend(chunk)
+    return bytes(result)
+
+
+def read_message(stream):
+    deadline = time.monotonic() + 5
+    headers = bytearray()
+    while not headers.endswith(b"\r\n\r\n"):
+        headers.extend(read_exact(stream, 1, deadline))
+    content_length = next(
+        int(line.split(b":", 1)[1].strip())
+        for line in headers.split(b"\r\n")
+        if line.lower().startswith(b"content-length:")
+    )
+    return json.loads(read_exact(stream, content_length, deadline))
+
+
+def send_message(stream, message):
+    body = json.dumps(message, separators=(",", ":")).encode()
+    stream.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+    stream.flush()
+
+
+process = subprocess.Popen(
+    [sys.argv[1], "lsp"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    bufsize=0,
+)
+try:
+    send_message(
+        process.stdin,
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}},
+    )
+    initialized = read_message(process.stdout)
+    capabilities = initialized.get("result", {}).get("capabilities", {})
+    if (
+        initialized.get("id") != 1
+        or capabilities.get("textDocumentSync") != 1
+        or capabilities.get("hoverProvider") is not True
+    ):
+        raise RuntimeError(f"unexpected initialize response: {initialized}")
+
+    send_message(process.stdin, {"jsonrpc": "2.0", "method": "initialized", "params": {}})
+    send_message(process.stdin, {"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": None})
+    shutdown = read_message(process.stdout)
+    if shutdown.get("id") != 2 or shutdown.get("result") is not None:
+        raise RuntimeError(f"unexpected shutdown response: {shutdown}")
+
+    send_message(process.stdin, {"jsonrpc": "2.0", "method": "exit", "params": None})
+    process.stdin.close()
+    if process.wait(timeout=5) != 0:
+        raise RuntimeError(f"Mux LSP exited with status {process.returncode}")
+except Exception:
+    if process.poll() is None:
+        process.kill()
+    process.wait()
+    sys.stderr.write(process.stderr.read().decode(errors="replace"))
+    raise
+else:
+    process.stderr.close()
+    process.stdout.close()
+PY
+); then
   cat "$smoke_tmp/lsp.stderr" >&2
   printf '::error::%s failed the packaged LSP lifecycle smoke\n' "$mux"
-  exit 1
-fi
-if ! grep -Fq '"id":1' "$lsp_output" \
-  || ! grep -Fq '"textDocumentSync":1' "$lsp_output" \
-  || ! grep -Fq '"hoverProvider":true' "$lsp_output" \
-  || ! grep -Fq '"id":2' "$lsp_output"; then
-  cat "$lsp_output" >&2
-  cat "$smoke_tmp/lsp.stderr" >&2
-  printf '::error::%s did not complete the packaged LSP lifecycle\n' "$mux"
   exit 1
 fi
 echo "OK: completed the LSP initialize/shutdown lifecycle without MUX_RUNTIME_LIB."

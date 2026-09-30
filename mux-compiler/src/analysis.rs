@@ -165,31 +165,39 @@ pub fn apply_fixes_and_validate(
             );
         }
         let staged = analyze_source_with_overlays(root_path, root_source, &overlays);
-        if let Some(diagnostic) = first_new_error(analysis, &staged) {
+        if let Some(diagnostic) = first_new_error(analysis, &staged, edits) {
             return Err(format!("{}: {}", diagnostic.code, diagnostic.message));
         }
         Ok(())
     })
 }
 
-fn first_new_error<'a>(baseline: &Analysis, staged: &'a Analysis) -> Option<&'a Diagnostic> {
+fn first_new_error<'a>(
+    baseline: &Analysis,
+    staged: &'a Analysis,
+    edits: &[TextEdit],
+) -> Option<&'a Diagnostic> {
     use crate::diagnostic::Level;
 
-    let mut existing =
-        HashMap::<(Option<PathBuf>, crate::diagnostic::DiagnosticCode, String), usize>::new();
+    let mut existing = HashMap::<ErrorKey, usize>::new();
     for diagnostic in baseline
         .diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.level == Level::Error)
     {
-        *existing.entry(error_key(baseline, diagnostic)).or_default() += 1;
+        if let Some(key) = error_key(baseline, diagnostic, edits) {
+            *existing.entry(key).or_default() += 1;
+        }
     }
     for diagnostic in staged
         .diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.level == Level::Error)
     {
-        let count = existing.entry(error_key(staged, diagnostic)).or_default();
+        let Some(key) = error_key(staged, diagnostic, &[]) else {
+            return Some(diagnostic);
+        };
+        let count = existing.entry(key).or_default();
         if *count == 0 {
             return Some(diagnostic);
         }
@@ -198,15 +206,53 @@ fn first_new_error<'a>(baseline: &Analysis, staged: &'a Analysis) -> Option<&'a 
     None
 }
 
-fn error_key(
-    analysis: &Analysis,
-    diagnostic: &Diagnostic,
-) -> (Option<PathBuf>, crate::diagnostic::DiagnosticCode, String) {
+type ErrorKey = (
+    Option<PathBuf>,
+    crate::diagnostic::DiagnosticCode,
+    String,
+    crate::lexer::Span,
+);
+
+fn error_key(analysis: &Analysis, diagnostic: &Diagnostic, edits: &[TextEdit]) -> Option<ErrorKey> {
     let path = diagnostic
         .file_id
         .and_then(|file_id| analysis.files.path(file_id))
         .map(Path::to_path_buf);
-    (path, diagnostic.code, diagnostic.message.clone())
+    let primary_span = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.style == crate::diagnostic::LabelStyle::Primary)
+        .and_then(|label| label.span.byte_range)?;
+    let mut offset_delta = 0_i128;
+    for edit in edits {
+        if path.is_none() {
+            break;
+        }
+        let edit_path = analysis.files.path(edit.file_id).map(Path::to_path_buf);
+        if edit_path != path {
+            continue;
+        }
+
+        let target = edit.range;
+        if target.end_byte <= primary_span.start {
+            offset_delta +=
+                edit.replacement.len() as i128 - (target.end_byte - target.start_byte) as i128;
+        } else if target.start_byte >= primary_span.end {
+            continue;
+        } else {
+            // An edit touching the diagnostic can change its cause, so it
+            // must not let the original error mask a newly introduced one.
+            return None;
+        }
+    }
+    let start = usize::try_from(primary_span.start as i128 + offset_delta).ok()?;
+    let end = usize::try_from(primary_span.end as i128 + offset_delta).ok()?;
+    Some((
+        path,
+        diagnostic.code,
+        diagnostic.message.clone(),
+        crate::lexer::Span::new(start, end),
+    ))
 }
 
 /// Make a path suitable for use as a stable source identity during analysis.
@@ -221,8 +267,11 @@ pub fn absolute_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{analyze_source, analyze_source_with_overlays, apply_fixes_and_validate};
-    use crate::diagnostic::{DiagnosticCode, Level, SourceRange, TextEdit};
+    use super::{
+        analyze_source, analyze_source_with_overlays, apply_fixes_and_validate, first_new_error,
+    };
+    use crate::diagnostic::{DiagnosticCode, LabelStyle, Level, SourceRange, TextEdit};
+    use crate::lexer::Span;
     use std::collections::HashMap;
     use std::path::Path;
 
@@ -317,5 +366,51 @@ mod tests {
         );
 
         assert!(apply_fixes_and_validate(&analysis, path, &[edit]).is_err());
+    }
+
+    #[test]
+    fn treats_the_same_error_at_a_new_location_as_new() {
+        let path = Path::new("/tmp/mux-lsp-analysis/moved-error.mux");
+        let source = "func main() returns void {\n    int value = \"wrong\"\n}\n";
+        let baseline = analyze_source(path, source);
+        let mut staged = analyze_source(path, source);
+        let diagnostic = staged
+            .diagnostics
+            .iter_mut()
+            .find(|diagnostic| {
+                diagnostic.level == Level::Error && diagnostic.code == DiagnosticCode::TypeMismatch
+            })
+            .expect("source should produce a type mismatch");
+        let label = diagnostic
+            .labels
+            .iter_mut()
+            .find(|label| label.style == LabelStyle::Primary)
+            .expect("type mismatch should have a primary source label");
+        let range = label
+            .span
+            .byte_range
+            .expect("label should have a source span");
+        label.span = Span::new(range.start + 1, range.end + 1);
+
+        assert!(first_new_error(&baseline, &staged, &[]).is_some());
+    }
+
+    #[test]
+    fn accepts_a_fix_that_shifts_an_unrelated_error() {
+        let path = Path::new("/tmp/mux-lsp-analysis/shifted-error.mux");
+        let source = "func main() returns void {\n    auto value = 1\n    int bad = \"wrong\"\n}\n";
+        let analysis = analyze_source(path, source);
+        let line = "    auto value = 1\n";
+        let start = source
+            .find(line)
+            .expect("source should contain the edited line");
+        let edit = TextEdit::machine_applicable(
+            analysis.root_file,
+            SourceRange::new(start, start + line.len()),
+            format!("{line}\n"),
+            DiagnosticCode::TypeMismatch,
+        );
+
+        assert!(apply_fixes_and_validate(&analysis, path, &[edit]).is_ok());
     }
 }
