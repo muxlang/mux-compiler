@@ -27,12 +27,16 @@ path = "src/main.rs"
 [dependencies]
 anstream = "1"
 anstyle = "1"
+crossbeam-channel = "0.5"
 ordered-float = "4.2"
 unicode-width = "0.1.11"
 fs2 = "0.4"
 lazy_static = "1.4"
 inkwell = { version = "0.9.0", features = ["llvm22-1"] }
 clap = { version = "4", features = ["derive"] }
+lsp-server = "0.10"
+lsp-types = "0.97"
+url = "2.5"
 # Resolved from muxlang/mux-runtime `main`, not crates.io: the compiler and the
 # runtime are ABI-coupled and change together, so a coupled change must build
 # against the source that defines the new FFI symbols rather than waiting on a

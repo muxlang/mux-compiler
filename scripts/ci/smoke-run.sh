@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove a given `mux` can compile and run real programs.
+# Prove a given `mux` can serve LSP requests and compile and run real programs.
 #
 # Takes the executable rather than a layout, so it works for anything that
 # produces one: a staged dist/ tree (scripts/ci/smoke-packaged.sh) or an install
@@ -29,7 +29,7 @@ if [[ ! -x "$mux" && ! -f "$mux" ]]; then
 fi
 
 echo "Smoke-testing: $mux"
-"$mux" --version || true
+"$mux" version > /dev/null
 
 # Misbehaving compiled programs (LLVM UB) hang rather than crash, so every run
 # is bounded. macOS ships no `timeout`, so fall back to gtimeout and then to a
@@ -64,6 +64,120 @@ run_bounded() {
     return "$rc"
   fi
 }
+
+# Keep this on the packaged binary in the cross-platform install matrix. It
+# proves the language server starts and completes its protocol lifecycle
+# without relying on the runtime archive used by compiled Mux programs.
+if ! (
+  unset MUX_RUNTIME_LIB
+  run_bounded 20 python3 - "$mux" 2> "$smoke_tmp/lsp.stderr" <<'PY'
+import json
+import queue
+import subprocess
+import sys
+import threading
+import time
+
+
+class PipeReader:
+    def __init__(self, stream):
+        self.chunks = queue.Queue()
+        self.pending = bytearray()
+        self.thread = threading.Thread(target=self._read, args=(stream,), daemon=True)
+        self.thread.start()
+
+    def _read(self, stream):
+        while True:
+            chunk = stream.read(4096)
+            self.chunks.put(chunk or None)
+            if not chunk:
+                return
+
+    def read_exact(self, length, deadline):
+        while len(self.pending) < length:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for an LSP response")
+            try:
+                chunk = self.chunks.get(timeout=remaining)
+            except queue.Empty as error:
+                raise TimeoutError("timed out waiting for an LSP response") from error
+            if chunk is None:
+                raise EOFError("Mux LSP server closed stdout before replying")
+            self.pending.extend(chunk)
+
+        result = bytes(self.pending[:length])
+        del self.pending[:length]
+        return result
+
+
+def read_message(reader):
+    deadline = time.monotonic() + 5
+    headers = bytearray()
+    while not headers.endswith(b"\r\n\r\n"):
+        headers.extend(reader.read_exact(1, deadline))
+    content_length = next(
+        int(line.split(b":", 1)[1].strip())
+        for line in headers.split(b"\r\n")
+        if line.lower().startswith(b"content-length:")
+    )
+    return json.loads(reader.read_exact(content_length, deadline))
+
+
+def send_message(stream, message):
+    body = json.dumps(message, separators=(",", ":")).encode()
+    stream.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+    stream.flush()
+
+
+process = subprocess.Popen(
+    [sys.argv[1], "lsp"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    bufsize=0,
+)
+reader = PipeReader(process.stdout)
+try:
+    send_message(
+        process.stdin,
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}},
+    )
+    initialized = read_message(reader)
+    capabilities = initialized.get("result", {}).get("capabilities", {})
+    if (
+        initialized.get("id") != 1
+        or capabilities.get("textDocumentSync") != 1
+        or capabilities.get("hoverProvider") is not True
+    ):
+        raise RuntimeError(f"unexpected initialize response: {initialized}")
+
+    send_message(process.stdin, {"jsonrpc": "2.0", "method": "initialized", "params": {}})
+    send_message(process.stdin, {"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": None})
+    shutdown = read_message(reader)
+    if shutdown.get("id") != 2 or shutdown.get("result") is not None:
+        raise RuntimeError(f"unexpected shutdown response: {shutdown}")
+
+    send_message(process.stdin, {"jsonrpc": "2.0", "method": "exit", "params": None})
+    process.stdin.close()
+    if process.wait(timeout=5) != 0:
+        raise RuntimeError(f"Mux LSP exited with status {process.returncode}")
+except Exception:
+    if process.poll() is None:
+        process.kill()
+    process.wait()
+    sys.stderr.write(process.stderr.read().decode(errors="replace"))
+    raise
+else:
+    process.stderr.close()
+    process.stdout.close()
+PY
+); then
+  cat "$smoke_tmp/lsp.stderr" >&2
+  printf '::error::%s failed the packaged LSP lifecycle smoke\n' "$mux"
+  exit 1
+fi
+echo "OK: completed the LSP initialize/shutdown lifecycle without MUX_RUNTIME_LIB."
 
 # MUX_RUNTIME_LIB is unset deliberately: it wins over every other resolution
 # path, so leaving it set would test whatever it points at rather than the

@@ -1,5 +1,6 @@
 mod build_config;
 mod format_config;
+mod lsp;
 mod version_banner;
 
 use mux_lang::{
@@ -111,6 +112,8 @@ enum Commands {
         #[arg(short, long)]
         check: bool,
     },
+    /// Start the Mux language server over stdio
+    Lsp,
     /// Check system dependencies for the Mux compiler
     Doctor {
         /// Validate contributor toolchain requirements (LLVM 22)
@@ -1754,6 +1757,13 @@ fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
                 }
             };
             process::exit(status);
+        }
+        Commands::Lsp => {
+            if let Err(error) = lsp::run() {
+                eprintln!("mux lsp: {error}");
+                process::exit(1);
+            }
+            process::exit(0);
         }
         Commands::Test {
             files,

@@ -21,7 +21,7 @@ pub(crate) fn load_from_current_directory() -> (FormatOptions, Vec<String>) {
     load_from_directory(&current_dir)
 }
 
-fn load_from_directory(current_dir: &Path) -> (FormatOptions, Vec<String>) {
+pub(crate) fn load_from_directory(current_dir: &Path) -> (FormatOptions, Vec<String>) {
     for directory in current_dir.ancestors() {
         if directory.parent().is_none() {
             break;
