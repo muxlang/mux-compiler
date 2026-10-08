@@ -1,27 +1,14 @@
 // Control flow
 auto x = 5
-
-if x > 0 {
-    print("Positive")
-} else {
-    print("Non-positive")
-}
+if x > 0 { print("Positive") } else { print("Non-positive") }
 
 match some(15) {
-some(v)if v > 10 {
-    print("Large: " + v.to_string())
-}
-some(v) {
-    print("Small: " + v.to_string())
-}
-none {
-    print("none")
-}
+    some(v) if v > 10 { print("Large: " + v.to_string()) }
+    some(v) { print("Small: " + v.to_string()) }
+    none { print("none") }
 }
 
-for int i in range(0, 3) {
-    print(i.to_string())
-}
+for int i in range(0, 3) { print(i.to_string()) }
 
 for int j in range(0, 10) {
     if j % 2 == 0 {
@@ -31,9 +18,7 @@ for int j in range(0, 10) {
     }
 }
 
-while x > 0 {
-    x -= 1
-}
+while x > 0 { x -= 1 }
 
 if x < 0 {
     print("Negative")
@@ -65,10 +50,12 @@ while x < 3 {
     x = x + 1
 }
 
-if x > 1 {
+if x > 1
+{
     print("nl brace then")
 }
-else {
+else
+{
     print("nl brace else")
 }
 
