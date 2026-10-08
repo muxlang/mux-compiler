@@ -3182,6 +3182,7 @@ mod tests {
     use crate::lexer::Span;
     use clap::Parser as _;
     use std::path::{Path, PathBuf};
+    #[cfg(unix)]
     use std::process::Command;
 
     #[test]
