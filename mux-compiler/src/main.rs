@@ -3182,6 +3182,7 @@ mod tests {
     use crate::lexer::Span;
     use clap::Parser as _;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     #[test]
     fn coverage_reports_require_a_complete_counted_format() {
@@ -3631,6 +3632,60 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Exercise the production environment lookup with the Unix object path
+    /// used by `main`. A subprocess keeps the temporary environment override
+    /// isolated from concurrently running tests.
+    #[cfg(unix)]
+    #[test]
+    fn build_linker_args_uses_runtime_env_with_stdin_object() {
+        const CHILD_MARKER: &str = "MUX_LINKER_ENV_TEST_CHILD";
+
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let archive = PathBuf::from(
+                std::env::var_os("MUX_RUNTIME_LIB").expect("parent sets runtime archive"),
+            );
+            let lib_dir = archive.parent().expect("archive has a parent directory");
+            let args = super::build_linker_args(Path::new("/dev/stdin"), lib_dir);
+
+            let archive_index = args
+                .iter()
+                .position(|arg| arg == archive.as_os_str())
+                .expect("the MUX_RUNTIME_LIB archive should be linked");
+            if cfg!(target_os = "linux") {
+                let math_index = args
+                    .iter()
+                    .position(|arg| arg == std::ffi::OsStr::new("-lm"))
+                    .expect("an explicit static runtime needs libm");
+                assert!(math_index > archive_index, "libm must follow the archive");
+            }
+            return;
+        }
+
+        let dir = unique_tmp("rtlib_env_stdin");
+        std::fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join("libmux_runtime-abc123.a");
+        std::fs::write(&archive, b"archive").unwrap();
+        std::fs::write(dir.join(dynamic_lib_name()), b"shared").unwrap();
+
+        let output = Command::new(std::env::current_exe().expect("test binary path"))
+            .args([
+                "--exact",
+                "tests::build_linker_args_uses_runtime_env_with_stdin_object",
+                "--nocapture",
+            ])
+            .env(CHILD_MARKER, "1")
+            .env("MUX_RUNTIME_LIB", &archive)
+            .output()
+            .expect("spawn isolated linker environment test");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            output.status.success(),
+            "isolated linker environment test failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// A static archive's undefined symbols are resolved only by libraries that
