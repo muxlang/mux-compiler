@@ -601,19 +601,22 @@ fn handle_formatting(
     let edits = documents
         .get(params.text_document.uri.as_str())
         .and_then(|document| {
-            let (mut options, warnings) = crate::format_config::load_from_directory(
+            let (mut config, warnings) = crate::format_config::load_from_directory(
                 &formatting_config_directory(document, workspace_folders),
             );
             for warning in warnings {
                 eprintln!("warning: {warning}");
             }
-            options.indent_type = if params.options.insert_spaces {
+            if !config.enabled {
+                return None;
+            }
+            config.options.indent_type = if params.options.insert_spaces {
                 mux_lang::formatter::IndentType::Space
             } else {
                 mux_lang::formatter::IndentType::Tab
             };
-            options.indent_count = params.options.tab_size.max(1) as usize;
-            mux_lang::formatter::format_source_with_options(&document.source, options)
+            config.options.indent_count = params.options.tab_size.max(1) as usize;
+            mux_lang::formatter::format_source_with_options(&document.source, config.options)
                 .ok()
                 .map(|formatted| (document, formatted))
         })
@@ -626,7 +629,8 @@ fn handle_formatting(
                 ),
                 new_text: formatted,
             }]
-        });
+        })
+        .unwrap_or_default();
     connection
         .sender
         .send(Response::new_ok(request.id, serde_json::to_value(edits)?).into())?;
