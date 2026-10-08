@@ -1738,11 +1738,15 @@ fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
             cli.deny_warnings,
         ),
         Commands::Format { files, check } => {
-            let (options, warnings) = format_config::load_from_current_directory();
+            let (config, warnings) = format_config::load_from_current_directory();
             for warning in warnings {
                 eprintln!("warning: {warning}");
             }
-            let status = match formatter::format_paths_with_options(files, *check, options) {
+            if !config.enabled {
+                eprintln!("mux format: disabled by mux-project.json");
+                process::exit(0);
+            }
+            let status = match formatter::format_paths_with_options(files, *check, config.options) {
                 Ok(outcome) => {
                     if *check {
                         for path in &outcome.changed {
@@ -2873,20 +2877,19 @@ fn native_runtime_deps(target_os: &str) -> &'static [&'static str] {
 /// budget. Keeping them together also means the whole link line can be read in
 /// one place.
 fn build_linker_args(object_file: &Path, lib_dir: &Path) -> Vec<std::ffi::OsString> {
-    // Unit tests use synthetic object paths and expect the directory-based
-    // resolution below. A real link always receives an object that was just
-    // produced by clang, so only then should the explicit archive override
-    // participate in linker argument construction.
-    let explicit_runtime = object_file
-        .is_file()
-        .then(runtime_lib_path_from_env)
-        .flatten();
-    build_linker_args_for_with_runtime(
-        env::consts::OS,
-        object_file,
-        lib_dir,
-        explicit_runtime.as_deref(),
-    )
+    // On Unix, clang reads the emitted object from `/dev/stdin`, which is not
+    // necessarily a regular file. The explicit runtime override must not
+    // depend on the object path's filesystem type.
+    let explicit_runtime = runtime_lib_path_from_env();
+    build_linker_args_with_runtime_override(object_file, lib_dir, explicit_runtime.as_deref())
+}
+
+fn build_linker_args_with_runtime_override(
+    object_file: &Path,
+    lib_dir: &Path,
+    explicit_runtime: Option<&Path>,
+) -> Vec<std::ffi::OsString> {
+    build_linker_args_for_with_runtime(env::consts::OS, object_file, lib_dir, explicit_runtime)
 }
 
 fn append_linker_output(args: &mut Vec<std::ffi::OsString>, output: &Path) {
@@ -2998,7 +3001,15 @@ fn build_linker_args_for_with_runtime(
     // using libm (e.g. `**`/`pow`) fails to link with "undefined reference to
     // pow" (issue #291). These must follow -lmux_runtime so the archive's
     // references are satisfied by the libraries after it.
-    if runtime_lib_dir_is_static_only(lib_dir) {
+    let selected_static_runtime = explicit_runtime.map_or_else(
+        || runtime_lib_dir_is_static_only(lib_dir),
+        |path| {
+            path.extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension == if windows { "lib" } else { "a" })
+        },
+    );
+    if selected_static_runtime {
         for native_lib in native_runtime_deps(target_os) {
             linker_args.push((*native_lib).into());
         }
@@ -3157,20 +3168,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        REQUIRED_LLVM_MAJOR, TestCase, TestResult, append_linker_output, build_linker_args,
-        build_linker_args_for, build_linker_args_for_with_runtime, clang_failure_detail,
-        clang_version_output, compiling_file, dir_holding_runtime_lib, extract_clang_major,
-        extract_test_cases, find_runtime_lib_in_dir, format_panic_detail,
-        internal_compiler_error_report, llvm_config_candidates, materialize_span_edits,
-        merge_coverage, native_runtime_deps, pick_llvm_for_dev, print_doctor_verdict,
-        print_version_banner, relativize_to_cwd, rename_main_declaration, report_clang_for_doctor,
-        report_runtime_for_doctor, runtime_lib_dir_is_static_only, set_compiling_file,
-        status_marker, validate_llvm_for_doctor,
+        REQUIRED_LLVM_MAJOR, TestCase, TestResult, append_linker_output, build_linker_args_for,
+        build_linker_args_with_runtime_override, clang_failure_detail, clang_version_output,
+        compiling_file, dir_holding_runtime_lib, extract_clang_major, extract_test_cases,
+        find_runtime_lib_in_dir, format_panic_detail, internal_compiler_error_report,
+        llvm_config_candidates, materialize_span_edits, merge_coverage, native_runtime_deps,
+        pick_llvm_for_dev, print_doctor_verdict, print_version_banner, relativize_to_cwd,
+        rename_main_declaration, report_clang_for_doctor, report_runtime_for_doctor,
+        runtime_lib_dir_is_static_only, set_compiling_file, status_marker,
+        validate_llvm_for_doctor,
     };
     use crate::diagnostic::{Diagnostic, DiagnosticCode, Files, SpanEdit};
     use crate::lexer::Span;
     use clap::Parser as _;
     use std::path::{Path, PathBuf};
+    #[cfg(unix)]
+    use std::process::Command;
 
     #[test]
     fn coverage_reports_require_a_complete_counted_format() {
@@ -3570,7 +3583,7 @@ mod tests {
     fn build_linker_args_links_the_object_and_the_runtime() {
         let dir = unique_tmp("linkargs_basic");
         std::fs::create_dir_all(&dir).unwrap();
-        let args = build_linker_args(Path::new("scratch.o"), &dir);
+        let args = build_linker_args_for(std::env::consts::OS, Path::new("scratch.o"), &dir);
 
         assert_eq!(
             args.first().map(std::ffi::OsString::as_os_str),
@@ -3586,25 +3599,94 @@ mod tests {
     fn explicit_runtime_path_wins_over_a_neighboring_shared_library() {
         let dir = unique_tmp("rtlib_explicit");
         std::fs::create_dir_all(&dir).unwrap();
-        let archive = dir.join(static_lib_name());
+        // Cargo gives explicit static runtime archives a hashed filename.
+        let archive = dir.join(if cfg!(target_os = "windows") {
+            "mux_runtime-abc123.lib"
+        } else {
+            "libmux_runtime-abc123.a"
+        });
         let shared = dir.join(dynamic_lib_name());
         std::fs::write(&archive, b"archive").unwrap();
         std::fs::write(&shared, b"shared").unwrap();
 
-        let args = build_linker_args_for_with_runtime(
-            "linux",
-            Path::new("scratch.o"),
-            &dir,
-            Some(&archive),
-        );
+        let args =
+            build_linker_args_with_runtime_override(Path::new("scratch.o"), &dir, Some(&archive));
         assert!(args.iter().any(|arg| arg == archive.as_os_str()));
         assert!(
             !args
                 .iter()
                 .any(|arg| arg == std::ffi::OsStr::new("-lmux_runtime"))
         );
+        if cfg!(target_os = "linux") {
+            let archive_index = args
+                .iter()
+                .position(|arg| arg == archive.as_os_str())
+                .unwrap();
+            let math_index = args
+                .iter()
+                .position(|arg| arg == std::ffi::OsStr::new("-lm"))
+                .expect("explicit static runtime needs libm even beside a shared library");
+            assert!(
+                math_index > archive_index,
+                "libm must follow the runtime archive"
+            );
+        }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Exercise the production environment lookup with the Unix object path
+    /// used by `main`. A subprocess keeps the temporary environment override
+    /// isolated from concurrently running tests.
+    #[cfg(unix)]
+    #[test]
+    fn build_linker_args_uses_runtime_env_with_stdin_object() {
+        const CHILD_MARKER: &str = "MUX_LINKER_ENV_TEST_CHILD";
+
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let archive = PathBuf::from(
+                std::env::var_os("MUX_RUNTIME_LIB").expect("parent sets runtime archive"),
+            );
+            let lib_dir = archive.parent().expect("archive has a parent directory");
+            let args = super::build_linker_args(Path::new("/dev/stdin"), lib_dir);
+
+            let archive_index = args
+                .iter()
+                .position(|arg| arg == archive.as_os_str())
+                .expect("the MUX_RUNTIME_LIB archive should be linked");
+            if cfg!(target_os = "linux") {
+                let math_index = args
+                    .iter()
+                    .position(|arg| arg == std::ffi::OsStr::new("-lm"))
+                    .expect("an explicit static runtime needs libm");
+                assert!(math_index > archive_index, "libm must follow the archive");
+            }
+            return;
+        }
+
+        let dir = unique_tmp("rtlib_env_stdin");
+        std::fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join("libmux_runtime-abc123.a");
+        std::fs::write(&archive, b"archive").unwrap();
+        std::fs::write(dir.join(dynamic_lib_name()), b"shared").unwrap();
+
+        let output = Command::new(std::env::current_exe().expect("test binary path"))
+            .args([
+                "--exact",
+                "tests::build_linker_args_uses_runtime_env_with_stdin_object",
+                "--nocapture",
+            ])
+            .env(CHILD_MARKER, "1")
+            .env("MUX_RUNTIME_LIB", &archive)
+            .output()
+            .expect("spawn isolated linker environment test");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            output.status.success(),
+            "isolated linker environment test failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// A static archive's undefined symbols are resolved only by libraries that
@@ -3616,7 +3698,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(static_lib_name()), b"x").unwrap();
 
-        let args = build_linker_args(Path::new("scratch.o"), &dir);
+        let args = build_linker_args_for(std::env::consts::OS, Path::new("scratch.o"), &dir);
         let runtime = args
             .iter()
             .position(|a| a == "-lmux_runtime")
@@ -3647,7 +3729,7 @@ mod tests {
         std::fs::write(dir.join(static_lib_name()), b"x").unwrap();
         std::fs::write(dir.join(dynamic_lib_name()), b"x").unwrap();
 
-        let args = build_linker_args(Path::new("scratch.o"), &dir);
+        let args = build_linker_args_for(std::env::consts::OS, Path::new("scratch.o"), &dir);
         let extra: Vec<&std::ffi::OsString> = args
             .iter()
             .filter(|a| a.to_string_lossy().starts_with("-l") && *a != "-lmux_runtime")
@@ -3741,7 +3823,7 @@ mod tests {
         let hashed_path = deps_dir.join("libmux_runtime-0123456789abcdef.a");
         std::fs::write(&hashed_path, b"x").unwrap();
         assert_eq!(find_runtime_lib_in_dir(&hashed_dir), Some(hashed_path));
-        let args = build_linker_args(Path::new("scratch.o"), &hashed_dir);
+        let args = build_linker_args_for(std::env::consts::OS, Path::new("scratch.o"), &hashed_dir);
         assert!(args.iter().any(|arg| {
             arg.to_string_lossy()
                 .ends_with("libmux_runtime-0123456789abcdef.a")

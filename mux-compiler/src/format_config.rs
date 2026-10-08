@@ -8,20 +8,35 @@ use mux_lang::formatter::{BraceStyle, FormatOptions, IndentType, TrailingComma, 
 
 const CONFIG_NAME: &str = "mux-project.json";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FormatConfig {
+    pub enabled: bool,
+    pub options: FormatOptions,
+}
+
+impl Default for FormatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            options: FormatOptions::default(),
+        }
+    }
+}
+
 /// Load the nearest project formatter settings from the current directory.
 /// The search stops after checking the nearest Git worktree root and never
 /// checks the filesystem root.
-pub(crate) fn load_from_current_directory() -> (FormatOptions, Vec<String>) {
+pub(crate) fn load_from_current_directory() -> (FormatConfig, Vec<String>) {
     let Ok(current_dir) = env::current_dir() else {
         return (
-            FormatOptions::default(),
+            FormatConfig::default(),
             vec!["could not determine the working directory; using formatter defaults".into()],
         );
     };
     load_from_directory(&current_dir)
 }
 
-pub(crate) fn load_from_directory(current_dir: &Path) -> (FormatOptions, Vec<String>) {
+pub(crate) fn load_from_directory(current_dir: &Path) -> (FormatConfig, Vec<String>) {
     for directory in current_dir.ancestors() {
         if directory.parent().is_none() {
             break;
@@ -32,7 +47,7 @@ pub(crate) fn load_from_directory(current_dir: &Path) -> (FormatOptions, Vec<Str
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return (
-                    FormatOptions::default(),
+                    FormatConfig::default(),
                     vec![format!(
                         "{}: could not inspect formatter config ({error}); using defaults",
                         config_path.display()
@@ -44,16 +59,16 @@ pub(crate) fn load_from_directory(current_dir: &Path) -> (FormatOptions, Vec<Str
             break;
         }
     }
-    (FormatOptions::default(), Vec::new())
+    (FormatConfig::default(), Vec::new())
 }
 
-fn load_file(path: &Path) -> (FormatOptions, Vec<String>) {
+fn load_file(path: &Path) -> (FormatConfig, Vec<String>) {
     let display_path = path.display().to_string();
     let source = match fs::read_to_string(path) {
         Ok(source) => source,
         Err(error) => {
             return (
-                FormatOptions::default(),
+                FormatConfig::default(),
                 vec![format!(
                     "{display_path}: could not read formatter config ({error}); using defaults"
                 )],
@@ -64,7 +79,7 @@ fn load_file(path: &Path) -> (FormatOptions, Vec<String>) {
         Ok(value) => value,
         Err(error) => {
             return (
-                FormatOptions::default(),
+                FormatConfig::default(),
                 vec![format!(
                     "{display_path}: invalid JSON ({error}); using formatter defaults"
                 )],
@@ -73,29 +88,30 @@ fn load_file(path: &Path) -> (FormatOptions, Vec<String>) {
     };
     let Some(root) = value.as_object() else {
         return (
-            FormatOptions::default(),
+            FormatConfig::default(),
             vec![format!(
                 "{display_path}: expected a JSON object; using formatter defaults"
             )],
         );
     };
 
-    let mut options = FormatOptions::default();
+    let mut config = FormatConfig::default();
     let mut warnings = Vec::new();
     warn_unknown_fields(root, &["format"], "", &display_path, &mut warnings);
     let Some(format_value) = root.get("format") else {
-        return (options, warnings);
+        return (config, warnings);
     };
     let Some(format) = format_value.as_object() else {
         warnings.push(format!(
             "{display_path}: 'format' must be an object; using formatter defaults"
         ));
-        return (options, warnings);
+        return (config, warnings);
     };
 
     warn_unknown_fields(
         format,
         &[
+            "enabled",
             "indent_type",
             "indent_count",
             "line_width",
@@ -110,6 +126,16 @@ fn load_file(path: &Path) -> (FormatOptions, Vec<String>) {
         &display_path,
         &mut warnings,
     );
+
+    if let Some(value) = format.get("enabled") {
+        if let Some(enabled) = value.as_bool() {
+            config.enabled = enabled;
+        } else {
+            invalid(&mut warnings, &display_path, "format.enabled", "a boolean");
+        }
+    }
+
+    let options = &mut config.options;
 
     if let Some(value) = format.get("indent_type") {
         match value.as_str() {
@@ -209,7 +235,7 @@ fn load_file(path: &Path) -> (FormatOptions, Vec<String>) {
             ),
         }
     }
-    (options, warnings)
+    (config, warnings)
 }
 
 fn set_blank_lines(
@@ -284,13 +310,26 @@ mod tests {
         )
         .unwrap();
 
-        let (options, warnings) = load_from_directory(&root);
+        let (config, warnings) = load_from_directory(&root);
 
-        assert_eq!(options.indent_type, IndentType::Tab);
-        assert_eq!(options.indent_count, 1);
-        assert_eq!(options.line_width, 100);
-        assert_eq!(options.blank_lines_between_declarations, 1);
+        assert_eq!(config.options.indent_type, IndentType::Tab);
+        assert_eq!(config.options.indent_count, 1);
+        assert_eq!(config.options.line_width, 100);
+        assert_eq!(config.options.blank_lines_between_declarations, 1);
+        assert!(config.enabled);
         assert_eq!(warnings.len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn formatting_can_be_disabled_in_project_config() {
+        let root = temp_dir();
+        fs::write(root.join(CONFIG_NAME), r#"{"format":{"enabled":false}}"#).unwrap();
+
+        let (config, warnings) = load_from_directory(&root);
+
+        assert!(!config.enabled);
+        assert!(warnings.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -303,11 +342,11 @@ mod tests {
         )
         .unwrap();
 
-        let (options, warnings) = load_from_directory(&root);
+        let (config, warnings) = load_from_directory(&root);
 
-        assert_eq!(options.indent_count, 1);
-        assert_eq!(options.line_width, 100);
-        assert_eq!(options.blank_lines_between_members, 0);
+        assert_eq!(config.options.indent_count, 1);
+        assert_eq!(config.options.line_width, 100);
+        assert_eq!(config.options.blank_lines_between_members, 0);
         assert_eq!(warnings.len(), 2);
         fs::remove_dir_all(root).unwrap();
     }
@@ -317,9 +356,9 @@ mod tests {
         let root = temp_dir();
         fs::write(root.join(CONFIG_NAME), "{").unwrap();
 
-        let (options, warnings) = load_from_directory(&root);
+        let (config, warnings) = load_from_directory(&root);
 
-        assert_eq!(options, FormatOptions::default());
+        assert_eq!(config, FormatConfig::default());
         assert_eq!(warnings.len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
@@ -333,9 +372,9 @@ mod tests {
         fs::write(root.join(CONFIG_NAME), r#"{"format":{"line_width":100}}"#).unwrap();
         fs::write(nested.join(CONFIG_NAME), r#"{"format":{"line_width":120}}"#).unwrap();
 
-        let (options, _) = load_from_directory(&nested);
+        let (config, _) = load_from_directory(&nested);
 
-        assert_eq!(options.line_width, 120);
+        assert_eq!(config.options.line_width, 120);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -346,9 +385,9 @@ mod tests {
         let worktree = parent.join("worktree");
         fs::create_dir_all(worktree.join(".git")).unwrap();
 
-        let (options, warnings) = load_from_directory(&worktree);
+        let (config, warnings) = load_from_directory(&worktree);
 
-        assert_eq!(options.line_width, 80);
+        assert_eq!(config.options.line_width, 80);
         assert!(warnings.is_empty());
         fs::remove_dir_all(parent).unwrap();
     }
@@ -361,9 +400,9 @@ mod tests {
         fs::create_dir_all(worktree.join(".git")).unwrap();
         fs::create_dir(worktree.join(CONFIG_NAME)).unwrap();
 
-        let (options, warnings) = load_from_directory(&worktree);
+        let (config, warnings) = load_from_directory(&worktree);
 
-        assert_eq!(options.line_width, 80);
+        assert_eq!(config.options.line_width, 80);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("could not read formatter config"));
         fs::remove_dir_all(parent).unwrap();
@@ -380,9 +419,9 @@ mod tests {
         fs::create_dir_all(worktree.join(".git")).unwrap();
         symlink("missing.json", worktree.join(CONFIG_NAME)).unwrap();
 
-        let (options, warnings) = load_from_directory(&worktree);
+        let (config, warnings) = load_from_directory(&worktree);
 
-        assert_eq!(options.line_width, 80);
+        assert_eq!(config.options.line_width, 80);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("could not read formatter config"));
         fs::remove_dir_all(parent).unwrap();
