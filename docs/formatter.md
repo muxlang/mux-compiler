@@ -33,6 +33,18 @@ Put formatter settings under `format`:
 }
 ```
 
+Set `format.enabled` to `false` to disable formatting for the project. Both
+`mux format` and formatting requests from the language server then leave source
+unchanged. Formatting is enabled by default.
+
+```json
+{
+  "format": {
+    "enabled": false
+  }
+}
+```
+
 The defaults are four spaces per indentation level, an 80-column target,
 opening block braces on the declaration line, and `where` clauses on their own
 line. There is one blank line between top-level declarations, no blank line

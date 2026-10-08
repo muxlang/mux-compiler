@@ -36,6 +36,85 @@ fn receive_response(stdout: &mut BufReader<ChildStdout>, id: u64) -> Value {
     }
 }
 
+#[test]
+fn formatting_respects_project_disable_setting() {
+    let root = std::env::temp_dir().join(format!("mux-lsp-format-disabled-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("mux-project.json"),
+        r#"{"format":{"enabled":false}}"#,
+    )
+    .unwrap();
+    let path = root.join("main.mux");
+    let uri = url::Url::from_file_path(path).unwrap().to_string();
+    let root_uri = url::Url::from_directory_path(&root).unwrap().to_string();
+    let (mut child, mut stdin, mut stdout) = start_server();
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": root_uri,
+                "workspaceFolders": [{"uri": root_uri, "name": "format-disabled"}]
+            }
+        }),
+    );
+    assert_eq!(receive_response(&mut stdout, 1)["id"], 1);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "method":"initialized", "params":{}}),
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "mux",
+                    "version": 1,
+                    "text": "func main() returns void {\nprint(1+2)\n}\n"
+                }
+            }
+        }),
+    );
+    assert_eq!(
+        receive(&mut stdout)["method"],
+        "textDocument/publishDiagnostics"
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": {"uri": uri},
+                "options": {"tabSize": 4, "insertSpaces": true}
+            }
+        }),
+    );
+    assert_eq!(receive_response(&mut stdout, 2)["result"], json!([]));
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "id":3, "method":"shutdown", "params":null}),
+    );
+    assert_eq!(receive_response(&mut stdout, 3)["id"], 3);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "method":"exit", "params":null}),
+    );
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn start_server() -> (Child, ChildStdin, BufReader<ChildStdout>) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_mux"))
         .arg("lsp")

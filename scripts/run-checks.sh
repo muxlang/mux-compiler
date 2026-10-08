@@ -8,8 +8,17 @@ service_tests_only=0
 
 cargo_cmd=(cargo)
 if [[ -x "$repo_root/scripts/dev-cargo.sh" ]] && [[ -z "${LLVM_CONFIG_PATH:-}" ]] && [[ -z "${LLVM_SYS_221_PREFIX:-}" ]]; then
+  target_dir="${CARGO_TARGET_DIR:-$repo_root/target/dev-cargo}"
   cargo_cmd=("$repo_root/scripts/dev-cargo.sh")
+else
+  target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
 fi
+if [[ "$target_dir" != /* ]]; then
+  target_dir="$PWD/$target_dir"
+fi
+export CARGO_TARGET_DIR="$target_dir"
+
+cd "$repo_root"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,7 +54,7 @@ run_step() {
 # or every program fails to link with "Could not locate the mux-runtime
 # library".
 run_step "cargo build" "${cargo_cmd[@]}" build -p mux-runtime -p mux-lang
-export MUX_RUNTIME_LIB="$repo_root/target/debug/libmux_runtime.a"
+export MUX_RUNTIME_LIB="$CARGO_TARGET_DIR/debug/libmux_runtime.a"
 
 # --service-tests-only runs the service_integration suite and nothing else.
 #
