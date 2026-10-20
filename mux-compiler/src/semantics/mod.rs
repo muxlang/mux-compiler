@@ -80,6 +80,7 @@ pub struct SemanticAnalyzer {
     pub(super) expression_guards: HashMap<Span, narrowing::Guard>,
     pub(super) symbol_table: SymbolTable,
     editor_references: Vec<ResolvedIdentifier>,
+    editor_type_references: RefCell<Vec<ResolvedIdentifier>>,
     editor_bindings: Vec<InferredBinding>,
     editor_members: Vec<ResolvedMember>,
     collect_editor_references: bool,
@@ -240,6 +241,7 @@ impl SemanticAnalyzer {
         Self {
             symbol_table,
             editor_references: Vec::new(),
+            editor_type_references: RefCell::new(Vec::new()),
             editor_bindings: Vec::new(),
             editor_members: Vec::new(),
             collect_editor_references: false,
@@ -394,7 +396,9 @@ impl SemanticAnalyzer {
 
     /// Take names resolved by expression analysis for editor navigation.
     pub fn take_editor_references(&mut self) -> Vec<ResolvedIdentifier> {
-        std::mem::take(&mut self.editor_references)
+        let mut references = std::mem::take(&mut self.editor_references);
+        references.append(&mut self.editor_type_references.borrow_mut());
+        references
     }
 
     /// Take local bindings whose inferred types are useful to editor clients.
@@ -1146,7 +1150,9 @@ impl SemanticAnalyzer {
                 )),
             },
             TypeKind::Named(name, type_args) => {
-                self.resolve_named_type(name, type_args, type_node.span)
+                let resolved = self.resolve_named_type(name, type_args, type_node.span)?;
+                self.record_editor_type_reference(name, type_node.span);
+                Ok(resolved)
             }
             TypeKind::Function { params, returns } => {
                 let resolved_params = params
@@ -1186,9 +1192,13 @@ impl SemanticAnalyzer {
                 ))
             }
 
-            TypeKind::TraitObject(inner) => self
-                .resolve_trait_object_target(inner, type_node.span)
-                .map(|target| Type::TraitObject(Box::new(target))),
+            TypeKind::TraitObject(inner) => {
+                let target = self.resolve_trait_object_target(inner, type_node.span)?;
+                if let TypeKind::Named(name, _) = &inner.kind {
+                    self.record_editor_type_reference(name, inner.span);
+                }
+                Ok(Type::TraitObject(Box::new(target)))
+            }
             TypeKind::Auto => Err(SemanticError::with_help(
                 DiagnosticCode::InvalidOperation,
                 "The 'auto' type is not allowed in this context",
@@ -1196,6 +1206,48 @@ impl SemanticAnalyzer {
                 "Use an explicit type annotation instead of 'auto'",
             )),
         }
+    }
+
+    fn record_editor_type_reference(&self, name: &str, span: Span) {
+        if !self.collect_editor_references {
+            return;
+        }
+        let bare_name = name.rsplit('.').next().unwrap_or(name);
+        let symbol = name
+            .rsplit_once('.')
+            .and_then(|(module, bare)| self.imported_symbols.get(module)?.get(bare).cloned())
+            .or_else(|| self.lookup_named_type_symbol(bare_name));
+        let Some(symbol) = symbol.filter(|symbol| {
+            matches!(
+                symbol.kind,
+                SymbolKind::Class | SymbolKind::Interface | SymbolKind::Enum | SymbolKind::Type
+            )
+        }) else {
+            return;
+        };
+        let Some(byte_range) = span.byte_range else {
+            return;
+        };
+        let start = byte_range.start + name.rfind('.').map_or(0, |index| index + 1);
+        let usage = Span::new(start, start + bare_name.len());
+        let source_path = self.source_path_for_symbol(bare_name, &symbol);
+        self.editor_type_references
+            .borrow_mut()
+            .push(ResolvedIdentifier {
+                name: bare_name.to_owned(),
+                source_name: symbol
+                    .original_name
+                    .clone()
+                    .unwrap_or_else(|| bare_name.to_owned()),
+                usage,
+                usage_path: self.current_file.clone(),
+                is_import: false,
+                declaration: Some(symbol.span),
+                kind: symbol.kind,
+                type_: None,
+                bound_methods: Vec::new(),
+                source_path,
+            });
     }
 
     /// Resolve a `TypeKind::Named` annotation: a generic type parameter, a

@@ -36,6 +36,20 @@ fn receive_response(stdout: &mut BufReader<ChildStdout>, id: u64) -> Value {
     }
 }
 
+fn text_in_range(source: &str, range: &Value) -> String {
+    let offset = |position: &Value| {
+        let line = position["line"].as_u64().unwrap() as usize;
+        let character = position["character"].as_u64().unwrap() as usize;
+        source
+            .split_inclusive('\n')
+            .take(line)
+            .map(str::len)
+            .sum::<usize>()
+            + character
+    };
+    source[offset(&range["start"])..offset(&range["end"])].to_owned()
+}
+
 #[test]
 fn formatting_respects_project_disable_setting() {
     let root = std::env::temp_dir().join(format!("mux-lsp-format-disabled-{}", std::process::id()));
@@ -138,10 +152,10 @@ fn workspace_references_rename_hints_and_folding_use_compiler_analysis() {
     let other_path = root.join("other.mux");
     std::fs::write(
         &tools_path,
-        "class Tool {\n    int value = 0\n    func get() returns int { return self.value }\n}\nfunc helper(int value) returns int { return value }\n",
+        "class Tool {\n    int value = 0\n    func get() returns int { return self.value }\n}\nfunc consume(Tool value) returns void { return }\nfunc helper(int value) returns int { return value }\n",
     )
     .unwrap();
-    let main_source = "import tools.(helper as assist, Tool)\nfunc example() returns int {\n    auto answer = assist(1)\n    auto tool = Tool.new()\n    return tool.get() + answer\n}\n";
+    let main_source = "import tools.(helper as assist, Tool)\nfunc example() returns int {\n    auto answer = assist(1)\n    auto tool = Tool.new()\n    auto a = 1\n    auto value = tool.value\n    return tool.get() + answer + value\n}\n";
     std::fs::write(
         &other_path,
         "import tools.(helper as assist, Tool)\nfunc other() returns int {\n    auto tool = Tool.new()\n    return tool.get() + assist(2)\n}\n",
@@ -243,6 +257,44 @@ fn workspace_references_rename_hints_and_folding_use_compiler_analysis() {
                 .any(|change| change["textDocument"]["uri"] == uri.as_str())
         );
     }
+    for change in &rename {
+        let uri = change["textDocument"]["uri"].as_str().unwrap();
+        let source = if uri == main_uri {
+            main_source.to_owned()
+        } else if uri == other_uri {
+            std::fs::read_to_string(&other_path).unwrap()
+        } else {
+            std::fs::read_to_string(&tools_path).unwrap()
+        };
+        for edit in change["edits"].as_array().unwrap() {
+            assert_eq!(text_in_range(&source, &edit["range"]), "helper");
+        }
+    }
+
+    let type_character = main_source.lines().next().unwrap().find("Tool").unwrap();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":10,
+            "method":"textDocument/references",
+            "params":{
+                "textDocument":{"uri":main_uri},
+                "position":{"line":0,"character":type_character},
+                "context":{"includeDeclaration":true}
+            }
+        }),
+    );
+    let type_references = receive_response(&mut stdout, 10)["result"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        type_references.iter().any(|location| {
+            location["uri"] == tools_uri && location["range"]["start"]["line"] == 4
+        }),
+        "type references should include the parameter annotation: {type_references:?}"
+    );
 
     let alias_character = main_source.lines().next().unwrap().find("assist").unwrap();
     send(
@@ -284,7 +336,7 @@ fn workspace_references_rename_hints_and_folding_use_compiler_analysis() {
     assert_eq!(alias_rename.len(), 1, "{alias_rename:?}");
     assert_eq!(alias_rename[0]["textDocument"]["uri"], main_uri);
 
-    let get_character = main_source.lines().nth(4).unwrap().find("get").unwrap();
+    let get_character = main_source.lines().nth(6).unwrap().find("get").unwrap();
     send(
         &mut stdin,
         json!({
@@ -293,7 +345,7 @@ fn workspace_references_rename_hints_and_folding_use_compiler_analysis() {
             "method":"textDocument/references",
             "params":{
                 "textDocument":{"uri":main_uri},
-                "position":{"line":4,"character":get_character},
+                "position":{"line":6,"character":get_character},
                 "context":{"includeDeclaration":true}
             }
         }),
@@ -312,7 +364,7 @@ fn workspace_references_rename_hints_and_folding_use_compiler_analysis() {
             "method":"textDocument/rename",
             "params":{
                 "textDocument":{"uri":main_uri},
-                "position":{"line":4,"character":get_character},
+                "position":{"line":6,"character":get_character},
                 "newName":"read_value"
             }
         }),
@@ -323,6 +375,30 @@ fn workspace_references_rename_hints_and_folding_use_compiler_analysis() {
         .clone();
     assert_eq!(member_rename.len(), 3, "{member_rename:?}");
 
+    let field_character = main_source.lines().nth(5).unwrap().rfind("value").unwrap();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":11,
+            "method":"textDocument/rename",
+            "params":{
+                "textDocument":{"uri":main_uri},
+                "position":{"line":5,"character":field_character},
+                "newName":"count"
+            }
+        }),
+    );
+    let field_rename = receive_response(&mut stdout, 11)["result"]["documentChanges"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        field_rename.len(),
+        2,
+        "field access must not select local `value`: {field_rename:?}"
+    );
+
     send(
         &mut stdin,
         json!({
@@ -331,7 +407,7 @@ fn workspace_references_rename_hints_and_folding_use_compiler_analysis() {
             "method":"textDocument/inlayHint",
             "params":{
                 "textDocument":{"uri":main_uri},
-                "range":{"start":{"line":0,"character":0},"end":{"line":4,"character":0}}
+                "range":{"start":{"line":0,"character":0},"end":{"line":7,"character":0}}
             }
         }),
     );
@@ -342,6 +418,12 @@ fn workspace_references_rename_hints_and_folding_use_compiler_analysis() {
     assert!(
         hints.iter().any(|hint| hint["label"] == ": int"),
         "{hints:?}"
+    );
+    assert!(
+        hints
+            .iter()
+            .any(|hint| { hint["position"]["line"] == 4 && hint["position"]["character"] == 10 }),
+        "the hint for `a` should follow its identifier, not the `auto` keyword: {hints:?}"
     );
 
     send(

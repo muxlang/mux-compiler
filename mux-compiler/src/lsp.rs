@@ -24,6 +24,7 @@ struct RequestTask {
     documents: HashMap<String, OpenDocument>,
     workspace_folders: Vec<PathBuf>,
     supports_document_changes: bool,
+    supports_snippets: bool,
 }
 
 struct DiagnosticTask {
@@ -73,11 +74,13 @@ struct ServerState {
     pending_diagnostics: Arc<Mutex<PendingDiagnostics>>,
     workspace_folders: Vec<PathBuf>,
     supports_document_changes: bool,
+    supports_snippets: bool,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (connection, io_threads) = Connection::stdio();
-    let (workspace_folders, supports_document_changes) = initialize(&connection)?;
+    let (workspace_folders, supports_document_changes, supports_snippets) =
+        initialize(&connection)?;
     let (task_sender, task_receiver) = std::sync::mpsc::channel::<WorkerTask>();
     let (result_sender, result_receiver) = std::sync::mpsc::channel::<WorkerResult>();
     let cancelled = Arc::new(Mutex::new(std::collections::HashSet::new()));
@@ -114,6 +117,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         pending_diagnostics,
         workspace_folders,
         supports_document_changes,
+        supports_snippets,
     };
     let event_loop_result = server_event_loop(&connection, &mut state);
     let shutdown_requested = state.shutdown_requested;
@@ -132,7 +136,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn initialize(connection: &Connection) -> Result<(Vec<PathBuf>, bool), Box<dyn std::error::Error>> {
+fn initialize(
+    connection: &Connection,
+) -> Result<(Vec<PathBuf>, bool, bool), Box<dyn std::error::Error>> {
     let (initialize_id, initialize_params) = connection.initialize_start()?;
     let initialize_params = serde_json::from_value::<lsp::InitializeParams>(initialize_params)?;
     let watch_mux_files = initialize_params
@@ -148,6 +154,14 @@ fn initialize(connection: &Connection) -> Result<(Vec<PathBuf>, bool), Box<dyn s
         .as_ref()
         .and_then(|workspace| workspace.workspace_edit.as_ref())
         .and_then(|edit| edit.document_changes)
+        .unwrap_or(false);
+    let supports_snippets = initialize_params
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|text_document| text_document.completion.as_ref())
+        .and_then(|completion| completion.completion_item.as_ref())
+        .and_then(|item| item.snippet_support)
         .unwrap_or(false);
     let legacy_root = initialize_root_path(&initialize_params);
     let mut workspace_folders = initialize_params
@@ -232,7 +246,11 @@ fn initialize(connection: &Connection) -> Result<(Vec<PathBuf>, bool), Box<dyn s
             .into(),
         )?;
     }
-    Ok((workspace_folders, supports_document_changes))
+    Ok((
+        workspace_folders,
+        supports_document_changes,
+        supports_snippets,
+    ))
 }
 
 fn server_event_loop(
@@ -296,6 +314,7 @@ fn handle_request(
             documents: state.documents.clone(),
             workspace_folders: state.workspace_folders.clone(),
             supports_document_changes: state.supports_document_changes,
+            supports_snippets: state.supports_snippets,
         }))
         .map_err(|_| "language server request worker stopped".into())
 }
@@ -605,6 +624,7 @@ fn run_request_task(
     let request_id = task.request.id.clone();
     let workspace_folders = task.workspace_folders.clone();
     let supports_document_changes = task.supports_document_changes;
+    let supports_snippets = task.supports_snippets;
     if lock_or_recover(cancelled, "request cancellation state").remove(&request_id) {
         return;
     }
@@ -638,9 +658,12 @@ fn run_request_task(
             supports_document_changes,
         ),
         "textDocument/hover" => handle_hover(&worker_connection, task.request, &task.documents),
-        "textDocument/completion" => {
-            handle_completion(&worker_connection, task.request, &task.documents)
-        }
+        "textDocument/completion" => handle_completion(
+            &worker_connection,
+            task.request,
+            &task.documents,
+            supports_snippets,
+        ),
         "textDocument/semanticTokens/full" => {
             handle_semantic_tokens(&worker_connection, task.request, &task.documents)
         }
@@ -880,22 +903,24 @@ fn handle_references(
         .and_then(|document| {
             let target =
                 symbol_target_at(document, params.text_document_position.position, documents)?;
-            workspace_references(&target, documents, workspace_folders).map(|mut locations| {
-                if params.context.include_declaration
-                    && let Some(range) =
-                        lsp_range_for_bytes(&target.path, &target.name_range, documents)
-                {
-                    locations.push(lsp::Location::new(target.uri.clone(), range));
-                }
-                locations.sort_by(|left, right| {
-                    left.uri
-                        .as_str()
-                        .cmp(right.uri.as_str())
-                        .then_with(|| left.range.start.cmp(&right.range.start))
-                });
-                locations.dedup();
-                locations
-            })
+            workspace_references(&target, documents, workspace_folders, true).map(
+                |mut locations| {
+                    if params.context.include_declaration
+                        && let Some(range) =
+                            lsp_range_for_bytes(&target.path, &target.name_range, documents)
+                    {
+                        locations.push(lsp::Location::new(target.uri.clone(), range));
+                    }
+                    locations.sort_by(|left, right| {
+                        left.uri
+                            .as_str()
+                            .cmp(right.uri.as_str())
+                            .then_with(|| left.range.start.cmp(&right.range.start))
+                    });
+                    locations.dedup();
+                    locations
+                },
+            )
         })
         .unwrap_or_default();
     connection
@@ -926,7 +951,7 @@ fn handle_rename(
     let key = params.text_document_position.text_document.uri.as_str();
     let edit = documents.get(key).and_then(|document| {
         let target = symbol_target_at(document, params.text_document_position.position, documents)?;
-        let references = workspace_references(&target, documents, workspace_folders)?;
+        let references = workspace_references(&target, documents, workspace_folders, false)?;
         let mut changes = HashMap::<String, (lsp::Uri, Vec<lsp::TextEdit>)>::new();
         let declaration_range = lsp_range_for_bytes(&target.path, &target.name_range, documents)?;
         changes
@@ -1046,6 +1071,13 @@ fn symbol_target_at(
                         && reference
                             .declaration
                             .and_then(|span| span.byte_range)
+                            .and_then(|range| {
+                                declaration_name_range(
+                                    &document.source,
+                                    range,
+                                    &reference.source_name,
+                                )
+                            })
                             .is_some_and(|range| range.start <= offset && offset < range.end)
                 })
                 .min_by_key(|reference| {
@@ -1287,38 +1319,11 @@ fn import_item_name_range(
     statement: mux_lang::lexer::ByteRange,
     expected_name: &str,
 ) -> Option<mux_lang::lexer::ByteRange> {
-    use mux_lang::syntax::{AstLoweringData as Data, SyntaxElement, SyntaxImportSpec};
-
-    fn visit(
-        source: &str,
-        node: &mux_lang::syntax::SyntaxNode,
-        statement: mux_lang::lexer::ByteRange,
-        expected_name: &str,
-    ) -> Option<mux_lang::lexer::ByteRange> {
-        if let Some(Data::Import { spec, ast_span, .. }) = node.lowering_data()
-            && *ast_span == statement
-        {
-            let items = match spec {
-                SyntaxImportSpec::Item { item, .. } => vec![*item],
-                SyntaxImportSpec::Items { items } => items.iter().map(|(item, _)| *item).collect(),
-                SyntaxImportSpec::Module { .. } | SyntaxImportSpec::Wildcard => Vec::new(),
-            };
-            return items
-                .into_iter()
-                .find(|item| source.get(item.start..item.end) == Some(expected_name));
-        }
-        for child in node.children() {
-            if let SyntaxElement::Node(child) = child
-                && let Some(range) = visit(source, child, statement, expected_name)
-            {
-                return Some(range);
-            }
-        }
-        None
-    }
-
-    let parsed = mux_lang::syntax::parse_source(source);
-    visit(source, parsed.tree.root(), statement, expected_name)
+    import_name_ranges(source, statement)?
+        .into_iter()
+        .find_map(|(item, _)| {
+            (source.get(item.start..item.end) == Some(expected_name)).then_some(item)
+        })
 }
 
 fn import_alias_name_range(
@@ -1327,54 +1332,61 @@ fn import_alias_name_range(
     imported_name: &str,
     alias_name: &str,
 ) -> Option<mux_lang::lexer::ByteRange> {
+    import_name_ranges(source, statement)?
+        .into_iter()
+        .find_map(|(item, alias)| {
+            let alias = alias?;
+            (source.get(item.start..item.end) == Some(imported_name)
+                && source.get(alias.start..alias.end) == Some(alias_name))
+            .then_some(alias)
+        })
+}
+
+fn import_name_ranges(
+    source: &str,
+    statement: mux_lang::lexer::ByteRange,
+) -> Option<
+    Vec<(
+        mux_lang::lexer::ByteRange,
+        Option<mux_lang::lexer::ByteRange>,
+    )>,
+> {
     use mux_lang::syntax::{AstLoweringData as Data, SyntaxElement, SyntaxImportSpec};
 
     fn visit(
-        source: &str,
         node: &mux_lang::syntax::SyntaxNode,
         statement: mux_lang::lexer::ByteRange,
-        imported_name: &str,
-        alias_name: &str,
-    ) -> Option<mux_lang::lexer::ByteRange> {
+    ) -> Option<
+        Vec<(
+            mux_lang::lexer::ByteRange,
+            Option<mux_lang::lexer::ByteRange>,
+        )>,
+    > {
         if let Some(Data::Import { spec, ast_span, .. }) = node.lowering_data()
             && *ast_span == statement
         {
-            let aliases = match spec {
-                SyntaxImportSpec::Item { item, alias } => alias
-                    .as_ref()
-                    .map(|alias| (*item, *alias))
-                    .into_iter()
-                    .collect(),
+            let names = match spec {
+                SyntaxImportSpec::Item { item, alias } => vec![(*item, alias.as_ref().copied())],
                 SyntaxImportSpec::Items { items } => items
                     .iter()
-                    .filter_map(|(item, alias)| alias.as_ref().map(|alias| (*item, *alias)))
+                    .map(|(item, alias)| (*item, alias.as_ref().copied()))
                     .collect(),
                 SyntaxImportSpec::Module { .. } | SyntaxImportSpec::Wildcard => Vec::new(),
             };
-            return aliases.into_iter().find_map(|(item, alias)| {
-                (source.get(item.start..item.end) == Some(imported_name)
-                    && source.get(alias.start..alias.end) == Some(alias_name))
-                .then_some(alias)
-            });
+            return Some(names);
         }
         for child in node.children() {
             if let SyntaxElement::Node(child) = child
-                && let Some(range) = visit(source, child, statement, imported_name, alias_name)
+                && let Some(ranges) = visit(child, statement)
             {
-                return Some(range);
+                return Some(ranges);
             }
         }
         None
     }
 
     let parsed = mux_lang::syntax::parse_source(source);
-    visit(
-        source,
-        parsed.tree.root(),
-        statement,
-        imported_name,
-        alias_name,
-    )
+    visit(parsed.tree.root(), statement)
 }
 
 fn declaration_name_range(
@@ -1442,6 +1454,7 @@ fn workspace_references(
     target: &SymbolTarget,
     documents: &HashMap<String, OpenDocument>,
     workspace_folders: &[PathBuf],
+    include_aliased_uses: bool,
 ) -> Option<Vec<lsp::Location>> {
     let sources = collect_workspace_sources(documents, workspace_folders);
     let overlays = sources
@@ -1456,95 +1469,129 @@ fn workspace_references(
             &overlays,
         );
         if let Some(alias) = &target.import_alias {
-            if same_path(&source.path, &target.path) {
-                for reference in &analysis.resolved_identifiers {
-                    if reference.is_import
-                        || reference.name != alias.local_name
-                        || reference.source_name != alias.imported_source_name
-                        || !reference
-                            .source_path
-                            .as_deref()
-                            .is_some_and(|path| same_path(path, &alias.imported_source_path))
-                        || !reference
-                            .usage_path
-                            .as_deref()
-                            .is_some_and(|path| same_path(path, &source.path))
-                    {
-                        continue;
-                    }
-                    let Some(usage) = reference.usage.byte_range else {
-                        continue;
-                    };
-                    let Some(range) = lsp_range(&source.source, usage) else {
-                        continue;
-                    };
-                    locations.push(lsp::Location::new(source.uri.clone(), range));
-                }
-            }
+            locations.extend(alias_references_for_source(
+                &source, &analysis, target, alias,
+            ));
             continue;
         }
-        for member in &analysis.resolved_members {
-            if target.member_owner_name.as_deref() != Some(member.owner_name.as_str())
-                || !same_path(&member.source_path, &target.path)
-                || member.name != target.source_name
-                || !member
-                    .usage_path
-                    .as_deref()
-                    .is_some_and(|path| same_path(path, &source.path))
-            {
-                continue;
-            }
-            let Some(range) = lsp_range(&source.source, member.usage) else {
-                continue;
-            };
-            locations.push(lsp::Location::new(source.uri.clone(), range));
-        }
+        locations.extend(member_references_for_source(&source, &analysis, target));
         if target.member_owner_name.is_some() {
             continue;
         }
-        for reference in &analysis.resolved_identifiers {
-            let Some(declaration) = reference.declaration.and_then(|span| span.byte_range) else {
-                continue;
-            };
-            let owner = reference.source_path.as_deref().unwrap_or(&source.path);
-            if !reference
-                .usage_path
-                .as_deref()
-                .is_some_and(|usage_path| same_path(usage_path, &source.path))
-                || !same_path(owner, &target.path)
-                || reference.source_name != target.source_name
-            {
-                continue;
-            }
-            let Some(owner_id) = reference
-                .source_path
-                .as_deref()
-                .and_then(|path| find_file_id(&analysis.files, path))
-                .or(Some(analysis.root_file))
-            else {
-                continue;
-            };
-            let Some(owner_source) = analysis.files.source(owner_id) else {
-                continue;
-            };
-            let Some(name_range) =
-                declaration_name_range(owner_source, declaration, &reference.source_name)
-            else {
-                continue;
-            };
-            if name_range.start != target.name_range.start {
-                continue;
-            }
-            let Some(usage) = resolved_identifier_usage_range(reference, &source.source) else {
-                continue;
-            };
-            let Some(range) = lsp_range(&source.source, usage) else {
-                continue;
-            };
-            locations.push(lsp::Location::new(source.uri.clone(), range));
-        }
+        locations.extend(identifier_references_for_source(
+            &source,
+            &analysis,
+            target,
+            include_aliased_uses,
+        ));
     }
     Some(locations)
+}
+
+fn alias_references_for_source(
+    source: &WorkspaceSource,
+    analysis: &mux_lang::analysis::Analysis,
+    target: &SymbolTarget,
+    alias: &ImportAliasTarget,
+) -> Vec<lsp::Location> {
+    if !same_path(&source.path, &target.path) {
+        return Vec::new();
+    }
+    analysis
+        .resolved_identifiers
+        .iter()
+        .filter(|reference| {
+            !reference.is_import
+                && reference.name == alias.local_name
+                && reference.source_name == alias.imported_source_name
+                && reference
+                    .source_path
+                    .as_deref()
+                    .is_some_and(|path| same_path(path, &alias.imported_source_path))
+                && reference
+                    .usage_path
+                    .as_deref()
+                    .is_some_and(|path| same_path(path, &source.path))
+        })
+        .filter_map(|reference| {
+            let usage = reference.usage.byte_range?;
+            let range = lsp_range(&source.source, usage)?;
+            Some(lsp::Location::new(source.uri.clone(), range))
+        })
+        .collect()
+}
+
+fn member_references_for_source(
+    source: &WorkspaceSource,
+    analysis: &mux_lang::analysis::Analysis,
+    target: &SymbolTarget,
+) -> Vec<lsp::Location> {
+    analysis
+        .resolved_members
+        .iter()
+        .filter(|member| {
+            target.member_owner_name.as_deref() == Some(member.owner_name.as_str())
+                && same_path(&member.source_path, &target.path)
+                && member.name == target.source_name
+                && member
+                    .usage_path
+                    .as_deref()
+                    .is_some_and(|path| same_path(path, &source.path))
+        })
+        .filter_map(|member| {
+            let range = lsp_range(&source.source, member.usage)?;
+            Some(lsp::Location::new(source.uri.clone(), range))
+        })
+        .collect()
+}
+
+fn identifier_references_for_source(
+    source: &WorkspaceSource,
+    analysis: &mux_lang::analysis::Analysis,
+    target: &SymbolTarget,
+    include_aliased_uses: bool,
+) -> Vec<lsp::Location> {
+    analysis
+        .resolved_identifiers
+        .iter()
+        .filter_map(|reference| {
+            identifier_reference_range(source, analysis, target, reference, include_aliased_uses)
+                .map(|range| lsp::Location::new(source.uri.clone(), range))
+        })
+        .collect()
+}
+
+fn identifier_reference_range(
+    source: &WorkspaceSource,
+    analysis: &mux_lang::analysis::Analysis,
+    target: &SymbolTarget,
+    reference: &mux_lang::semantics::ResolvedIdentifier,
+    include_aliased_uses: bool,
+) -> Option<lsp::Range> {
+    let declaration = reference.declaration.and_then(|span| span.byte_range)?;
+    if !include_aliased_uses && !reference.is_import && reference.name != reference.source_name {
+        return None;
+    }
+    let owner = reference.source_path.as_deref().unwrap_or(&source.path);
+    let usage_path = reference.usage_path.as_deref()?;
+    if !same_path(usage_path, &source.path)
+        || !same_path(owner, &target.path)
+        || reference.source_name != target.source_name
+    {
+        return None;
+    }
+    let owner_id = reference
+        .source_path
+        .as_deref()
+        .and_then(|path| find_file_id(&analysis.files, path))
+        .unwrap_or(analysis.root_file);
+    let owner_source = analysis.files.source(owner_id)?;
+    let name_range = declaration_name_range(owner_source, declaration, &reference.source_name)?;
+    if name_range.start != target.name_range.start {
+        return None;
+    }
+    let usage = resolved_identifier_usage_range(reference, &source.source)?;
+    lsp_range(&source.source, usage)
 }
 
 fn collect_workspace_sources(
@@ -2030,54 +2077,64 @@ fn function_parameter_names(
     function_name: &str,
     declaration: Option<mux_lang::lexer::ByteRange>,
 ) -> Vec<String> {
-    use mux_lang::syntax::{AstLoweringData as Data, SyntaxElement};
     let parsed = mux_lang::syntax::parse_source(source);
-    let mut pending = vec![parsed.tree.root()];
-    while let Some(node) = pending.pop() {
-        if let Some(Data::Function {
-            name, parameters, ..
-        }) = node.lowering_data()
-            && source.get(name.start..name.end) == Some(function_name)
-            && declaration.is_none_or(|range| {
-                range.start <= node.range().end && node.range().start <= range.end
-            })
-        {
-            let mut names = Vec::with_capacity(parameters.len());
-            for parameter_range in parameters {
-                let mut nested = vec![node];
-                let mut name = None;
-                while let Some(parameter_node) = nested.pop() {
-                    if parameter_node.range().start <= parameter_range.start
-                        && parameter_range.end <= parameter_node.range().end
-                        && let Some(Data::Parameter {
-                            name: name_range, ..
-                        }) = parameter_node.lowering_data()
-                    {
-                        name = source
-                            .get(name_range.start..name_range.end)
-                            .map(str::to_owned);
-                        break;
-                    }
-                    for child in parameter_node.children() {
-                        if let SyntaxElement::Node(child) = child
-                            && child.range().start <= parameter_range.start
-                            && parameter_range.end <= child.range().end
-                        {
-                            nested.push(child);
-                        }
-                    }
-                }
-                names.push(name.unwrap_or_else(|| format!("param{}", names.len() + 1)));
-            }
-            return names;
-        }
-        for child in node.children() {
-            if let SyntaxElement::Node(child) = child {
-                pending.push(child);
-            }
-        }
+    find_function_parameter_names(parsed.tree.root(), source, function_name, declaration)
+        .unwrap_or_default()
+}
+
+fn find_function_parameter_names(
+    node: &mux_lang::syntax::SyntaxNode,
+    source: &str,
+    function_name: &str,
+    declaration: Option<mux_lang::lexer::ByteRange>,
+) -> Option<Vec<String>> {
+    use mux_lang::syntax::{AstLoweringData as Data, SyntaxElement};
+    if let Some(Data::Function {
+        name, parameters, ..
+    }) = node.lowering_data()
+        && source.get(name.start..name.end) == Some(function_name)
+        && declaration
+            .is_none_or(|range| range.start <= node.range().end && node.range().start <= range.end)
+    {
+        return Some(
+            parameters
+                .iter()
+                .enumerate()
+                .map(|(index, range)| {
+                    find_parameter_name(node, source, *range)
+                        .unwrap_or_else(|| format!("param{}", index + 1))
+                })
+                .collect(),
+        );
     }
-    Vec::new()
+    node.children().iter().find_map(|child| match child {
+        SyntaxElement::Node(child) => {
+            find_function_parameter_names(child, source, function_name, declaration)
+        }
+        SyntaxElement::Token(_) => None,
+    })
+}
+
+fn find_parameter_name(
+    node: &mux_lang::syntax::SyntaxNode,
+    source: &str,
+    range: mux_lang::lexer::ByteRange,
+) -> Option<String> {
+    use mux_lang::syntax::{AstLoweringData as Data, SyntaxElement};
+    if node.range().start <= range.start
+        && range.end <= node.range().end
+        && let Some(Data::Parameter { name, .. }) = node.lowering_data()
+    {
+        return source.get(name.start..name.end).map(str::to_owned);
+    }
+    node.children().iter().find_map(|child| match child {
+        SyntaxElement::Node(child)
+            if child.range().start <= range.start && range.end <= child.range().end =>
+        {
+            find_parameter_name(child, source, range)
+        }
+        SyntaxElement::Node(_) | SyntaxElement::Token(_) => None,
+    })
 }
 
 fn symbol_kind_name(kind: &mux_lang::semantics::SymbolKind) -> &'static str {
@@ -2098,6 +2155,7 @@ fn handle_completion(
     connection: &Connection,
     request: Request,
     documents: &HashMap<String, OpenDocument>,
+    supports_snippets: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let params = serde_json::from_value::<lsp::CompletionParams>(request.params)?;
     let key = params.text_document_position.text_document.uri.as_str();
@@ -2108,11 +2166,12 @@ fn handle_completion(
                 .values()
                 .map(|open| (open.path.clone(), open.source.clone()))
                 .collect::<HashMap<_, _>>();
-            complete(
+            complete_with_snippet_support(
                 &document.source,
                 params.text_document_position.position,
                 &document.path,
                 &overlays,
+                supports_snippets,
             )
         })
         .unwrap_or_default();
@@ -2172,100 +2231,145 @@ fn semantic_tokens(
     let parameter_type_ranges = collect_parameter_type_ranges(parsed.tree.root());
 
     for reference in &analysis.resolved_identifiers {
-        if !reference
-            .usage_path
-            .as_deref()
-            .is_some_and(|path| same_path(path, &document.path))
-        {
-            continue;
-        }
-        let Some(range) = resolved_identifier_usage_range(reference, &document.source) else {
-            continue;
-        };
-        let Some(kind) = document.source.get(range.start..range.end) else {
-            continue;
-        };
-        let declaration_is_local = reference
-            .source_path
-            .as_deref()
-            .is_none_or(|path| same_path(path, &document.path));
-        let declaration_range = declaration_is_local
-            .then(|| reference.declaration.and_then(|span| span.byte_range))
-            .flatten();
-        let declared_semantic = declaration_range.and_then(|declaration| {
-            semantic
-                .iter()
-                .filter(|((start, end), _)| declaration.start <= *start && *end <= declaration.end)
-                .filter(|((start, end), _)| {
-                    document.source.get(*start..*end) == Some(reference.name.as_str())
-                })
-                .min_by_key(|((start, end), _)| end - start)
-        });
-        let declared_token_type = declared_semantic.map(|(_, (token_type, _))| *token_type);
-        let is_parameter = declaration_range
-            .is_some_and(|range| parameter_type_ranges.contains(&(range.start, range.end)));
-        let type_reference = semantic
-            .get(&(range.start, range.end))
-            .map(|(token_type, _)| *token_type)
-            .filter(|token_type| {
-                matches!(
-                    *token_type,
-                    SEMANTIC_TOKEN_TYPE
-                        | SEMANTIC_TOKEN_CLASS
-                        | SEMANTIC_TOKEN_ENUM
-                        | SEMANTIC_TOKEN_INTERFACE
-                )
-            });
-        let token_type = if reference.name == "some"
-            && reference.declaration.is_none()
-            && matches!(&reference.kind, mux_lang::semantics::SymbolKind::Function)
-        {
-            SEMANTIC_TOKEN_TYPE
-        } else {
-            type_reference.unwrap_or_else(|| {
-                declared_token_type.unwrap_or_else(|| {
-                    if is_parameter {
-                        SEMANTIC_TOKEN_PARAMETER
-                    } else {
-                        semantic_type_for_symbol(&reference.kind, kind, &parsed.tree, range.start)
-                    }
-                })
-            })
-        };
-        let modifiers = if reference.declaration.is_none() {
-            4
-        } else if matches!(&reference.kind, mux_lang::semantics::SymbolKind::Constant)
-            || declared_semantic.is_some_and(|(_, (_, modifiers))| *modifiers & 2 != 0)
-        {
-            2
-        } else {
-            0
-        };
-        semantic.insert((range.start, range.end), (token_type, modifiers));
-
-        if declaration_is_local
-            && let Some(declaration) = reference.declaration.and_then(|span| span.byte_range)
-            && let Some(declaration_text) = document.source.get(declaration.start..declaration.end)
-            && let Some(name_offset) = declaration_text.find(&reference.name)
-        {
-            let start = declaration.start + name_offset;
-            let end = start + reference.name.len();
-            let existing_modifiers = semantic
-                .get(&(start, end))
-                .map_or(0, |(_, modifiers)| *modifiers);
-            semantic.insert((start, end), (token_type, existing_modifiers | 1));
-        }
+        add_resolved_identifier_semantic(
+            document,
+            &parsed.tree,
+            &parameter_type_ranges,
+            reference,
+            &mut semantic,
+        );
     }
 
     collect_member_access_semantics(parsed.tree.root(), &mut semantic);
+    encode_semantic_tokens(&document.source, parsed.tree.tokens(), semantic)
+}
 
+fn add_resolved_identifier_semantic(
+    document: &OpenDocument,
+    tree: &mux_lang::syntax::SyntaxTree,
+    parameter_type_ranges: &std::collections::HashSet<(usize, usize)>,
+    reference: &mux_lang::semantics::ResolvedIdentifier,
+    semantic: &mut HashMap<(usize, usize), (u32, u32)>,
+) {
+    if !reference
+        .usage_path
+        .as_deref()
+        .is_some_and(|path| same_path(path, &document.path))
+    {
+        return;
+    }
+    let Some(range) = resolved_identifier_usage_range(reference, &document.source) else {
+        return;
+    };
+    let Some(kind) = document.source.get(range.start..range.end) else {
+        return;
+    };
+    let declaration_is_local = reference
+        .source_path
+        .as_deref()
+        .is_none_or(|path| same_path(path, &document.path));
+    let declaration_range = declaration_is_local
+        .then(|| reference.declaration.and_then(|span| span.byte_range))
+        .flatten();
+    let declared_semantic = declaration_range.and_then(|declaration| {
+        semantic
+            .iter()
+            .filter(|((start, end), _)| declaration.start <= *start && *end <= declaration.end)
+            .filter(|((start, end), _)| {
+                document.source.get(*start..*end) == Some(reference.name.as_str())
+            })
+            .min_by_key(|((start, end), _)| end - start)
+    });
+    let declared_token_type = declared_semantic.map(|(_, (token_type, _))| *token_type);
+    let is_parameter = declaration_range
+        .is_some_and(|range| parameter_type_ranges.contains(&(range.start, range.end)));
+    let type_reference = semantic
+        .get(&(range.start, range.end))
+        .map(|(token_type, _)| *token_type)
+        .filter(|token_type| {
+            matches!(
+                *token_type,
+                SEMANTIC_TOKEN_TYPE
+                    | SEMANTIC_TOKEN_CLASS
+                    | SEMANTIC_TOKEN_ENUM
+                    | SEMANTIC_TOKEN_INTERFACE
+            )
+        });
+    let token_type = if reference.name == "some"
+        && reference.declaration.is_none()
+        && matches!(&reference.kind, mux_lang::semantics::SymbolKind::Function)
+    {
+        SEMANTIC_TOKEN_TYPE
+    } else {
+        type_reference.unwrap_or_else(|| {
+            declared_token_type.unwrap_or_else(|| {
+                if is_parameter {
+                    SEMANTIC_TOKEN_PARAMETER
+                } else {
+                    semantic_type_for_symbol(&reference.kind, kind, tree, range.start)
+                }
+            })
+        })
+    };
+    let modifiers = if reference.declaration.is_none() {
+        4
+    } else if matches!(&reference.kind, mux_lang::semantics::SymbolKind::Constant)
+        || declared_semantic.is_some_and(|(_, (_, modifiers))| *modifiers & 2 != 0)
+    {
+        2
+    } else {
+        0
+    };
+    semantic.insert((range.start, range.end), (token_type, modifiers));
+    add_declaration_semantic_modifier(
+        document,
+        reference,
+        declaration_is_local,
+        token_type,
+        semantic,
+    );
+}
+
+fn add_declaration_semantic_modifier(
+    document: &OpenDocument,
+    reference: &mux_lang::semantics::ResolvedIdentifier,
+    declaration_is_local: bool,
+    token_type: u32,
+    semantic: &mut HashMap<(usize, usize), (u32, u32)>,
+) {
+    let Some(declaration) = reference
+        .declaration
+        .and_then(|span| span.byte_range)
+        .filter(|_| declaration_is_local)
+    else {
+        return;
+    };
+    let Some(declaration_text) = document.source.get(declaration.start..declaration.end) else {
+        return;
+    };
+    let Some(name_offset) = declaration_text.find(&reference.name) else {
+        return;
+    };
+    let start = declaration.start + name_offset;
+    let end = start + reference.name.len();
+    let existing_modifiers = semantic
+        .get(&(start, end))
+        .map_or(0, |(_, modifiers)| *modifiers);
+    semantic.insert((start, end), (token_type, existing_modifiers | 1));
+}
+
+fn encode_semantic_tokens(
+    source: &str,
+    tokens: &[mux_lang::syntax::SyntaxToken],
+    semantic: HashMap<(usize, usize), (u32, u32)>,
+) -> lsp::SemanticTokens {
     let mut raw = Vec::<(u32, u32, u32, u32, u32)>::new();
-    for token in parsed.tree.tokens() {
+    for token in tokens {
         let range = token.range();
         if range.start == range.end {
             continue;
         }
-        let Some(text) = document.source.get(range.start..range.end) else {
+        let Some(text) = source.get(range.start..range.end) else {
             continue;
         };
         let Some(token_type) = lexical_semantic_type(token.kind(), text) else {
@@ -2282,17 +2386,12 @@ fn semantic_tokens(
         for (relative, byte) in text.bytes().enumerate() {
             if byte == b'\n' {
                 let mut segment_end = range.start + relative;
-                if document
-                    .source
-                    .as_bytes()
-                    .get(segment_end.saturating_sub(1))
-                    == Some(&b'\r')
-                {
+                if source.as_bytes().get(segment_end.saturating_sub(1)) == Some(&b'\r') {
                     segment_end -= 1;
                 }
                 if segment_start < segment_end {
                     push_semantic_segment(
-                        &document.source,
+                        source,
                         segment_start,
                         segment_end,
                         token_type,
@@ -2305,7 +2404,7 @@ fn semantic_tokens(
         }
         if segment_start < range.end {
             push_semantic_segment(
-                &document.source,
+                source,
                 segment_start,
                 range.end,
                 token_type,
@@ -2728,11 +2827,22 @@ fn semantic_type_for_symbol(
     }
 }
 
+#[cfg(test)]
 fn complete(
     source: &str,
     position: lsp::Position,
     path: &std::path::Path,
     overlays: &HashMap<PathBuf, String>,
+) -> Vec<lsp::CompletionItem> {
+    complete_with_snippet_support(source, position, path, overlays, true)
+}
+
+fn complete_with_snippet_support(
+    source: &str,
+    position: lsp::Position,
+    path: &std::path::Path,
+    overlays: &HashMap<PathBuf, String>,
+    supports_snippets: bool,
 ) -> Vec<lsp::CompletionItem> {
     let symbols = document_symbols(source);
     let offset = position_to_offset(source, position);
@@ -2820,7 +2930,7 @@ fn complete(
             let next_is_call = source[prefix_end..]
                 .trim_start_matches([' ', '\t'])
                 .starts_with('(');
-            let use_snippet = function && !next_is_call;
+            let use_snippet = supports_snippets && function && !next_is_call;
             let documentation = type_detail.as_ref().map(|detail| {
                 lsp::Documentation::MarkupContent(lsp::MarkupContent {
                     kind: lsp::MarkupKind::Markdown,
@@ -3875,9 +3985,9 @@ fn handle_inlay_hints(
             })
             .filter_map(|binding| {
                 let declaration = binding.span.byte_range?;
-                let text = document.source.get(declaration.start..declaration.end)?;
-                let start = declaration.start + text.find(&binding.name)?;
-                let end = start + binding.name.len();
+                let name_range =
+                    declaration_name_range(&document.source, declaration, &binding.name)?;
+                let end = name_range.end;
                 if !document.source.is_char_boundary(end) {
                     return None;
                 }
@@ -4252,9 +4362,9 @@ fn floor_char_boundary(source: &str, mut offset: usize) -> usize {
 mod tests {
     use super::{
         OpenDocument, PendingDiagnostics, RequestTask, WorkerResult, WorkerTask, complete,
-        find_member_access_base, formatting_config_directory, lock_or_recover, lsp,
-        offset_to_position, position_to_offset, run_request_task, schedule_diagnostics,
-        semantic_tokens, update_workspace_folders,
+        complete_with_snippet_support, find_member_access_base, formatting_config_directory,
+        lock_or_recover, lsp, offset_to_position, position_to_offset, run_request_task,
+        schedule_diagnostics, semantic_tokens, update_workspace_folders,
     };
     use lsp_server::{Message, Request};
     use lsp_types::Position;
@@ -4284,6 +4394,7 @@ mod tests {
             documents: HashMap::new(),
             workspace_folders: Vec::new(),
             supports_document_changes: false,
+            supports_snippets: false,
         };
         let cancelled = Arc::new(Mutex::new(std::collections::HashSet::new()));
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -4636,6 +4747,20 @@ mod tests {
             greet.detail
         );
         assert_eq!(greet.insert_text.as_deref(), Some("greet($0)"));
+
+        let items = complete_with_snippet_support(
+            source,
+            offset_to_position(source, cursor),
+            std::path::Path::new("/tmp/mux-completion-signature.mux"),
+            &HashMap::new(),
+            false,
+        );
+        let greet = items.iter().find(|item| item.label == "greet").unwrap();
+        assert_eq!(greet.insert_text.as_deref(), Some("greet"));
+        assert_eq!(
+            greet.insert_text_format,
+            Some(lsp::InsertTextFormat::PLAIN_TEXT)
+        );
 
         let source_with_call = source.replace("    gr\n", "    gr(\n");
         let cursor = source_with_call.rfind("gr(").unwrap() + 2;
