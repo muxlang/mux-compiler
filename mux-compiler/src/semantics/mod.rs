@@ -80,6 +80,8 @@ pub struct SemanticAnalyzer {
     pub(super) expression_guards: HashMap<Span, narrowing::Guard>,
     pub(super) symbol_table: SymbolTable,
     editor_references: Vec<ResolvedIdentifier>,
+    editor_bindings: Vec<InferredBinding>,
+    editor_members: Vec<ResolvedMember>,
     collect_editor_references: bool,
     editor_imported_modules: HashMap<String, HashMap<String, SymbolKind>>,
     current_bounds: std::collections::HashMap<String, GenericBounds>,
@@ -160,8 +162,16 @@ pub struct SemanticAnalyzer {
 pub struct ResolvedIdentifier {
     /// The visible name at this use site.
     pub name: String,
+    /// The name written at the defining source declaration. This differs from
+    /// `name` when an import introduces an alias.
+    pub source_name: String,
     /// Exact source range of the name expression.
     pub usage: Span,
+    /// Source file containing the usage, including imported-module analysis.
+    pub usage_path: Option<std::path::PathBuf>,
+    /// Whether this source range belongs to a named import item. The range is
+    /// the full import declaration; editor clients narrow it to the item token.
+    pub is_import: bool,
     /// Declaration range when the binding has source text.
     pub declaration: Option<Span>,
     /// Semantic category used to produce editor information.
@@ -172,6 +182,26 @@ pub struct ResolvedIdentifier {
     pub bound_methods: Vec<String>,
     /// Defining module path for an imported source declaration.
     pub source_path: Option<std::path::PathBuf>,
+}
+
+/// A local binding whose type the compiler inferred, retained for editor hints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InferredBinding {
+    pub name: String,
+    pub span: Span,
+    pub type_: types::Type,
+    pub source_path: Option<std::path::PathBuf>,
+}
+
+/// A source-backed member access resolved on a user-defined type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedMember {
+    pub owner_name: String,
+    pub name: String,
+    pub usage: crate::lexer::ByteRange,
+    pub usage_path: Option<std::path::PathBuf>,
+    pub source_path: std::path::PathBuf,
+    pub kind: types::SymbolKind,
 }
 
 impl Default for SemanticAnalyzer {
@@ -210,6 +240,8 @@ impl SemanticAnalyzer {
         Self {
             symbol_table,
             editor_references: Vec::new(),
+            editor_bindings: Vec::new(),
+            editor_members: Vec::new(),
             collect_editor_references: false,
             editor_imported_modules: HashMap::new(),
             flow: narrowing::FlowState::default(),
@@ -363,6 +395,67 @@ impl SemanticAnalyzer {
     /// Take names resolved by expression analysis for editor navigation.
     pub fn take_editor_references(&mut self) -> Vec<ResolvedIdentifier> {
         std::mem::take(&mut self.editor_references)
+    }
+
+    /// Take local bindings whose inferred types are useful to editor clients.
+    pub fn take_editor_bindings(&mut self) -> Vec<InferredBinding> {
+        std::mem::take(&mut self.editor_bindings)
+    }
+
+    /// Take resolved member accesses for editor navigation and refactoring.
+    pub fn take_editor_members(&mut self) -> Vec<ResolvedMember> {
+        std::mem::take(&mut self.editor_members)
+    }
+
+    pub(super) fn record_editor_member(
+        &mut self,
+        receiver_type: &Type,
+        field: &str,
+        access_span: Span,
+    ) {
+        if !self.collect_editor_references {
+            return;
+        }
+        let receiver_type = match receiver_type {
+            Type::Reference(inner) => inner.as_ref(),
+            receiver_type => receiver_type,
+        };
+        let (Type::Named(name, _) | Type::Instantiated(name, _)) = receiver_type else {
+            return;
+        };
+        let Some(symbol) = self.lookup_named_type_symbol(name) else {
+            return;
+        };
+        if !matches!(
+            symbol.kind.clone(),
+            SymbolKind::Class | SymbolKind::Interface | SymbolKind::Enum
+        ) || (!symbol.methods.contains_key(field) && !symbol.fields.contains_key(field))
+        {
+            return;
+        }
+        let Some(access) = access_span.byte_range else {
+            return;
+        };
+        let Some(start) = access.end.checked_sub(field.len()) else {
+            return;
+        };
+        if start < access.start {
+            return;
+        }
+        let Some(source_path) = self
+            .source_path_for_symbol(name, &symbol)
+            .or_else(|| self.current_file.clone())
+        else {
+            return;
+        };
+        self.editor_members.push(ResolvedMember {
+            owner_name: symbol.original_name.clone().unwrap_or_else(|| name.clone()),
+            name: field.to_owned(),
+            usage: crate::lexer::ByteRange::new(start, access.end),
+            usage_path: self.current_file.clone(),
+            source_path,
+            kind: symbol.kind.clone(),
+        });
     }
 
     /// Retain resolved source references for editor features such as
@@ -918,6 +1011,10 @@ impl SemanticAnalyzer {
         // One generic-arity pass over every type annotation, now
         // that all type symbols and their type parameters are registered (#303).
         self.validate_all_type_arities(ast);
+        let warning_source = self
+            .current_file_id
+            .and_then(|file_id| files.as_deref().and_then(|files| files.source(file_id)))
+            .map(str::to_owned);
         self.analyze_nodes(ast, files);
         // Two-pass analysis (hoist/collection, then body analysis) can resolve
         // the same field or signature type twice, so a type error on it is
@@ -928,7 +1025,7 @@ impl SemanticAnalyzer {
             .iter()
             .any(|error| error.code.level() == crate::diagnostic::Level::Error);
         if !has_errors && !self.is_imported_module {
-            errors.extend(warnings::collect(ast));
+            errors.extend(warnings::collect(ast, warning_source.as_deref()));
         }
         let mut seen = HashSet::new();
         errors.retain(|e| seen.insert((e.code, e.message.clone(), *e.span, e.file_id)));
@@ -1451,8 +1548,8 @@ impl SemanticAnalyzer {
             ExpressionKind::Call { func, args } => {
                 self.resolve_call_expression_type(func, args, expr.span)
             }
-            ExpressionKind::FieldAccess { expr, field } => {
-                self.resolve_field_access_type(expr, field, expr.span)
+            ExpressionKind::FieldAccess { expr: base, field } => {
+                self.resolve_field_access_type(base, field, base.span, expr.span)
             }
             ExpressionKind::ListAccess { expr, index: _ } => {
                 self.resolve_list_access_type(expr, expr.span)
@@ -1516,6 +1613,7 @@ impl SemanticAnalyzer {
         expr: &ExpressionNode,
         field: &str,
         span: Span,
+        access_span: Span,
     ) -> Result<Type, SemanticError> {
         let expr_type_res = self.get_expression_type(expr);
         let expr_type = match expr_type_res {
@@ -1571,14 +1669,20 @@ impl SemanticAnalyzer {
                     Type::Named(_, args) | Type::Instantiated(_, args) => args.clone(),
                     _ => Vec::new(),
                 };
+                self.record_editor_member(&expr_type, field, access_span);
                 return Ok(Type::Named(enum_name, type_args));
             }
+            self.record_editor_member(&expr_type, field, access_span);
             return Err(Self::enum_variant_needs_arguments(
                 &enum_name, field, arity, span,
             ));
         }
 
-        self.resolve_field_access_by_type(&expr_type, field, span)
+        let result = self.resolve_field_access_by_type(&expr_type, field, span);
+        if result.is_ok() {
+            self.record_editor_member(&expr_type, field, access_span);
+        }
+        result
     }
 
     /// If `field` names a variant of the user enum `expr_type`, return the enum's
@@ -2119,6 +2223,7 @@ impl SemanticAnalyzer {
         }
         let base_type = self.get_expression_type(base).ok()?;
         let (enum_name, arity) = self.enum_variant_arity(&base_type, field)?;
+        self.record_editor_member(&base_type, field, func.span);
 
         if arity == 0 {
             return Some(Err(SemanticError::with_help(
@@ -2631,7 +2736,13 @@ impl SemanticAnalyzer {
                 let bound_methods = self.editor_bound_methods(&type_);
                 self.editor_references.push(ResolvedIdentifier {
                     name: name.to_owned(),
+                    source_name: symbol
+                        .original_name
+                        .clone()
+                        .unwrap_or_else(|| name.to_owned()),
                     usage: span,
+                    usage_path: self.current_file.clone(),
+                    is_import: false,
                     declaration: symbol.span.byte_range.map(|_| symbol.span),
                     kind: symbol.kind,
                     type_: Some(type_.clone()),
@@ -2651,7 +2762,10 @@ impl SemanticAnalyzer {
             if self.collect_editor_references {
                 self.editor_references.push(ResolvedIdentifier {
                     name: name.to_owned(),
+                    source_name: name.to_owned(),
                     usage: span,
+                    usage_path: self.current_file.clone(),
+                    is_import: false,
                     declaration: None,
                     kind: SymbolKind::Function,
                     type_: Some(type_.clone()),

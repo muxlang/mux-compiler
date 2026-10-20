@@ -180,6 +180,12 @@ impl SemanticAnalyzer {
     /// that reads them. The imported module's own dependencies are appended
     /// here, ahead of the module itself, so they initialize first.
     fn absorb_module_analyzer(&mut self, module_analyzer: &mut SemanticAnalyzer) {
+        self.editor_references
+            .append(&mut module_analyzer.editor_references);
+        self.editor_bindings
+            .append(&mut module_analyzer.editor_bindings);
+        self.editor_members
+            .append(&mut module_analyzer.editor_members);
         for (path, nodes) in std::mem::take(&mut module_analyzer.all_module_asts) {
             self.all_module_asts.entry(path).or_insert(nodes);
         }
@@ -214,12 +220,18 @@ impl SemanticAnalyzer {
         span: Span,
     ) -> Result<HashMap<String, Symbol>, SemanticError> {
         let mut module_analyzer = SemanticAnalyzer::new_with_resolver(resolver.clone());
+        if self.collect_editor_references {
+            module_analyzer.enable_editor_references();
+        }
         module_analyzer.set_imported_module();
         module_analyzer.set_current_file(std::path::PathBuf::from(
             module_path.replace('.', "/") + ".mux",
         ));
         if let Some(file_id) = resolver.borrow().file_id_for_module(module_path) {
             module_analyzer.set_current_file_id(file_id);
+            if let Some(path) = files.path(file_id) {
+                module_analyzer.set_current_file(path.to_path_buf());
+            }
         }
         let errors = module_analyzer.analyze(module_nodes, Some(files));
         self.imported_errors
@@ -386,14 +398,10 @@ impl SemanticAnalyzer {
             self.analyze_imported_module(&module_nodes, module_path, &resolver, files, span)?;
         self.mangle_and_import_module_symbols(&module_symbols, module_path)?;
 
-        self.handle_import_spec(spec, &module_symbols, module_path, span)?;
-
-        resolver
-            .borrow_mut()
-            .cache_module(module_path, module_nodes.clone());
-        resolver.borrow_mut().finish_import(module_path);
+        // Import references need these maps to resolve symbols back to their
+        // declaration in the source module.
         self.all_module_asts
-            .insert(module_path.to_string(), module_nodes);
+            .insert(module_path.to_string(), module_nodes.clone());
         if let Some(file_id) = resolver.borrow().file_id_for_module(module_path)
             && let Some(path) = files.path(file_id)
         {
@@ -401,6 +409,12 @@ impl SemanticAnalyzer {
                 .insert(module_path.to_string(), path.to_path_buf());
         }
 
+        self.handle_import_spec(spec, &module_symbols, module_path, span)?;
+
+        resolver
+            .borrow_mut()
+            .cache_module(module_path, module_nodes.clone());
+        resolver.borrow_mut().finish_import(module_path);
         if !self.module_dependencies.contains(&module_path.to_string()) {
             self.module_dependencies.push(module_path.to_string());
         }
@@ -430,12 +444,18 @@ impl SemanticAnalyzer {
             })?;
 
         let mut submodule_analyzer = SemanticAnalyzer::new_with_resolver(resolver.clone());
+        if self.collect_editor_references {
+            submodule_analyzer.enable_editor_references();
+        }
         submodule_analyzer.set_imported_module();
         submodule_analyzer.set_current_file(std::path::PathBuf::from(
             submodule_path.replace('.', "/") + ".mux",
         ));
         if let Some(file_id) = resolver.borrow().file_id_for_module(submodule_path) {
             submodule_analyzer.set_current_file_id(file_id);
+            if let Some(path) = files.path(file_id) {
+                submodule_analyzer.set_current_file(path.to_path_buf());
+            }
         }
         let errors = submodule_analyzer.analyze(&submodule_nodes, Some(files));
         self.imported_errors
@@ -746,6 +766,23 @@ impl SemanticAnalyzer {
         }
 
         self.add_import_symbol_if_absent(local_name, imported_symbol)?;
+
+        if self.collect_editor_references
+            && let Some(source_path) = self.source_path_for_symbol(item_name, symbol)
+        {
+            self.editor_references.push(super::ResolvedIdentifier {
+                name: local_name.to_owned(),
+                source_name: item_name.to_owned(),
+                usage: span,
+                usage_path: self.current_file.clone(),
+                is_import: true,
+                declaration: symbol.span.byte_range.map(|_| symbol.span),
+                kind: symbol.kind.clone(),
+                type_: symbol.type_.clone(),
+                bound_methods: Vec::new(),
+                source_path: Some(source_path),
+            });
+        }
 
         // Bring in the interfaces this type implements. Importing a type used
         // to leave them behind, so `import std.dsa.graph.Graph` alone left

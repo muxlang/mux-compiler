@@ -1037,6 +1037,7 @@ impl<'a> CodeGenerator<'a> {
                     .iter()
                     .map(|p| Param {
                         name: p.name.clone(),
+                        name_span: p.name_span,
                         type_: self.substitute_types_in_type_node(&p.type_, type_map),
                         default_value: p
                             .default_value

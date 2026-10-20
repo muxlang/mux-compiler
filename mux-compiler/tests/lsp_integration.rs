@@ -57,7 +57,9 @@ fn formatting_respects_project_disable_setting() {
             "id": 1,
             "method": "initialize",
             "params": {
-                "capabilities": {},
+                "capabilities": {
+                    "workspace": {"workspaceEdit": {"documentChanges": true}}
+                },
                 "rootUri": root_uri,
                 "workspaceFolders": [{"uri": root_uri, "name": "format-disabled"}]
             }
@@ -128,6 +130,460 @@ fn start_server() -> (Child, ChildStdin, BufReader<ChildStdout>) {
 }
 
 #[test]
+fn workspace_references_rename_hints_and_folding_use_compiler_analysis() {
+    let root = std::env::temp_dir().join(format!("mux-lsp-workspace-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let tools_path = root.join("tools.mux");
+    let main_path = root.join("main.mux");
+    let other_path = root.join("other.mux");
+    std::fs::write(
+        &tools_path,
+        "class Tool {\n    int value = 0\n    func get() returns int { return self.value }\n}\nfunc helper(int value) returns int { return value }\n",
+    )
+    .unwrap();
+    let main_source = "import tools.(helper as assist, Tool)\nfunc example() returns int {\n    auto answer = assist(1)\n    auto tool = Tool.new()\n    return tool.get() + answer\n}\n";
+    std::fs::write(
+        &other_path,
+        "import tools.(helper as assist, Tool)\nfunc other() returns int {\n    auto tool = Tool.new()\n    return tool.get() + assist(2)\n}\n",
+    )
+    .unwrap();
+    let main_uri = url::Url::from_file_path(&main_path).unwrap().to_string();
+    let tools_uri = url::Url::from_file_path(&tools_path).unwrap().to_string();
+    let other_uri = url::Url::from_file_path(&other_path).unwrap().to_string();
+    let root_uri = url::Url::from_directory_path(&root).unwrap().to_string();
+    let (mut child, mut stdin, mut stdout) = start_server();
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {
+                    "workspace": {"workspaceEdit": {"documentChanges": true}}
+                },
+                "rootUri": root_uri,
+                "workspaceFolders": [{"uri": root_uri, "name": "workspace"}]
+            }
+        }),
+    );
+    let initialized = receive_response(&mut stdout, 1);
+    let capabilities = &initialized["result"]["capabilities"];
+    assert_eq!(capabilities["referencesProvider"], true);
+    assert_eq!(capabilities["renameProvider"], true);
+    assert_eq!(capabilities["inlayHintProvider"], true);
+    assert_eq!(capabilities["foldingRangeProvider"], true);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "method":"initialized", "params":{}}),
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "method":"textDocument/didOpen",
+            "params":{"textDocument":{"uri":main_uri,"languageId":"mux","version":1,"text":main_source}}
+        }),
+    );
+    let _diagnostics = receive(&mut stdout);
+
+    let helper_character = main_source.lines().next().unwrap().find("helper").unwrap();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":2,
+            "method":"textDocument/references",
+            "params":{
+                "textDocument":{"uri":main_uri},
+                "position":{"line":0,"character":helper_character},
+                "context":{"includeDeclaration":true}
+            }
+        }),
+    );
+    let references = receive_response(&mut stdout, 2)["result"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(references.len(), 5, "{references:?}");
+    assert!(
+        references
+            .iter()
+            .any(|location| location["uri"] == tools_uri)
+    );
+    assert!(
+        references
+            .iter()
+            .any(|location| location["uri"] == other_uri)
+    );
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":3,
+            "method":"textDocument/rename",
+            "params":{
+                "textDocument":{"uri":main_uri},
+                "position":{"line":0,"character":helper_character},
+                "newName":"compute"
+            }
+        }),
+    );
+    let rename = receive_response(&mut stdout, 3)["result"]["documentChanges"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(rename.len(), 3, "{rename:?}");
+    for uri in [&tools_uri, &main_uri, &other_uri] {
+        assert!(
+            rename
+                .iter()
+                .any(|change| change["textDocument"]["uri"] == uri.as_str())
+        );
+    }
+
+    let alias_character = main_source.lines().next().unwrap().find("assist").unwrap();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":8,
+            "method":"textDocument/references",
+            "params":{
+                "textDocument":{"uri":main_uri},
+                "position":{"line":0,"character":alias_character},
+                "context":{"includeDeclaration":true}
+            }
+        }),
+    );
+    let alias_references = receive_response(&mut stdout, 8)["result"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(alias_references.len(), 2, "{alias_references:?}");
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":9,
+            "method":"textDocument/rename",
+            "params":{
+                "textDocument":{"uri":main_uri},
+                "position":{"line":0,"character":alias_character},
+                "newName":"run_helper"
+            }
+        }),
+    );
+    let alias_rename = receive_response(&mut stdout, 9)["result"]["documentChanges"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(alias_rename.len(), 1, "{alias_rename:?}");
+    assert_eq!(alias_rename[0]["textDocument"]["uri"], main_uri);
+
+    let get_character = main_source.lines().nth(4).unwrap().find("get").unwrap();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":6,
+            "method":"textDocument/references",
+            "params":{
+                "textDocument":{"uri":main_uri},
+                "position":{"line":4,"character":get_character},
+                "context":{"includeDeclaration":true}
+            }
+        }),
+    );
+    let member_references = receive_response(&mut stdout, 6)["result"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(member_references.len(), 3, "{member_references:?}");
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":7,
+            "method":"textDocument/rename",
+            "params":{
+                "textDocument":{"uri":main_uri},
+                "position":{"line":4,"character":get_character},
+                "newName":"read_value"
+            }
+        }),
+    );
+    let member_rename = receive_response(&mut stdout, 7)["result"]["documentChanges"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(member_rename.len(), 3, "{member_rename:?}");
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":4,
+            "method":"textDocument/inlayHint",
+            "params":{
+                "textDocument":{"uri":main_uri},
+                "range":{"start":{"line":0,"character":0},"end":{"line":4,"character":0}}
+            }
+        }),
+    );
+    let hints = receive_response(&mut stdout, 4)["result"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        hints.iter().any(|hint| hint["label"] == ": int"),
+        "{hints:?}"
+    );
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc":"2.0",
+            "id":5,
+            "method":"textDocument/foldingRange",
+            "params":{"textDocument":{"uri":main_uri}}
+        }),
+    );
+    let folds = receive_response(&mut stdout, 5)["result"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        !folds.is_empty(),
+        "expected a fold for the multiline function: {folds:?}"
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "id":6, "method":"shutdown", "params":null}),
+    );
+    assert_eq!(receive_response(&mut stdout, 6)["id"], 6);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "method":"exit", "params":null}),
+    );
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn binding_diagnostics_count_where_reads_and_select_the_binding_name() {
+    let (mut child, mut stdin, mut stdout) = start_server();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"capabilities": {}}
+        }),
+    );
+    assert_eq!(receive_response(&mut stdout, 1)["id"], 1);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "method":"initialized", "params":{}}),
+    );
+
+    let path =
+        std::env::temp_dir().join(format!("mux-lsp-binding-spans-{}.mux", std::process::id()));
+    let uri = url::Url::from_file_path(path).unwrap().to_string();
+    let source = "func constrained(int retries) where { retries >= 0 } returns void { return }\nfunc unused(int value) returns void { return }\nfunc local_unused() returns void {\n    int unused_local = 1\n    return\n}\n";
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "mux",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+    let published = receive(&mut stdout);
+    let diagnostics = published["params"]["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics.iter().all(|diagnostic| {
+            !diagnostic["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("retries")
+        }),
+        "where-clause references must count as reads: {diagnostics:?}"
+    );
+    let unused = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["message"] == "binding 'value' is never read")
+        .expect("unused parameter warning");
+    assert_eq!(unused["range"]["start"]["line"], 1);
+    assert_eq!(
+        unused["range"]["start"]["character"],
+        source.lines().nth(1).unwrap().find("value").unwrap()
+    );
+    assert_eq!(
+        unused["range"]["end"]["character"],
+        source.lines().nth(1).unwrap().find("value").unwrap() + "value".len()
+    );
+    let local = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["message"] == "binding 'unused_local' is never read")
+        .expect("unused local binding warning");
+    assert_eq!(local["range"]["start"]["line"], 3);
+    assert_eq!(
+        local["range"]["start"]["character"],
+        source.lines().nth(3).unwrap().find("unused_local").unwrap()
+    );
+    assert_eq!(
+        local["range"]["end"]["character"],
+        source.lines().nth(3).unwrap().find("unused_local").unwrap() + "unused_local".len()
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "id":2, "method":"shutdown", "params":null}),
+    );
+    assert_eq!(receive_response(&mut stdout, 2)["id"], 2);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "method":"exit", "params":null}),
+    );
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn type_hovers_show_signatures_and_adjacent_documentation() {
+    let (mut child, mut stdin, mut stdout) = start_server();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"capabilities": {}}
+        }),
+    );
+    assert_eq!(receive_response(&mut stdout, 1)["id"], 1);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "method":"initialized", "params":{}}),
+    );
+
+    let path = std::env::temp_dir().join(format!("mux-lsp-type-hover-{}.mux", std::process::id()));
+    let uri = url::Url::from_file_path(path).unwrap().to_string();
+    let source = "/// A calculator for arithmetic.\nclass Calculator {\n    int value\n}\nfunc consume(Calculator value) returns void { return }\n";
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {"uri": uri, "languageId": "mux", "version": 1, "text": source}
+            }
+        }),
+    );
+    let _diagnostics = receive(&mut stdout);
+
+    let class_line = 1;
+    let class_character = source
+        .lines()
+        .nth(class_line)
+        .unwrap()
+        .find("Calculator")
+        .unwrap();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": class_line, "character": class_character}
+            }
+        }),
+    );
+    let class_hover = receive_response(&mut stdout, 2);
+    let class_hover = class_hover["result"]["contents"]["value"].as_str().unwrap();
+    assert!(class_hover.contains("A calculator for arithmetic."));
+    assert!(class_hover.contains("class Calculator"));
+    assert!(!class_hover.contains("int value"));
+
+    let type_line = 4;
+    let type_character = source
+        .lines()
+        .nth(type_line)
+        .unwrap()
+        .find("Calculator")
+        .unwrap();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": type_line, "character": type_character}
+            }
+        }),
+    );
+    let type_hover = receive_response(&mut stdout, 3);
+    assert!(
+        type_hover["result"]["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("A calculator for arithmetic.")
+    );
+
+    let builtin_character = source.lines().nth(2).unwrap().find("int").unwrap();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": 2, "character": builtin_character}
+            }
+        }),
+    );
+    let builtin_hover = receive_response(&mut stdout, 4);
+    assert!(
+        builtin_hover["result"]["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("Built-in type `int`")
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "id":5, "method":"shutdown", "params":null}),
+    );
+    assert_eq!(receive_response(&mut stdout, 5)["id"], 5);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0", "method":"exit", "params":null}),
+    );
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
 fn stdio_server_publishes_diagnostics_and_shuts_down_cleanly() {
     let (mut child, mut stdin, mut stdout) = start_server();
     send(
@@ -156,6 +612,7 @@ fn stdio_server_publishes_diagnostics_and_shuts_down_cleanly() {
         true
     );
     assert!(initialized["result"]["capabilities"]["completionProvider"].is_object());
+    assert!(initialized["result"]["capabilities"]["semanticTokensProvider"].is_object());
     assert!(initialized["result"]["capabilities"]["signatureHelpProvider"].is_object());
 
     let path = std::env::temp_dir().join("mux-lsp-smoke.mux");
@@ -297,6 +754,23 @@ fn stdio_server_publishes_diagnostics_and_shuts_down_cleanly() {
             .unwrap()
             .iter()
             .any(|item| item["label"] == "value")
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "textDocument/semanticTokens/full",
+            "params": {"textDocument": {"uri": uri}}
+        }),
+    );
+    let semantic_tokens = receive_response(&mut stdout, 10);
+    assert_eq!(semantic_tokens["id"], 10);
+    assert!(
+        !semantic_tokens["result"]["data"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
     send(
         &mut stdin,

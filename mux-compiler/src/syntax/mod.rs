@@ -2143,6 +2143,7 @@ impl SyntaxTree {
         };
         Ok(Param {
             name: self.identifier_for_range(*name)?,
+            name_span: self.span_for_range(*name)?,
             type_: self.lower_type_at(*type_range)?,
             default_value: default_value
                 .map(|range| self.lower_expression_at(range))
