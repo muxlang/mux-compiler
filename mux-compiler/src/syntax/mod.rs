@@ -1240,10 +1240,12 @@ impl SyntaxTree {
                         key_type: Box::new(TypeNode {
                             kind: TypeKind::Auto,
                             span: inferred_type_span,
+                            name_span: None,
                         }),
                         value_type: Box::new(TypeNode {
                             kind: TypeKind::Auto,
                             span: inferred_type_span,
+                            name_span: None,
                         }),
                         entries: entries
                             .iter()
@@ -1329,7 +1331,7 @@ impl SyntaxTree {
                 let token_start = self
                     .tokens
                     .partition_point(|token| token.range().end <= name.start);
-                for token in self.tokens[token_start..]
+                let name_tokens = self.tokens[token_start..]
                     .iter()
                     .take_while(|token| token.range().start < name.end)
                     .filter(|token| {
@@ -1341,11 +1343,13 @@ impl SyntaxTree {
                                 | TokenType::MultilineComment(_)
                                 | TokenType::Eof
                         )
-                    })
-                {
+                    });
+                let mut name_span = None;
+                for token in name_tokens {
                     match token.kind() {
                         TokenType::Id(_) => {
                             semantic_name.push_str(token.text(self.source.text()));
+                            name_span = Some(self.span_for_range(token.range())?);
                             found_name_token = true;
                         }
                         TokenType::Dot if found_name_token => semantic_name.push('.'),
@@ -1370,11 +1374,16 @@ impl SyntaxTree {
                 } else {
                     TypeKind::Named(name.to_owned(), args)
                 };
-                Ok(TypeNode { kind, span })
+                Ok(TypeNode {
+                    kind,
+                    span,
+                    name_span,
+                })
             }
             AstLoweringData::TypeReference { reference } => Ok(TypeNode {
                 kind: TypeKind::Reference(Box::new(self.lower_type_at(*reference)?)),
                 span,
+                name_span: None,
             }),
             AstLoweringData::TypeContainer {
                 name: name_range,
@@ -1412,7 +1421,11 @@ impl SyntaxTree {
                     ),
                     _ => return Err(SyntaxLowerError::MissingToken(*name_range)),
                 };
-                Ok(TypeNode { kind, span })
+                Ok(TypeNode {
+                    kind,
+                    span,
+                    name_span: None,
+                })
             }
             AstLoweringData::FunctionType {
                 parameters,
@@ -1426,6 +1439,7 @@ impl SyntaxTree {
                     returns: Box::new(self.lower_type_at(*returns)?),
                 },
                 span,
+                name_span: None,
             }),
             _ => Err(SyntaxLowerError::UnsupportedContext(node.kind)),
         }
@@ -1465,6 +1479,7 @@ impl SyntaxTree {
                     None => TypeNode {
                         kind: TypeKind::Auto,
                         span: self.span_for_range(name_range)?,
+                        name_span: None,
                     },
                 };
                 let value = (*value)
@@ -2045,6 +2060,7 @@ impl SyntaxTree {
             .unwrap_or(TypeNode {
                 kind: TypeKind::Primitive(PrimitiveType::Void),
                 span: self.span_for_range(*return_type_span)?,
+                name_span: None,
             });
         let where_clause = where_clause
             .map(|range| self.lower_where_clause_at(range))
@@ -3098,12 +3114,18 @@ mod tests {
         assert!(matches!(named.kind, TypeKind::Named(name, args)
             if name == "Box" && matches!(args.as_slice(), [TypeNode { kind: TypeKind::Primitive(PrimitiveType::Int), .. }])));
 
+        let qualified_source = "func f(graph /* trivia */ . Graph<string> value) returns void {}";
         let qualified = lower_type_data(
-            "func f(graph /* trivia */ . Graph<string> value) returns void {}",
+            qualified_source,
             |data| matches!(data, AstLoweringData::TypeName { arguments, .. } if !arguments.is_empty()),
         );
         assert!(matches!(qualified.kind, TypeKind::Named(name, _)
             if name == "graph.Graph"));
+        let graph_start = qualified_source.rfind("Graph").unwrap();
+        assert_eq!(
+            qualified.name_span,
+            Some(Span::new(graph_start, graph_start + "Graph".len()))
+        );
 
         let container =
             lower_type_data("func f(map<string, list<int>> x) returns void {}", |data| {

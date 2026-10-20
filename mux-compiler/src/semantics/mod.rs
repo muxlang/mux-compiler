@@ -1151,7 +1151,10 @@ impl SemanticAnalyzer {
             },
             TypeKind::Named(name, type_args) => {
                 let resolved = self.resolve_named_type(name, type_args, type_node.span)?;
-                self.record_editor_type_reference(name, type_node.span);
+                self.record_editor_type_reference(
+                    name,
+                    type_node.name_span.unwrap_or(type_node.span),
+                );
                 Ok(resolved)
             }
             TypeKind::Function { params, returns } => {
@@ -1195,7 +1198,7 @@ impl SemanticAnalyzer {
             TypeKind::TraitObject(inner) => {
                 let target = self.resolve_trait_object_target(inner, type_node.span)?;
                 if let TypeKind::Named(name, _) = &inner.kind {
-                    self.record_editor_type_reference(name, inner.span);
+                    self.record_editor_type_reference(name, inner.name_span.unwrap_or(inner.span));
                 }
                 Ok(Type::TraitObject(Box::new(target)))
             }
@@ -1228,8 +1231,7 @@ impl SemanticAnalyzer {
         let Some(byte_range) = span.byte_range else {
             return;
         };
-        let start = byte_range.start + name.rfind('.').map_or(0, |index| index + 1);
-        let usage = Span::new(start, start + bare_name.len());
+        let usage = Span::new(byte_range.start, byte_range.end);
         let source_path = self.source_path_for_symbol(bare_name, &symbol);
         self.editor_type_references
             .borrow_mut()
