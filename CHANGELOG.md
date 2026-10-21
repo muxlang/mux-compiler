@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-21
+
+### Added
+
+- Extend `mux lsp` with workspace references and rename for resolved
+  identifiers and user-defined members, semantic tokens, inferred local type
+  hints, and folding ranges. (#468)
+
+### Changed
+
+- Let projects disable formatter edits through `format.enabled` in
+  `mux-project.json`. (#466)
+- Run non-network compiler fixtures concurrently and let developers set the
+  worker count with `MUX_EXECUTABLE_TEST_JOBS`. Network fixtures and snapshots
+  stay serial. (#469)
+
+### Fixed
+
+- Link required native libraries when explicitly linking the runtime archive
+  from Cargo's hashed output path. (#466)
+
 ## [0.13.0] - 2026-09-29
 
 ### Added
