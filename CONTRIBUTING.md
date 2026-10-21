@@ -39,6 +39,8 @@ Thanks for your interest! This guide explains how to contribute to Mux.
 
    To run the full test and snapshot check locally when useful:
 
+   Install the snapshot review command once with `cargo install cargo-insta --locked`.
+
    ```bash
    ./scripts/run-checks.sh --reject-unreferenced-snapshots
    ```

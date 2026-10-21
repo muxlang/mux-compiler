@@ -253,34 +253,35 @@ fn fixture_worker_count() -> usize {
     }
 }
 
-fn compile_files_in_parallel(paths: &[PathBuf]) -> Vec<(PathBuf, CompiledFixture)> {
-    let jobs = fixture_worker_count().min(paths.len().max(1));
-    if jobs <= 1 || paths.len() <= 1 {
-        return paths
-            .iter()
-            .map(|path| (path.clone(), compile_file(path)))
-            .collect();
+fn map_fixtures_in_parallel<T, R>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+{
+    let jobs = fixture_worker_count().min(items.len().max(1));
+    if jobs <= 1 || items.len() <= 1 {
+        return items.iter().map(work).collect();
     }
 
-    let chunk_size = paths.len().div_ceil(jobs);
+    let chunk_size = items.len().div_ceil(jobs);
     std::thread::scope(|scope| {
-        let handles: Vec<_> = paths
+        let handles: Vec<_> = items
             .chunks(chunk_size)
             .map(|chunk| {
-                scope.spawn(move || {
-                    chunk
-                        .iter()
-                        .map(|path| (path.clone(), compile_file(path)))
-                        .collect::<Vec<_>>()
-                })
+                let work = &work;
+                scope.spawn(move || chunk.iter().map(work).collect::<Vec<_>>())
             })
             .collect();
 
         handles
             .into_iter()
-            .flat_map(|handle| handle.join().expect("fixture compiler worker panicked"))
+            .flat_map(|handle| handle.join().expect("fixture worker panicked"))
             .collect()
     })
+}
+
+fn compile_files_in_parallel(paths: &[PathBuf]) -> Vec<(PathBuf, CompiledFixture)> {
+    map_fixtures_in_parallel(paths, |path| (path.clone(), compile_file(path)))
 }
 
 fn execute_compiled_file(compilation: &CompiledFixture) -> (String, String) {
@@ -295,34 +296,8 @@ fn execute_compiled_file(compilation: &CompiledFixture) -> (String, String) {
 fn execute_files_in_parallel(
     fixtures: &[(PathBuf, CompiledFixture)],
 ) -> Vec<(PathBuf, (String, String))> {
-    let jobs = fixture_worker_count().min(fixtures.len().max(1));
-    if jobs <= 1 || fixtures.len() <= 1 {
-        return fixtures
-            .iter()
-            .map(|(path, compilation)| (path.clone(), execute_compiled_file(compilation)))
-            .collect();
-    }
-
-    let chunk_size = fixtures.len().div_ceil(jobs);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = fixtures
-            .chunks(chunk_size)
-            .map(|chunk| {
-                scope.spawn(move || {
-                    chunk
-                        .iter()
-                        .map(|(path, compilation)| {
-                            (path.clone(), execute_compiled_file(compilation))
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-
-        handles
-            .into_iter()
-            .flat_map(|handle| handle.join().expect("fixture runner worker panicked"))
-            .collect()
+    map_fixtures_in_parallel(fixtures, |(path, compilation)| {
+        (path.clone(), execute_compiled_file(compilation))
     })
 }
 
