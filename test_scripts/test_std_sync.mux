@@ -109,12 +109,11 @@ auto notifier = sync.spawn(func() returns void {
         } else {
             print("condvar signal ok")
         }
+        print("notifier mutex callback ok")
         return
     })
     if locked.is_err() {
         print("notifier mutex callback err: " + locked.error().message())
-    } else {
-        print("notifier mutex callback ok")
     }
     return
 })
