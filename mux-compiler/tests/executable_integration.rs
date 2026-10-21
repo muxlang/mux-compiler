@@ -165,7 +165,7 @@ fn execute_file(exec_path: &Path, abs_dir: &Path) -> (String, String) {
     #[cfg(target_os = "linux")]
     {
         let ldd_out = Command::new("ldd")
-            .arg(&exec_path)
+            .arg(exec_path)
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();
