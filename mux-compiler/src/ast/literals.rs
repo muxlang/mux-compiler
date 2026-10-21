@@ -49,11 +49,24 @@ impl From<char> for LiteralNode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Param {
     pub name: String,
+    /// Exact source range of the parameter name, for diagnostics and editor tooling.
+    pub name_span: Span,
     pub type_: TypeNode,
     pub default_value: Option<super::nodes::ExpressionNode>,
+}
+
+impl std::fmt::Debug for Param {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Param")
+            .field("name", &self.name)
+            .field("type_", &self.type_)
+            .field("default_value", &self.default_value)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

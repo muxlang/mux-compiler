@@ -67,6 +67,12 @@ document formatting using editor indentation preferences and the nearest
 `mux-project.json`. It also provides document symbols, go-to-definition,
 resolved-name hover, visible-scope, imported-name, class-member, built-in
 method, and imported module namespace completion, plus function signature help.
+It also provides workspace references and rename for resolved identifiers and
+user-defined members, semantic tokens, inferred local type hints, and folding
+ranges for declarations and control-flow blocks. References scan workspace
+files when requested.
+These additions are part of the next compiler release and are not included in
+v0.13.0.
 VSCode's maintained
 extension starts `mux lsp` automatically; Neovim and Helix can run the same
 command through their built-in LSP clients.

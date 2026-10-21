@@ -12,7 +12,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{DiagnosticCode, SpanEdit};
 
-pub(super) fn collect(nodes: &[AstNode]) -> Vec<SemanticError> {
+pub(super) fn collect(nodes: &[AstNode], source: Option<&str>) -> Vec<SemanticError> {
     let mut warnings = Vec::new();
     for node in nodes {
         match node {
@@ -27,7 +27,7 @@ pub(super) fn collect(nodes: &[AstNode]) -> Vec<SemanticError> {
             AstNode::Test { .. } => {}
         }
     }
-    warnings.extend(collect_binding_warnings(nodes));
+    warnings.extend(collect_binding_warnings(nodes, source));
     warnings
 }
 
@@ -43,18 +43,20 @@ struct Binding {
 /// A deliberately small lexical-use pass. Semantic analysis has already
 /// proven the program valid when this runs, so this pass can focus on facts
 /// that are syntax-local and cannot be invalidated by error recovery.
-struct BindingWarnings {
+struct BindingWarnings<'source> {
     bindings: Vec<Binding>,
     scopes: Vec<Vec<usize>>,
     warnings: Vec<SemanticError>,
+    source: Option<&'source str>,
 }
 
-impl BindingWarnings {
-    fn new() -> Self {
+impl<'source> BindingWarnings<'source> {
+    fn new(source: Option<&'source str>) -> Self {
         Self {
             bindings: Vec::new(),
             scopes: Vec::new(),
             warnings: Vec::new(),
+            source,
         }
     }
 
@@ -157,8 +159,8 @@ impl BindingWarnings {
     }
 }
 
-fn collect_binding_warnings(nodes: &[AstNode]) -> Vec<SemanticError> {
-    let mut analysis = BindingWarnings::new();
+fn collect_binding_warnings(nodes: &[AstNode], source: Option<&str>) -> Vec<SemanticError> {
+    let mut analysis = BindingWarnings::new(source);
     for node in nodes {
         match node {
             AstNode::Function(function) => collect_function_bindings(function, &mut analysis),
@@ -181,9 +183,14 @@ fn collect_binding_warnings(nodes: &[AstNode]) -> Vec<SemanticError> {
 fn collect_function_bindings(function: &FunctionNode, analysis: &mut BindingWarnings) {
     analysis.push_scope();
     for parameter in &function.params {
-        analysis.declare(&parameter.name, parameter.type_.span);
+        analysis.declare(&parameter.name, parameter.name_span);
         if let Some(default) = &parameter.default_value {
             collect_binding_expression(default, analysis);
+        }
+    }
+    if let Some(where_clause) = &function.where_clause {
+        for predicate in &where_clause.predicates {
+            collect_binding_expression(predicate, analysis);
         }
     }
     collect_binding_block(&function.body, analysis);
@@ -198,20 +205,28 @@ fn collect_binding_block(statements: &[StatementNode], analysis: &mut BindingWar
 
 fn collect_binding_statement(statement: &StatementNode, analysis: &mut BindingWarnings) {
     match &statement.kind {
-        StatementKind::AutoDecl(name, _, expression)
-        | StatementKind::TypedDecl(name, _, expression)
-        | StatementKind::ConstDecl(name, _, expression) => {
+        StatementKind::AutoDecl(name, type_node, expression)
+        | StatementKind::TypedDecl(name, type_node, expression)
+        | StatementKind::ConstDecl(name, type_node, expression) => {
             collect_binding_expression(expression, analysis);
-            analysis.declare(name, statement.span);
+            let span = binding_name_span(name, type_node, statement.span, analysis.source);
+            analysis.declare(name, span);
         }
-        StatementKind::UninitDecl(name, _) => analysis.declare(name, statement.span),
+        StatementKind::UninitDecl(name, type_node) => {
+            let span = binding_name_span(name, type_node, statement.span, analysis.source);
+            analysis.declare(name, span);
+        }
         StatementKind::For {
-            var, iter, body, ..
+            var,
+            var_type,
+            iter,
+            body,
         } => {
             collect_binding_expression(iter, analysis);
             analysis.clear_assignment_tracking();
             analysis.push_scope();
-            analysis.declare(var, statement.span);
+            let span = binding_name_span(var, var_type, statement.span, analysis.source);
+            analysis.declare(var, span);
             collect_binding_block(body, analysis);
             analysis.pop_scope();
             analysis.clear_assignment_tracking();
@@ -270,6 +285,35 @@ fn collect_binding_statement(statement: &StatementNode, analysis: &mut BindingWa
         | StatementKind::Return(None)
         | StatementKind::Break
         | StatementKind::Continue => {}
+    }
+}
+
+fn binding_name_span(
+    name: &str,
+    type_node: &crate::ast::TypeNode,
+    fallback: crate::lexer::Span,
+    source: Option<&str>,
+) -> crate::lexer::Span {
+    let Some(source) = source else {
+        return fallback;
+    };
+    let Some(type_range) = type_node.span.byte_range else {
+        return fallback;
+    };
+    if source.get(type_range.start..type_range.end) == Some(name) {
+        return type_node.span;
+    }
+    let Some(after_type) = source.get(type_range.end..) else {
+        return fallback;
+    };
+    let name_start = type_range.end + (after_type.len() - after_type.trim_start().len());
+    let Some(name_end) = name_start.checked_add(name.len()) else {
+        return fallback;
+    };
+    if source.get(name_start..name_end) == Some(name) {
+        crate::lexer::Span::new(name_start, name_end)
+    } else {
+        fallback
     }
 }
 
@@ -413,7 +457,7 @@ fn collect_binding_lambda(
     analysis.clear_assignment_tracking();
     analysis.push_scope();
     for parameter in params {
-        analysis.declare(&parameter.name, parameter.type_.span);
+        analysis.declare(&parameter.name, parameter.name_span);
     }
     collect_binding_block(body, analysis);
     analysis.pop_scope();
@@ -714,5 +758,60 @@ fn statement_may_break_loop(statement: &StatementNode) -> bool {
         StatementKind::Match { arms, .. } => arms.iter().any(|arm| block_may_break_loop(&arm.body)),
         // A break in a nested loop targets that loop, not this one.
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect;
+    use crate::syntax::parse_source;
+
+    #[test]
+    fn unused_parameter_warning_targets_the_parameter_name() {
+        let source = "func do_work(int retries) returns void { return }\n";
+        let parsed = parse_source(source);
+        let nodes = parsed.lower().expect("valid function");
+        let warning = collect(&nodes, Some(source))
+            .into_iter()
+            .find(|warning| {
+                warning.message.contains("retries") && warning.message.contains("is never read")
+            })
+            .expect("unused parameter warning");
+        let range = warning.span.byte_range.expect("source range");
+        assert_eq!(&source[range.start..range.end], "retries");
+    }
+
+    #[test]
+    fn unused_local_binding_warning_targets_the_identifier_name() {
+        for source in [
+            "func do_work() returns void {\n  auto retries = 1\n  return\n}\n",
+            "func do_work() returns void {\n  int retries = 1\n  return\n}\n",
+            "func do_work() returns void {\n  for int retries in range(0, 1) { }\n  return\n}\n",
+        ] {
+            let parsed = parse_source(source);
+            let nodes = parsed.lower().expect("valid function");
+            let warning = collect(&nodes, Some(source))
+                .into_iter()
+                .find(|warning| {
+                    warning.message.contains("retries") && warning.message.contains("is never read")
+                })
+                .expect("unused local binding warning");
+            let range = warning.span.byte_range.expect("source range");
+            assert_eq!(&source[range.start..range.end], "retries");
+        }
+    }
+
+    #[test]
+    fn where_clause_references_count_as_parameter_reads() {
+        let source = "func address(int retries) where { retries >= 0 } returns void { return }\n";
+        let parsed = parse_source(source);
+        let nodes = parsed.lower().expect("valid function");
+        let warnings = collect(&nodes, Some(source));
+        assert!(
+            warnings
+                .iter()
+                .all(|warning| !warning.message.contains("retries")),
+            "where-clause parameter references must not be reported unused: {warnings:?}"
+        );
     }
 }

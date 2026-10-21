@@ -121,6 +121,14 @@ impl SemanticAnalyzer {
                 "Use explicit type annotations for all empty collection literals.",
             ));
         }
+        if self.collect_editor_references {
+            self.editor_bindings.push(super::InferredBinding {
+                name: name.to_owned(),
+                span,
+                type_: expr_type.clone(),
+                source_path: self.current_file.clone(),
+            });
+        }
         self.symbol_table.add_symbol(
             name,
             Self::make_symbol(SymbolKind::Variable, span, Some(expr_type)),
@@ -399,6 +407,14 @@ impl SemanticAnalyzer {
                 ));
             }
         };
+        if self.collect_editor_references {
+            self.editor_bindings.push(super::InferredBinding {
+                name: var.to_owned(),
+                span,
+                type_: var_type.clone(),
+                source_path: self.current_file.clone(),
+            });
+        }
         self.symbol_table.add_symbol(
             var,
             Self::make_symbol(SymbolKind::Variable, span, Some(var_type)),

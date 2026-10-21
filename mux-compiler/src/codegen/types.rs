@@ -31,6 +31,7 @@ impl<'a> CodeGenerator<'a> {
         TypeNode {
             kind,
             span: SYNTHETIC_SPAN,
+            name_span: None,
         }
     }
 

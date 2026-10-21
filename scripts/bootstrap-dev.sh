@@ -27,8 +27,11 @@ if [[ -f /etc/arch-release ]]; then
   if llvm22_ready; then
     echo "LLVM 22 is already installed on Arch Linux"
   else
+    # Arch tracks the newest LLVM in the unversioned packages. Install the
+    # versioned packages so LLVM 22 remains available alongside the system
+    # toolchain as Arch advances to newer LLVM releases.
     echo "Installing LLVM 22 toolchain for Arch Linux via pacman"
-    $sudo_cmd pacman -S --needed llvm clang lld
+    $sudo_cmd pacman -S --needed llvm22 clang22 lld22
 
     if ! llvm22_ready; then
       echo "LLVM 22 installation did not complete successfully."

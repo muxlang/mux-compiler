@@ -1100,6 +1100,7 @@ impl SemanticAnalyzer {
         let type_node = TypeNode {
             kind: TypeKind::Named(name.to_string(), args.to_vec()),
             span,
+            name_span: None,
         };
         self.arity_check_type(&type_node, params);
     }
@@ -1246,6 +1247,7 @@ impl SemanticAnalyzer {
                 let type_node = TypeNode {
                     kind: TypeKind::Named(name.clone(), args.clone()),
                     span: expr.span,
+                    name_span: None,
                 };
                 self.arity_check_type(&type_node, params);
             }

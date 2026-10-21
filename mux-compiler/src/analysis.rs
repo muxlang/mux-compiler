@@ -23,6 +23,10 @@ pub struct Analysis {
     pub diagnostics: Vec<Diagnostic>,
     /// Name expressions resolved by semantic analysis for editor navigation.
     pub resolved_identifiers: Vec<crate::semantics::ResolvedIdentifier>,
+    /// Local bindings whose inferred types can be shown by editor clients.
+    pub inferred_bindings: Vec<crate::semantics::InferredBinding>,
+    /// Source-backed class, interface, and enum member usages.
+    pub resolved_members: Vec<crate::semantics::ResolvedMember>,
     /// Exported members of modules imported by the root source, used for
     /// namespace and import completion even when a module is runtime-backed.
     pub imported_modules: HashMap<String, HashMap<String, crate::semantics::SymbolKind>>,
@@ -126,12 +130,16 @@ pub fn analyze_source_with_overlays(
     recovery.extend(resolver.borrow_mut().take_recovery_intervals());
     crate::diagnostic::sort_diagnostics(&mut diagnostics, &files);
     let resolved_identifiers = analyzer.take_editor_references();
+    let inferred_bindings = analyzer.take_editor_bindings();
+    let resolved_members = analyzer.take_editor_members();
     let imported_modules = analyzer.take_editor_imported_modules();
 
     Analysis {
         files,
         diagnostics,
         resolved_identifiers,
+        inferred_bindings,
+        resolved_members,
         imported_modules,
         root_file,
         recovery,

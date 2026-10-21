@@ -20,10 +20,21 @@ pub enum TypeKind {
     Auto,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct TypeNode {
     pub kind: TypeKind,
     pub span: Span,
+    /// Source span of the written type name, excluding generic arguments.
+    pub name_span: Option<Span>,
+}
+
+impl std::fmt::Debug for TypeNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TypeNode")
+            .field("kind", &self.kind)
+            .field("span", &self.span)
+            .finish()
+    }
 }
 
 impl super::Spanned for TypeNode {
@@ -37,6 +48,7 @@ impl From<PrimitiveType> for TypeNode {
         TypeNode {
             kind: TypeKind::Primitive(prim),
             span: Span::default(),
+            name_span: None,
         }
     }
 }
@@ -46,6 +58,7 @@ impl From<&str> for TypeNode {
         TypeNode {
             kind: TypeKind::Named(s.to_string(), Vec::new()),
             span: Span::default(),
+            name_span: None,
         }
     }
 }
