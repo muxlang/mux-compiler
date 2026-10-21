@@ -5,6 +5,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 
 service_tests_only=0
+reject_unreferenced_snapshots=0
 
 cargo_cmd=(cargo)
 if [[ -x "$repo_root/scripts/dev-cargo.sh" ]] && [[ -z "${LLVM_CONFIG_PATH:-}" ]] && [[ -z "${LLVM_SYS_221_PREFIX:-}" ]]; then
@@ -26,12 +27,21 @@ while [[ $# -gt 0 ]]; do
       service_tests_only=1
       shift
       ;;
+    --reject-unreferenced-snapshots)
+      reject_unreferenced_snapshots=1
+      shift
+      ;;
     *)
       echo "Unknown argument: $1"
       exit 1
       ;;
   esac
 done
+
+if [[ "$service_tests_only" == "1" && "$reject_unreferenced_snapshots" == "1" ]]; then
+  echo "--reject-unreferenced-snapshots cannot be combined with --service-tests-only" >&2
+  exit 1
+fi
 
 run_step() {
   local name="$1"
@@ -76,5 +86,10 @@ if [[ "$service_tests_only" == "1" ]]; then
   run_step "cargo test --test service_integration" \
     "${cargo_cmd[@]}" test -p mux-lang --test service_integration -- --nocapture
 else
-  run_step "cargo test" "${cargo_cmd[@]}" test -p mux-lang
+  if [[ "$reject_unreferenced_snapshots" == "1" ]]; then
+    run_step "cargo insta test (reject unreferenced snapshots)" \
+      "${cargo_cmd[@]}" insta test -p mux-lang --unreferenced=reject
+  else
+    run_step "cargo test" "${cargo_cmd[@]}" test -p mux-lang
+  fi
 fi

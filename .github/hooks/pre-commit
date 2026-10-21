@@ -44,7 +44,9 @@ if [ "$HAS_RUST" = true ]; then
 
   echo ""
   echo "Running tests..."
-  if ! cargo test; then
+  # The full fixture corpus takes several minutes. Keep focused unit,
+  # snapshot, LSP, and executable smoke tests local; CI runs the full corpus.
+  if ! ./scripts/dev-cargo.sh test -p mux-lang -- --skip test_executable_all_mux_files_in_dir; then
     echo ""
     echo "Tests failed. Fix failing tests before committing."
     FAILED=1

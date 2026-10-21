@@ -8,7 +8,10 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod common;
+#[path = "common/network_fixtures.rs"]
+mod network_fixtures;
 use common::runtime_library_for_child_process;
+use network_fixtures::is_network_fixture;
 
 /// Matches the compiler-source location embedded in a panic's internal-error
 /// report, e.g. `(at mux-compiler/src/codegen/memory.rs:42:9)`. The line and
@@ -88,7 +91,7 @@ fn executable_snapshot_normalizes_native_paths() {
     );
 }
 
-fn compile_and_execute_file(test_file: &Path) -> (String, String) {
+fn compile_file(test_file: &Path) -> (PathBuf, PathBuf, String, bool) {
     let abs_path = fs::canonicalize(test_file).unwrap_or_else(|e| {
         panic!(
             "Failed to get absolute path for {}: {}",
@@ -147,10 +150,13 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
     // Check if binary was created (indicates successful compilation)
     if !exec_path.exists() {
         // Compilation failed - return the error output
-        return (String::new(), compile_stderr);
+        return (exec_path, abs_dir.to_path_buf(), compile_stderr, false);
     }
 
-    // Execute the compiled binary
+    (exec_path, abs_dir.to_path_buf(), compile_stderr, true)
+}
+
+fn execute_file(exec_path: &Path, abs_dir: &Path) -> (String, String) {
     println!("Executing: {}", exec_path.display());
 
     // Debug: print ELF dependency/rpath details where the tools are defined.
@@ -159,7 +165,7 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
     #[cfg(target_os = "linux")]
     {
         let ldd_out = Command::new("ldd")
-            .arg(&exec_path)
+            .arg(exec_path)
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();
@@ -177,14 +183,14 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
         }
     }
 
-    let mut exec_cmd = Command::new(&exec_path);
+    let mut exec_cmd = Command::new(exec_path);
     exec_cmd.current_dir(abs_dir);
 
     let exec_output = match exec_cmd.output() {
         Ok(output) => output,
         Err(e) => {
             // Clean up before returning
-            let _ = fs::remove_file(&exec_path);
+            let _ = fs::remove_file(exec_path);
             return (String::new(), format!("Failed to execute binary: {e}"));
         }
     };
@@ -203,7 +209,7 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
 
     // Clean up the executable
     if exec_path.exists() {
-        fs::remove_file(&exec_path).unwrap_or_else(|e| {
+        fs::remove_file(exec_path).unwrap_or_else(|e| {
             eprintln!(
                 "Warning: Failed to clean up executable {}: {}",
                 exec_path.display(),
@@ -213,6 +219,86 @@ fn compile_and_execute_file(test_file: &Path) -> (String, String) {
     }
 
     (exec_stdout, exec_stderr)
+}
+
+fn compile_and_execute_file(test_file: &Path) -> (String, String) {
+    let (exec_path, abs_dir, compile_stderr, compiled) = compile_file(test_file);
+    if compiled {
+        execute_file(&exec_path, &abs_dir)
+    } else {
+        (String::new(), compile_stderr)
+    }
+}
+
+type CompiledFixture = (PathBuf, PathBuf, String, bool);
+
+fn fixture_worker_count() -> usize {
+    let default_jobs = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(2);
+    match std::env::var("MUX_EXECUTABLE_TEST_JOBS") {
+        Ok(value) => value
+            .parse::<usize>()
+            .ok()
+            .filter(|jobs| *jobs > 0)
+            .unwrap_or_else(|| {
+                panic!("MUX_EXECUTABLE_TEST_JOBS must be a positive integer, got {value:?}")
+            }),
+        Err(std::env::VarError::NotPresent) => default_jobs,
+        Err(std::env::VarError::NotUnicode(value)) => panic!(
+            "MUX_EXECUTABLE_TEST_JOBS must be valid Unicode, got {:?}",
+            value
+        ),
+    }
+}
+
+fn map_fixtures_in_parallel<T, R>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+{
+    let jobs = fixture_worker_count().min(items.len().max(1));
+    if jobs <= 1 || items.len() <= 1 {
+        return items.iter().map(work).collect();
+    }
+
+    let chunk_size = items.len().div_ceil(jobs);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let work = &work;
+                scope.spawn(move || chunk.iter().map(work).collect::<Vec<_>>())
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("fixture worker panicked"))
+            .collect()
+    })
+}
+
+fn compile_files_in_parallel(paths: &[PathBuf]) -> Vec<(PathBuf, CompiledFixture)> {
+    map_fixtures_in_parallel(paths, |path| (path.clone(), compile_file(path)))
+}
+
+fn execute_compiled_file(compilation: &CompiledFixture) -> (String, String) {
+    let (exec_path, abs_dir, compile_stderr, compiled) = compilation;
+    if *compiled {
+        execute_file(exec_path, abs_dir)
+    } else {
+        (String::new(), compile_stderr.clone())
+    }
+}
+
+fn execute_files_in_parallel(
+    fixtures: &[(PathBuf, CompiledFixture)],
+) -> Vec<(PathBuf, (String, String))> {
+    map_fixtures_in_parallel(fixtures, |(path, compilation)| {
+        (path.clone(), execute_compiled_file(compilation))
+    })
 }
 
 fn collect_mux_files(dir: &Path) -> Vec<PathBuf> {
@@ -230,9 +316,14 @@ fn collect_mux_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn run_snapshot_test(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
-    println!("Compiling and executing file: {}", path.display());
-    let (stdout, stderr) = compile_and_execute_file(path);
+fn run_snapshot_test(
+    path: &Path,
+    stdout: String,
+    stderr: String,
+    ipv4_re: &Regex,
+    ipv6_re: &Regex,
+) {
+    println!("Checking executable output for: {}", path.display());
 
     let snapshot_name = path
         .file_stem()
@@ -261,34 +352,31 @@ fn run_snapshot_test(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
     );
 }
 
-fn run_network_test(path: &Path) {
-    let (stdout, stderr) = compile_and_execute_file(path);
-    assert!(
-        stderr.is_empty(),
-        "network fixture wrote to stderr: {stderr}"
-    );
-    assert!(
-        !stdout.contains("Program exited with status:"),
-        "network fixture failed: {stdout}"
-    );
-}
-
-fn process_test_file(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
+fn process_test_output(
+    path: &Path,
+    stdout: String,
+    stderr: String,
+    ipv4_re: &Regex,
+    ipv6_re: &Regex,
+) {
     let file_name = path
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("unknown");
-    if is_network_fixture(file_name) && std::env::var_os("MUX_RUN_NETWORK_TESTS").is_none() {
-        println!("Skipping network fixture {file_name}; set MUX_RUN_NETWORK_TESTS=1 to run it");
-        return;
-    }
     println!("\n=== Testing executable for file: {file_name} ===");
 
     match std::panic::catch_unwind(|| {
         if is_network_fixture(file_name) {
-            run_network_test(path);
+            assert!(
+                stderr.is_empty(),
+                "network fixture wrote to stderr: {stderr}"
+            );
+            assert!(
+                !stdout.contains("Program exited with status:"),
+                "network fixture failed: {stdout}"
+            );
         } else {
-            run_snapshot_test(path, ipv4_re, ipv6_re);
+            run_snapshot_test(path, stdout, stderr, ipv4_re, ipv6_re);
         }
         println!("✓ Successfully processed executable for: {file_name}");
     }) {
@@ -298,17 +386,6 @@ fn process_test_file(path: &Path, ipv4_re: &Regex, ipv6_re: &Regex) {
             panic!("Executable test failed while processing: {file_name}");
         }
     }
-}
-
-fn is_network_fixture(file_name: &str) -> bool {
-    matches!(
-        file_name,
-        "test_std_http.mux"
-            | "test_std_http_server.mux"
-            | "test_std_local_net.mux"
-            | "test_std_tcp.mux"
-            | "test_std_udp.mux"
-    )
 }
 
 #[test]
@@ -425,7 +502,62 @@ fn test_executable_all_mux_files_in_dir() {
     let ipv4_re = Regex::new(r"(?P<host>\b(?:\d{1,3}\.){3}\d{1,3}):\d+\b").unwrap();
     let ipv6_re = Regex::new(r"\[(?P<host>[0-9a-fA-F:]+)\]:\d+\b").unwrap();
 
-    for path in test_files {
-        process_test_file(&path, &ipv4_re, &ipv6_re);
+    let run_network_tests = std::env::var_os("MUX_RUN_NETWORK_TESTS").is_some();
+    let paths_to_compile: Vec<_> = test_files
+        .iter()
+        .filter(|path| {
+            let file_name = path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or("unknown");
+            if is_network_fixture(file_name) && !run_network_tests {
+                println!(
+                    "Skipping network fixture {file_name}; set MUX_RUN_NETWORK_TESTS=1 to run it"
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+
+    // The fixture compiler writes one executable beside each source file.
+    // Stems are unique (checked above), so each compiler process writes a
+    // separate executable. Non-network fixture programs use process-local
+    // state or unique temporary paths. Keep network fixtures serial and
+    // update all snapshots in sorted order.
+    for batch in paths_to_compile.chunks(fixture_worker_count()) {
+        let compiled = compile_files_in_parallel(batch);
+        let parallel_fixtures: Vec<_> = compiled
+            .iter()
+            .filter(|(path, _)| {
+                !is_network_fixture(
+                    path.file_name()
+                        .and_then(std::ffi::OsStr::to_str)
+                        .unwrap_or("unknown"),
+                )
+            })
+            .cloned()
+            .collect();
+        let mut parallel_outputs: std::collections::BTreeMap<_, _> =
+            execute_files_in_parallel(&parallel_fixtures)
+                .into_iter()
+                .collect();
+
+        for (path, compilation) in compiled {
+            let is_network = path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(is_network_fixture);
+            let (stdout, stderr) = if is_network {
+                execute_compiled_file(&compilation)
+            } else {
+                parallel_outputs
+                    .remove(&path)
+                    .expect("parallel fixture output missing")
+            };
+            process_test_output(&path, stdout, stderr, &ipv4_re, &ipv6_re);
+        }
     }
 }

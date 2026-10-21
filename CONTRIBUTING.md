@@ -33,13 +33,27 @@ Thanks for your interest! This guide explains how to contribute to Mux.
    On Windows PowerShell, run `.\scripts\dev-cargo.ps1 build` instead. These
    wrappers automatically set the correct LLVM environment variables.
 
-6. Run tests to make sure everything is working:
+6. Run the focused tests before opening a pull request. The pre-commit hook
+   does this for compiler changes. CI runs the full executable fixture corpus,
+   including a second run with the leak-check runtime.
+
+   To run the full test and snapshot check locally when useful:
+
+   Install the snapshot review command once with `cargo install cargo-insta --locked`.
 
    ```bash
-   ./scripts/run-checks.sh
+   ./scripts/run-checks.sh --reject-unreferenced-snapshots
    ```
 
-   On Windows PowerShell, run `.\scripts\dev-cargo.ps1 test` instead.
+   The hook skips only the multi-minute test that executes every fixture. That
+   test compiles and runs up to two non-network fixtures at once. Network
+   fixtures run serially, and snapshots are checked in sorted order. Set
+   `MUX_EXECUTABLE_TEST_JOBS` to use more workers on a larger machine. For
+   example, to run the corpus with eight workers:
+
+   ```bash
+   MUX_EXECUTABLE_TEST_JOBS=8 ./scripts/dev-cargo.sh test -p mux-lang --test executable_integration
+   ```
 
 7. Running Mux programs during development:
 
@@ -82,7 +96,9 @@ Thanks for your interest! This guide explains how to contribute to Mux.
 
 11. Profile the compiler and runtime with external tools (see the Setup documentation for platform-specific guidance).
 
-12. Always run `cargo fmt` and `cargo clippy` before committing changes.
+12. The pre-commit hook runs `cargo fmt` and strict Clippy for compiler changes.
+    CI runs the full suite for every pull request. Run the full checks above
+    locally when you need an ad-hoc reproduction or broader confidence.
 13. For releases, bump `version` in `mux-compiler/Cargo.toml`, add the matching section in `CHANGELOG.md`, and update the README version badge (see the Release Process in AGENTS.md).
 14. Create a new branch for your changes, named with the tag first, and description after, e.g., `bug/xyz-fix` or `feature/new-feat`.
 15. Make your changes.
@@ -189,7 +205,7 @@ We generally don't accept contributions that:
 ## Tooling
 
 - Standard Rust tooling: `cargo fmt`, `cargo clippy`, and `cargo test`.
-- Canonical local verification: `./scripts/run-checks.sh`
+- Ad-hoc full Rust and snapshot verification: `./scripts/run-checks.sh --reject-unreferenced-snapshots`
 - Docker-backed integration verification: `./scripts/integration-checks.sh`
 - Valgrind memory checking: `./scripts/valgrind-checks.sh` (Leg A programs are PR-blocking; Leg B compiler run is report-only)
 - Benchmarks: `cargo bench` (criterion) plus `scripts/bench-report.py` for the per-phase box-and-whisker; local/manual and non-blocking CI, never a merge gate
