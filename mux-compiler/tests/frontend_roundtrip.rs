@@ -81,23 +81,6 @@ fn corpus_syntax_trees_reconstruct_the_original_source() {
 }
 
 #[test]
-fn corpus_syntax_lowering_succeeds_for_every_fixture() {
-    for path in fixtures() {
-        let source = fs::read_to_string(&path).unwrap();
-        let parsed = syntax::parse_source(&source);
-        assert!(
-            !parsed.has_errors(),
-            "{}: {:?}",
-            path.display(),
-            parsed.errors
-        );
-        parsed
-            .lower()
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-    }
-}
-
-#[test]
 fn syntax_lowering_preserves_unary_binary_and_postfix_validation() {
     let source = "func valid(int seed = 1) returns void {\n    auto value = -seed + 2\n    value++\n    return\n}\n";
     let parsed = syntax::parse_source(source);

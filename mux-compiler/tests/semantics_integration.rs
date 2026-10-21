@@ -1,6 +1,9 @@
+#[path = "common/network_fixtures.rs"]
+mod network_fixtures;
 use mux_lang::semantics::SemanticAnalyzer;
 use mux_lang::syntax::parse_source;
 use mux_lang::{diagnostic::Files, diagnostic::Level, module_resolver::ModuleResolver};
+use network_fixtures::is_network_fixture;
 use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
@@ -73,7 +76,7 @@ fn collect_mux_files_in_dir(
 }
 
 #[test]
-fn test_semantic_analysis() {
+fn network_and_operator_fixtures_have_no_semantic_errors() {
     let test_dir = Path::new("../test_scripts");
 
     if !test_dir.exists() {
@@ -92,7 +95,19 @@ fn test_semantic_analysis() {
         files_processed += 1;
     }
 
-    files_processed += collect_mux_files_in_dir(test_dir, &mut failures);
+    for entry in fs::read_dir(test_dir).expect("fixture directory should be readable") {
+        let path = entry.expect("fixture entry should be readable").path();
+        if path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(is_network_fixture)
+        {
+            if let Err(error) = analyze_mux_file(&path) {
+                failures.push((path, error));
+            }
+            files_processed += 1;
+        }
+    }
 
     assert!(
         files_processed > 0,

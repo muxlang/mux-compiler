@@ -384,16 +384,10 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust checks
-        run: ./scripts/run-checks.sh
-      # cargo-insta is no longer installed here. It is baked into the CI image
-      # at 1.47.2, still matched to the insta library version in Cargo.lock -
-      # the pin moved, it did not go away. See infra/docker/integration/Dockerfile.
-      - name: Reject orphaned snapshots
-        # test_scripts/ is auto-discovered, so deleting a script leaves its
-        # snapshot behind, referenced by nothing and asserting nothing. Those
-        # orphans read as coverage that does not exist - see #269. Runs here to
-        # reuse the uninstrumented build from the step above.
-        run: cargo insta test -p mux-lang --unreferenced=reject
+        # Run tests once through cargo-insta so the same execution checks both
+        # behavior and that auto-discovered fixture snapshots are still
+        # referenced. This replaces a separate full-suite snapshot pass.
+        run: ./scripts/run-checks.sh --reject-unreferenced-snapshots
       # cargo-llvm-cov comes from the CI image too, pinned at 0.8.7 - it used
       # to be installed unpinned here on every run.
       - name: Install nightly toolchain for branch coverage

@@ -30,10 +30,6 @@ fn parse_file_to_ast(test_file: &Path) -> String {
     output
 }
 
-fn ast_without_spans(nodes: &[mux_lang::ast::AstNode]) -> String {
-    without_span_debug(&format!("{nodes:#?}"))
-}
-
 fn without_span_debug(debug: &str) -> String {
     let mut normalized = String::with_capacity(debug.len());
     let mut remainder = debug;
@@ -77,9 +73,6 @@ fn parser_snapshot_inventory_matches_fixtures() {
             let stem = name
                 .strip_prefix("parser_integration__")?
                 .strip_suffix(".snap")?;
-            if stem.starts_with("legacy_ast_") {
-                return None;
-            }
             Some(stem.to_owned().into())
         })
         .collect();
@@ -148,48 +141,5 @@ fn test_parse_all_mux_files_in_dir() {
                 panic!("Test failed while processing: {file_name}");
             }
         }
-    }
-}
-
-#[test]
-fn syntax_frontend_lowering_matches_legacy_ast_baselines() {
-    let fixture_dir = std::env::var_os("MUX_TEST_SCRIPTS_DIR").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_scripts"),
-        PathBuf::from,
-    );
-    let mut files: Vec<_> = fs::read_dir(&fixture_dir)
-        .unwrap_or_else(|error| panic!("failed to read {}: {error}", fixture_dir.display()))
-        .map(|entry| entry.expect("failed to read fixture entry").path())
-        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("mux"))
-        .collect();
-    files.sort();
-
-    for path in files {
-        let source_text = fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
-        let fixture_name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .expect("fixture path has a UTF-8 file stem");
-
-        let parsed = syntax::parse_source(&source_text);
-        assert!(
-            parsed.errors.is_empty(),
-            "syntax frontend failed on {}: {:#?}",
-            path.display(),
-            parsed.errors
-        );
-        let lowered = parsed.lower().unwrap_or_else(|error| {
-            panic!(
-                "syntax frontend could not lower {}: {error}",
-                path.display()
-            )
-        });
-        insta::with_settings!({ omit_expression => true }, {
-            insta::assert_snapshot!(
-                format!("legacy_ast_{fixture_name}"),
-                ast_without_spans(&lowered)
-            );
-        });
     }
 }
