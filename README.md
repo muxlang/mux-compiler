@@ -6,7 +6,7 @@
 
 **The Programming Language For Everyone**
 
-[![Version](https://img.shields.io/badge/version-0.14.0-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
+[![Version](https://img.shields.io/badge/version-0.15.0-blue.svg?style=flat-square)](https://github.com/muxlang/mux-compiler/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-online-blue.svg?style=flat-square)](https://mux-lang.dev)
 [![Sonar Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=muxlang_mux-compiler&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=muxlang_mux-compiler)
@@ -87,10 +87,12 @@ document formatting using editor indentation preferences and the nearest
 `mux-project.json`. It also provides document symbols, go-to-definition,
 resolved-name hover, visible-scope, imported-name, class-member, built-in
 method, and imported module namespace completion, plus function signature help.
-Compiler v0.14.0 adds workspace references and rename for resolved identifiers
-and user-defined members, semantic tokens, inferred local type hints, and
-folding ranges for declarations and control-flow blocks. References scan
-workspace files when requested.
+Compiler v0.14.0 added workspace references and rename for resolved
+identifiers and user-defined members, semantic tokens, inferred local type
+hints, and folding ranges for declarations and control-flow blocks. References
+scan workspace files when requested. Compiler v0.15.0 adds `mux check` for
+frontend diagnostics without code generation, plus `mux update` for installed
+releases.
 VSCode's maintained
 extension starts `mux lsp` automatically; Neovim and Helix can run the same
 command through their built-in LSP clients.
@@ -253,7 +255,7 @@ Profiling is done with external tools so it stays decoupled from the compiler an
 Mux is actively being developed. Expect occasional breaking changes while the
 language, compiler, and standard library continue to converge.
 
-- **Current Version:** 0.14.0
+- **Current Version:** 0.15.0
 
 ## Versioning
 

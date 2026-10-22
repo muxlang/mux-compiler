@@ -7,14 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-22
+
 ### Added
 
 - Add `mux check <file.mux>` to validate an entry file and its imports without
   generating code or linking. Support `--deny-warnings` and library files.
+  (#476)
 - Add `mux update` and `mux update --check` for stable GitHub releases.
   Updates replace the compiler and bundled libraries together, verify
   checksums, and restore the previous installation on failure. Windows uses
-  a launcher so the command returns only after the update finishes. (#465)
+  a launcher so the command returns only after the update finishes. (#474)
+- Update MySQL dependencies to address the LRU unsoundness advisory and remove
+  the unused development TOML parser. (#475)
 
 ## [0.14.0] - 2026-10-21
 
