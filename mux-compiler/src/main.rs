@@ -96,6 +96,8 @@ enum Commands {
         #[arg(short, long)]
         intermediate: bool,
     },
+    /// Check a Mux file and its imports without generating code
+    Check { file: PathBuf },
     /// Compile and run a Mux file
     Run {
         file: PathBuf,
@@ -1730,7 +1732,22 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn parse_args_or_exit(cli: Cli) -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompileMode {
+    Check,
+    Build,
+    Run,
+}
+
+struct CompileRequest {
+    file_path: PathBuf,
+    mode: CompileMode,
+    output: Option<PathBuf>,
+    intermediate: bool,
+    deny_warnings: bool,
+}
+
+fn parse_args_or_exit(cli: Cli) -> CompileRequest {
     match &cli.command {
         Commands::Update { check } => {
             exit_with_update_result(mux_update::run(*check, env!("CARGO_PKG_VERSION")));
@@ -1776,28 +1793,39 @@ fn parse_args_or_exit(cli: Cli) -> (PathBuf, bool, Option<PathBuf>, bool, bool) 
             let status = run_fix_command(file, *dry_run, *format, cli.deny_warnings);
             process::exit(status);
         }
+        Commands::Check { file } => {
+            if cli.output.is_some() || cli.intermediate {
+                eprintln!("error: mux check does not accept --output or --intermediate");
+                process::exit(2);
+            }
+            CompileRequest {
+                file_path: file.clone(),
+                mode: CompileMode::Check,
+                output: None,
+                intermediate: false,
+                deny_warnings: cli.deny_warnings,
+            }
+        }
         Commands::Build {
             file,
             output,
             intermediate,
-        } => (
-            file.clone(),
-            false,
-            output.clone(),
-            *intermediate,
-            cli.deny_warnings,
-        ),
-        Commands::Run {
+        }
+        | Commands::Run {
             file,
             output,
             intermediate,
-        } => (
-            file.clone(),
-            true,
-            output.clone(),
-            *intermediate,
-            cli.deny_warnings,
-        ),
+        } => CompileRequest {
+            file_path: file.clone(),
+            mode: if matches!(cli.command, Commands::Run { .. }) {
+                CompileMode::Run
+            } else {
+                CompileMode::Build
+            },
+            output: output.clone(),
+            intermediate: *intermediate,
+            deny_warnings: cli.deny_warnings,
+        },
         Commands::Format { files, check } => {
             let (config, warnings) = format_config::load_from_current_directory();
             for warning in warnings {
@@ -3123,7 +3151,14 @@ fn main() {
     }
     let cli = Cli::parse();
     let _installation_lock = compiler_installation_lock(&cli.command);
-    let (file_path, do_run, output, intermediate, deny_warnings) = parse_args_or_exit(cli);
+    let CompileRequest {
+        file_path,
+        mode,
+        output,
+        intermediate,
+        deny_warnings,
+    } = parse_args_or_exit(cli);
+    let do_run = mode == CompileMode::Run;
     set_compiling_file(&file_path);
 
     ensure_mux_extension_or_exit(&file_path);
@@ -3134,7 +3169,9 @@ fn main() {
 
     // Progress spinner on stderr for slow compiles; error paths and the
     // post-link stop below clear the line before anything else prints.
-    spinner::start(format!("compiling {}", file_path.display()));
+    if mode != CompileMode::Check {
+        spinner::start(format!("compiling {}", file_path.display()));
+    }
 
     let nodes = parse_source_or_exit(file_id, &files, &source_str);
 
@@ -3147,6 +3184,10 @@ fn main() {
 
     let mut analyzer = semantics::SemanticAnalyzer::new_with_resolver(resolver);
     analyze_semantics_or_exit(&mut analyzer, &nodes, file_id, &mut files, deny_warnings);
+
+    if mode == CompileMode::Check {
+        return;
+    }
 
     let context = inkwell::context::Context::create();
     let source_name = if env::var_os("MUX_COVERAGE_MODE").is_some() {

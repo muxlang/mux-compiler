@@ -58,6 +58,26 @@ mux run hello.mux
 
 ## Documentation
 
+Check an entry file and its imports without generating an executable:
+
+```bash
+mux check hello.mux
+mux check hello.mux --deny-warnings
+```
+
+`check` accepts exactly one `.mux` file, including library files without `main`.
+It runs the same parser, import resolution, and semantic analysis as `build`
+and `run`. Success is quiet unless there are warnings. Exit codes are 0 for
+success, 1 for source or input errors, and 2 for invalid command arguments.
+`--deny-warnings` makes warnings fail the check while preserving their codes.
+`check` rejects `-o`/`--output` and `-i`/`--intermediate`.
+
+Checking writes no build artifacts and needs neither the runtime archive nor a
+C linker. The compiler binary still needs its LLVM loader dependencies.
+Backend and linker errors can still occur when a checked program is built.
+See [check command measurements](docs/check-performance.md) for a local
+comparison with `build`.
+
 Formatter usage is documented in [Formatting Mux source](docs/formatter.md).
 
 The compiler also provides a language server for editors. Configure the editor
