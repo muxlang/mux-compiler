@@ -1,10 +1,9 @@
 import importlib.util
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
-
 
 SCRIPT = Path(__file__).resolve().parents[1] / "ci" / "bundle-windows-dlls.py"
 SPEC = importlib.util.spec_from_file_location("windows_dll_bundle", SCRIPT)
@@ -29,22 +28,30 @@ class WindowsDllBundleTests(unittest.TestCase):
             (self.llvm / name).write_bytes(name.encode())
         (self.system / "KERNEL32.dll").write_bytes(b"system")
         dependencies = {
-            "mux-driver.exe": ["llvm-c.DLL", "KERNEL32.dll", "api-ms-win-core-test.dll"],
+            "mux-driver.exe": [
+                "llvm-c.DLL",
+                "KERNEL32.dll",
+                "api-ms-win-core-test.dll",
+            ],
             "LLVM-C.dll": ["libxml2.dll", "zlib.dll"],
             "libxml2.dll": ["ZLIB.DLL"],
             "zlib.dll": ["LLVM-C.dll"],
         }
-        copied = bundler.bundle(self.bin, [self.llvm], self.system,
-                                lambda binary: dependencies[binary.name])
+        copied = bundler.bundle(
+            self.bin, [self.llvm], self.system, lambda binary: dependencies[binary.name]
+        )
         self.assertEqual(set(copied), {"LLVM-C.dll", "libxml2.dll", "zlib.dll"})
         self.assertEqual(len(copied), 3)
         self.assertFalse((self.bin / "KERNEL32.dll").exists())
         self.assertEqual((self.bin / "zlib.dll").read_bytes(), b"zlib.dll")
 
     def test_missing_dependency_reports_importer(self):
-        with self.assertRaisesRegex(FileNotFoundError, "missing.dll, imported by.*mux-driver"):
-            bundler.bundle(self.bin, [self.llvm], self.system,
-                           lambda _: ["missing.dll"])
+        with self.assertRaisesRegex(
+            FileNotFoundError, "missing.dll, imported by.*mux-driver"
+        ):
+            bundler.bundle(
+                self.bin, [self.llvm], self.system, lambda _: ["missing.dll"]
+            )
 
     def test_conflicting_sources_fail(self):
         other = self.root / "other"
@@ -56,8 +63,13 @@ class WindowsDllBundleTests(unittest.TestCase):
 
     def test_import_path_cannot_escape_binary_directory(self):
         for name in ("../outside.dll", "C:\\outside.dll", "sub/outside.dll"):
-            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Invalid DLL"):
-                bundler.bundle(self.bin, [self.llvm], self.system, lambda _: [name])
+            with (
+                self.subTest(name=name),
+                self.assertRaisesRegex(ValueError, "Invalid DLL"),
+            ):
+                bundler.bundle(
+                    self.bin, [self.llvm], self.system, lambda _, name=name: [name]
+                )
 
     def test_dumpbin_normal_and_delay_imports_are_parsed(self):
         output = """Dump of file mux.exe
@@ -69,10 +81,15 @@ class WindowsDllBundleTests(unittest.TestCase):
   Summary
     1000 .rdata
 """
-        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
-                [], 0, stdout=output, stderr="")):
-            self.assertEqual(bundler.imported_dlls(Path("mux.exe")),
-                             ["KERNEL32.dll", "LLVM-C.dll", "delayed.dll"])
+        with patch.object(
+            subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
+        ):
+            self.assertEqual(
+                bundler.imported_dlls(Path("mux.exe")),
+                ["KERNEL32.dll", "LLVM-C.dll", "delayed.dll"],
+            )
 
 
 if __name__ == "__main__":

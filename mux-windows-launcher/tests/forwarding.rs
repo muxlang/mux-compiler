@@ -89,12 +89,15 @@ fn preserves_arguments_environment_working_directory_and_exit_status() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(37));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let (reported_directory, forwarded_output) = stdout.split_once('\n').unwrap();
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!(
-            "{}\ninherited\nrun\nfile with spaces.mux\na\"b\n\nunicode-λ\n",
-            installation.0.canonicalize().unwrap().display()
-        )
+        Path::new(reported_directory).canonicalize().unwrap(),
+        installation.0.canonicalize().unwrap()
+    );
+    assert_eq!(
+        forwarded_output,
+        "inherited\nrun\nfile with spaces.mux\na\"b\n\nunicode-λ\n"
     );
     assert_eq!(output.stderr, b"driver error\n");
 }
