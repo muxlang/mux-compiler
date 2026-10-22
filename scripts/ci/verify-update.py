@@ -28,6 +28,42 @@ def run(mux, *args, env=None, succeeds=True):
     return result.stdout
 
 
+def smoke_shell(windows):
+    if not windows:
+        return "bash"
+
+    # The verifier runs under Git Bash in Windows CI. A child process that
+    # searches PATH for `bash` can instead select Windows' WSL launcher, which
+    # fails on runners without a Linux distribution. Reuse the parent shell
+    # when available, converting its MSYS path to a native Windows path.
+    bash = os.environ.get("BASH")
+    if bash:
+        candidate = Path(bash)
+        if candidate.is_file():
+            return str(candidate)
+
+        cygpath = shutil.which("cygpath")
+        if cygpath:
+            result = subprocess.run(
+                [cygpath, "-w", bash], capture_output=True, text=True, check=True
+            )
+            candidate = Path(result.stdout.strip())
+            if candidate.is_file():
+                return str(candidate)
+
+    # Git for Windows commonly puts git.exe in <Git>/cmd and Bash in
+    # <Git>/bin. This fallback also works when BASH is not exported.
+    git = shutil.which("git")
+    if git:
+        git_dir = Path(git).resolve().parent
+        for root in (git_dir.parent, git_dir.parent.parent):
+            candidate = root / "bin" / "bash.exe"
+            if candidate.is_file():
+                return str(candidate)
+
+    raise RuntimeError("could not locate Git for Windows Bash for the smoke test")
+
+
 def main():
     source_mux = Path(sys.argv[1]).resolve()
     windows = platform.system() == "Windows"
@@ -137,7 +173,7 @@ def main():
             (served / "latest").write_text(json.dumps(metadata))
             receipt_path.write_bytes(installed_receipt)
             subprocess.run(
-                ["bash", "scripts/ci/smoke-run.sh", str(mux)],
+                [smoke_shell(windows), "scripts/ci/smoke-run.sh", str(mux)],
                 env=environment, check=True, timeout=300,
             )
         finally:
