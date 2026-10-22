@@ -70,6 +70,45 @@ pub(crate) fn install(
     }
     Ok(())
 }
+
+pub(crate) fn bundle_version(bundle: &Path) -> Result<String> {
+    let binary = bundle
+        .join("bin")
+        .join(if cfg!(windows) { "mux.exe" } else { "mux" });
+    let bin_dir = binary.parent().ok_or("Bundle compiler has no parent")?;
+    let mut command = Command::new(&binary);
+    command
+        .arg("__version")
+        .current_dir(bin_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or("SystemRoot is missing; cannot inspect the Windows bundle")?;
+        let root = PathBuf::from(system_root);
+        let path = std::env::join_paths([bin_dir.to_path_buf(), root.join("System32"), root])
+            .context("Prepare isolated bundle validation PATH")?;
+        command.env("PATH", path);
+    }
+    let output = command
+        .output()
+        .context("Read compiler version from installer bundle")?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not read compiler version from {} ({})",
+            binary.display(),
+            output.status
+        ));
+    }
+    let version = std::str::from_utf8(&output.stdout)
+        .context("Invalid compiler version output")?
+        .trim()
+        .to_owned();
+    semver::Version::parse(&version).context("Invalid compiler version in installer bundle")?;
+    Ok(version)
+}
+
 fn prepare(
     old: &Receipt,
     new: &Receipt,
@@ -278,6 +317,21 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         fs::read(binary).unwrap()
+    }
+
+    #[test]
+    fn bundle_version_reads_packaged_compiler_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let bin = directory.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let binary = bin.join(launcher());
+        fs::write(&binary, compile_fake_compiler("0.15.1")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(bundle_version(directory.path()).unwrap(), "0.15.1");
     }
     fn fake_compiler() -> &'static [u8] {
         static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();

@@ -5,7 +5,7 @@ mod transaction;
 
 pub use download::run_download_worker;
 pub use receipt::{
-    InstallationLock, installed_runtime_dir, installed_version, register_install,
+    InstallationLock, install_bundle, installed_runtime_dir, installed_version, register_install,
     shared_installation_lock,
 };
 use semver::Version;

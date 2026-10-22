@@ -10,7 +10,7 @@ import unittest
 
 
 class InstallerTests(unittest.TestCase):
-    def install(self, supports_update, registration_succeeds=True):
+    def install(self, supports_update, registration_succeeds=True, registered=False):
         with tempfile.TemporaryDirectory(prefix="mux-installer-test-") as temporary:
             root = Path(temporary)
             bundle = root / "mux-linux-x86_64"
@@ -23,10 +23,20 @@ class InstallerTests(unittest.TestCase):
 case "$1" in
   __version) exit {0 if supports_update else 2} ;;
   __register-install) echo registered > "$MUX_TEST_MARKER"; exit {0 if registration_succeeds else 1} ;;
+  __install-bundle)
+    cp "$MUX_TEST_BUNDLE/bin/"* "$MUX_INSTALL_DIR/"
+    cp "$MUX_TEST_BUNDLE/lib/"* "$MUX_LIB_DIR/"
+    echo locked > "$MUX_TEST_LOCKED_MARKER"
+    exit 0 ;;
   *) exit 0 ;;
 esac
 ''')
             compiler.chmod(0o755)
+            if registered:
+                (root / "installed files" / "bin").mkdir(parents=True)
+                (root / "installed files" / "bin" / ".mux-install.json").write_text("{}")
+                (root / "installed files" / "bin" / "mux").write_text(compiler.read_text())
+                (root / "installed files" / "bin" / "mux").chmod(0o755)
             archive = root / "mux-linux-x86_64.tar.gz"
             with tarfile.open(archive, "w:gz") as packed:
                 packed.add(bundle, arcname=bundle.name)
@@ -45,15 +55,19 @@ cp "$MUX_TEST_DOWNLOADS/${2##*/}" "$4"
             uname.chmod(0o755)
             destination = root / "installed files"
             marker = root / "registration"
+            locked_marker = root / "locked-install"
             environment = dict(os.environ, PATH=f"{mocks}:{os.environ['PATH']}",
                                MUX_TEST_DOWNLOADS=str(root), MUX_TEST_MARKER=str(marker),
+                               MUX_TEST_LOCKED_MARKER=str(locked_marker),
+                               MUX_TEST_BUNDLE=str(bundle),
                                MUX_INSTALL_DIR=str(destination / "bin"),
                                MUX_LIB_DIR=str(destination / "custom lib"))
             installer = Path(__file__).resolve().parents[1] / "install.sh"
             result = subprocess.run(["sh", str(installer)], env=environment,
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0 if registration_succeeds else 1, result.stderr)
-            self.assertEqual(marker.exists(), supports_update)
+            self.assertEqual(marker.exists(), supports_update and not registered)
+            self.assertEqual(locked_marker.exists(), registered)
             self.assertTrue((destination / "bin" / "compiler-support.dylib").is_file())
             self.assertEqual("does not support mux update" in result.stdout, not supports_update)
 
@@ -65,6 +79,9 @@ cp "$MUX_TEST_DOWNLOADS/${2##*/}" "$4"
 
     def test_registration_failure_is_fatal(self):
         self.install(True, False)
+
+    def test_registered_install_uses_locked_bundle_replacement(self):
+        self.install(True, registered=True)
 
 
 if __name__ == "__main__":

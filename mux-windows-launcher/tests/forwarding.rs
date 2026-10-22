@@ -221,6 +221,27 @@ fn registration_bypasses_damaged_receipt_and_cleanup() {
 }
 
 #[test]
+fn bundle_install_bypasses_damaged_receipt_and_cleanup() {
+    let installation = Installation::new(
+        "fn main() { assert_eq!(std::env::args().nth(1).unwrap(), \"__install-bundle\"); }",
+    );
+    fs::write(installation.path(".mux-install.json"), "invalid receipt").unwrap();
+    let backup = installation.path(".mux-update-backup-launcher-sentinel");
+    fs::write(&backup, "old launcher").unwrap();
+    let output = installation
+        .command()
+        .arg("__install-bundle")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(backup.exists());
+}
+
+#[test]
 fn update_check_fetches_metadata_in_worker_without_starting_driver() {
     use std::io::Read;
     let installation = Installation::new("fn main() { std::process::exit(97); }");

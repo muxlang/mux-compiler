@@ -141,6 +141,13 @@ enum Commands {
         #[arg(long)]
         target: String,
     },
+    #[command(name = "__install-bundle", hide = true)]
+    InstallBundle {
+        #[arg(long)]
+        bundle_dir: PathBuf,
+        #[arg(long)]
+        target: String,
+    },
     /// Explain a compiler diagnostic code
     Explain {
         /// A code such as E0302 or W0300
@@ -1746,6 +1753,9 @@ fn parse_args_or_exit(cli: Cli) -> (PathBuf, bool, Option<PathBuf>, bool, bool) 
                 env!("CARGO_PKG_VERSION"),
             ));
         }
+        Commands::InstallBundle { bundle_dir, target } => {
+            exit_with_update_result(mux_update::install_bundle(bundle_dir, target));
+        }
         Commands::Version {} => {
             print_version_banner();
             process::exit(0);
@@ -3089,6 +3099,7 @@ fn compiler_installation_lock(command: &Commands) -> Option<mux_update::Installa
                 | Commands::InternalVersion
                 | Commands::Version {}
                 | Commands::RegisterInstall { .. }
+                | Commands::InstallBundle { .. }
         )
     {
         return None;

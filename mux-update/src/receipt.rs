@@ -277,6 +277,28 @@ pub fn register_install(
     .context("Write installation receipt")
 }
 
+/// Replace a registered installation while holding the same lock used by
+/// compilation and `mux update`. Installers use this path when updating an
+/// installation that already has a receipt.
+pub fn install_bundle(bundle: &Path, target: &str) -> Result<()> {
+    validate_target(target)?;
+    bundle_files(bundle)?;
+    let version = crate::transaction::bundle_version(bundle)?;
+    let executable = std::env::current_exe().context("Locate running Mux")?;
+    let old = load(&executable)?.ok_or(
+        "This Mux installation has no installer receipt; use the standard installer path.",
+    )?;
+    if old.target != target {
+        return Err("Bundle target does not match the registered installation".into());
+    }
+    let _lock = lock(&old.bin_dir, true)?;
+    let current = load(&executable)?.ok_or("Installation receipt disappeared")?;
+    if current != old {
+        return Err("Installation changed while preparing the installer. Retry.".into());
+    }
+    crate::transaction::install(&old, bundle, &version, |_| Ok(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

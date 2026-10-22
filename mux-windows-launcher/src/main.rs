@@ -68,7 +68,7 @@ fn run() -> Result<i32, String> {
 
     let _installation_lock = if arguments
         .first()
-        .is_some_and(|arg| arg == "__register-install")
+        .is_some_and(|arg| arg == "__register-install" || arg == "__install-bundle")
     {
         None
     } else {
