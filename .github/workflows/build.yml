@@ -399,6 +399,41 @@ jobs:
         # out to CARGO_BIN_EXE_mux, which llvm-cov instruments too, so codegen
         # executed in the spawned compiler is captured.
         run: cargo +nightly llvm-cov -p mux-lang --all-features --branch --lcov --output-path lcov.info
+      - name: Normalize coverage source paths
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          report = Path("lcov.info")
+          lines = report.read_text().splitlines()
+          source_count = 0
+
+          for index, line in enumerate(lines):
+              if not line.startswith("SF:"):
+                  continue
+
+              source = Path(line[3:]).resolve()
+              try:
+                  relative = source.relative_to(workspace)
+              except ValueError as error:
+                  raise SystemExit(
+                      f"LCOV source is outside the workspace: {source}"
+                  ) from error
+
+              if not (workspace / relative).is_file():
+                  raise SystemExit(f"LCOV source is missing from checkout: {relative}")
+
+              lines[index] = f"SF:{relative.as_posix()}"
+              source_count += 1
+
+          if source_count == 0:
+              raise SystemExit("LCOV report contains no source files")
+
+          report.write_text("\n".join(lines) + "\n")
+          print(f"Normalized {source_count} LCOV source paths to workspace-relative paths")
+          PY
       - name: Upload coverage report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
