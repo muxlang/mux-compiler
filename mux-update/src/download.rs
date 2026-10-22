@@ -79,6 +79,7 @@ pub fn run_download_worker(arguments: &[OsString]) -> Option<Result<()>> {
             Some("false") => false,
             _ => return Err("Invalid download fixture mode".into()),
         };
+        crate::cancellation::install_handler()?;
         let bytes = fetch_with(url, limit, fixtures)?;
         fs::write(Path::new(&arguments[4]), bytes).context("Write downloaded release data")
     })())
@@ -169,9 +170,7 @@ fn fetch_with(url: &str, limit: u64, fixtures: bool) -> Result<Vec<u8>> {
             continue;
         }
         let mut bytes = Vec::new();
-        response
-            .body_mut()
-            .as_reader()
+        Interruptible(response.body_mut().as_reader())
             .take(limit + 1)
             .read_to_end(&mut bytes)
             .context("Read release data")?;
