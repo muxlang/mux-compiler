@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `mux check <file.mux>` to validate an entry file and its imports without
+  generating code or linking. Support `--deny-warnings` and library files.
 - Add `mux update` and `mux update --check` for stable GitHub releases.
   Updates replace the compiler and bundled libraries together, verify
   checksums, and restore the previous installation on failure. Windows uses
