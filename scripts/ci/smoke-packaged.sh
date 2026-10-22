@@ -33,7 +33,12 @@ esac
 
 rm -rf "$dist"
 mkdir -p "$dist/bin" "$dist/lib"
-cp "${target_dir}/mux${exe_suffix}" "$dist/bin/"
+if [[ "$exe_suffix" == ".exe" ]]; then
+  cp "${target_dir}/mux.exe" "$dist/bin/mux-driver.exe"
+  cp "${target_dir}/mux-windows-launcher.exe" "$dist/bin/mux.exe"
+else
+  cp "${target_dir}/mux" "$dist/bin/"
+fi
 
 found_lib=0
 for name in "${runtime_libs[@]}"; do
@@ -77,4 +82,6 @@ ls -l "$dist/bin" "$dist/lib"
 
 # Everything past staging is shared with the release install-verification job,
 # which has a mux installed by scripts/install.sh rather than a staged dist/.
+python3 "$(dirname "$0")/verify-update.py" "$dist/bin/mux${exe_suffix}"
+
 exec "$(dirname "$0")/smoke-run.sh" "./$dist/bin/mux${exe_suffix}"

@@ -8,7 +8,7 @@ HAS_RUST=false
 # the loop in this shell so HAS_RUST persists.
 while IFS= read -r -d '' file; do
   case "$file" in
-    mux-compiler/*|Cargo.toml|Cargo.lock|clippy.toml|scripts/run-checks.sh|scripts/dev-cargo.sh)
+    mux-compiler/*|mux-update/*|mux-windows-launcher/*|Cargo.toml|Cargo.lock|clippy.toml|scripts/run-checks.sh|scripts/dev-cargo.sh)
       HAS_RUST=true
       ;;
   esac
@@ -24,9 +24,9 @@ FAILED=0
 
 if [ "$HAS_RUST" = true ]; then
   echo "Checking Rust formatting..."
-  if ! cargo fmt -- --check; then
+  if ! cargo fmt --all -- --check; then
     echo ""
-    echo "Formatting check failed. Run 'cargo fmt' to fix."
+    echo "Formatting check failed. Run 'cargo fmt --all' to fix."
     FAILED=1
   else
     echo "Formatting OK"
@@ -34,7 +34,7 @@ if [ "$HAS_RUST" = true ]; then
 
   echo ""
   echo "Running Clippy (warnings denied)..."
-  if ! cargo clippy --all-targets --all-features -- -D warnings; then
+  if ! cargo clippy --workspace --all-targets --all-features -- -D warnings; then
     echo ""
     echo "Clippy check failed. Fix warnings before committing."
     FAILED=1
@@ -46,7 +46,7 @@ if [ "$HAS_RUST" = true ]; then
   echo "Running tests..."
   # The full fixture corpus takes several minutes. Keep focused unit,
   # snapshot, LSP, and executable smoke tests local; CI runs the full corpus.
-  if ! ./scripts/dev-cargo.sh test -p mux-lang -- --skip test_executable_all_mux_files_in_dir; then
+  if ! ./scripts/dev-cargo.sh test --workspace -- --skip test_executable_all_mux_files_in_dir; then
     echo ""
     echo "Tests failed. Fix failing tests before committing."
     FAILED=1

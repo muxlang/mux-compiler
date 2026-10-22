@@ -78,6 +78,14 @@ runs:
         MUX_LIB_DIR: ${{ github.workspace }}\installed\lib
       run: ./scripts/install.ps1
 
+    - name: Verify synchronous packaged update
+      shell: bash
+      run: |
+        set -euo pipefail
+        exe=""
+        if [ "${RUNNER_OS}" = "Windows" ]; then exe=".exe"; fi
+        python3 scripts/ci/verify-update.py "installed/bin/mux${exe}"
+
     - name: Compile and run programs with the installed compiler
       shell: bash
       run: |

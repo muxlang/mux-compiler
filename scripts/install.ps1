@@ -64,6 +64,26 @@ try {
         }
     }
 
+    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    try {
+        $PSNativeCommandUseErrorActionPreference = $false
+        & (Join-Path $InstallDir "mux.exe") __version *> $null
+        $supportsUpdate = $LASTEXITCODE -eq 0
+    }
+    finally {
+        $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+    }
+    if ($supportsUpdate) {
+        & (Join-Path $InstallDir "mux.exe") __register-install `
+            --bundle-dir $bundleRoot --bin-dir $InstallDir --lib-dir $LibDir --target $target
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not register the Mux installation (exit $LASTEXITCODE)"
+        }
+    }
+    else {
+        Write-Host "This release does not support mux update; use the installer again for a newer release."
+    }
+
     Write-Host "Installed mux to $(Join-Path $InstallDir "mux.exe")"
     Write-Host "Installed runtime libraries to $LibDir"
 

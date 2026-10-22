@@ -118,6 +118,25 @@ iwr -useb https://raw.githubusercontent.com/muxlang/mux-compiler/main/scripts/in
 MUX_INSTALL_DIR=/usr/local/bin MUX_LIB_DIR=/usr/local/lib sh install.sh
 ```
 
+### Updating Mux
+
+After installing a release that includes `mux update`, use:
+
+```bash
+mux update --check     # Check the latest stable release
+mux update             # Download and install it
+```
+
+The update replaces the compiler and bundled libraries together. It preserves
+custom installation directories recorded by the installer. On Linux, macOS,
+and Windows, the command prints its final result before returning to the shell.
+An already current or newer installation stays unchanged.
+
+If your installation predates this command, run the installer once to get it.
+Source builds can use `mux update --check`; rebuild from source to update them.
+Close other Mux commands and editors running `mux lsp` before installing an
+update. The updater reports permission errors without elevating privileges.
+
 ### Option 2: crates.io (frozen)
 
 `mux-lang` was published to crates.io through 0.6.0. That channel is no longer
