@@ -100,6 +100,8 @@ fn fetch(url: &str, limit: u64) -> Result<Vec<u8>> {
     let errors = directory.path().join("errors");
     let stderr = fs::File::create(&errors).context("Create download error log")?;
     let executable = std::env::current_exe().context("Locate download worker")?;
+    // Keep blocking HTTP reads in a child so this process can poll cancellation.
+    // Dropping the guard kills and reaps that child, closing its request promptly.
     let child = Command::new(executable)
         .arg(DOWNLOAD_WORKER)
         .arg(url)
