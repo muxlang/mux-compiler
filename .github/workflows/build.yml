@@ -398,7 +398,7 @@ jobs:
         # Re-runs the test suite under instrumentation. Integration tests shell
         # out to CARGO_BIN_EXE_mux, which llvm-cov instruments too, so codegen
         # executed in the spawned compiler is captured.
-        run: cargo +nightly llvm-cov -p mux-lang --all-features --branch --lcov --output-path lcov.info
+        run: cargo +nightly llvm-cov --workspace --all-features --branch --lcov --output-path lcov.info
       - name: Normalize coverage source paths
         run: |
           python3 - <<'PY'

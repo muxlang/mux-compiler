@@ -201,18 +201,9 @@ jobs:
           $envRoot = Join-Path $condaBase "envs\mux-llvm"
           $llvmBin = Join-Path $envRoot "Library\bin"
 
-          foreach ($pattern in @("LLVM*.dll", "libclang*.dll", "clang*.dll")) {
-            Get-ChildItem -Path $llvmBin -Filter $pattern -File -ErrorAction SilentlyContinue | ForEach-Object {
-              Copy-Item $_.FullName "dist/mux-${{ matrix.target }}/bin/"
-            }
-          }
-
-          foreach ($dll in @("libxml2.dll", "zlib.dll", "zstd.dll")) {
-            $candidate = Join-Path $llvmBin $dll
-            if (Test-Path $candidate) {
-              Copy-Item $candidate "dist/mux-${{ matrix.target }}/bin/"
-            }
-          }
+          python scripts/ci/bundle-windows-dlls.py `
+            --bin-dir "dist/mux-${{ matrix.target }}/bin" --search-dir $llvmBin
+          if ($LASTEXITCODE -ne 0) { throw "Could not bundle Windows DLL dependencies" }
 
           & "dist/mux-${{ matrix.target }}/bin/mux.exe" version
           # No trailing /* : that packs bin/ and lib/ at the archive root and

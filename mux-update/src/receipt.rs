@@ -368,4 +368,167 @@ mod tests {
         drop(exclusive);
         assert!(shared_installation_lock(&exe).is_err());
     }
+    #[test]
+    fn invalid_receipt_metadata_never_authorizes_installation() {
+        for field in [
+            "schema",
+            "version",
+            "target",
+            "bin_dir",
+            "launcher",
+            "duplicate",
+        ] {
+            let (_root, executable) = fixture();
+            let mut receipt = load(&executable).unwrap().unwrap();
+            let path = receipt.bin_dir.join(RECEIPT);
+            match field {
+                "schema" => receipt.schema = 2,
+                "version" => receipt.version = "invalid".into(),
+                "target" => receipt.target = "unsupported".into(),
+                "bin_dir" => receipt.bin_dir = receipt.lib_dir.clone(),
+                "launcher" => receipt.files.clear(),
+                "duplicate" => receipt.files.push(receipt.files[0].clone()),
+                _ => unreachable!(),
+            }
+            fs::write(path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+            assert!(load(&executable).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn launcher_cleanup_preserves_unrelated_files_and_defers_when_busy() {
+        let (_root, executable) = fixture();
+        let receipt = load(&executable).unwrap().unwrap();
+        let backup = receipt.bin_dir.join(".mux-update-backup-launcher-old");
+        let unrelated = receipt.bin_dir.join("personal-file");
+        fs::write(&backup, "old launcher").unwrap();
+        fs::write(&unrelated, "keep").unwrap();
+        let lock = lock(&receipt.bin_dir, false).unwrap();
+        crate::cleanup_old_launchers(&executable).unwrap();
+        assert!(backup.exists());
+        drop(lock);
+        crate::cleanup_old_launchers(&executable).unwrap();
+        assert!(!backup.exists());
+        assert_eq!(fs::read(unrelated).unwrap(), b"keep");
+        assert_eq!(
+            installed_version(&executable).unwrap().as_deref(),
+            Some("0.14.0")
+        );
+    }
+    fn installable_bundle(root: &Path, receipt: &Receipt) -> PathBuf {
+        let bundle = root.join("release");
+        fs::create_dir_all(bundle.join("bin")).unwrap();
+        fs::create_dir_all(bundle.join("lib")).unwrap();
+        let names: &[(&str, &str)] = if cfg!(windows) {
+            &[
+                ("bin", "mux.exe"),
+                ("bin", "mux-driver.exe"),
+                ("lib", "mux_runtime.dll"),
+                ("lib", "mux_runtime.lib"),
+            ]
+        } else if cfg!(target_os = "macos") {
+            &[
+                ("bin", "mux"),
+                ("lib", "libmux_runtime.a"),
+                ("lib", "libmux_runtime.dylib"),
+            ]
+        } else {
+            &[
+                ("bin", "mux"),
+                ("lib", "libmux_runtime.a"),
+                ("lib", "libmux_runtime.so"),
+            ]
+        };
+        for (area, name) in names {
+            fs::write(bundle.join(area).join(name), format!("bundled {name}")).unwrap();
+            let installed = if *area == "bin" {
+                &receipt.bin_dir
+            } else {
+                &receipt.lib_dir
+            };
+            fs::copy(bundle.join(area).join(name), installed.join(name)).unwrap();
+            if cfg!(windows) && name.ends_with(".dll") {
+                fs::copy(bundle.join(area).join(name), receipt.bin_dir.join(name)).unwrap();
+            }
+        }
+        bundle
+    }
+
+    #[test]
+    fn registration_records_installed_bundle_and_requires_every_owned_file() {
+        let (root, executable) = fixture();
+        let old = load(&executable).unwrap().unwrap();
+        let bundle = installable_bundle(root.path(), &old);
+        register_install(&bundle, &old.bin_dir, &old.lib_dir, &old.target, "0.15.0").unwrap();
+        let receipt = load(&executable).unwrap().unwrap();
+        assert_eq!(receipt.version, "0.15.0");
+        assert_eq!(receipt.files, bundle_files(&bundle).unwrap());
+        assert_eq!(receipt.lib_dir, old.lib_dir);
+        let before = fs::read(old.bin_dir.join(RECEIPT)).unwrap();
+        let library = receipt
+            .files
+            .iter()
+            .find(|file| file.area == Area::Lib)
+            .unwrap();
+        fs::remove_file(receipt.destination(library)).unwrap();
+        let error = register_install(&bundle, &old.bin_dir, &old.lib_dir, &old.target, "0.16.0")
+            .unwrap_err();
+        assert!(
+            error.contains("Installed bundle file is missing"),
+            "{error}"
+        );
+        assert_eq!(fs::read(old.bin_dir.join(RECEIPT)).unwrap(), before);
+    }
+
+    #[test]
+    fn registration_rejects_invalid_version_target_and_overlapping_directories() {
+        let (root, executable) = fixture();
+        let receipt = load(&executable).unwrap().unwrap();
+        let bundle = installable_bundle(root.path(), &receipt);
+        let before = fs::read(receipt.bin_dir.join(RECEIPT)).unwrap();
+        for (target, version) in [
+            (receipt.target.as_str(), "invalid"),
+            ("unsupported", "0.15.0"),
+        ] {
+            assert!(
+                register_install(&bundle, &receipt.bin_dir, &receipt.lib_dir, target, version)
+                    .is_err()
+            );
+        }
+        let error = register_install(
+            &bundle,
+            &receipt.bin_dir,
+            &receipt.bin_dir,
+            &receipt.target,
+            "0.15.0",
+        )
+        .unwrap_err();
+        assert!(error.contains("must be different"), "{error}");
+        assert_eq!(fs::read(receipt.bin_dir.join(RECEIPT)).unwrap(), before);
+    }
+
+    #[test]
+    fn bundle_inventory_rejects_missing_libraries_and_nested_directories() {
+        let (root, executable) = fixture();
+        let receipt = load(&executable).unwrap().unwrap();
+        let bundle = installable_bundle(root.path(), &receipt);
+        fs::create_dir(bundle.join("lib/nested")).unwrap();
+        assert!(
+            bundle_files(&bundle)
+                .unwrap_err()
+                .contains("only regular files")
+        );
+        fs::remove_dir(bundle.join("lib/nested")).unwrap();
+        let library = bundle_files(&bundle)
+            .unwrap()
+            .into_iter()
+            .find(|file| file.area == Area::Lib)
+            .unwrap();
+        fs::remove_file(bundle.join("lib").join(library.name)).unwrap();
+        assert!(
+            bundle_files(&bundle)
+                .unwrap_err()
+                .contains("Bundle is missing")
+        );
+    }
 }

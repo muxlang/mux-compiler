@@ -68,13 +68,10 @@ fi
 # mux.exe loads LLVM dynamically on Windows, so a real install ships those DLLs
 # beside it. Copying them here keeps this a test of the packaged layout rather
 # than of whatever happens to be on PATH.
-if [[ "$exe_suffix" == ".exe" && -n "${LLVM_SYS_221_PREFIX:-}" ]]; then
-  llvm_bin="${LLVM_SYS_221_PREFIX}/bin"
-  if [[ -d "$llvm_bin" ]]; then
-    find "$llvm_bin" -maxdepth 1 -type f \
-      \( -name 'LLVM*.dll' -o -name 'libclang*.dll' -o -name 'clang*.dll' \) \
-      -exec cp {} "$dist/bin/" \; 2>/dev/null || true
-  fi
+if [[ "$exe_suffix" == ".exe" ]]; then
+  : "${LLVM_SYS_221_PREFIX:?LLVM_SYS_221_PREFIX is required to bundle Windows dependencies}"
+  python3 "$(dirname "$0")/bundle-windows-dlls.py" \
+    --bin-dir "$dist/bin" --search-dir "${LLVM_SYS_221_PREFIX}/bin"
 fi
 
 echo "Staged install:"

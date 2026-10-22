@@ -3,6 +3,7 @@ mod download;
 mod receipt;
 mod transaction;
 
+pub use download::run_download_worker;
 pub use receipt::{
     InstallationLock, installed_runtime_dir, installed_version, register_install,
     shared_installation_lock,
@@ -54,9 +55,7 @@ pub fn run(check: bool, current_version: &str) -> Result<()> {
     if !check && installation.is_none() {
         return Err("This Mux installation has no installer receipt. Reinstall using the official installer before running mux update.".into());
     }
-    if !check {
-        cancellation::install_handler()?;
-    }
+    cancellation::install_handler()?;
     let current = Version::parse(
         installation
             .as_ref()

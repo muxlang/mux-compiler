@@ -220,6 +220,11 @@ fn probe(binary: &Path, version: &str) -> Result<()> {
         .context("Start updated compiler for validation")?;
     let started = Instant::now();
     let status = loop {
+        if let Err(error) = crate::cancellation::check() {
+            child.kill().context("Stop cancelled compiler validation")?;
+            child.wait().context("Reap cancelled compiler validation")?;
+            return Err(error);
+        }
         if let Some(status) = child.try_wait().context("Wait for compiler validation")? {
             break status;
         }
@@ -243,7 +248,8 @@ fn probe(binary: &Path, version: &str) -> Result<()> {
         .trim();
     if !status.success() || reported != version {
         return Err(format!(
-            "Updated compiler validation failed: expected {version}, got {reported:?} ({status})"
+            "Updated compiler validation failed for {}: expected {version}, got {reported:?} ({status})",
+            binary.display()
         ));
     }
     Ok(())

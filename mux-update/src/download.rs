@@ -4,10 +4,12 @@ use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
+    ffi::OsString,
     fs,
     io::{Cursor, Read},
     path::{Component, Path, PathBuf},
-    time::Duration,
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
 };
 const API: &str = "https://api.github.com/repos/muxlang/mux-compiler/releases/latest";
 const MAX_METADATA: u64 = 2 * 1024 * 1024;
@@ -48,12 +50,100 @@ fn validate_url(url: &str, fixtures: bool) -> Result<()> {
 fn fixture_mode() -> bool {
     std::env::var_os("MUX_UPDATE_API_URL").is_some()
 }
+const DOWNLOAD_WORKER: &str = "__update-download";
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+const CANCEL_POLL: Duration = Duration::from_millis(20);
+
+pub fn run_download_worker(arguments: &[OsString]) -> Option<Result<()>> {
+    if arguments
+        .first()
+        .is_none_or(|argument| argument != DOWNLOAD_WORKER)
+    {
+        return None;
+    }
+    Some((|| {
+        if arguments.len() != 5 {
+            return Err("Invalid download worker arguments".into());
+        }
+        let url = arguments[1].to_str().ok_or("Invalid download URL")?;
+        let limit: u64 = arguments[2]
+            .to_str()
+            .ok_or("Invalid download limit")?
+            .parse()
+            .context("Invalid download limit")?;
+        if limit > MAX_ARCHIVE {
+            return Err("Invalid download limit".into());
+        }
+        let fixtures = match arguments[3].to_str() {
+            Some("true") => true,
+            Some("false") => false,
+            _ => return Err("Invalid download fixture mode".into()),
+        };
+        let bytes = fetch_with(url, limit, fixtures)?;
+        fs::write(Path::new(&arguments[4]), bytes).context("Write downloaded release data")
+    })())
+}
+
+struct DownloadChild(Child);
+impl Drop for DownloadChild {
+    fn drop(&mut self) {
+        // Reap before deleting staging files, including on cancellation and errors.
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn fetch(url: &str, limit: u64) -> Result<Vec<u8>> {
-    fetch_with(url, limit, fixture_mode())
+    crate::cancellation::check()?;
+    let directory = tempfile::tempdir().context("Create download staging directory")?;
+    let output = directory.path().join("download");
+    let errors = directory.path().join("errors");
+    let stderr = fs::File::create(&errors).context("Create download error log")?;
+    let executable = std::env::current_exe().context("Locate download worker")?;
+    let child = Command::new(executable)
+        .arg(DOWNLOAD_WORKER)
+        .arg(url)
+        .arg(limit.to_string())
+        .arg(fixture_mode().to_string())
+        .arg(&output)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .spawn()
+        .context("Start release download")?;
+    let mut child = DownloadChild(child);
+    let started = Instant::now();
+    loop {
+        crate::cancellation::check()?;
+        if let Some(status) = child.0.try_wait().context("Wait for release download")? {
+            if !status.success() {
+                let error = fs::read_to_string(&errors).context("Read download error log")?;
+                return Err(format!(
+                    "Release download failed ({status}): {}",
+                    error.trim()
+                ));
+            }
+            let file = fs::File::open(&output).context("Open downloaded release data")?;
+            let mut bytes = Vec::new();
+            Interruptible(file)
+                .take(limit + 1)
+                .read_to_end(&mut bytes)
+                .context("Read downloaded release data")?;
+            crate::cancellation::check()?;
+            if bytes.len() as u64 > limit {
+                return Err("Release download exceeds size limit".into());
+            }
+            return Ok(bytes);
+        }
+        if started.elapsed() >= DOWNLOAD_TIMEOUT {
+            return Err("Release download timed out".into());
+        }
+        std::thread::sleep(CANCEL_POLL);
+    }
 }
 fn fetch_with(url: &str, limit: u64, fixtures: bool) -> Result<Vec<u8>> {
     let config = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(120)))
+        .timeout_global(Some(DOWNLOAD_TIMEOUT))
         .max_redirects(0)
         .build();
     let agent: ureq::Agent = config.into();
@@ -167,7 +257,12 @@ fn verify_checksum(archive: &[u8], checksum: &[u8]) -> Result<()> {
     if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Invalid SHA-256 checksum".into());
     }
-    let actual = format!("{:x}", Sha256::digest(archive));
+    let mut digest = Sha256::new();
+    for chunk in archive.chunks(64 * 1024) {
+        crate::cancellation::check()?;
+        digest.update(chunk);
+    }
+    let actual = format!("{:x}", digest.finalize());
     if !actual.eq_ignore_ascii_case(expected) {
         return Err("Checksum verification failed; installation was not changed".into());
     }
@@ -202,11 +297,21 @@ fn extract(bytes: &[u8], extension: &str, directory: &Path, target: &str) -> Res
         extract_tar(bytes, directory, target)
     }
 }
+struct Interruptible<R>(R);
+impl<R: Read> Read for Interruptible<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        crate::cancellation::check().map_err(std::io::Error::other)?;
+        let length = buffer.len().min(64 * 1024);
+        self.0.read(&mut buffer[..length])
+    }
+}
+
 fn extract_tar(bytes: &[u8], directory: &Path, target: &str) -> Result<()> {
-    let mut archive = tar::Archive::new(GzDecoder::new(bytes));
+    let mut archive = tar::Archive::new(Interruptible(GzDecoder::new(bytes)));
     let mut total = 0u64;
     let mut seen = std::collections::BTreeSet::new();
     for entry in archive.entries().context("Read archive")? {
+        crate::cancellation::check()?;
         let mut entry = entry.context("Read archive entry")?;
         let kind = entry.header().entry_type();
         if !kind.is_file() && !kind.is_dir() {
@@ -237,12 +342,13 @@ fn extract_zip(bytes: &[u8], directory: &Path, target: &str) -> Result<()> {
     let mut total = 0u64;
     let mut seen = std::collections::BTreeSet::new();
     for index in 0..archive.len() {
+        crate::cancellation::check()?;
         let mut entry = archive.by_index(index).context("Read ZIP entry")?;
         let file_type = entry.unix_mode().unwrap_or(0) & 0o170000;
         if entry.is_symlink() || !matches!(file_type, 0 | 0o100000 | 0o040000) {
             return Err("Archive contains a link or special file".into());
         }
-        let path = PathBuf::from(entry.name());
+        let path = PathBuf::from(entry.name().context("Read ZIP entry name")?.as_ref());
         safe_path(&path, target, entry.is_dir())?;
         if !seen.insert(path.clone()) {
             return Err("Archive contains duplicate paths".into());
@@ -265,7 +371,8 @@ fn extract_zip(bytes: &[u8], directory: &Path, target: &str) -> Result<()> {
                 .create_new(true)
                 .open(destination)
                 .context("Create ZIP output")?;
-            std::io::copy(&mut entry, &mut output).context("Extract ZIP file")?;
+            std::io::copy(&mut Interruptible(&mut entry), &mut output)
+                .context("Extract ZIP file")?;
         }
     }
     Ok(())
@@ -422,5 +529,138 @@ mod tests {
         let error = fetch_with(&url, 1024, true).unwrap_err();
         assert!(error.contains("Release URLs must use HTTPS"), "{error}");
         server.join().unwrap();
+    }
+    #[test]
+    fn extracts_regular_tar_and_zip_files_and_rejects_duplicates_and_links() {
+        use std::io::Write;
+        let file = "mux-linux-x86_64/bin/mux";
+        for duplicate in [false, true] {
+            let stage = tempfile::tempdir().unwrap();
+            let mut builder = tar::Builder::new(Vec::new());
+            for _ in 0..if duplicate { 2 } else { 1 } {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(7);
+                header.set_mode(0o755);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, file, &b"payload"[..])
+                    .unwrap();
+            }
+            let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            gzip.write_all(&builder.into_inner().unwrap()).unwrap();
+            let result = extract_tar(&gzip.finish().unwrap(), stage.path(), "linux-x86_64");
+            if duplicate {
+                assert!(result.unwrap_err().contains("duplicate"));
+            } else {
+                result.unwrap();
+                assert_eq!(fs::read(stage.path().join(file)).unwrap(), b"payload");
+            }
+        }
+        for link in [false, true] {
+            let stage = tempfile::tempdir().unwrap();
+            let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            if link {
+                writer
+                    .add_symlink(file, "/escape", zip::write::SimpleFileOptions::default())
+                    .unwrap();
+            } else {
+                writer
+                    .add_directory(
+                        "mux-linux-x86_64/bin/",
+                        zip::write::SimpleFileOptions::default(),
+                    )
+                    .unwrap();
+                writer
+                    .start_file(file, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(b"payload").unwrap();
+            }
+            let result = extract_zip(
+                &writer.finish().unwrap().into_inner(),
+                stage.path(),
+                "linux-x86_64",
+            );
+            if link {
+                assert!(result.unwrap_err().contains("link or special"));
+            } else {
+                result.unwrap();
+                assert_eq!(fs::read(stage.path().join(file)).unwrap(), b"payload");
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_rejects_duplicate_assets_and_checksum_encoding_errors() {
+        let metadata = br#"{"tag_name":"1.0.0","draft":false,"prerelease":false,"assets":[{"name":"bundle","browser_download_url":"https://example.com/one"},{"name":"bundle","browser_download_url":"https://example.com/two"}]}"#;
+        let release = parse_release(metadata).unwrap();
+        assert!(asset(&release, "bundle").unwrap_err().contains("duplicate"));
+        assert!(verify_checksum(b"", b"").unwrap_err().contains("Empty"));
+        assert!(
+            verify_checksum(b"", &[255])
+                .unwrap_err()
+                .contains("encoding")
+        );
+        assert!(parse_release(b"invalid").is_err());
+    }
+
+    #[test]
+    fn relative_redirects_preserve_scheme_and_origin() {
+        for (location, expected) in [
+            ("/file", "https://example.com/file"),
+            ("file", "https://example.com/releases/file"),
+            ("//cdn.example.com/file", "https://cdn.example.com/file"),
+            (
+                "https://cdn.example.com/file",
+                "https://cdn.example.com/file",
+            ),
+        ] {
+            assert_eq!(
+                resolve_redirect("https://example.com/releases/latest", location).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn worker_requires_exact_mode_and_valid_bounded_arguments() {
+        assert!(run_download_worker(&[]).is_none());
+        assert!(run_download_worker(&["other".into()]).is_none());
+        for args in [
+            vec![DOWNLOAD_WORKER],
+            vec![
+                DOWNLOAD_WORKER,
+                "https://example.com",
+                "invalid",
+                "false",
+                "unused",
+            ],
+            vec![
+                DOWNLOAD_WORKER,
+                "https://example.com",
+                "1099511627776",
+                "false",
+                "unused",
+            ],
+            vec![
+                DOWNLOAD_WORKER,
+                "https://example.com",
+                "16",
+                "invalid",
+                "unused",
+            ],
+            vec![
+                DOWNLOAD_WORKER,
+                "http://example.com",
+                "16",
+                "false",
+                "unused",
+            ],
+        ] {
+            assert!(
+                run_download_worker(&args.into_iter().map(OsString::from).collect::<Vec<_>>())
+                    .unwrap()
+                    .is_err()
+            );
+        }
     }
 }

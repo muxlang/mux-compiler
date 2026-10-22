@@ -77,6 +77,8 @@ jobs:
       - name: Test installer rollout compatibility
         if: runner.os != 'Windows'
         run: python3 scripts/ci/test-installer.py
+      - name: Test Windows dependency bundling
+        run: python3 -m unittest discover -s scripts/tests -p 'test_windows_dll_bundle.py'
       - name: Stage and smoke-test the packaged layout
         run: ./scripts/ci/smoke-packaged.sh debug
 

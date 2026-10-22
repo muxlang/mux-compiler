@@ -93,7 +93,7 @@ fn preserves_arguments_environment_working_directory_and_exit_status() {
         String::from_utf8(output.stdout).unwrap(),
         format!(
             "{}\ninherited\nrun\nfile with spaces.mux\na\"b\n\nunicode-λ\n",
-            installation.0.display()
+            installation.0.canonicalize().unwrap().display()
         )
     );
     assert_eq!(output.stderr, b"driver error\n");
@@ -194,4 +194,126 @@ fn missing_driver_is_an_actionable_failure() {
     let error = String::from_utf8(output.stderr).unwrap();
     assert!(error.contains("mux-driver.exe"), "{error}");
     assert!(error.contains("Reinstall Mux"), "{error}");
+}
+
+#[test]
+fn registration_bypasses_damaged_receipt_and_cleanup() {
+    let installation = Installation::new(
+        "fn main() { assert_eq!(std::env::args().nth(1).unwrap(), \"__register-install\"); }",
+    );
+    fs::write(installation.path(".mux-install.json"), "invalid receipt").unwrap();
+    let backup = installation.path(".mux-update-backup-launcher-sentinel");
+    fs::write(&backup, "old launcher").unwrap();
+    let output = installation
+        .command()
+        .arg("__register-install")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(backup.exists());
+}
+
+#[test]
+fn update_check_fetches_metadata_in_worker_without_starting_driver() {
+    use std::io::Read;
+    let installation = Installation::new("fn main() { std::process::exit(97); }");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/latest", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 4096];
+        assert!(stream.read(&mut request).unwrap() > 0);
+        let body = br#"{"tag_name":"v99.0.0","draft":false,"prerelease":false,"assets":[]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body).unwrap();
+    });
+    let output = installation
+        .command()
+        .args(["update", "--check"])
+        .env("MUX_UPDATE_API_URL", url)
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Latest stable:   99.0.0"));
+}
+
+#[cfg(unix)]
+#[test]
+fn cancellation_kills_and_reaps_download_during_headers_and_body() {
+    use std::io::Read;
+    for signal in ["-INT", "-TERM"] {
+        for headers in [false, true] {
+            let installation = Installation::new("fn main() { std::process::exit(97); }");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/latest", listener.local_addr().unwrap());
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                assert!(stream.read(&mut request).unwrap() > 0);
+                if headers {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n{")
+                        .unwrap();
+                }
+                ready_tx.send(()).unwrap();
+                // EOF proves the worker stopped before the command returned.
+                assert_eq!(stream.read(&mut request).unwrap(), 0);
+            });
+            let mut child = installation
+                .command()
+                .args(["update", "--check"])
+                .env("MUX_UPDATE_API_URL", url)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(
+                Command::new("kill")
+                    .args([signal, &child.id().to_string()])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let started = Instant::now();
+            loop {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                if started.elapsed() > Duration::from_secs(3) {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("Update ignored {signal} while headers={headers}");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("Update cancelled"),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            server.join().unwrap();
+            assert!(!installation.path(".mux-install.json").exists());
+        }
+    }
 }

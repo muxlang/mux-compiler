@@ -46,6 +46,9 @@ fn main() {
 
 fn run() -> Result<i32, String> {
     let arguments: Vec<_> = env::args_os().skip(1).collect();
+    if let Some(result) = mux_update::run_download_worker(&arguments) {
+        return result.map(|()| 0);
+    }
     if arguments.len() == 1 && arguments[0] == "__version" {
         println!("{}", env!("MUX_COMPILER_VERSION"));
         return Ok(0);
@@ -63,13 +66,13 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
 
-    mux_update::cleanup_old_launchers(&executable)?;
     let _installation_lock = if arguments
         .first()
         .is_some_and(|arg| arg == "__register-install")
     {
         None
     } else {
+        mux_update::cleanup_old_launchers(&executable)?;
         mux_update::shared_installation_lock(&executable)?
     };
     forward_to_driver(&executable, &arguments)

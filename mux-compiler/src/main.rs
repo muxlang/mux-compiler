@@ -3105,6 +3105,11 @@ fn compiler_installation_lock(command: &Commands) -> Option<mux_update::Installa
 
 fn main() {
     install_internal_error_panic_hook();
+    if let Some(result) =
+        mux_update::run_download_worker(&env::args_os().skip(1).collect::<Vec<_>>())
+    {
+        exit_with_update_result(result);
+    }
     let cli = Cli::parse();
     let _installation_lock = compiler_installation_lock(&cli.command);
     let (file_path, do_run, output, intermediate, deny_warnings) = parse_args_or_exit(cli);
