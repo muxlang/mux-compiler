@@ -38,6 +38,8 @@ jobs:
         include:
           - os: ubuntu-latest
             label: linux-x86_64
+          - os: macos-15-intel
+            label: macos-x86_64
           - os: macos-14
             label: macos-aarch64
           - os: windows-latest
@@ -53,6 +55,7 @@ jobs:
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # untagged master commit; the repo's only tag (v1) is OLDER than this
         with:
           toolchain: 1.93.1
+          components: clippy
       - name: Setup LLVM 22
         uses: ./.github/actions/setup-llvm
         with:
@@ -64,6 +67,18 @@ jobs:
         run: |
           cargo build -p mux-runtime --locked
           cargo build -p mux-lang --locked
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cargo build -p mux-windows-launcher --locked
+          fi
+      - name: Test updater and launcher
+        run: cargo test -p mux-update -p mux-windows-launcher --locked
+      - name: Check updater and launcher
+        run: cargo clippy -p mux-update -p mux-windows-launcher --locked --all-targets -- -D warnings
+      - name: Test installer rollout compatibility
+        if: runner.os != 'Windows'
+        run: python3 scripts/ci/test-installer.py
+      - name: Test Windows dependency bundling
+        run: python3 -m unittest discover -s scripts/tests -p 'test_windows_dll_bundle.py'
       - name: Stage and smoke-test the packaged layout
         run: ./scripts/ci/smoke-packaged.sh debug
 

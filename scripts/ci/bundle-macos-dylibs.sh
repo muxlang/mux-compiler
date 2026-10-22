@@ -30,6 +30,7 @@ die() { echo "$*" >&2; exit 1; }
 [[ "$#" -eq 2 ]] || die "usage: $0 <binary> <lib-dir>"
 binary="$1"
 lib_dir="$2"
+support_dir="$(dirname "$binary")"
 
 [[ "$(uname -s)" == "Darwin" ]] || die "this script is macOS only"
 [[ -f "$binary" ]] || die "no such binary: $binary"
@@ -83,7 +84,7 @@ while [[ "${#queue[@]}" -gt 0 ]]; do
     is_system_path "$dep" && continue
 
     name="$(basename "$dep")"
-    dest="$lib_dir/$name"
+    dest="$support_dir/$name"
 
     if [[ ! -f "$dest" ]]; then
       [[ -f "$dep" ]] || die "referenced dylib does not exist: $dep"
@@ -124,9 +125,20 @@ shopt -u nullglob
 if [[ "${#bundled[@]}" -eq 0 ]]; then
   echo "No non-system dylibs referenced; nothing to bundle."
 else
-  # The loader needs to know where @rpath is. bin/ and lib/ are siblings in the
-  # installed layout, which is what scripts/install.sh lays down.
-  install_name_tool -add_rpath "@executable_path/../lib" "$binary" 2>/dev/null || true
+  # Compiler support libraries travel beside the executable so custom runtime
+  # library directories work before the compiler can read its receipt.
+  # Remove the old sibling-lib search path when repackaging a binary. It may
+  # contain stale dependencies from an earlier install with custom libraries.
+  binary_rpaths="$(otool -l "$binary" | awk '
+    $1 == "cmd" { is_rpath = ($2 == "LC_RPATH") }
+    is_rpath && $1 == "path" { print $2 }
+  ')"
+  if printf '%s\n' "$binary_rpaths" | grep -Fxq '@executable_path/../lib'; then
+    install_name_tool -delete_rpath "@executable_path/../lib" "$binary"
+  fi
+  if ! printf '%s\n' "$binary_rpaths" | grep -Fxq '@executable_path'; then
+    install_name_tool -add_rpath "@executable_path" "$binary"
+  fi
   resign "$binary"
 fi
 
@@ -135,7 +147,7 @@ fi
 # the break would resurface as an abort trap on a user's machine.
 leaked=0
 shopt -s nullglob
-for file in "$binary" "$lib_dir"/*.dylib; do
+for file in "$binary" "$support_dir"/*.dylib "$lib_dir"/*.dylib; do
   while read -r dep; do
     [[ -n "$dep" ]] || continue
     if ! is_system_path "$dep"; then

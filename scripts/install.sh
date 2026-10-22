@@ -11,7 +11,7 @@ LIB_DIR_DEFAULT="$(dirname "$INSTALL_DIR")/lib"
 LIB_DIR="${MUX_LIB_DIR:-$LIB_DIR_DEFAULT}"
 BASE_URL="${MUX_RELEASE_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
 # awk program that extracts the first whitespace-separated field (the checksum).
-AWK_FIRST_FIELD='{print $1}'
+AWK_FIRST_FIELD="{print \$1}"
 
 if [ "${1:-}" = "--help" ]; then
   echo "Mux installer"
@@ -95,7 +95,8 @@ elif command -v shasum >/dev/null 2>&1; then
     exit 1
   fi
 else
-  echo "Warning: sha256 tool not found; skipping checksum verification"
+  echo "Missing SHA-256 tool: install sha256sum or shasum" >&2
+  exit 1
 fi
 
 mkdir -p "$INSTALL_DIR"
@@ -109,11 +110,31 @@ if [ ! -f "$bin_path" ]; then
   exit 1
 fi
 
-cp "$bin_path" "$INSTALL_DIR/mux"
-chmod +x "$INSTALL_DIR/mux"
+if [ -f "$INSTALL_DIR/.mux-install.json" ]; then
+  # Registered installations share a lock with compilation and updates. Let
+  # the installed updater stage and replace the complete bundle transactionally.
+  "$INSTALL_DIR/mux" __install-bundle --bundle-dir "$bundle_root" --target "$TARGET"
+else
+  for binary in "$bundle_root/bin"/*; do
+    [ -f "$binary" ] || continue
+    cp -f "$binary" "$INSTALL_DIR/"
+  done
+  chmod +x "$INSTALL_DIR/mux"
 
-if [ -d "$bundle_root/lib" ]; then
-  cp -f "$bundle_root/lib"/* "$LIB_DIR/" 2>/dev/null || true
+  if [ -d "$bundle_root/lib" ]; then
+    for lib in "$bundle_root/lib"/*; do
+      [ -f "$lib" ] || continue
+      cp -f "$lib" "$LIB_DIR/"
+    done
+  fi
+
+  if "$INSTALL_DIR/mux" __version >/dev/null 2>&1; then
+    "$INSTALL_DIR/mux" __register-install \
+      --bundle-dir "$bundle_root" --bin-dir "$INSTALL_DIR" \
+      --lib-dir "$LIB_DIR" --target "$TARGET"
+  else
+    echo "This release does not support mux update; use the installer again for a newer release."
+  fi
 fi
 
 echo "Installed mux to $INSTALL_DIR/mux"

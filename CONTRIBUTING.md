@@ -34,7 +34,7 @@ Thanks for your interest! This guide explains how to contribute to Mux.
    wrappers automatically set the correct LLVM environment variables.
 
 6. Run the focused tests before opening a pull request. The pre-commit hook
-   does this for compiler changes. CI runs the full executable fixture corpus,
+   does this for compiler, updater, and Windows launcher changes. CI runs the full executable fixture corpus,
    including a second run with the leak-check runtime.
 
    To run the full test and snapshot check locally when useful:
@@ -96,7 +96,8 @@ Thanks for your interest! This guide explains how to contribute to Mux.
 
 11. Profile the compiler and runtime with external tools (see the Setup documentation for platform-specific guidance).
 
-12. The pre-commit hook runs `cargo fmt` and strict Clippy for compiler changes.
+12. The pre-commit hook runs `cargo fmt --all`, strict Clippy, and tests across
+    the workspace for compiler, updater, and Windows launcher changes.
     CI runs the full suite for every pull request. Run the full checks above
     locally when you need an ad-hoc reproduction or broader confidence.
 13. For releases, bump `version` in `mux-compiler/Cargo.toml`, add the matching section in `CHANGELOG.md`, and update the README version badge (see the Release Process in AGENTS.md).

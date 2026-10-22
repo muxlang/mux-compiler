@@ -122,6 +122,32 @@ enum Commands {
     },
     /// Print the Mux version
     Version {},
+    /// Install the latest stable Mux release
+    Update {
+        /// Report update availability without installing anything.
+        #[arg(long)]
+        check: bool,
+    },
+    #[command(name = "__version", hide = true)]
+    InternalVersion,
+    #[command(name = "__register-install", hide = true)]
+    RegisterInstall {
+        #[arg(long)]
+        bundle_dir: PathBuf,
+        #[arg(long)]
+        bin_dir: PathBuf,
+        #[arg(long)]
+        lib_dir: PathBuf,
+        #[arg(long)]
+        target: String,
+    },
+    #[command(name = "__install-bundle", hide = true)]
+    InstallBundle {
+        #[arg(long)]
+        bundle_dir: PathBuf,
+        #[arg(long)]
+        target: String,
+    },
     /// Explain a compiler diagnostic code
     Explain {
         /// A code such as E0302 or W0300
@@ -525,8 +551,20 @@ fn runtime_lib_near_executable() -> Option<PathBuf> {
 /// which sits outside `full` and is the one build the compiler cannot produce.
 fn resolve_runtime_lib_dir() -> Option<PathBuf> {
     runtime_lib_from_env()
+        .or_else(runtime_lib_from_receipt)
         .or_else(runtime_lib_near_executable)
         .or_else(runtime_lib_from_build_config)
+}
+
+fn runtime_lib_from_receipt() -> Option<PathBuf> {
+    let executable = env::current_exe().unwrap_or_else(|error| {
+        eprintln!("Could not locate the running compiler: {error}");
+        process::exit(1);
+    });
+    mux_update::installed_runtime_dir(&executable).unwrap_or_else(|error| {
+        eprintln!("Could not read the Mux installation receipt: {error}");
+        process::exit(1);
+    })
 }
 
 /// Colored ASCII status marker for doctor checks: green `[ok]` or red `[x]`.
@@ -1692,9 +1730,32 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
-    let cli = Cli::parse();
+fn parse_args_or_exit(cli: Cli) -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
     match &cli.command {
+        Commands::Update { check } => {
+            exit_with_update_result(mux_update::run(*check, env!("CARGO_PKG_VERSION")));
+        }
+        Commands::InternalVersion => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            process::exit(0);
+        }
+        Commands::RegisterInstall {
+            bundle_dir,
+            bin_dir,
+            lib_dir,
+            target,
+        } => {
+            exit_with_update_result(mux_update::register_install(
+                bundle_dir,
+                bin_dir,
+                lib_dir,
+                target,
+                env!("CARGO_PKG_VERSION"),
+            ));
+        }
+        Commands::InstallBundle { bundle_dir, target } => {
+            exit_with_update_result(mux_update::install_bundle(bundle_dir, target));
+        }
         Commands::Version {} => {
             print_version_banner();
             process::exit(0);
@@ -1790,6 +1851,16 @@ fn parse_args_or_exit() -> (PathBuf, bool, Option<PathBuf>, bool, bool) {
                 *coverage,
             );
             process::exit(status);
+        }
+    }
+}
+
+fn exit_with_update_result(result: Result<(), String>) -> ! {
+    match result {
+        Ok(()) => process::exit(0),
+        Err(error) => {
+            eprintln!("mux update: {error}");
+            process::exit(1);
         }
     }
 }
@@ -3018,9 +3089,41 @@ fn build_linker_args_for_with_runtime(
     linker_args
 }
 
+fn compiler_installation_lock(command: &Commands) -> Option<mux_update::InstallationLock> {
+    // The Windows launcher owns the lock. Version probes must also work while
+    // the updater holds its exclusive lock to validate a staged installation.
+    if cfg!(windows)
+        || matches!(
+            command,
+            Commands::Update { .. }
+                | Commands::InternalVersion
+                | Commands::Version {}
+                | Commands::RegisterInstall { .. }
+                | Commands::InstallBundle { .. }
+        )
+    {
+        return None;
+    }
+    let executable = env::current_exe().unwrap_or_else(|error| {
+        eprintln!("Could not locate the running compiler: {error}");
+        process::exit(1);
+    });
+    mux_update::shared_installation_lock(&executable).unwrap_or_else(|error| {
+        eprintln!("Could not lock the Mux installation: {error}");
+        process::exit(1);
+    })
+}
+
 fn main() {
     install_internal_error_panic_hook();
-    let (file_path, do_run, output, intermediate, deny_warnings) = parse_args_or_exit();
+    if let Some(result) =
+        mux_update::run_download_worker(&env::args_os().skip(1).collect::<Vec<_>>())
+    {
+        exit_with_update_result(result);
+    }
+    let cli = Cli::parse();
+    let _installation_lock = compiler_installation_lock(&cli.command);
+    let (file_path, do_run, output, intermediate, deny_warnings) = parse_args_or_exit(cli);
     set_compiling_file(&file_path);
 
     ensure_mux_extension_or_exit(&file_path);

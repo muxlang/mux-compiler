@@ -44,23 +44,52 @@ try {
         throw "Could not find mux.exe in archive"
     }
 
-    # Everything in bin/, not just mux.exe: the bundle also ships the LLVM and
-    # support DLLs (LLVM-C.dll, libxml2.dll, zlib.dll, zstd.dll) that mux.exe
-    # loads at run time, and Windows resolves those from the executable's own
-    # directory. Copying only the exe produced a missing-DLL failure on first
-    # use.
-    Get-ChildItem -Path (Join-Path $bundleRoot "bin") -File | ForEach-Object {
-        Copy-Item $_.FullName (Join-Path $InstallDir $_.Name) -Force
+    $receiptPath = Join-Path $InstallDir ".mux-install.json"
+    if (Test-Path $receiptPath) {
+        # Registered installations share a lock with compilation and updates.
+        # The installed updater replaces the complete bundle transactionally.
+        & (Join-Path $InstallDir "mux.exe") __install-bundle `
+            --bundle-dir $bundleRoot --target $target
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not install the Mux bundle (exit $LASTEXITCODE)"
+        }
     }
+    else {
+        # Everything in bin/, not just mux.exe: the bundle also ships the LLVM
+        # and support DLLs that mux.exe loads at runtime.
+        Get-ChildItem -Path (Join-Path $bundleRoot "bin") -File | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $InstallDir $_.Name) -Force
+        }
 
-    $bundleLibDir = Join-Path $bundleRoot "lib"
-    if (Test-Path $bundleLibDir) {
-        Get-ChildItem -Path $bundleLibDir -File | ForEach-Object {
-            Copy-Item $_.FullName (Join-Path $LibDir $_.Name) -Force
+        $bundleLibDir = Join-Path $bundleRoot "lib"
+        if (Test-Path $bundleLibDir) {
+            Get-ChildItem -Path $bundleLibDir -File | ForEach-Object {
+                Copy-Item $_.FullName (Join-Path $LibDir $_.Name) -Force
 
-            if ($_.Name -match "\.dll$") {
-                Copy-Item $_.FullName (Join-Path $InstallDir $_.Name) -Force
+                if ($_.Name -match "\.dll$") {
+                    Copy-Item $_.FullName (Join-Path $InstallDir $_.Name) -Force
+                }
             }
+        }
+
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        try {
+            $PSNativeCommandUseErrorActionPreference = $false
+            & (Join-Path $InstallDir "mux.exe") __version *> $null
+            $supportsUpdate = $LASTEXITCODE -eq 0
+        }
+        finally {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+        if ($supportsUpdate) {
+            & (Join-Path $InstallDir "mux.exe") __register-install `
+                --bundle-dir $bundleRoot --bin-dir $InstallDir --lib-dir $LibDir --target $target
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not register the Mux installation (exit $LASTEXITCODE)"
+            }
+        }
+        else {
+            Write-Host "This release does not support mux update; use the installer again for a newer release."
         }
     }
 

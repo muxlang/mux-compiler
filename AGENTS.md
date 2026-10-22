@@ -23,8 +23,9 @@ changing syntax, diagnostics, generated code, or the runtime ABI.
 ## Quality gate
 
 Run `cargo fmt --all -- --check`,
-`./scripts/dev-cargo.sh clippy --all-targets --all-features -- -D warnings`,
-and the focused tests before committing. The pre-commit hook runs these checks
+`./scripts/dev-cargo.sh clippy --workspace --all-targets --all-features -- -D warnings`,
+and the focused tests before committing. The pre-commit hook checks all workspace
+packages, including the updater and Windows launcher, and runs these checks
 and skips only `test_executable_all_mux_files_in_dir`, the multi-minute run over
 the full executable fixture corpus. The corpus compiles and runs up to two
 non-network fixtures at once. Network fixtures run serially, and snapshots

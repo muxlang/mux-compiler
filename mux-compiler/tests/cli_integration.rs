@@ -155,6 +155,39 @@ fn version_subcommand_prints_versions() {
 }
 
 #[test]
+fn update_help_describes_check_only_mode() {
+    let output = mux().args(["update", "--help"]).output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--check"), "{stdout}");
+    assert!(stdout.contains("without installing"), "{stdout}");
+}
+
+#[test]
+fn internal_version_probe_is_machine_readable() {
+    let output = mux().arg("__version").output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        env!("CARGO_PKG_VERSION")
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn update_from_source_build_requires_an_installer_receipt_before_network_access() {
+    let output = mux()
+        .arg("update")
+        .env("MUX_UPDATE_API_URL", "http://invalid.example/latest")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("installer receipt"), "{stderr}");
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
 fn help_flag_succeeds() {
     let out = mux().arg("--help").output().expect("spawn mux --help");
     assert!(out.status.success());

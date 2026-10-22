@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `mux update` and `mux update --check` for stable GitHub releases.
+  Updates replace the compiler and bundled libraries together, verify
+  checksums, and restore the previous installation on failure. Windows uses
+  a launcher so the command returns only after the update finishes. (#465)
+
 ## [0.14.0] - 2026-10-21
 
 ### Added

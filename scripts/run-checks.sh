@@ -86,6 +86,8 @@ if [[ "$service_tests_only" == "1" ]]; then
   run_step "cargo test --test service_integration" \
     "${cargo_cmd[@]}" test -p mux-lang --test service_integration -- --nocapture
 else
+  run_step "updater and launcher tests" \
+    "${cargo_cmd[@]}" test -p mux-update -p mux-windows-launcher
   if [[ "$reject_unreferenced_snapshots" == "1" ]]; then
     run_step "cargo insta test (reject unreferenced snapshots)" \
       "${cargo_cmd[@]}" insta test -p mux-lang --unreferenced=reject

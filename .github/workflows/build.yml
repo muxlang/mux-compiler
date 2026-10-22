@@ -88,7 +88,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Formatting check
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
 
   ab_benchmark_gate:
     # Roc-style A/B regression gate (plan.md step 5): builds a release binary
@@ -315,7 +315,7 @@ jobs:
         # rlib - not the staticlib compiled Mux programs link against.
         run: cargo build -p mux-runtime -p mux-lang --locked
       - name: Clippy
-        run: cargo clippy -p mux-lang --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   rustdoc:
     # Clippy and the compiler tests do not build public documentation. Keep
@@ -398,7 +398,7 @@ jobs:
         # Re-runs the test suite under instrumentation. Integration tests shell
         # out to CARGO_BIN_EXE_mux, which llvm-cov instruments too, so codegen
         # executed in the spawned compiler is captured.
-        run: cargo +nightly llvm-cov -p mux-lang --all-features --branch --lcov --output-path lcov.info
+        run: cargo +nightly llvm-cov --workspace --all-features --branch --lcov --output-path lcov.info
       - name: Normalize coverage source paths
         run: |
           python3 - <<'PY'
