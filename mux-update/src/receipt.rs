@@ -77,7 +77,7 @@ pub fn shared_installation_lock(executable: &Path) -> Result<Option<Installation
 }
 pub(crate) fn validate_launcher(executable: &Path) -> Result<()> {
     let expected = if cfg!(windows) { "mux.exe" } else { "mux" };
-    if executable.file_name().and_then(|n| n.to_str()) != Some(expected) {
+    if executable.file_name().and_then(std::ffi::OsStr::to_str) != Some(expected) {
         return Err("Run mux update through the installed mux launcher.".into());
     }
     Ok(())

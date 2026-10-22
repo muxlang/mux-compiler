@@ -36,7 +36,7 @@ def digest(path):
         return hashlib.file_digest(source, "sha256").digest()
 
 
-def bundle(binary_directory, search_directories, system_directory, inspect=imported_dlls):
+def dll_sources(search_directories):
     sources = {}
     for directory in search_directories:
         for name, path in dll_index(directory).items():
@@ -44,6 +44,35 @@ def bundle(binary_directory, search_directories, system_directory, inspect=impor
             if previous is not None and digest(previous) != digest(path):
                 raise ValueError(f"Conflicting DLL sources: {previous} and {path}")
             sources[name] = path
+    return sources
+
+
+def add_dependency(binary, dependency, binary_directory, installed, sources,
+                   system, pending, copied):
+    if Path(dependency).name != dependency or any(c in dependency for c in "/\\:"):
+        raise ValueError(f"Invalid DLL import in {binary}: {dependency}")
+    name = dependency.casefold()
+    # Windows resolves API-set contract names without a physical DLL.
+    if name.startswith(("api-ms-", "ext-ms-")):
+        return
+    if name in installed:
+        pending.append(installed[name])
+        return
+    source = sources.get(name)
+    if source is None:
+        if name in system:
+            return
+        raise FileNotFoundError(f"Missing DLL {dependency}, imported by {binary}")
+    destination = binary_directory / source.name
+    shutil.copy2(source, destination)
+    installed[name] = destination
+    pending.append(destination)
+    copied.append(destination.name)
+    print(f"Bundled {destination.name} (imported by {binary.name})")
+
+
+def bundle(binary_directory, search_directories, system_directory, inspect=imported_dlls):
+    sources = dll_sources(search_directories)
     system = dll_index(system_directory)
     installed = dll_index(binary_directory)
     pending = deque(sorted(path for path in binary_directory.iterdir()
@@ -58,26 +87,8 @@ def bundle(binary_directory, search_directories, system_directory, inspect=impor
             continue
         inspected.add(binary.name.casefold())
         for dependency in inspect(binary):
-            if Path(dependency).name != dependency or any(c in dependency for c in "/\\:"):
-                raise ValueError(f"Invalid DLL import in {binary}: {dependency}")
-            name = dependency.casefold()
-            # Windows resolves API-set contract names without a physical DLL.
-            if name.startswith(("api-ms-", "ext-ms-")):
-                continue
-            if name in installed:
-                pending.append(installed[name])
-                continue
-            source = sources.get(name)
-            if source is None:
-                if name in system:
-                    continue
-                raise FileNotFoundError(f"Missing DLL {dependency}, imported by {binary}")
-            destination = binary_directory / source.name
-            shutil.copy2(source, destination)
-            installed[name] = destination
-            pending.append(destination)
-            copied.append(destination.name)
-            print(f"Bundled {destination.name} (imported by {binary.name})")
+            add_dependency(binary, dependency, binary_directory, installed,
+                           sources, system, pending, copied)
     return copied
 
 
