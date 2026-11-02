@@ -25,11 +25,11 @@ sudo apt-get install -y --no-install-recommends ca-certificates gnupg lsb-releas
 
 # A literal https:// URL plus --max-redirect=0 means the key download cannot be
 # downgraded to http by a redirect.
-sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key \
+sudo wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.asc \
   https://apt.llvm.org/llvm-snapshot.gpg.key
 
 codename="$(lsb_release -cs)"
-echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-${llvm_version} main" \
+echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.asc] https://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-${llvm_version} main" \
   | sudo tee /etc/apt/sources.list.d/llvm.list
 
 packages=(
