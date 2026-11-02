@@ -43,9 +43,9 @@ elif [[ -f /etc/debian_version ]]; then
   echo "Installing LLVM 22 toolchain for Debian/Ubuntu"
   $sudo_cmd apt-get update
   $sudo_cmd apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release wget
-  $sudo_cmd wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.gpg.key \
+  $sudo_cmd wget --max-redirect=0 -O /usr/share/keyrings/llvm-snapshot.asc \
     https://apt.llvm.org/llvm-snapshot.gpg.key
-  echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg.key] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" \
+  echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.asc] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" \
     | $sudo_cmd tee /etc/apt/sources.list.d/llvm.list >/dev/null
   $sudo_cmd apt-get update
   $sudo_cmd apt-get install -y llvm-22 llvm-22-dev clang-22 lld-22 libpolly-22-dev
