@@ -1765,11 +1765,13 @@ fn handle_hover(
                 }) {
                     value.push_str(&format!("\n\n```mux\n{header}\n```"));
                 }
-                if let Some(documentation) = declaration_range.and_then(|declaration| {
-                    documentation_comment_before(declaration_source, declaration.start)
-                }) {
+                if let Some(documentation) = documentation_for_reference(&analysis, reference) {
                     value.push_str("\n\n");
-                    value.push_str(&documentation);
+                    value.push_str(&render_lsp_comment(
+                        &analysis,
+                        declaration_file,
+                        &documentation,
+                    ));
                 }
                 Some(lsp::Hover {
                     contents: lsp::HoverContents::Markup(lsp::MarkupContent {
@@ -1788,31 +1790,86 @@ fn handle_hover(
 }
 
 fn documentation_comment_before(source: &str, declaration_start: usize) -> Option<String> {
-    let line_start = source[..declaration_start]
-        .rfind('\n')
-        .map_or(0, |index| index + 1);
-    if !source.get(line_start..declaration_start)?.trim().is_empty() {
-        return None;
-    }
-    let mut lines = Vec::new();
-    let mut cursor = line_start;
-    while cursor > 0 {
-        let previous_end = cursor - 1;
-        let previous_start = source[..previous_end]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let line = source[previous_start..previous_end].trim();
-        if line.is_empty() || !line.starts_with("//") {
-            break;
+    let parsed = mux_lang::syntax::parse_source(source);
+    mux_lang::muxdoc::DocIndex::from_tree(&parsed.tree)
+        .before(declaration_start)
+        .map(mux_lang::muxdoc::DocComment::markdown)
+}
+
+fn documentation_for_reference(
+    analysis: &mux_lang::analysis::Analysis,
+    reference: &mux_lang::semantics::ResolvedIdentifier,
+) -> Option<mux_lang::muxdoc::DocComment> {
+    let declaration = reference.declaration?.byte_range?;
+    let file = declaration_file_for_reference(analysis, reference);
+    let source = analysis.files.source(file)?;
+    let parsed = mux_lang::syntax::parse_source(source);
+    mux_lang::muxdoc::DocIndex::from_tree(&parsed.tree)
+        .before(declaration.start)
+        .cloned()
+}
+
+fn declaration_file_for_reference(
+    analysis: &mux_lang::analysis::Analysis,
+    reference: &mux_lang::semantics::ResolvedIdentifier,
+) -> mux_lang::diagnostic::FileId {
+    reference
+        .source_path
+        .as_deref()
+        .and_then(|path| find_file_id(&analysis.files, path))
+        .unwrap_or(analysis.root_file)
+}
+
+fn render_lsp_comment(
+    analysis: &mux_lang::analysis::Analysis,
+    current_file: mux_lang::diagnostic::FileId,
+    doc: &mux_lang::muxdoc::DocComment,
+) -> String {
+    doc.markdown_with_links(|target| {
+        let mut candidates = Vec::new();
+        for (file_id, path, source) in analysis.files.iter() {
+            if path.to_string_lossy().starts_with("<embedded>") {
+                continue;
+            }
+            let parsed = mux_lang::syntax::parse_source(source);
+            let index = mux_lang::muxdoc::DocIndex::from_tree(&parsed.tree);
+            let Some(module) = path.file_stem().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let module_path = path
+                .with_extension("")
+                .to_string_lossy()
+                .replace(['/', '\\'], ".");
+            for declaration in index.declarations.iter().filter(|declaration| {
+                declaration.name == target
+                    || declaration.qualified_name == target
+                    || format!("{module}.{}", declaration.qualified_name) == target
+                    || format!("{module_path}.{}", declaration.qualified_name)
+                        .ends_with(&format!(".{target}"))
+            }) {
+                let line = source[..declaration.name_range.start]
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count()
+                    + 1;
+                let mut url =
+                    url::Url::from_file_path(mux_lang::analysis::absolute_path(path)).ok()?;
+                url.set_fragment(Some(&format!("L{line}")));
+                candidates.push((file_id, url.to_string()));
+            }
         }
-        lines.push(line.trim_start_matches('/').trim().to_owned());
-        cursor = previous_start;
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    lines.reverse();
-    Some(lines.join("\n"))
+        let local = candidates
+            .iter()
+            .filter(|(file_id, _)| *file_id == current_file)
+            .collect::<Vec<_>>();
+        if local.len() == 1 {
+            return Some(local[0].1.clone());
+        }
+        if candidates.len() == 1 {
+            return Some(candidates[0].1.clone());
+        }
+        None
+    })
 }
 
 fn declaration_header(source: &str, declaration_start: usize) -> Option<&str> {
@@ -2931,10 +2988,20 @@ fn complete_with_snippet_support(
                 .trim_start_matches([' ', '\t'])
                 .starts_with('(');
             let use_snippet = supports_snippets && function && !next_is_call;
+            let doc =
+                reference.and_then(|reference| documentation_for_reference(&analysis, reference));
             let documentation = type_detail.as_ref().map(|detail| {
+                let mut value = format!("```mux\n{name}: {detail}\n```");
+                if let Some(doc) = &doc {
+                    value.push_str("\n\n");
+                    let file = reference.map_or(analysis.root_file, |reference| {
+                        declaration_file_for_reference(&analysis, reference)
+                    });
+                    value.push_str(&render_lsp_comment(&analysis, file, doc));
+                }
                 lsp::Documentation::MarkupContent(lsp::MarkupContent {
                     kind: lsp::MarkupKind::Markdown,
-                    value: format!("```mux\n{name}: {detail}\n```"),
+                    value,
                 })
             });
             lsp::CompletionItem {
@@ -3580,9 +3647,14 @@ fn handle_signature_help(
         else {
             return None;
         };
+        let declaration_file = declaration_file_for_reference(&analysis, reference);
+        let declaration_source = analysis
+            .files
+            .source(declaration_file)
+            .unwrap_or(&document.source);
         let parameter_names = function_parameter_names(
-            &document.source,
-            &reference.name,
+            declaration_source,
+            &reference.source_name,
             reference.declaration.and_then(|span| span.byte_range),
         );
         let parameter_labels = params
@@ -3609,16 +3681,34 @@ fn handle_signature_help(
                 .count()
                 .min(params.len().saturating_sub(1)) as u32
         });
+        let doc = documentation_for_reference(&analysis, reference);
         Some(lsp::SignatureHelp {
             signatures: vec![lsp::SignatureInformation {
                 label,
-                documentation: None,
+                documentation: doc.as_ref().map(|doc| {
+                    lsp::Documentation::MarkupContent(lsp::MarkupContent {
+                        kind: lsp::MarkupKind::Markdown,
+                        value: render_lsp_comment(&analysis, declaration_file, doc),
+                    })
+                }),
                 parameters: Some(
                     parameter_labels
                         .into_iter()
-                        .map(|label| lsp::ParameterInformation {
-                            label: lsp::ParameterLabel::Simple(label),
-                            documentation: None,
+                        .map(|label| {
+                            let name = label.split(':').next().unwrap_or_default();
+                            let parameter_doc = doc
+                                .as_ref()
+                                .and_then(|doc| doc.parameter(name))
+                                .map(str::to_owned);
+                            lsp::ParameterInformation {
+                                label: lsp::ParameterLabel::Simple(label),
+                                documentation: parameter_doc.map(|text| {
+                                    lsp::Documentation::MarkupContent(lsp::MarkupContent {
+                                        kind: lsp::MarkupKind::Markdown,
+                                        value: text,
+                                    })
+                                }),
+                            }
                         })
                         .collect(),
                 ),

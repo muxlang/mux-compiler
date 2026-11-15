@@ -98,6 +98,12 @@ enum Commands {
     },
     /// Check a Mux file and its imports without generating code
     Check { file: PathBuf },
+    /// Generate Markdown API reference pages for a Mux file and its imports
+    Doc {
+        file: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
     /// Compile and run a Mux file
     Run {
         file: PathBuf,
@@ -1806,6 +1812,23 @@ fn parse_args_or_exit(cli: Cli) -> CompileRequest {
                 deny_warnings: cli.deny_warnings,
             }
         }
+        Commands::Doc { file, output } => {
+            match mux_lang::docgen::generate(file, output, cli.deny_warnings) {
+                Ok(outcome) => {
+                    for warning in outcome.warnings {
+                        eprintln!("warning: {warning}");
+                    }
+                    for path in outcome.paths {
+                        println!("generated {}", path.display());
+                    }
+                    process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("mux doc: {error}");
+                    process::exit(1);
+                }
+            }
+        }
         Commands::Build {
             file,
             output,
@@ -2505,6 +2528,7 @@ fn analyze_semantics_or_exit(
     if let Some(resolver) = analyzer.module_resolver.as_ref() {
         diagnostics.extend(resolver.borrow_mut().take_diagnostics());
     }
+    diagnostics.extend(mux_lang::muxdoc::diagnostics_for_files(files));
     if !diagnostics.is_empty() && emit_diagnostic_batch(files, &diagnostics, deny_warnings) {
         process::exit(1);
     }

@@ -666,6 +666,197 @@ fn type_hovers_show_signatures_and_adjacent_documentation() {
 }
 
 #[test]
+fn muxdoc_reaches_hover_completion_and_signature_help() {
+    let (mut child, mut stdin, mut stdout) = start_server();
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}),
+    );
+    assert_eq!(receive_response(&mut stdout, 1)["id"], 1);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+    );
+    let path = std::env::temp_dir().join(format!("mux-lsp-muxdoc-{}.mux", std::process::id()));
+    let uri = url::Url::from_file_path(path).unwrap().to_string();
+    let source = "/**\n * Add two values.\n * a: First value\n * b: Second value\n * returns: Their sum\n * see: main\n */\nfunc add(int a, int b) returns int { return a + b }\nfunc main() returns void {\n    add(1, 2)\n    ad\n    return\n}\n";
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"mux","version":1,"text":source}}}),
+    );
+    assert_eq!(
+        receive(&mut stdout)["method"],
+        "textDocument/publishDiagnostics"
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":uri},"position":{"line":9,"character":5}}}),
+    );
+    let hover = receive_response(&mut stdout, 2);
+    assert!(
+        hover["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Add two values."),
+        "{hover}"
+    );
+    assert!(
+        hover["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("**See:** [main](file://"),
+        "{hover}"
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":uri},"position":{"line":10,"character":6}}}),
+    );
+    let completion = receive_response(&mut stdout, 3);
+    let add = completion["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["label"] == "add")
+        .unwrap();
+    assert!(
+        add["documentation"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Add two values."),
+        "{add}"
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":uri},"position":{"line":9,"character":9}}}),
+    );
+    let signature = receive_response(&mut stdout, 4);
+    assert!(
+        signature["result"]["signatures"][0]["documentation"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Add two values."),
+        "{signature}"
+    );
+    assert!(
+        signature["result"]["signatures"][0]["parameters"][0]["documentation"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("First value"),
+        "{signature}"
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":5,"method":"shutdown","params":null}),
+    );
+    assert_eq!(receive_response(&mut stdout, 5)["id"], 5);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    );
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn muxdoc_on_imported_functions_reaches_editor_help() {
+    let root = std::env::temp_dir().join(format!("mux-lsp-imported-doc-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let entry = root.join("main.mux");
+    let imported = root.join("tools.mux");
+    std::fs::write(&imported, "/**\n * Greet someone.\n * name: The person to greet\n */\nfunc greet(string name) returns void { print(name) return }\n").unwrap();
+    let uri = url::Url::from_file_path(&entry).unwrap().to_string();
+    let source =
+        "import tools.*\nfunc main() returns void {\n    greet(\"Mux\")\n    gr\n    return\n}\n";
+    let (mut child, mut stdin, mut stdout) = start_server();
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}),
+    );
+    assert_eq!(receive_response(&mut stdout, 1)["id"], 1);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+    );
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"mux","version":1,"text":source}}}),
+    );
+    assert_eq!(
+        receive(&mut stdout)["method"],
+        "textDocument/publishDiagnostics"
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":uri},"position":{"line":2,"character":6}}}),
+    );
+    let hover = receive_response(&mut stdout, 2);
+    assert!(
+        hover["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Greet someone."),
+        "{hover}"
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":uri},"position":{"line":3,"character":6}}}),
+    );
+    let completion = receive_response(&mut stdout, 3);
+    let greet = completion["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["label"] == "greet")
+        .unwrap();
+    assert!(
+        greet["documentation"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Greet someone."),
+        "{greet}"
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":uri},"position":{"line":2,"character":10}}}),
+    );
+    let signature = receive_response(&mut stdout, 4);
+    assert!(
+        signature["result"]["signatures"][0]["documentation"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Greet someone."),
+        "{signature}"
+    );
+    assert!(
+        signature["result"]["signatures"][0]["parameters"][0]["documentation"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("The person to greet"),
+        "{signature}"
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":5,"method":"shutdown","params":null}),
+    );
+    assert_eq!(receive_response(&mut stdout, 5)["id"], 5);
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    );
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn stdio_server_publishes_diagnostics_and_shuts_down_cleanly() {
     let (mut child, mut stdin, mut stdout) = start_server();
     send(
