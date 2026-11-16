@@ -364,10 +364,13 @@ fn validate_output_directory(output: &Path) -> Result<bool, String> {
     }
     for name in &expected {
         let path = output.join(name);
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-            return Err(format!("managed output {} is not a regular file", path.display()));
+            return Err(format!(
+                "managed output {} is not a regular file",
+                path.display()
+            ));
         }
     }
     Ok(true)

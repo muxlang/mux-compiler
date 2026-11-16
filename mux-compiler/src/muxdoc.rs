@@ -533,10 +533,13 @@ fn parse_comment(range: ByteRange, lines: &[(String, ByteRange)]) -> DocComment 
     let mut sections: Vec<Section> = Vec::new();
     for (line, line_range) in lines {
         let trimmed = line.trim();
-        let heading = (!matches!(sections.last().map(|section| &section.kind), Some(SectionKind::Example)))
-            .then(|| trimmed.split_once(':'))
-            .flatten()
-            .filter(|(key, _)| {
+        let heading = (!matches!(
+            sections.last().map(|section| &section.kind),
+            Some(SectionKind::Example)
+        ))
+        .then(|| trimmed.split_once(':'))
+        .flatten()
+        .filter(|(key, _)| {
             key.chars()
                 .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         });
