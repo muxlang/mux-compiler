@@ -189,6 +189,7 @@ fn build_links(modules: &[Module]) -> HashMap<String, (String, String)> {
             let target = (module.filename.clone(), anchor(&declaration.qualified_name));
             let keys = [
                 declaration.qualified_name.clone(),
+                declaration.name.clone(),
                 format!("{module_name}.{}", declaration.qualified_name),
                 format!("{}.{}", module.title, declaration.qualified_name),
             ]
@@ -360,6 +361,14 @@ fn validate_output_directory(output: &Path) -> Result<bool, String> {
         .collect::<HashSet<_>>();
     if contents != expected {
         return Err("output directory contains files not managed by mux doc".into());
+    }
+    for name in &expected {
+        let path = output.join(name);
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(format!("managed output {} is not a regular file", path.display()));
+        }
     }
     Ok(true)
 }

@@ -1386,6 +1386,7 @@ fn import_name_ranges(
     }
 
     let parsed = mux_lang::syntax::parse_source(source);
+    let local_doc_index = mux_lang::muxdoc::DocIndex::from_tree(&parsed.tree);
     visit(parsed.tree.root(), statement)
 }
 
@@ -2965,6 +2966,11 @@ fn complete_with_snippet_support(
                 .resolved_identifiers
                 .iter()
                 .find(|reference| reference.name == name);
+            let local_doc = local_doc_index
+                .declarations
+                .iter()
+                .find(|declaration| declaration.name == name)
+                .and_then(|declaration| declaration.doc.clone());
             let type_detail = reference
                 .and_then(|reference| reference.type_.as_ref().map(|type_| (reference, type_)))
                 .map(|(reference, type_)| {
@@ -2988,8 +2994,9 @@ fn complete_with_snippet_support(
                 .trim_start_matches([' ', '\t'])
                 .starts_with('(');
             let use_snippet = supports_snippets && function && !next_is_call;
-            let doc =
-                reference.and_then(|reference| documentation_for_reference(&analysis, reference));
+            let doc = local_doc.or_else(|| {
+                reference.and_then(|reference| documentation_for_reference(&analysis, reference))
+            });
             let documentation = type_detail.as_ref().map(|detail| {
                 let mut value = format!("```mux\n{name}: {detail}\n```");
                 if let Some(doc) = &doc {

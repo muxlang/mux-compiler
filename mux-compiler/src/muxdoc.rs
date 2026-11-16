@@ -466,7 +466,8 @@ fn preceding_comment(
     let tokens = tree.tokens();
     let mut cursor = start;
     let mut pieces = Vec::new();
-    for (position, token) in tokens.iter().enumerate().rev() {
+    let upper = tokens.partition_point(|token| token.range().end <= start);
+    for (position, token) in tokens[..upper].iter().enumerate().rev() {
         let range = token.range();
         if range.end > cursor {
             continue;
@@ -532,7 +533,10 @@ fn parse_comment(range: ByteRange, lines: &[(String, ByteRange)]) -> DocComment 
     let mut sections: Vec<Section> = Vec::new();
     for (line, line_range) in lines {
         let trimmed = line.trim();
-        let heading = trimmed.split_once(':').filter(|(key, _)| {
+        let heading = (!matches!(sections.last().map(|section| &section.kind), Some(SectionKind::Example)))
+            .then(|| trimmed.split_once(':'))
+            .flatten()
+            .filter(|(key, _)| {
             key.chars()
                 .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         });
