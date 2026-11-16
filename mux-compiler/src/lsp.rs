@@ -1386,7 +1386,6 @@ fn import_name_ranges(
     }
 
     let parsed = mux_lang::syntax::parse_source(source);
-    let local_doc_index = mux_lang::muxdoc::DocIndex::from_tree(&parsed.tree);
     visit(parsed.tree.root(), statement)
 }
 
@@ -2912,6 +2911,7 @@ fn complete_with_snippet_support(
         std::collections::BTreeMap::<String, Option<lsp::CompletionItemKind>>::new();
     let imports = collect_imports(source);
     let parsed = mux_lang::syntax::parse_source(source);
+    let local_doc_index = mux_lang::muxdoc::DocIndex::from_tree(&parsed.tree);
     let member_base = find_member_access_base(parsed.tree.root(), offset);
     if member_base.is_none() {
         collect_completions(&symbols, position, false, &mut candidates);
