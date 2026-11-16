@@ -1753,6 +1753,58 @@ struct CompileRequest {
     deny_warnings: bool,
 }
 
+fn run_doc_command(file: &Path, output: &Path, deny_warnings: bool) -> ! {
+    match mux_lang::docgen::generate(file, output, deny_warnings) {
+        Ok(outcome) => {
+            for warning in outcome.warnings {
+                eprintln!("warning: {warning}");
+            }
+            for path in outcome.paths {
+                println!("generated {}", path.display());
+            }
+            process::exit(0);
+        }
+        Err(error) => {
+            eprintln!("mux doc: {error}");
+            process::exit(1);
+        }
+    }
+}
+
+fn run_format_command(files: &[PathBuf], check: bool) -> ! {
+    let (config, warnings) = format_config::load_from_current_directory();
+    for warning in warnings {
+        eprintln!("warning: {warning}");
+    }
+    if !config.enabled {
+        eprintln!("mux format: disabled by mux-project.json");
+        process::exit(0);
+    }
+    let status = match formatter::format_paths_with_options(files, check, config.options) {
+        Ok(outcome) => {
+            if check {
+                for path in &outcome.changed {
+                    println!("would format {}", path.display());
+                }
+            }
+            i32::from(check && !outcome.changed.is_empty())
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            2
+        }
+    };
+    process::exit(status);
+}
+
+fn run_lsp_command() -> ! {
+    if let Err(error) = lsp::run() {
+        eprintln!("mux lsp: {error}");
+        process::exit(1);
+    }
+    process::exit(0);
+}
+
 fn parse_args_or_exit(cli: Cli) -> CompileRequest {
     match &cli.command {
         Commands::Update { check } => {
@@ -1812,23 +1864,7 @@ fn parse_args_or_exit(cli: Cli) -> CompileRequest {
                 deny_warnings: cli.deny_warnings,
             }
         }
-        Commands::Doc { file, output } => {
-            match mux_lang::docgen::generate(file, output, cli.deny_warnings) {
-                Ok(outcome) => {
-                    for warning in outcome.warnings {
-                        eprintln!("warning: {warning}");
-                    }
-                    for path in outcome.paths {
-                        println!("generated {}", path.display());
-                    }
-                    process::exit(0);
-                }
-                Err(error) => {
-                    eprintln!("mux doc: {error}");
-                    process::exit(1);
-                }
-            }
-        }
+        Commands::Doc { file, output } => run_doc_command(file, output, cli.deny_warnings),
         Commands::Build {
             file,
             output,
@@ -1849,38 +1885,8 @@ fn parse_args_or_exit(cli: Cli) -> CompileRequest {
             intermediate: *intermediate,
             deny_warnings: cli.deny_warnings,
         },
-        Commands::Format { files, check } => {
-            let (config, warnings) = format_config::load_from_current_directory();
-            for warning in warnings {
-                eprintln!("warning: {warning}");
-            }
-            if !config.enabled {
-                eprintln!("mux format: disabled by mux-project.json");
-                process::exit(0);
-            }
-            let status = match formatter::format_paths_with_options(files, *check, config.options) {
-                Ok(outcome) => {
-                    if *check {
-                        for path in &outcome.changed {
-                            println!("would format {}", path.display());
-                        }
-                    }
-                    i32::from(*check && !outcome.changed.is_empty())
-                }
-                Err(error) => {
-                    eprintln!("{error}");
-                    2
-                }
-            };
-            process::exit(status);
-        }
-        Commands::Lsp => {
-            if let Err(error) = lsp::run() {
-                eprintln!("mux lsp: {error}");
-                process::exit(1);
-            }
-            process::exit(0);
-        }
+        Commands::Format { files, check } => run_format_command(files, *check),
+        Commands::Lsp => run_lsp_command(),
         Commands::Test {
             files,
             jobs,

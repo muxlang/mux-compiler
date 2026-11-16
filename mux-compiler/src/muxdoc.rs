@@ -130,6 +130,80 @@ pub struct DocIndex {
     pub problems: Vec<DocProblem>,
 }
 
+pub enum ReferenceResolution<'a, T> {
+    Found(&'a T),
+    Missing,
+    Ambiguous,
+}
+
+struct ReferenceEntry<T> {
+    module: String,
+    target: T,
+    api: bool,
+}
+
+pub struct ReferenceIndex<T> {
+    keys: HashMap<String, Vec<ReferenceEntry<T>>>,
+}
+
+impl<T> Default for ReferenceIndex<T> {
+    fn default() -> Self {
+        Self {
+            keys: HashMap::new(),
+        }
+    }
+}
+
+impl<T> ReferenceIndex<T> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, module: &str, declaration: &DocumentedDeclaration, target: T)
+    where
+        T: Clone,
+    {
+        let short_module = module.rsplit('.').next().unwrap_or(module);
+        for key in [
+            declaration.name.clone(),
+            declaration.qualified_name.clone(),
+            format!("{short_module}.{}", declaration.qualified_name),
+            format!("{module}.{}", declaration.qualified_name),
+        ]
+        .into_iter()
+        .collect::<HashSet<_>>()
+        {
+            self.keys.entry(key).or_default().push(ReferenceEntry {
+                module: module.to_owned(),
+                target: target.clone(),
+                api: declaration.api,
+            });
+        }
+    }
+
+    #[must_use]
+    pub fn resolve(&self, module: &str, name: &str) -> ReferenceResolution<'_, T> {
+        let Some(entries) = self.keys.get(name) else {
+            return ReferenceResolution::Missing;
+        };
+        let local = entries
+            .iter()
+            .filter(|entry| entry.module == module)
+            .collect::<Vec<_>>();
+        let matches = if local.is_empty() {
+            entries.iter().filter(|entry| entry.api).collect::<Vec<_>>()
+        } else {
+            local
+        };
+        match matches.as_slice() {
+            [] => ReferenceResolution::Missing,
+            [entry] => ReferenceResolution::Found(&entry.target),
+            _ => ReferenceResolution::Ambiguous,
+        }
+    }
+}
+
 impl DocIndex {
     #[must_use]
     pub fn from_tree(tree: &SyntaxTree) -> Self {
@@ -171,16 +245,7 @@ impl DocIndex {
             .and_then(|declaration| declaration.doc.as_ref())
     }
 
-    fn validate_references(&mut self, known: &HashMap<String, usize>) {
-        let mut local = HashMap::new();
-        for declaration in &self.declarations {
-            for key in [declaration.name.clone(), declaration.qualified_name.clone()]
-                .into_iter()
-                .collect::<HashSet<_>>()
-            {
-                *local.entry(key).or_insert(0_usize) += 1;
-            }
-        }
+    fn validate_references(&mut self, references: &ReferenceIndex<()>, module: &str) {
         for declaration in &self.declarations {
             let Some(doc) = &declaration.doc else {
                 continue;
@@ -193,24 +258,16 @@ impl DocIndex {
                 if is_external_url(target) {
                     continue;
                 }
-                let matches = local
-                    .get(target)
-                    .or_else(|| known.get(target))
-                    .copied()
-                    .unwrap_or(0);
-                if matches == 1 {
-                    continue;
-                }
-                let (code, message) = if matches > 1 {
-                    (
+                let (code, message) = match references.resolve(module, target) {
+                    ReferenceResolution::Found(_) => continue,
+                    ReferenceResolution::Ambiguous => (
                         DiagnosticCode::DocAmbiguousReference,
                         format!("MuxDoc reference '{target}' is ambiguous"),
-                    )
-                } else {
-                    (
+                    ),
+                    ReferenceResolution::Missing => (
                         DiagnosticCode::DocUnknownReference,
                         format!("MuxDoc reference '{target}' does not resolve"),
-                    )
+                    ),
                 };
                 self.problems.push(DocProblem {
                     code,
@@ -253,28 +310,11 @@ pub fn diagnostics_for_files(files: &Files) -> Vec<Diagnostic> {
             (id, path.to_path_buf(), DocIndex::from_tree(&parsed.tree))
         })
         .collect::<Vec<_>>();
-    let mut known = HashMap::new();
+    let mut references = ReferenceIndex::new();
     for (_, path, index) in &indexes {
         let module = module_name(path, root_directory.as_deref());
-        let short_module = path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
         for declaration in &index.declarations {
-            if !declaration.api {
-                continue;
-            }
-            for key in [
-                declaration.name.clone(),
-                declaration.qualified_name.clone(),
-                format!("{short_module}.{}", declaration.qualified_name),
-                format!("{module}.{}", declaration.qualified_name),
-            ]
-            .into_iter()
-            .collect::<HashSet<_>>()
-            {
-                *known.entry(key).or_insert(0_usize) += 1;
-            }
+            references.insert(&module, declaration, ());
         }
     }
     let mut diagnostics = Vec::new();
@@ -282,7 +322,8 @@ pub fn diagnostics_for_files(files: &Files) -> Vec<Diagnostic> {
         if path.to_string_lossy().starts_with("<embedded>") {
             continue;
         }
-        index.validate_references(&known);
+        let module = module_name(path, root_directory.as_deref());
+        index.validate_references(&references, &module);
         diagnostics.extend(
             index
                 .problems
@@ -293,7 +334,7 @@ pub fn diagnostics_for_files(files: &Files) -> Vec<Diagnostic> {
     diagnostics
 }
 
-fn module_name(path: &std::path::Path, root_directory: Option<&std::path::Path>) -> String {
+pub fn module_name(path: &std::path::Path, root_directory: Option<&std::path::Path>) -> String {
     let relative = if let Ok(relative) = path.strip_prefix("<embedded>") {
         relative.to_path_buf()
     } else if let Some(root) = root_directory {

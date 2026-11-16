@@ -1,6 +1,6 @@
 //! Markdown API reference generation for local Mux modules.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,10 @@ use fs2::FileExt;
 
 use crate::analysis;
 use crate::diagnostic::{Diagnostic, Level};
-use crate::muxdoc::{DeclarationKind, DocComment, DocIndex, DocumentedDeclaration};
+use crate::muxdoc::{
+    DeclarationKind, DocComment, DocIndex, DocumentedDeclaration, ReferenceIndex,
+    ReferenceResolution,
+};
 use crate::syntax;
 
 const MARKER: &str = ".muxdoc-generated";
@@ -29,7 +32,7 @@ pub fn generate(
     let entry = entry
         .canonicalize()
         .map_err(|error| format!("{}: {error}", entry.display()))?;
-    if entry.extension().and_then(|ext| ext.to_str()) != Some("mux") {
+    if entry.extension().and_then(std::ffi::OsStr::to_str) != Some("mux") {
         return Err("mux doc expects a .mux entry file".into());
     }
     let source =
@@ -175,11 +178,9 @@ fn anchor(name: &str) -> String {
     encode_name(name)
 }
 
-fn build_links(modules: &[Module]) -> HashMap<String, (String, String)> {
-    let mut links = HashMap::new();
-    let mut ambiguous = HashSet::new();
+fn build_links(modules: &[Module]) -> ReferenceIndex<(String, String)> {
+    let mut links = ReferenceIndex::new();
     for module in modules {
-        let module_name = module.title.rsplit('.').next().unwrap_or(&module.title);
         for declaration in module
             .index
             .declarations
@@ -187,31 +188,13 @@ fn build_links(modules: &[Module]) -> HashMap<String, (String, String)> {
             .filter(|declaration| declaration.api && declaration.kind != DeclarationKind::Test)
         {
             let target = (module.filename.clone(), anchor(&declaration.qualified_name));
-            let keys = [
-                declaration.qualified_name.clone(),
-                declaration.name.clone(),
-                format!("{module_name}.{}", declaration.qualified_name),
-                format!("{}.{}", module.title, declaration.qualified_name),
-            ]
-            .into_iter()
-            .collect::<HashSet<_>>();
-            for key in keys {
-                if links
-                    .insert(key.clone(), target.clone())
-                    .is_some_and(|previous| previous != target)
-                {
-                    ambiguous.insert(key);
-                }
-            }
+            links.insert(&module.title, declaration, target);
         }
-    }
-    for name in ambiguous {
-        links.remove(&name);
     }
     links
 }
 
-fn render_module(module: &Module, links: &HashMap<String, (String, String)>) -> String {
+fn render_module(module: &Module, links: &ReferenceIndex<(String, String)>) -> String {
     let mut output = format!("# {}\n\n", module.title);
     for declaration in module
         .index
@@ -252,21 +235,14 @@ fn signature(source: &str, declaration: &DocumentedDeclaration) -> String {
 fn render_comment(
     doc: &DocComment,
     module: &Module,
-    links: &HashMap<String, (String, String)>,
+    links: &ReferenceIndex<(String, String)>,
 ) -> String {
-    doc.markdown_with_links(|target| {
-        if let Some(declaration) = module.index.declarations.iter().find(|declaration| {
-            declaration.api && (declaration.name == target || declaration.qualified_name == target)
-        }) {
-            return Some(format!("#{}", anchor(&declaration.qualified_name)));
+    doc.markdown_with_links(|target| match links.resolve(&module.title, target) {
+        ReferenceResolution::Found((file, anchor)) if file == &module.filename => {
+            Some(format!("#{anchor}"))
         }
-        links.get(target).map(|(file, anchor)| {
-            if file == &module.filename {
-                format!("#{anchor}")
-            } else {
-                format!("{file}#{anchor}")
-            }
-        })
+        ReferenceResolution::Found((file, anchor)) => Some(format!("{file}#{anchor}")),
+        ReferenceResolution::Missing | ReferenceResolution::Ambiguous => None,
     })
 }
 
@@ -278,7 +254,7 @@ fn write_pages(output: &Path, pages: &BTreeMap<String, String>) -> Result<(), St
     fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     let name = output
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or("output path needs a directory name")?;
     let lock_path = parent.join(format!(".{name}.muxdoc.lock"));
     let lock = OpenOptions::new()
@@ -424,7 +400,11 @@ mod tests {
         ));
         fs::create_dir(&root).unwrap();
         let entry = root.join("main.mux");
-        fs::write(&entry, "import math\nfunc main() returns void { return }\n").unwrap();
+        fs::write(
+            &entry,
+            "import math\n/// see: x\nfunc main() returns void { return }\n",
+        )
+        .unwrap();
         fs::write(root.join("math.mux"), "/**\n * Larger value.\n * see: min\n */\nfunc max(int a, int b) returns int { if a > b { return a } return b }\n/// Smaller value.\nfunc min(int a, int b) returns int { if a < b { return a } return b }\n/// A point.\nclass Point {\n    /// Horizontal position.\n    int x\n}\n").unwrap();
         let output = root.join("api");
         generate(&entry, &output, false).unwrap();
@@ -433,11 +413,9 @@ mod tests {
         assert!(page.contains("```mux\nfunc max(int a, int b) returns int"));
         assert!(page.contains("```mux\nclass Point\n```"));
         assert!(page.contains("## Point.x"));
-        assert!(
-            fs::read_to_string(output.join("module-main.md"))
-                .unwrap()
-                .contains("func main() returns void")
-        );
+        let main_page = fs::read_to_string(output.join("module-main.md")).unwrap();
+        assert!(main_page.contains("func main() returns void"));
+        assert!(main_page.contains("**See:** [x](module-math.md#Point~2Ex)"));
         generate(&entry, &output, false).unwrap();
         assert_eq!(
             page,
