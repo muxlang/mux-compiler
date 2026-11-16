@@ -137,7 +137,7 @@ pub enum ReferenceResolution<'a, T> {
 }
 
 struct ReferenceEntry<T> {
-    module: String,
+    file: PathBuf,
     target: T,
     api: bool,
 }
@@ -160,8 +160,13 @@ impl<T> ReferenceIndex<T> {
         Self::default()
     }
 
-    pub fn insert(&mut self, module: &str, declaration: &DocumentedDeclaration, target: T)
-    where
+    pub fn insert(
+        &mut self,
+        file: &Path,
+        module: &str,
+        declaration: &DocumentedDeclaration,
+        target: T,
+    ) where
         T: Clone,
     {
         let short_module = module.rsplit('.').next().unwrap_or(module);
@@ -175,7 +180,7 @@ impl<T> ReferenceIndex<T> {
         .collect::<HashSet<_>>()
         {
             self.keys.entry(key).or_default().push(ReferenceEntry {
-                module: module.to_owned(),
+                file: file.to_path_buf(),
                 target: target.clone(),
                 api: declaration.api,
             });
@@ -183,13 +188,13 @@ impl<T> ReferenceIndex<T> {
     }
 
     #[must_use]
-    pub fn resolve(&self, module: &str, name: &str) -> ReferenceResolution<'_, T> {
+    pub fn resolve(&self, file: &Path, name: &str) -> ReferenceResolution<'_, T> {
         let Some(entries) = self.keys.get(name) else {
             return ReferenceResolution::Missing;
         };
         let local = entries
             .iter()
-            .filter(|entry| entry.module == module)
+            .filter(|entry| entry.file == file)
             .collect::<Vec<_>>();
         let matches = if local.is_empty() {
             entries.iter().filter(|entry| entry.api).collect::<Vec<_>>()
@@ -245,7 +250,7 @@ impl DocIndex {
             .and_then(|declaration| declaration.doc.as_ref())
     }
 
-    fn validate_references(&mut self, references: &ReferenceIndex<()>, module: &str) {
+    fn validate_references(&mut self, references: &ReferenceIndex<()>, file: &Path) {
         for declaration in &self.declarations {
             let Some(doc) = &declaration.doc else {
                 continue;
@@ -258,7 +263,7 @@ impl DocIndex {
                 if is_external_url(target) {
                     continue;
                 }
-                let (code, message) = match references.resolve(module, target) {
+                let (code, message) = match references.resolve(file, target) {
                     ReferenceResolution::Found(_) => continue,
                     ReferenceResolution::Ambiguous => (
                         DiagnosticCode::DocAmbiguousReference,
@@ -314,7 +319,7 @@ pub fn diagnostics_for_files(files: &Files) -> Vec<Diagnostic> {
     for (_, path, index) in &indexes {
         let module = module_name(path, root_directory.as_deref());
         for declaration in &index.declarations {
-            references.insert(&module, declaration, ());
+            references.insert(path, &module, declaration, ());
         }
     }
     let mut diagnostics = Vec::new();
@@ -322,8 +327,7 @@ pub fn diagnostics_for_files(files: &Files) -> Vec<Diagnostic> {
         if path.to_string_lossy().starts_with("<embedded>") {
             continue;
         }
-        let module = module_name(path, root_directory.as_deref());
-        index.validate_references(&references, &module);
+        index.validate_references(&references, path);
         diagnostics.extend(
             index
                 .problems
@@ -802,6 +806,23 @@ mod tests {
             diagnostics_for_files(&ambiguous)
                 .iter()
                 .any(|diagnostic| diagnostic.code == DiagnosticCode::DocAmbiguousReference)
+        );
+    }
+
+    #[test]
+    fn local_references_use_file_identity_when_module_names_collide() {
+        let source = "/// see: helper\nfunc caller() returns void { return }\nfunc helper() returns void { return }\n";
+        let mut files = Files::new();
+        files.add("/tmp/muxdoc-local/tools.mux", source.into());
+        files.add("/tmp/muxdoc-external/tools.mux", source.into());
+
+        let diagnostics = diagnostics_for_files(&files);
+        assert!(
+            diagnostics.iter().all(|diagnostic| {
+                diagnostic.code != DiagnosticCode::DocAmbiguousReference
+                    && diagnostic.code != DiagnosticCode::DocUnknownReference
+            }),
+            "{diagnostics:?}"
         );
     }
 }

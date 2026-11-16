@@ -75,6 +75,7 @@ pub fn generate(
             return Err(format!("cannot parse {}", absolute.display()));
         }
         modules.push(Module {
+            path: absolute,
             filename,
             title: relative
                 .with_extension("")
@@ -128,6 +129,7 @@ fn display_diagnostic(analysis: &analysis::Analysis, diagnostic: &Diagnostic) ->
 }
 
 struct Module {
+    path: PathBuf,
     filename: String,
     title: String,
     source: String,
@@ -188,7 +190,7 @@ fn build_links(modules: &[Module]) -> ReferenceIndex<(String, String)> {
             .filter(|declaration| declaration.api && declaration.kind != DeclarationKind::Test)
         {
             let target = (module.filename.clone(), anchor(&declaration.qualified_name));
-            links.insert(&module.title, declaration, target);
+            links.insert(&module.path, &module.title, declaration, target);
         }
     }
     links
@@ -237,7 +239,7 @@ fn render_comment(
     module: &Module,
     links: &ReferenceIndex<(String, String)>,
 ) -> String {
-    doc.markdown_with_links(|target| match links.resolve(&module.title, target) {
+    doc.markdown_with_links(|target| match links.resolve(&module.path, target) {
         ReferenceResolution::Found((file, anchor)) if file == &module.filename => {
             Some(format!("#{anchor}"))
         }

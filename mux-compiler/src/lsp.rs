@@ -1812,7 +1812,6 @@ struct LspDocTarget {
 
 struct LspDocs {
     indexes: HashMap<mux_lang::diagnostic::FileId, mux_lang::muxdoc::DocIndex>,
-    modules: HashMap<mux_lang::diagnostic::FileId, String>,
     references: mux_lang::muxdoc::ReferenceIndex<LspDocTarget>,
 }
 
@@ -1824,7 +1823,6 @@ impl LspDocs {
                 .map(Path::to_path_buf)
         });
         let mut indexes = HashMap::new();
-        let mut modules = HashMap::new();
         let mut references = mux_lang::muxdoc::ReferenceIndex::new();
         for (file, path, source) in analysis.files.iter() {
             if path.to_string_lossy().starts_with("<embedded>") {
@@ -1839,14 +1837,12 @@ impl LspDocs {
                     .filter(|byte| *byte == b'\n')
                     .count()
                     + 1;
-                references.insert(&module, declaration, LspDocTarget { file, line });
+                references.insert(path, &module, declaration, LspDocTarget { file, line });
             }
             indexes.insert(file, index);
-            modules.insert(file, module);
         }
         Self {
             indexes,
-            modules,
             references,
         }
     }
@@ -1867,14 +1863,11 @@ impl LspDocs {
         current_file: mux_lang::diagnostic::FileId,
         doc: &mux_lang::muxdoc::DocComment,
     ) -> String {
-        let module = self
-            .modules
-            .get(&current_file)
-            .map(String::as_str)
-            .unwrap_or("");
+        let current_path = analysis.files.path(current_file);
         doc.markdown_with_links(|target| {
+            let current_path = current_path?;
             let mux_lang::muxdoc::ReferenceResolution::Found(destination) =
-                self.references.resolve(module, target)
+                self.references.resolve(current_path, target)
             else {
                 return None;
             };
