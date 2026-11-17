@@ -65,6 +65,18 @@ mux check hello.mux
 mux check hello.mux --deny-warnings
 ```
 
+Generate Markdown API reference pages from an entry file and its local imports:
+
+```bash
+mux doc hello.mux --output docs/api
+```
+
+The output includes signatures for undocumented module declarations. MuxDoc
+comments use `///` or `/** ... */` immediately before a declaration.
+Malformed sections are warnings, and `--deny-warnings` can make them fail a
+check. `mux doc` replaces only a directory it previously generated; it
+refuses a directory containing unrelated files.
+
 `check` accepts exactly one `.mux` file, including library files without `main`.
 It runs the same parser, import resolution, and semantic analysis as `build`
 and `run`. Success is quiet unless there are warnings. Exit codes are 0 for

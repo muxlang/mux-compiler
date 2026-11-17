@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1708,6 +1708,7 @@ fn handle_hover(
             &document.source,
             &overlays,
         );
+        let docs = LspDocs::new(&analysis);
         let resolved_hover = analysis
             .resolved_identifiers
             .iter()
@@ -1765,11 +1766,9 @@ fn handle_hover(
                 }) {
                     value.push_str(&format!("\n\n```mux\n{header}\n```"));
                 }
-                if let Some(documentation) = declaration_range.and_then(|declaration| {
-                    documentation_comment_before(declaration_source, declaration.start)
-                }) {
+                if let Some(documentation) = docs.for_reference(&analysis, reference) {
                     value.push_str("\n\n");
-                    value.push_str(&documentation);
+                    value.push_str(&docs.render(&analysis, declaration_file, documentation));
                 }
                 Some(lsp::Hover {
                     contents: lsp::HoverContents::Markup(lsp::MarkupContent {
@@ -1788,31 +1787,96 @@ fn handle_hover(
 }
 
 fn documentation_comment_before(source: &str, declaration_start: usize) -> Option<String> {
-    let line_start = source[..declaration_start]
-        .rfind('\n')
-        .map_or(0, |index| index + 1);
-    if !source.get(line_start..declaration_start)?.trim().is_empty() {
-        return None;
-    }
-    let mut lines = Vec::new();
-    let mut cursor = line_start;
-    while cursor > 0 {
-        let previous_end = cursor - 1;
-        let previous_start = source[..previous_end]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let line = source[previous_start..previous_end].trim();
-        if line.is_empty() || !line.starts_with("//") {
-            break;
+    let parsed = mux_lang::syntax::parse_source(source);
+    mux_lang::muxdoc::DocIndex::from_tree(&parsed.tree)
+        .before(declaration_start)
+        .map(mux_lang::muxdoc::DocComment::markdown)
+}
+
+fn declaration_file_for_reference(
+    analysis: &mux_lang::analysis::Analysis,
+    reference: &mux_lang::semantics::ResolvedIdentifier,
+) -> mux_lang::diagnostic::FileId {
+    reference
+        .source_path
+        .as_deref()
+        .and_then(|path| find_file_id(&analysis.files, path))
+        .unwrap_or(analysis.root_file)
+}
+
+#[derive(Clone)]
+struct LspDocTarget {
+    file: mux_lang::diagnostic::FileId,
+    line: usize,
+}
+
+struct LspDocs {
+    indexes: HashMap<mux_lang::diagnostic::FileId, mux_lang::muxdoc::DocIndex>,
+    references: mux_lang::muxdoc::ReferenceIndex<LspDocTarget>,
+}
+
+impl LspDocs {
+    fn new(analysis: &mux_lang::analysis::Analysis) -> Self {
+        let root_directory = analysis.files.iter().next().and_then(|(_, path, _)| {
+            mux_lang::analysis::absolute_path(path)
+                .parent()
+                .map(Path::to_path_buf)
+        });
+        let mut indexes = HashMap::new();
+        let mut references = mux_lang::muxdoc::ReferenceIndex::new();
+        for (file, path, source) in analysis.files.iter() {
+            if path.to_string_lossy().starts_with("<embedded>") {
+                continue;
+            }
+            let module = mux_lang::muxdoc::module_name(path, root_directory.as_deref());
+            let parsed = mux_lang::syntax::parse_source(source);
+            let index = mux_lang::muxdoc::DocIndex::from_tree(&parsed.tree);
+            for declaration in &index.declarations {
+                let line = source[..declaration.name_range.start]
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count()
+                    + 1;
+                references.insert(path, &module, declaration, LspDocTarget { file, line });
+            }
+            indexes.insert(file, index);
         }
-        lines.push(line.trim_start_matches('/').trim().to_owned());
-        cursor = previous_start;
+        Self {
+            indexes,
+            references,
+        }
     }
-    if lines.is_empty() {
-        return None;
+
+    fn for_reference<'a>(
+        &'a self,
+        analysis: &mux_lang::analysis::Analysis,
+        reference: &mux_lang::semantics::ResolvedIdentifier,
+    ) -> Option<&'a mux_lang::muxdoc::DocComment> {
+        let declaration = reference.declaration?.byte_range?;
+        let file = declaration_file_for_reference(analysis, reference);
+        self.indexes.get(&file)?.before(declaration.start)
     }
-    lines.reverse();
-    Some(lines.join("\n"))
+
+    fn render(
+        &self,
+        analysis: &mux_lang::analysis::Analysis,
+        current_file: mux_lang::diagnostic::FileId,
+        doc: &mux_lang::muxdoc::DocComment,
+    ) -> String {
+        let current_path = analysis.files.path(current_file);
+        doc.markdown_with_links(|target| {
+            let current_path = current_path?;
+            let mux_lang::muxdoc::ReferenceResolution::Found(destination) =
+                self.references.resolve(current_path, target)
+            else {
+                return None;
+            };
+            let path = analysis.files.path(destination.file)?;
+            let mut url = url::Url::from_file_path(mux_lang::analysis::absolute_path(path)).ok()?;
+            url.set_fragment(Some(&format!("L{}", destination.line)));
+            Some(url.to_string())
+        })
+    }
 }
 
 fn declaration_header(source: &str, declaration_start: usize) -> Option<&str> {
@@ -2854,6 +2918,7 @@ fn complete_with_snippet_support(
         std::collections::BTreeMap::<String, Option<lsp::CompletionItemKind>>::new();
     let imports = collect_imports(source);
     let parsed = mux_lang::syntax::parse_source(source);
+    let local_doc_index = mux_lang::muxdoc::DocIndex::from_tree(&parsed.tree);
     let member_base = find_member_access_base(parsed.tree.root(), offset);
     if member_base.is_none() {
         collect_completions(&symbols, position, false, &mut candidates);
@@ -2861,6 +2926,7 @@ fn complete_with_snippet_support(
         collect_visible_type_parameter_completions(source, offset, &mut candidates);
     }
     let analysis = mux_lang::analysis::analyze_source_with_overlays(path, source, overlays);
+    let docs = LspDocs::new(&analysis);
     if !imports.is_empty() || member_base.is_some() {
         collect_import_completions(source, path, &analysis, &imports, &mut candidates);
         collect_member_completions(source, path, &analysis, member_base, &mut candidates);
@@ -2908,6 +2974,11 @@ fn complete_with_snippet_support(
                 .resolved_identifiers
                 .iter()
                 .find(|reference| reference.name == name);
+            let local_doc = local_doc_index
+                .declarations
+                .iter()
+                .find(|declaration| declaration.name == name)
+                .and_then(|declaration| declaration.doc.as_ref());
             let type_detail = reference
                 .and_then(|reference| reference.type_.as_ref().map(|type_| (reference, type_)))
                 .map(|(reference, type_)| {
@@ -2931,10 +3002,25 @@ fn complete_with_snippet_support(
                 .trim_start_matches([' ', '\t'])
                 .starts_with('(');
             let use_snippet = supports_snippets && function && !next_is_call;
-            let documentation = type_detail.as_ref().map(|detail| {
+            let doc = local_doc.or_else(|| {
+                reference.and_then(|reference| docs.for_reference(&analysis, reference))
+            });
+            let documentation = (type_detail.is_some() || doc.is_some()).then(|| {
+                let mut value = type_detail.as_ref().map_or_else(String::new, |detail| {
+                    format!("```mux\n{name}: {detail}\n```")
+                });
+                if let Some(doc) = doc {
+                    if !value.is_empty() {
+                        value.push_str("\n\n");
+                    }
+                    let file = reference.map_or(analysis.root_file, |reference| {
+                        declaration_file_for_reference(&analysis, reference)
+                    });
+                    value.push_str(&docs.render(&analysis, file, doc));
+                }
                 lsp::Documentation::MarkupContent(lsp::MarkupContent {
                     kind: lsp::MarkupKind::Markdown,
-                    value: format!("```mux\n{name}: {detail}\n```"),
+                    value,
                 })
             });
             lsp::CompletionItem {
@@ -3567,6 +3653,7 @@ fn handle_signature_help(
             &document.source,
             &overlays,
         );
+        let docs = LspDocs::new(&analysis);
         let reference = analysis.resolved_identifiers.iter().find(|reference| {
             reference.name == callee_name
                 && reference
@@ -3580,9 +3667,14 @@ fn handle_signature_help(
         else {
             return None;
         };
+        let declaration_file = declaration_file_for_reference(&analysis, reference);
+        let declaration_source = analysis
+            .files
+            .source(declaration_file)
+            .unwrap_or(&document.source);
         let parameter_names = function_parameter_names(
-            &document.source,
-            &reference.name,
+            declaration_source,
+            &reference.source_name,
             reference.declaration.and_then(|span| span.byte_range),
         );
         let parameter_labels = params
@@ -3609,16 +3701,34 @@ fn handle_signature_help(
                 .count()
                 .min(params.len().saturating_sub(1)) as u32
         });
+        let doc = docs.for_reference(&analysis, reference);
         Some(lsp::SignatureHelp {
             signatures: vec![lsp::SignatureInformation {
                 label,
-                documentation: None,
+                documentation: doc.map(|doc| {
+                    lsp::Documentation::MarkupContent(lsp::MarkupContent {
+                        kind: lsp::MarkupKind::Markdown,
+                        value: docs.render(&analysis, declaration_file, doc),
+                    })
+                }),
                 parameters: Some(
                     parameter_labels
                         .into_iter()
-                        .map(|label| lsp::ParameterInformation {
-                            label: lsp::ParameterLabel::Simple(label),
-                            documentation: None,
+                        .map(|label| {
+                            let name = label.split(':').next().unwrap_or_default();
+                            let parameter_doc = doc
+                                .as_ref()
+                                .and_then(|doc| doc.parameter(name))
+                                .map(str::to_owned);
+                            lsp::ParameterInformation {
+                                label: lsp::ParameterLabel::Simple(label),
+                                documentation: parameter_doc.map(|text| {
+                                    lsp::Documentation::MarkupContent(lsp::MarkupContent {
+                                        kind: lsp::MarkupKind::Markdown,
+                                        value: text,
+                                    })
+                                }),
+                            }
                         })
                         .collect(),
                 ),
@@ -4772,6 +4882,23 @@ mod tests {
         );
         let greet = items.iter().find(|item| item.label == "greet").unwrap();
         assert_eq!(greet.insert_text.as_deref(), Some("greet"));
+    }
+
+    #[test]
+    fn completion_documents_an_unused_local_function() {
+        let source = "/// Never called.\nfunc unused() returns void { return }\nfunc main() returns void {\n    un\n}\n";
+        let cursor = source.rfind("un\n").unwrap() + 2;
+        let items = complete(
+            source,
+            offset_to_position(source, cursor),
+            std::path::Path::new("/tmp/mux-unused-doc-completion.mux"),
+            &HashMap::new(),
+        );
+        let unused = items.iter().find(|item| item.label == "unused").unwrap();
+        let Some(lsp::Documentation::MarkupContent(documentation)) = &unused.documentation else {
+            panic!("unused function has no documentation");
+        };
+        assert!(documentation.value.contains("Never called."));
     }
 
     #[test]

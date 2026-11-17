@@ -97,8 +97,8 @@ jobs:
             target: macos-x86_64
             archive_ext: tar.gz
             publish: true
-          - os: macos-14
-            runner_name: macos-14-arm64
+          - os: macos-15
+            runner_name: macos-15-arm64
             target: macos-aarch64
             archive_ext: tar.gz
             publish: true
@@ -125,13 +125,10 @@ jobs:
         # platforms, including the ~230 lines of Windows conda/MSVC/libxml2 work
         # this file used to carry inline.
         #
-        # build.yml's packaged-artifact matrix exercises these paths on
-        # ubuntu-latest, macos-14 and windows-latest. It does NOT cover the other
-        # two entries here, ubuntu-22.04 and macos-15-intel - which are the ones
-        # producing the published linux-x86_64 and macos-x86_64 artifacts. The
-        # underlying commands are identical for those (the two Linux installs
-        # were byte-identical and the codename is derived; macOS is the same brew
-        # formula), but nothing runs them until a tag does.
+        # The packaged-artifact matrix covers ubuntu-latest, macos-15,
+        # macos-15-intel and windows-latest. This workflow also builds on
+        # ubuntu-22.04 for the published Linux artifact; that runner path is
+        # exercised only when a tag is built.
         uses: ./.github/actions/setup-llvm
         with:
           extra-components: lld
@@ -250,7 +247,7 @@ jobs:
             artifact: mux-linux-x86_64
           # Native, because a container cannot stand in for either.
           - label: macos-aarch64
-            os: macos-14
+            os: macos-15
             artifact: mux-macos-aarch64
           - label: macos-x86_64
             os: macos-15-intel

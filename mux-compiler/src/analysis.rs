@@ -127,6 +127,7 @@ pub fn analyze_source_with_overlays(
     }
 
     diagnostics.extend(resolver.borrow_mut().take_diagnostics());
+    diagnostics.extend(crate::muxdoc::diagnostics_for_files(&files));
     recovery.extend(resolver.borrow_mut().take_recovery_intervals());
     crate::diagnostic::sort_diagnostics(&mut diagnostics, &files);
     let resolved_identifiers = analyzer.take_editor_references();

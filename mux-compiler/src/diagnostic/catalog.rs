@@ -43,6 +43,10 @@ pub enum DiagnosticCode {
     UninitializedRead,
     ConstantCondition,
     RedundantConstruct,
+    DocInvalidSection,
+    DocOrphan,
+    DocUnknownReference,
+    DocAmbiguousReference,
 }
 
 /// Documentation for one registered diagnostic code.
@@ -98,6 +102,10 @@ impl DiagnosticCode {
             Self::DeadAssignment,
             Self::ConstantCondition,
             Self::RedundantConstruct,
+            Self::DocInvalidSection,
+            Self::DocOrphan,
+            Self::DocUnknownReference,
+            Self::DocAmbiguousReference,
         ]
     }
 
@@ -149,6 +157,10 @@ impl DiagnosticCode {
             Self::UninitializedRead => "W0304",
             Self::ConstantCondition => "W0305",
             Self::RedundantConstruct => "W0306",
+            Self::DocInvalidSection => "W0500",
+            Self::DocOrphan => "W0501",
+            Self::DocUnknownReference => "W0502",
+            Self::DocAmbiguousReference => "W0503",
         }
     }
 
@@ -161,7 +173,11 @@ impl DiagnosticCode {
             | Self::DeadAssignment
             | Self::UninitializedRead
             | Self::ConstantCondition
-            | Self::RedundantConstruct => Level::Warning,
+            | Self::RedundantConstruct
+            | Self::DocInvalidSection
+            | Self::DocOrphan
+            | Self::DocUnknownReference
+            | Self::DocAmbiguousReference => Level::Warning,
             _ => Level::Error,
         }
     }
@@ -428,6 +444,34 @@ impl DiagnosticCode {
                 "value && true",
                 "The analyzer proved that a boolean operand has no effect on the result.",
                 "Apply the suggested simplification.",
+            ),
+            Self::DocInvalidSection => (
+                "invalid MuxDoc section",
+                "A MuxDoc section is empty, duplicated, or does not match its declaration.",
+                "/// missing: Description",
+                "MuxDoc sections must describe the declaration they precede.",
+                "Correct the section name or content.",
+            ),
+            Self::DocOrphan => (
+                "unattached MuxDoc comment",
+                "A MuxDoc comment does not immediately precede a named declaration.",
+                "/// Description\n\nfunc f() returns void {}",
+                "Blank lines and other tokens separate a MuxDoc comment from its declaration.",
+                "Move the comment next to the declaration or make it an ordinary comment.",
+            ),
+            Self::DocUnknownReference => (
+                "unresolved MuxDoc reference",
+                "A see section names a symbol that cannot be found.",
+                "/// see: missing",
+                "MuxDoc symbol references must identify a declaration in the project.",
+                "Correct the symbol name or use a full URL.",
+            ),
+            Self::DocAmbiguousReference => (
+                "ambiguous MuxDoc reference",
+                "A see section names more than one project symbol.",
+                "/// see: open",
+                "A MuxDoc symbol reference must identify one declaration.",
+                "Qualify the symbol with its type or module name.",
             ),
         };
         DiagnosticInfo {
